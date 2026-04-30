@@ -223,7 +223,7 @@
       </div>
       <form @submit.prevent="addWatch" class="space-y-2.5 relative">
         <div class="relative">
-          <input x-model="form.symbol" @input="searchStocks" @focus="showDropdown = true" @click.outside="showDropdown = false" placeholder="티커 또는 기업명 (예: 테슬라)" class="input w-full font-medium" autocomplete="off">
+          <input x-model="form.symbol" @input="searchStocks" @focus="showDropdown = true" @click.outside="showDropdown = false" placeholder="티커 또는 기업명 (예: MSFT)" class="input w-full font-medium" autocomplete="off">
           <div x-show="showDropdown && searchResults.length > 0" class="absolute z-10 w-full mt-1 bg-[#111111] border border-[#333333] rounded-lg shadow-xl overflow-hidden">
             <template x-for="res in searchResults" :key="res.symbol">
               <div @click="selectStock(res)" class="px-4 py-2.5 hover:bg-[#222222] cursor-pointer flex justify-between items-center">
@@ -233,14 +233,21 @@
             </template>
           </div>
         </div>
-        <div class="flex gap-2">
-          <select x-model="form.currency" class="input w-1/3 text-sm bg-[#111111] border-[#333333]">
-            <option value="USD">달러(USD)</option>
-            <option value="KRW">원화(KRW)</option>
-          </select>
-          <input x-model="form.capital_str" @input="formatCapital" type="text" placeholder="투자금 입력 (빈칸시 기본값)" class="input w-2/3">
-        </div>
-        <input x-model.number="form.risk_pct" type="number" step="0.1" placeholder="리스크 % (기본 1.0)" class="input w-full">
+        <details class="group">
+          <summary class="text-[10px] text-ink-500 cursor-pointer uppercase tracking-widest font-bold flex items-center gap-1">
+            옵션 (자본금/리스크)
+          </summary>
+          <div class="space-y-2 mt-2 pt-2 border-t border-[#222]">
+            <div class="flex gap-2">
+              <select x-model="form.currency" class="input w-1/3 text-sm bg-[#111111] border-[#333333]">
+                <option value="USD">USD</option>
+                <option value="KRW">KRW</option>
+              </select>
+              <input x-model="form.capital_str" @input="formatCapital" type="text" placeholder="투자금" class="input w-2/3">
+            </div>
+            <input x-model.number="form.risk_pct" type="number" step="0.1" placeholder="리스크 % (기본 1.0)" class="input w-full">
+          </div>
+        </details>
         <button class="btn btn-primary w-full">종목 추가 및 분석</button>
       </form>
       <div class="divider my-4"></div>
@@ -281,7 +288,6 @@
       </ul>
     </div>
 
-    <!-- 포트폴리오 요약 -->
     <div class="surface-elevated p-4">
       <div class="serif text-sm font-semibold text-ink-800 mb-2">내 포트폴리오</div>
       <div class="grid grid-cols-2 gap-2 text-sm">
@@ -291,6 +297,28 @@
         <div><span class="text-ink-500">수익률</span><br><span class="font-mono" :class="portfolio.total_pnl_pct>=0?'ticker-up':'ticker-down'" x-text="(portfolio.total_pnl_pct>=0?'+':'')+portfolio.total_pnl_pct+'%'"></span></div>
       </div>
       <button @click="showTradeModal=true; tradeForm.symbol=selected||''" class="btn btn-ghost w-full mt-3 text-xs">+ 매매 기록 추가</button>
+
+      <!-- 실시간 보유 종목 (사이드바 통합) -->
+      <template x-if="holdings.length > 0">
+        <div class="mt-4 pt-4 border-t border-[#222] space-y-2">
+          <div class="text-[10px] text-ink-500 uppercase font-bold tracking-widest">실시간 보유 현황</div>
+          <template x-for="h in holdings" :key="h.id">
+            <div class="surface p-2.5 border border-[#222] hover:border-coral-500/30 transition-colors cursor-pointer" @click="select(h.symbol)">
+              <div class="flex justify-between items-start mb-1">
+                <div class="flex items-center gap-1.5">
+                  <span class="font-bold text-sm" x-text="h.symbol"></span>
+                  <span class="text-[10px] px-1 rounded bg-zinc-800" :class="positionTone(h.position)" x-text="h.emoji"></span>
+                </div>
+                <div class="text-[10px] font-mono" :class="h.pnl_pct >= 0 ? 'ticker-up' : 'ticker-down'" x-text="(h.pnl_pct>=0?'+':'')+h.pnl_pct.toFixed(1)+'%'"></div>
+              </div>
+              <div class="flex justify-between items-baseline">
+                <div class="text-[10px] text-ink-500" x-text="cur(h.symbol)+h.current_price.toLocaleString()"></div>
+                <button @click.stop="removePortfolio(h.id)" class="text-ink-400 hover:text-rust-500 text-xs">×</button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
     </div>
 
     <!-- 매매 히스토리 -->
@@ -333,52 +361,6 @@
 
   <!-- ── 메인 리포트 ─────────────────────────────────── -->
   <section class="md:col-span-6 space-y-4 md:space-y-5" :class="mobileTab!=='report'&&'hidden md:block'">
-
-    <!-- 실시간 포트폴리오 현황 -->
-    <template x-if="holdings.length > 0">
-      <div class="surface p-5">
-        <div class="flex items-center justify-between mb-4">
-          <div class="serif text-xl font-bold">실시간 내 자산</div>
-          <button @click="loadHoldings()" class="text-xs text-coral-500 hover:underline">시세 갱신</button>
-        </div>
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="text-ink-500 border-b border-ink-100">
-                <th class="text-left py-2">종목</th>
-                <th class="text-right py-2">현재가</th>
-                <th class="text-right py-2">수익률</th>
-                <th class="text-center py-2">추천</th>
-                <th class="text-right py-2">관리</th>
-              </tr>
-            </thead>
-            <tbody>
-              <template x-for="h in holdings" :key="h.id">
-                <tr class="border-b border-ink-50 font-medium">
-                  <td class="py-3">
-                    <div class="font-bold" x-text="h.symbol"></div>
-                    <div class="text-[10px] text-ink-500" x-text="'평단 '+cur(h.symbol)+h.entry_price.toLocaleString()"></div>
-                  </td>
-                  <td class="text-right py-3 font-mono" x-text="cur(h.symbol)+h.current_price.toLocaleString()"></td>
-                  <td class="text-right py-3 font-mono" :class="h.pnl_pct >= 0 ? 'ticker-up' : 'ticker-down'" 
-                      x-text="(h.pnl_pct>=0?'+':'')+h.pnl_pct.toFixed(2)+'%'"></td>
-                  <td class="text-center py-3">
-                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-cream-100 border border-ink-100"
-                          :class="positionTone(h.position)">
-                      <span x-text="h.emoji"></span>
-                      <span x-text="h.position"></span>
-                    </span>
-                  </td>
-                  <td class="text-right py-3">
-                    <button @click="removePortfolio(h.id)" class="text-ink-300 hover:text-rust-500">×</button>
-                  </td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </template>
 
     <!-- 빈 상태 -->
     <template x-if="!report && !loading">
