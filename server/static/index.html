@@ -686,7 +686,14 @@ function app(){
     portForm: { symbol: '', krw_invested: 0, entry_price: 0, shares: 0 },
 
     init(){
-      if(this.user) { this.refresh(); this.loadTrades(); this.loadRecommendations(); this.loadHoldings(); }
+      if(this.user) { 
+        this.refresh(); 
+        this.loadTrades(); 
+        this.loadRecommendations(); 
+        this.loadHoldings();
+        // 5초마다 포트폴리오 실시간 갱신
+        setInterval(() => this.loadHoldings(), 5000);
+      }
       this.connect(); this.fetchExchangeRate();
       const tick = () => this.now = new Date().toLocaleString('ko-KR', { hour12:false });
       tick(); setInterval(tick, 1000);
