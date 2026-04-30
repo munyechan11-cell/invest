@@ -63,8 +63,17 @@
   ::selection { background:#10b981; color:#000000; }
   .scroll-soft::-webkit-scrollbar { width:8px; }
   .scroll-soft::-webkit-scrollbar-thumb { background:#333333; border-radius:8px; }
-  .overlay { position:fixed; inset:0; z-index:50; background:rgba(0,0,0,0.85); display:flex; align-items:center; justify-content:center; }
-  .modal { background:#0a0a0a; border:1px solid #333; border-radius:16px; padding:32px; width:360px; }
+  .overlay { position:fixed; inset:0; z-index:50; background:rgba(0,0,0,0.85); display:flex; align-items:center; justify-content:center; padding:16px; }
+  .modal { background:#0a0a0a; border:1px solid #333; border-radius:16px; padding:32px; width:360px; max-width:100%; max-height:90vh; overflow-y:auto; }
+  /* 모바일 탭 네비 */
+  .mobile-tabs { display:none; }
+  @media (max-width: 768px) {
+    .mobile-tabs { display:flex; position:fixed; bottom:0; left:0; right:0; z-index:30; background:#0a0a0a; border-top:1px solid #222; padding:8px 0; padding-bottom: env(safe-area-inset-bottom, 8px); }
+    .mobile-tabs button { flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; font-size:10px; color:#6b7280; padding:4px 0; }
+    .mobile-tabs button.active { color:#10b981; }
+    .modal { padding:24px 20px; width:100%; border-radius:12px; }
+    main { padding-bottom: 70px !important; }
+  }
 </style>
 <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
@@ -170,21 +179,21 @@
   </div>
 </div>
 
-<header class="px-8 py-5 border-b border-cream-200 bg-cream-50/70 backdrop-blur sticky top-0 z-20">
+<header class="px-4 md:px-8 py-3 md:py-5 border-b border-cream-200 bg-cream-50/70 backdrop-blur sticky top-0 z-20">
   <div class="max-w-[1400px] mx-auto flex items-center justify-between">
     <div class="flex items-center gap-3">
       <div class="w-9 h-9 rounded-lg bg-coral-500 flex items-center justify-center text-cream-50 serif text-xl font-semibold">T</div>
       <div>
-        <div class="serif text-2xl font-semibold leading-none">Toss</div>
-        <div class="text-xs text-ink-600 mt-0.5">Quant Assistant · 단기 트레이딩 리서치</div>
+        <div class="serif text-xl md:text-2xl font-semibold leading-none">Toss</div>
+        <div class="text-[10px] md:text-xs text-ink-600 mt-0.5 hidden sm:block">Quant Assistant · 단기 트레이딩 리서치</div>
       </div>
     </div>
     <div class="flex items-center gap-5">
-      <div class="flex items-center gap-2 text-sm text-ink-600">
+      <div class="hidden md:flex items-center gap-2 text-sm text-ink-600">
         <span class="pulse-dot" :class="!wsConnected && 'off'"></span>
-        <span x-text="wsConnected ? '실시간 스트림 연결됨' : '연결 끊김 — 재시도 중'"></span>
+        <span x-text="wsConnected ? '실시간 연결' : '재연결 중'"></span>
       </div>
-      <div class="text-sm text-ink-600 font-mono" x-text="now"></div>
+      <div class="hidden lg:block text-sm text-ink-600 font-mono" x-text="now"></div>
       <div x-show="user" class="relative" @click.outside="showProfileMenu=false">
         <button @click="showProfileMenu=!showProfileMenu" class="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-[#222] transition">
           <div class="w-7 h-7 rounded-full bg-coral-500 flex items-center justify-center text-xs font-bold text-black" x-text="(user?.display_name||user?.username||'?')[0]"></div>
@@ -203,10 +212,10 @@
   </div>
 </header>
 
-<main class="max-w-[1400px] mx-auto grid grid-cols-12 gap-5 px-8 py-6">
+<main class="max-w-[1400px] mx-auto grid grid-cols-1 md:grid-cols-12 gap-4 md:gap-5 px-4 md:px-8 py-4 md:py-6">
 
-  <!-- ── 워치리스트 ─────────────────────────────────── -->
-  <section class="col-span-3 space-y-5">
+  <!-- ── 워치리스트 ──────────────────────────────────── -->
+  <section class="md:col-span-3 space-y-4 md:space-y-5" :class="mobileTab!=='watch'&&'hidden md:block'">
     <div class="surface-elevated p-5">
       <div class="flex items-baseline justify-between mb-4">
         <h2 class="serif text-xl font-semibold">워치리스트</h2>
@@ -289,8 +298,8 @@
     </div>
   </section>
 
-  <!-- ── 메인 리포트 ────────────────────────────────── -->
-  <section class="col-span-6 space-y-5">
+  <!-- ── 메인 리포트 ─────────────────────────────────── -->
+  <section class="md:col-span-6 space-y-4 md:space-y-5" :class="mobileTab!=='report'&&'hidden md:block'">
 
     <!-- 빈 상태 -->
     <template x-if="!report && !loading">
@@ -483,16 +492,17 @@
         <!-- 차트 -->
         <div class="surface-elevated p-2 overflow-hidden">
           <iframe :src="'https://s.tradingview.com/widgetembed/?frameElementId=tv&symbol=' + (isKR(selected)?'KRX:'+selected:selected) + '&interval=15&theme=dark&style=1&hide_side_toolbar=1'"
-                  class="w-full rounded-2xl" style="height:440px;border:0"></iframe>
+                  class="w-full rounded-2xl" style="height:300px;border:0"></iframe>
+        </div>
         </div>
 
       </div>
     </template>
   </section>
 
-  <!-- ── 알림 ──────────────────────────────────────── -->
-  <aside class="col-span-3 space-y-4">
-    <div class="surface-elevated p-5 sticky top-24">
+  <!-- ── 알림 ───────────────────────────────────────── -->
+  <aside class="md:col-span-3 space-y-4" :class="mobileTab!=='alerts'&&'hidden md:block'">
+    <div class="surface-elevated p-4 md:p-5 md:sticky md:top-24">
       <div class="flex items-center justify-between mb-1">
         <h2 class="serif text-xl font-semibold">실시간 알림</h2>
         <span class="pill pill-coral" x-text="alerts.length + ' 건'"></span>
@@ -522,10 +532,27 @@
   </aside>
 </main>
 
-<footer class="max-w-[1400px] mx-auto px-8 py-8 text-xs text-ink-500">
+<!-- 모바일 하단 탭 -->
+<nav class="mobile-tabs">
+  <button @click="mobileTab='watch'" :class="mobileTab==='watch'&&'active'">
+    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h7v7H3zM13 3h4v4h-4zM13 13h4v4h-4zM3 14h7v3H3z"/></svg>
+    종목
+  </button>
+  <button @click="mobileTab='report'" :class="mobileTab==='report'&&'active'">
+    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h12v12H4z"/><path d="M7 12V9m3 3V7m3 5V5"/></svg>
+    분석
+  </button>
+  <button @click="mobileTab='alerts'" :class="mobileTab==='alerts'&&'active'">
+    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2a6 6 0 016 6c0 4 2 5 2 5H2s2-1 2-5a6 6 0 016-6zM8 17h4"/></svg>
+    알림
+    <span x-show="alerts.length" class="absolute -top-1 right-1/4 w-2 h-2 rounded-full bg-coral-500"></span>
+  </button>
+</nav>
+
+<footer class="max-w-[1400px] mx-auto px-4 md:px-8 py-6 md:py-8 text-xs text-ink-500 hidden md:block">
   <div class="divider mb-4"></div>
   본 도구는 참고용 리서치이며 매매 판단은 사용자 책임입니다.
-  &nbsp;·&nbsp; Powered by Claude Opus · Finnhub · Alpaca
+  &nbsp;·&nbsp; Powered by Gemini AI · Finnhub · Alpaca
 </footer>
 
 <audio id="ding" preload="auto">
@@ -539,6 +566,7 @@ function app(){
     watch: [], ticks: {}, alerts: [], selected: null, report: null,
     loading: false, wsConnected: false, now: '',
     krwRate: 1400,
+    mobileTab: 'watch',
     // 인증
     user: JSON.parse(localStorage.getItem('toss_user') || 'null'),
     authForm: { username: '', password: '', password2: '', display_name: '' },
@@ -685,7 +713,7 @@ function app(){
       }
     },
 
-    select(sym){ this.selected = sym; this.report = null; this.runAnalyze(); },
+    select(sym){ this.selected = sym; this.report = null; this.mobileTab = 'report'; this.runAnalyze(); },
     async addWatch(){
       if(!this.form.symbol) return;
       const sym = this.form.symbol.toUpperCase().trim();
