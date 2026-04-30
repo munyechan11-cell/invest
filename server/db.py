@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS watchlist (
   user_id INTEGER NOT NULL DEFAULT 0,
   capital REAL NOT NULL,
   risk_pct REAL NOT NULL DEFAULT 1.0,
+  last_position TEXT NOT NULL DEFAULT '관망',
+  last_emoji TEXT NOT NULL DEFAULT '⚪',
   added_at REAL NOT NULL,
   PRIMARY KEY (symbol, user_id)
 );
@@ -104,6 +106,13 @@ async def init():
             await c.execute(f"SELECT {col} FROM {table} LIMIT 1")
         except Exception:
             await c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {default}")
+    
+    # 워치리스트 포지션 컬럼 추가
+    for col, default in [("last_position", "TEXT NOT NULL DEFAULT '관망'"), ("last_emoji", "TEXT NOT NULL DEFAULT '⚪'")]:
+        try:
+            await c.execute(f"SELECT {col} FROM watchlist LIMIT 1")
+        except Exception:
+            await c.execute(f"ALTER TABLE watchlist ADD COLUMN {col} {default}")
     
     # 관리자 계정 자동 생성 (ADMIN_PASSWORD가 환경변수에 설정된 경우만)
     if ADMIN_PASSWORD:
@@ -200,6 +209,16 @@ async def upsert_watch(symbol: str, capital: float, risk_pct: float, user_id: in
 async def remove_watch(symbol: str, user_id: int = 0):
     c = await get_db()
     await c.execute("DELETE FROM watchlist WHERE symbol=? AND user_id=?", (symbol.upper(), user_id))
+    await c.commit()
+
+
+async def update_watch_position(symbol: str, user_id: int, position: str, emoji: str):
+    """분석 완료 후 워치리스트 목록의 포지션 정보를 갱신"""
+    c = await get_db()
+    await c.execute(
+        "UPDATE watchlist SET last_position=?, last_emoji=? WHERE symbol=? AND user_id=?",
+        (position, emoji, symbol.upper(), user_id)
+    )
     await c.commit()
 
 

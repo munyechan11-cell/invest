@@ -181,6 +181,8 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
 
         ana = await asyncio.to_thread(analyze, symbol, snap, news, flow, profile)
         await db.save_plan(symbol, ana)
+        # 워치리스트 목록에도 포지션 저장
+        await db.update_watch_position(symbol, user["id"], ana["position"], ana["position_emoji"])
 
         watch = next((w for w in await db.list_watch(user["id"]) if w["symbol"] == symbol), None)
         sizing = None

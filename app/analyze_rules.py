@@ -88,14 +88,14 @@ def analyze_rules(symbol: str, snapshot: dict, news: list[dict],
     elif rv < 0.5:
         score *= 0.7  # 거래 빈약 → 시그널 신뢰도 ↓
 
-    # ── 점수 → 포지션 매핑
-    if score >= 45:
+    # ── 점수 → 포지션 매핑 (단기 투자자용 공격적 튜닝)
+    if score >= 35:
         position, emoji = "적극 매수", "🟢"
-    elif score >= 18:
+    elif score >= 10:
         position, emoji = "분할 매수", "🟢"
-    elif score <= -45:
+    elif score <= -35:
         position, emoji = "적극 매도", "🔴"
-    elif score <= -18:
+    elif score <= -10:
         position, emoji = "분할 매도", "🟠"
     else:
         position, emoji = "관망", "⚪"

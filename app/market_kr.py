@@ -20,12 +20,17 @@ def _base() -> str:
 
 
 def _token_get() -> str:
+    app_key = os.environ.get("KIS_APP_KEY")
+    app_secret = os.environ.get("KIS_APP_SECRET")
+    if not app_key or not app_secret:
+        raise RuntimeError("한국 주식 분석을 위해 KIS_APP_KEY와 KIS_APP_SECRET 환경변수 설정이 필요합니다.")
+        
     if _token["value"] and _token["exp"] > time.time() + 60:
         return _token["value"]
     r = httpx.post(f"{_base()}/oauth2/tokenP", json={
         "grant_type": "client_credentials",
-        "appkey": os.environ["KIS_APP_KEY"],
-        "appsecret": os.environ["KIS_APP_SECRET"],
+        "appkey": app_key,
+        "appsecret": app_secret,
     }, timeout=15)
     r.raise_for_status()
     d = r.json()
@@ -37,8 +42,8 @@ def _token_get() -> str:
 def _headers(tr_id: str) -> dict:
     return {
         "authorization": f"Bearer {_token_get()}",
-        "appkey": os.environ["KIS_APP_KEY"],
-        "appsecret": os.environ["KIS_APP_SECRET"],
+        "appkey": os.environ.get("KIS_APP_KEY", ""),
+        "appsecret": os.environ.get("KIS_APP_SECRET", ""),
         "tr_id": tr_id,
         "content-type": "application/json; charset=utf-8",
     }
