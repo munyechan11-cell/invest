@@ -1,8 +1,13 @@
-"""FastAPI 진입점 — REST + WebSocket + 알림 워커."""
-from __future__ import annotations
-import asyncio, json, logging, os
-from contextlib import asynccontextmanager
+import sys, os
 from pathlib import Path
+
+# 프로젝트 루트를 경로에 추가 (Render 임포트 오류 해결 필살기)
+root = str(Path(__file__).resolve().parent.parent)
+if root not in sys.path:
+    sys.path.insert(0, root)
+
+import asyncio, json, logging
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends

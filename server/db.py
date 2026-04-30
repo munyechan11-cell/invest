@@ -5,10 +5,10 @@ from pathlib import Path
 DB = Path(__file__).resolve().parent.parent / "toss.db"
 _conn: aiosqlite.Connection | None = None
 
-# 보안 설정 (JWT)
+# 보안 설정
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "toss_super_secret_key_1111")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 1주일
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 
 
 def _hash(pw: str) -> str:
     salt = b"toss_quant_platform_v2_salt" 
@@ -24,7 +24,7 @@ def create_access_token(data: dict) -> str:
 def decode_token(token: str) -> dict | None:
     try:
         return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except:
+    except Exception:
         return None
 
 
