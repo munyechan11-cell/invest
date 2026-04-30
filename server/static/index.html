@@ -13,59 +13,56 @@
     theme: {
       extend: {
         colors: {
-          cream: { 50:'#FBF8F3', 100:'#F5F1EB', 200:'#EDE6DA', 300:'#E0D6C4', 400:'#C9BBA1' },
-          ink:   { 900:'#181715', 800:'#2A2724', 700:'#48433D', 600:'#6B6258', 500:'#8C8378' },
-          coral: { 50:'#F9EFEA', 100:'#F0DACE', 400:'#D4856B', 500:'#CC785C', 600:'#B5654E', 700:'#963F26' },
-          olive: { 500:'#6B7A4A', 600:'#5A6740' },
-          rust:  { 500:'#B8553B', 600:'#9C4730' },
+          cream: { 50:'#000000', 100:'#0a0a0a', 200:'#171717', 300:'#262626', 400:'#404040' },
+          ink:   { 900:'#ffffff', 800:'#f3f4f6', 700:'#d1d5db', 600:'#9ca3af', 500:'#6b7280' },
+          coral: { 50:'#022c22', 100:'#064e3b', 400:'#34d399', 500:'#10b981', 600:'#059669', 700:'#047857' },
+          olive: { 500:'#10b981', 600:'#059669' },
+          rust:  { 500:'#ef4444', 600:'#dc2626' },
         },
         fontFamily: {
-          serif: ['Fraunces','Georgia','serif'],
+          serif: ['Inter','ui-sans-serif','system-ui','sans-serif'],
           sans: ['Inter','ui-sans-serif','system-ui','sans-serif'],
           mono: ['"JetBrains Mono"','ui-monospace','monospace'],
         },
         boxShadow: {
-          soft: '0 1px 2px rgba(24,23,21,0.04), 0 4px 16px rgba(24,23,21,0.04)',
-          glow: '0 0 0 1px rgba(204,120,92,0.25), 0 8px 24px rgba(204,120,92,0.18)',
+          soft: '0 1px 2px rgba(0,0,0,0.5)',
+          glow: '0 0 0 1px rgba(16,185,129,0.25), 0 8px 24px rgba(16,185,129,0.18)',
         },
       }
     }
   }
 </script>
 <style>
-  html, body { background: #F5F1EB; color: #181715; font-family: Inter, system-ui, sans-serif; }
-  body { background-image:
-      radial-gradient(1100px 600px at 110% -10%, rgba(204,120,92,0.10), transparent 60%),
-      radial-gradient(900px 500px at -10% 110%, rgba(107,122,74,0.07), transparent 60%);
-    background-attachment: fixed; }
-  .serif { font-family: Fraunces, Georgia, serif; font-optical-sizing: auto; letter-spacing: -0.01em; }
-  .surface { background: #FBF8F3; border: 1px solid #EDE6DA; border-radius: 18px; }
-  .surface-elevated { background: #FFFFFF; border: 1px solid #EDE6DA; border-radius: 18px; box-shadow: 0 1px 2px rgba(24,23,21,0.04), 0 8px 28px rgba(24,23,21,0.05); }
-  .pill { display: inline-flex; align-items:center; gap:6px; padding: 4px 10px; border-radius: 9999px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.01em; }
-  .pill-coral { background:#F0DACE; color:#963F26; }
-  .pill-olive { background:#E5E8D4; color:#3F4A22; }
-  .pill-rust  { background:#F2D8CC; color:#7A2F1A; }
-  .pill-stone { background:#EDE6DA; color:#48433D; }
-  .input { background:#FFFFFF; border:1px solid #E0D6C4; border-radius:12px; padding:10px 12px; font-size:14px; outline:none; transition:.15s; }
-  .input:focus { border-color:#CC785C; box-shadow: 0 0 0 4px rgba(204,120,92,0.12); }
-  .btn { font-weight:600; padding:10px 14px; border-radius:12px; transition:.15s; font-size:14px; }
-  .btn-primary { background:#CC785C; color:#FBF8F3; }
-  .btn-primary:hover { background:#B5654E; }
+  html, body { background: #000000; color: #ffffff; font-family: Inter, system-ui, sans-serif; }
+  body { background-image: none; }
+  .serif { font-family: Inter, sans-serif; font-weight: 600; letter-spacing: -0.02em; }
+  .surface { background: #0a0a0a; border: 1px solid #222222; border-radius: 12px; }
+  .surface-elevated { background: #0a0a0a; border: 1px solid #222222; border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.8); }
+  .pill { display: inline-flex; align-items:center; gap:6px; padding: 4px 10px; border-radius: 4px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.01em; }
+  .pill-coral { background:#064e3b; color:#34d399; }
+  .pill-olive { background:#064e3b; color:#34d399; }
+  .pill-rust  { background:#450a0a; color:#f87171; }
+  .pill-stone { background:#222222; color:#d1d5db; }
+  .input { background:#000000; border:1px solid #333333; color:#ffffff; border-radius:8px; padding:10px 12px; font-size:14px; outline:none; transition:.15s; }
+  .input:focus { border-color:#10b981; box-shadow: 0 0 0 1px #10b981; }
+  .btn { font-weight:600; padding:10px 14px; border-radius:8px; transition:.15s; font-size:14px; }
+  .btn-primary { background:#ffffff; color:#000000; }
+  .btn-primary:hover { background:#d1d5db; }
   .btn-primary:disabled { opacity:.5; }
-  .btn-ghost { background:transparent; color:#48433D; border:1px solid #E0D6C4; }
-  .btn-ghost:hover { background:#F5F1EB; }
-  .divider { height:1px; background: linear-gradient(90deg, transparent, #E0D6C4, transparent); }
+  .btn-ghost { background:transparent; color:#d1d5db; border:1px solid #333333; }
+  .btn-ghost:hover { background:#222222; }
+  .divider { height:1px; background: #222222; }
   .flash-in { animation: flashIn .9s ease; }
-  @keyframes flashIn { 0%{ background:#F0DACE; transform: translateY(-3px) } 100%{ background:transparent; transform:none } }
-  .pulse-dot { width:7px; height:7px; border-radius:50%; background:#6B7A4A; box-shadow:0 0 0 0 rgba(107,122,74,.6); animation: pulseDot 1.6s infinite; }
-  .pulse-dot.off { background:#C04545; animation:none; box-shadow:none; }
-  @keyframes pulseDot { 0%{ box-shadow:0 0 0 0 rgba(107,122,74,.5)} 70%{ box-shadow:0 0 0 8px rgba(107,122,74,0)} 100%{ box-shadow:0 0 0 0 rgba(107,122,74,0)} }
-  .ticker-up   { color:#5A6740; }
-  .ticker-down { color:#9C4730; }
-  .frame-chip { background: linear-gradient(180deg,#FFFFFF, #F5F1EB); border:1px solid #EDE6DA; padding:4px 10px; border-radius:9999px; font-size:11.5px; color:#48433D; }
-  ::selection { background:#F0DACE; color:#181715; }
+  @keyframes flashIn { 0%{ background:#1f2937; transform: translateY(-3px) } 100%{ background:transparent; transform:none } }
+  .pulse-dot { width:7px; height:7px; border-radius:50%; background:#10b981; box-shadow:0 0 0 0 rgba(16,185,129,.6); animation: pulseDot 1.6s infinite; }
+  .pulse-dot.off { background:#ef4444; animation:none; box-shadow:none; }
+  @keyframes pulseDot { 0%{ box-shadow:0 0 0 0 rgba(16,185,129,.5)} 70%{ box-shadow:0 0 0 8px rgba(16,185,129,0)} 100%{ box-shadow:0 0 0 0 rgba(16,185,129,0)} }
+  .ticker-up   { color:#10b981; }
+  .ticker-down { color:#ef4444; }
+  .frame-chip { background: #111111; border:1px solid #333333; padding:4px 10px; border-radius:4px; font-size:11.5px; color:#9ca3af; }
+  ::selection { background:#10b981; color:#000000; }
   .scroll-soft::-webkit-scrollbar { width:8px; }
-  .scroll-soft::-webkit-scrollbar-thumb { background:#E0D6C4; border-radius:8px; }
+  .scroll-soft::-webkit-scrollbar-thumb { background:#333333; border-radius:8px; }
 </style>
 <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
@@ -99,11 +96,21 @@
         <h2 class="serif text-xl font-semibold">워치리스트</h2>
         <span class="text-xs text-ink-500" x-text="watch.length + ' 종목'"></span>
       </div>
-      <form @submit.prevent="addWatch" class="space-y-2.5">
-        <input x-model="form.symbol" placeholder="티커 (TSLA · 005930)" class="input w-full uppercase tracking-wider font-medium">
+      <form @submit.prevent="addWatch" class="space-y-2.5 relative">
+        <div class="relative">
+          <input x-model="form.symbol" @input="searchStocks" @focus="showDropdown = true" @click.outside="showDropdown = false" placeholder="티커 또는 기업명 (예: 테슬라)" class="input w-full font-medium" autocomplete="off">
+          <div x-show="showDropdown && searchResults.length > 0" class="absolute z-10 w-full mt-1 bg-[#111111] border border-[#333333] rounded-lg shadow-xl overflow-hidden">
+            <template x-for="res in searchResults" :key="res.symbol">
+              <div @click="selectStock(res)" class="px-4 py-2.5 hover:bg-[#222222] cursor-pointer flex justify-between items-center">
+                <span class="text-sm font-semibold" x-text="res.symbol"></span>
+                <span class="text-xs text-ink-500" x-text="res.name"></span>
+              </div>
+            </template>
+          </div>
+        </div>
         <input x-model.number="form.capital" type="number" placeholder="투자금 (USD)" class="input w-full">
         <input x-model.number="form.risk_pct" type="number" step="0.1" placeholder="리스크 % (기본 1.0)" class="input w-full">
-        <button class="btn btn-primary w-full">추가 / 갱신</button>
+        <button class="btn btn-primary w-full">종목 추가 및 분석</button>
       </form>
       <div class="divider my-4"></div>
       <ul class="space-y-1.5">
@@ -337,7 +344,7 @@
 
         <!-- 차트 -->
         <div class="surface-elevated p-2 overflow-hidden">
-          <iframe :src="'https://s.tradingview.com/widgetembed/?frameElementId=tv&symbol=' + (isKR(selected)?'KRX:'+selected:selected) + '&interval=15&theme=light&style=1&hide_side_toolbar=1'"
+          <iframe :src="'https://s.tradingview.com/widgetembed/?frameElementId=tv&symbol=' + (isKR(selected)?'KRX:'+selected:selected) + '&interval=15&theme=dark&style=1&hide_side_toolbar=1'"
                   class="w-full rounded-2xl" style="height:440px;border:0"></iframe>
         </div>
 
@@ -404,7 +411,8 @@ function app(){
       this.alerts = a.map(x => ({...x, ts: x.created_at}));
     },
     connect(){
-      const ws = new WebSocket(`ws://${location.host}/ws`);
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${protocol}//${location.host}/ws`);
       ws.onopen = ()=> this.wsConnected = true;
       ws.onclose = ()=> { this.wsConnected = false; setTimeout(()=>this.connect(), 2000); };
       ws.onmessage = (e)=>{
@@ -416,10 +424,42 @@ function app(){
         }
       };
     },
+    
+    // 자동완성 데이터
+    stockDb: [
+      { symbol: 'TSLA', name: 'Tesla 테슬라' },
+      { symbol: 'AAPL', name: 'Apple 애플' },
+      { symbol: 'NVDA', name: 'Nvidia 엔비디아' },
+      { symbol: 'MSFT', name: 'Microsoft 마이크로소프트' },
+      { symbol: 'AMZN', name: 'Amazon 아마존' },
+      { symbol: 'GOOGL', name: 'Alphabet 구글' },
+      { symbol: 'META', name: 'Meta 메타' },
+      { symbol: 'MSTR', name: 'MicroStrategy 마이크로스트레티지' },
+      { symbol: '005930', name: '삼성전자' },
+      { symbol: '000660', name: 'SK하이닉스' },
+      { symbol: '035720', name: '카카오' },
+      { symbol: '035420', name: 'NAVER 네이버' },
+    ],
+    showDropdown: false,
+    searchResults: [],
+    
+    searchStocks() {
+      const q = this.form.symbol.toLowerCase().trim();
+      if(!q) { this.searchResults = []; return; }
+      this.searchResults = this.stockDb.filter(s => 
+        s.symbol.toLowerCase().includes(q) || s.name.toLowerCase().includes(q)
+      ).slice(0, 5);
+      this.showDropdown = true;
+    },
+    selectStock(res) {
+      this.form.symbol = res.symbol;
+      this.showDropdown = false;
+    },
+
     select(sym){ this.selected = sym; this.report = null; this.runAnalyze(); },
     async addWatch(){
       if(!this.form.symbol) return;
-      const sym = this.form.symbol.toUpperCase();
+      const sym = this.form.symbol.toUpperCase().trim();
       await fetch('/api/watchlist', { method:'POST',
         headers:{'content-type':'application/json'},
         body: JSON.stringify({...this.form, symbol: sym})});
