@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Toss — Quant Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          cream: { 50:'#FBF8F3', 100:'#F5F1EB', 200:'#EDE6DA', 300:'#E0D6C4', 400:'#C9BBA1' },
+          ink:   { 900:'#181715', 800:'#2A2724', 700:'#48433D', 600:'#6B6258', 500:'#8C8378' },
+          coral: { 50:'#F9EFEA', 100:'#F0DACE', 400:'#D4856B', 500:'#CC785C', 600:'#B5654E', 700:'#963F26' },
+          olive: { 500:'#6B7A4A', 600:'#5A6740' },
+          rust:  { 500:'#B8553B', 600:'#9C4730' },
+        },
+        fontFamily: {
+          serif: ['Fraunces','Georgia','serif'],
+          sans: ['Inter','ui-sans-serif','system-ui','sans-serif'],
+          mono: ['"JetBrains Mono"','ui-monospace','monospace'],
+        },
+        boxShadow: {
+          soft: '0 1px 2px rgba(24,23,21,0.04), 0 4px 16px rgba(24,23,21,0.04)',
+          glow: '0 0 0 1px rgba(204,120,92,0.25), 0 8px 24px rgba(204,120,92,0.18)',
+        },
+      }
+    }
+  }
+</script>
+<style>
+  html, body { background: #F5F1EB; color: #181715; font-family: Inter, system-ui, sans-serif; }
+  body { background-image:
+      radial-gradient(1100px 600px at 110% -10%, rgba(204,120,92,0.10), transparent 60%),
+      radial-gradient(900px 500px at -10% 110%, rgba(107,122,74,0.07), transparent 60%);
+    background-attachment: fixed; }
+  .serif { font-family: Fraunces, Georgia, serif; font-optical-sizing: auto; letter-spacing: -0.01em; }
+  .surface { background: #FBF8F3; border: 1px solid #EDE6DA; border-radius: 18px; }
+  .surface-elevated { background: #FFFFFF; border: 1px solid #EDE6DA; border-radius: 18px; box-shadow: 0 1px 2px rgba(24,23,21,0.04), 0 8px 28px rgba(24,23,21,0.05); }
+  .pill { display: inline-flex; align-items:center; gap:6px; padding: 4px 10px; border-radius: 9999px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.01em; }
+  .pill-coral { background:#F0DACE; color:#963F26; }
+  .pill-olive { background:#E5E8D4; color:#3F4A22; }
+  .pill-rust  { background:#F2D8CC; color:#7A2F1A; }
+  .pill-stone { background:#EDE6DA; color:#48433D; }
+  .input { background:#FFFFFF; border:1px solid #E0D6C4; border-radius:12px; padding:10px 12px; font-size:14px; outline:none; transition:.15s; }
+  .input:focus { border-color:#CC785C; box-shadow: 0 0 0 4px rgba(204,120,92,0.12); }
+  .btn { font-weight:600; padding:10px 14px; border-radius:12px; transition:.15s; font-size:14px; }
+  .btn-primary { background:#CC785C; color:#FBF8F3; }
+  .btn-primary:hover { background:#B5654E; }
+  .btn-primary:disabled { opacity:.5; }
+  .btn-ghost { background:transparent; color:#48433D; border:1px solid #E0D6C4; }
+  .btn-ghost:hover { background:#F5F1EB; }
+  .divider { height:1px; background: linear-gradient(90deg, transparent, #E0D6C4, transparent); }
+  .flash-in { animation: flashIn .9s ease; }
+  @keyframes flashIn { 0%{ background:#F0DACE; transform: translateY(-3px) } 100%{ background:transparent; transform:none } }
+  .pulse-dot { width:7px; height:7px; border-radius:50%; background:#6B7A4A; box-shadow:0 0 0 0 rgba(107,122,74,.6); animation: pulseDot 1.6s infinite; }
+  .pulse-dot.off { background:#C04545; animation:none; box-shadow:none; }
+  @keyframes pulseDot { 0%{ box-shadow:0 0 0 0 rgba(107,122,74,.5)} 70%{ box-shadow:0 0 0 8px rgba(107,122,74,0)} 100%{ box-shadow:0 0 0 0 rgba(107,122,74,0)} }
+  .ticker-up   { color:#5A6740; }
+  .ticker-down { color:#9C4730; }
+  .frame-chip { background: linear-gradient(180deg,#FFFFFF, #F5F1EB); border:1px solid #EDE6DA; padding:4px 10px; border-radius:9999px; font-size:11.5px; color:#48433D; }
+  ::selection { background:#F0DACE; color:#181715; }
+  .scroll-soft::-webkit-scrollbar { width:8px; }
+  .scroll-soft::-webkit-scrollbar-thumb { background:#E0D6C4; border-radius:8px; }
+</style>
+<script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body x-data="app()" x-init="init()" class="min-h-screen">
+
+<header class="px-8 py-5 border-b border-cream-200 bg-cream-50/70 backdrop-blur sticky top-0 z-20">
+  <div class="max-w-[1400px] mx-auto flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg bg-coral-500 flex items-center justify-center text-cream-50 serif text-xl font-semibold">T</div>
+      <div>
+        <div class="serif text-2xl font-semibold leading-none">Toss</div>
+        <div class="text-xs text-ink-600 mt-0.5">Quant Assistant · 단기 트레이딩 리서치</div>
+      </div>
+    </div>
+    <div class="flex items-center gap-5">
+      <div class="flex items-center gap-2 text-sm text-ink-600">
+        <span class="pulse-dot" :class="!wsConnected && 'off'"></span>
+        <span x-text="wsConnected ? '실시간 스트림 연결됨' : '연결 끊김 — 재시도 중'"></span>
+      </div>
+      <div class="text-sm text-ink-600 font-mono" x-text="now"></div>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-[1400px] mx-auto grid grid-cols-12 gap-5 px-8 py-6">
+
+  <!-- ── 워치리스트 ─────────────────────────────────── -->
+  <section class="col-span-3 space-y-5">
+    <div class="surface-elevated p-5">
+      <div class="flex items-baseline justify-between mb-4">
+        <h2 class="serif text-xl font-semibold">워치리스트</h2>
+        <span class="text-xs text-ink-500" x-text="watch.length + ' 종목'"></span>
+      </div>
+      <form @submit.prevent="addWatch" class="space-y-2.5">
+        <input x-model="form.symbol" placeholder="티커 (TSLA · 005930)" class="input w-full uppercase tracking-wider font-medium">
+        <input x-model.number="form.capital" type="number" placeholder="투자금 (USD)" class="input w-full">
+        <input x-model.number="form.risk_pct" type="number" step="0.1" placeholder="리스크 % (기본 1.0)" class="input w-full">
+        <button class="btn btn-primary w-full">추가 / 갱신</button>
+      </form>
+      <div class="divider my-4"></div>
+      <ul class="space-y-1.5">
+        <template x-for="w in watch" :key="w.symbol">
+          <li @click="select(w.symbol)"
+              class="group p-3 rounded-xl cursor-pointer transition hover:bg-cream-100"
+              :class="selected===w.symbol && 'bg-coral-50 ring-1 ring-coral-500/30'">
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="serif font-semibold text-lg leading-none" x-text="w.symbol"></div>
+                <div class="text-[11px] text-ink-500 mt-1.5">
+                  자본 $<span x-text="w.capital.toLocaleString()"></span> · 리스크 <span x-text="w.risk_pct"></span>%
+                </div>
+              </div>
+              <div class="text-right">
+                <div class="font-mono text-sm font-semibold" x-text="ticks[w.symbol] ? cur(w.symbol)+ticks[w.symbol].price.toLocaleString(undefined,{maximumFractionDigits: isKR(w.symbol)?0:2}) : '—'"></div>
+                <div class="text-[11px] font-mono mt-0.5"
+                     :class="ticks[w.symbol]?.change_pct >= 0 ? 'ticker-up' : 'ticker-down'"
+                     x-text="ticks[w.symbol] ? (ticks[w.symbol].change_pct>=0?'+':'') + ticks[w.symbol].change_pct.toFixed(2)+'%' : ''"></div>
+              </div>
+            </div>
+          </li>
+        </template>
+        <template x-if="watch.length===0">
+          <li class="text-center text-ink-500 text-sm py-8 px-2">
+            아직 종목이 없습니다.<br>위에서 첫 종목을 추가하세요.
+          </li>
+        </template>
+      </ul>
+    </div>
+
+    <div class="surface p-4">
+      <div class="text-xs text-ink-600 leading-relaxed">
+        <div class="serif text-sm font-semibold text-ink-800 mb-1.5">평가 프레임워크</div>
+        AQR Factor Investing · O'Neil CANSLIM · Wyckoff · VWAP/Anchored VWAP ·
+        Smart Money Flow · Bridgewater 매크로 레짐 · Kelly Sizing
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 메인 리포트 ────────────────────────────────── -->
+  <section class="col-span-6 space-y-5">
+
+    <!-- 빈 상태 -->
+    <template x-if="!report && !loading">
+      <div class="surface-elevated p-12 text-center">
+        <div class="serif text-3xl font-semibold mb-2">실시간 퀀트 분석</div>
+        <p class="text-ink-600 max-w-md mx-auto">
+          티커를 추가하면 월가 기관급 프레임워크로 시세·뉴스·수급을
+          종합한 리포트를 즉시 받아볼 수 있어요.
+        </p>
+      </div>
+    </template>
+
+    <!-- 로딩 -->
+    <template x-if="loading">
+      <div class="surface-elevated p-12 text-center">
+        <div class="inline-block w-8 h-8 rounded-full border-2 border-coral-500 border-t-transparent animate-spin mb-3"></div>
+        <div class="serif text-xl">분석 중…</div>
+        <div class="text-ink-500 text-sm mt-1">시세 · 뉴스 · 매크로 컨텍스트를 종합하고 있습니다</div>
+      </div>
+    </template>
+
+    <!-- 리포트 -->
+    <template x-if="report && !loading">
+      <div class="space-y-5">
+
+        <!-- 헤드라인 -->
+        <div class="surface-elevated p-6">
+          <div class="flex items-start justify-between gap-6">
+            <div>
+              <div class="text-xs text-ink-500 uppercase tracking-widest mb-1">실시간 퀀트 분석 리포트</div>
+              <div class="serif text-4xl font-semibold leading-tight" x-text="selected"></div>
+              <div class="text-ink-600 mt-1" x-text="(report.profile?.name||'') + (report.profile?.finnhubIndustry ? ' · '+report.profile.finnhubIndustry : '')"></div>
+            </div>
+            <div class="text-right shrink-0">
+              <div class="font-mono text-4xl font-semibold tracking-tight" x-text="cur(selected) + report.snapshot.quote.price.toLocaleString(undefined,{maximumFractionDigits: isKR(selected)?0:2})"></div>
+              <div class="font-mono text-sm mt-1"
+                   :class="report.snapshot.quote.change_pct >= 0 ? 'ticker-up' : 'ticker-down'"
+                   x-text="(report.snapshot.quote.change_pct>=0?'▲':'▼')+' '+Math.abs(report.snapshot.quote.change_pct).toFixed(2)+'%'"></div>
+              <div class="text-[11px] text-ink-500 mt-2 font-mono" x-text="'쿼트 '+ new Date(report.snapshot.quote.ts).toLocaleTimeString()"></div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-4 gap-3 mt-5 pt-5 border-t border-cream-200">
+            <div>
+              <div class="text-[11px] text-ink-500 uppercase tracking-wider">금일 저</div>
+              <div class="font-mono mt-0.5" x-text="cur(selected)+report.snapshot.quote.day_low.toLocaleString()"></div>
+            </div>
+            <div>
+              <div class="text-[11px] text-ink-500 uppercase tracking-wider">금일 고</div>
+              <div class="font-mono mt-0.5" x-text="cur(selected)+report.snapshot.quote.day_high.toLocaleString()"></div>
+            </div>
+            <div>
+              <div class="text-[11px] text-ink-500 uppercase tracking-wider">시가</div>
+              <div class="font-mono mt-0.5" x-text="cur(selected)+report.snapshot.quote.day_open.toLocaleString()"></div>
+            </div>
+            <div>
+              <div class="text-[11px] text-ink-500 uppercase tracking-wider">RV (vs 20d)</div>
+              <div class="font-mono mt-0.5"
+                   :class="report.snapshot.quote.relative_volume >= 1.5 ? 'text-coral-600 font-semibold' : ''"
+                   x-text="report.snapshot.quote.relative_volume.toFixed(2)+'x'"></div>
+            </div>
+          </div>
+
+          <div class="flex gap-2 mt-5">
+            <button @click="runAnalyze()" class="btn btn-primary">재분석</button>
+            <button @click="removeWatch()" class="btn btn-ghost">제거</button>
+            <a :href="'https://www.tradingview.com/symbols/'+selected" target="_blank" class="btn btn-ghost ml-auto">TradingView ↗</a>
+          </div>
+        </div>
+
+        <!-- 포지션 카드 (강조) -->
+        <div class="surface-elevated p-6 relative overflow-hidden">
+          <div class="absolute -right-16 -top-16 w-56 h-56 rounded-full opacity-30"
+               :class="positionTone(report.analysis.position)"></div>
+          <div class="relative">
+            <div class="text-[11px] text-ink-500 uppercase tracking-widest mb-2">현재 포지션</div>
+            <div class="flex items-center gap-3 mb-3">
+              <span class="text-3xl" x-text="report.analysis.position_emoji"></span>
+              <span class="serif text-3xl font-semibold" x-text="report.analysis.position"></span>
+              <span class="pill pill-stone" x-text="'신뢰도 '+report.analysis.confidence+'%'"></span>
+            </div>
+            <p class="text-ink-800 leading-relaxed" x-text="report.analysis.rationale"></p>
+            <div class="flex flex-wrap gap-1.5 mt-4">
+              <template x-for="f in (report.analysis.frameworks_triggered||[])">
+                <span class="frame-chip" x-text="f"></span>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <!-- 액션 플랜 -->
+        <div class="grid grid-cols-3 gap-3">
+          <div class="surface-elevated p-4">
+            <div class="text-[11px] text-ink-500 uppercase tracking-wider">목표가</div>
+            <div class="font-mono text-2xl font-semibold mt-1 text-olive-600" x-text="cur(selected)+(report.analysis.target_price||0).toLocaleString()"></div>
+          </div>
+          <div class="surface-elevated p-4">
+            <div class="text-[11px] text-ink-500 uppercase tracking-wider" x-text="report.analysis.reentry_or_stop_label"></div>
+            <div class="font-mono text-2xl font-semibold mt-1 text-rust-500" x-text="cur(selected)+(report.analysis.reentry_or_stop_price||0).toLocaleString()"></div>
+          </div>
+          <div class="surface-elevated p-4">
+            <div class="text-[11px] text-ink-500 uppercase tracking-wider">R-Multiple</div>
+            <div class="font-mono text-2xl font-semibold mt-1" x-text="report.analysis.r_multiple || '—'"></div>
+          </div>
+        </div>
+
+        <!-- 사이징 -->
+        <template x-if="report.sizing">
+          <div class="surface-elevated p-5">
+            <div class="flex items-center gap-2 mb-3">
+              <div class="serif text-lg font-semibold">권장 포지션</div>
+              <span class="pill pill-coral">capital × risk%</span>
+            </div>
+            <div class="grid grid-cols-4 gap-4">
+              <div>
+                <div class="text-[11px] text-ink-500 uppercase tracking-wider">총 주식수</div>
+                <div class="font-mono text-2xl mt-1" x-text="report.sizing.shares + '주'"></div>
+              </div>
+              <div>
+                <div class="text-[11px] text-ink-500 uppercase tracking-wider">분할 청크</div>
+                <div class="font-mono text-2xl mt-1" x-text="report.sizing.splits.join(' / ')"></div>
+              </div>
+              <div>
+                <div class="text-[11px] text-ink-500 uppercase tracking-wider">투입 금액</div>
+                <div class="font-mono text-2xl mt-1" x-text="cur(selected)+report.sizing.notional.toLocaleString()"></div>
+              </div>
+              <div>
+                <div class="text-[11px] text-ink-500 uppercase tracking-wider">최대 손실</div>
+                <div class="font-mono text-2xl mt-1 text-rust-500" x-text="cur(selected)+report.sizing.max_loss.toLocaleString()"></div>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- 보유기간 / 매크로 -->
+        <div class="grid grid-cols-2 gap-3">
+          <div class="surface-elevated p-4">
+            <div class="text-[11px] text-ink-500 uppercase tracking-wider">권장 보유 기간</div>
+            <div class="serif text-xl mt-1" x-text="report.analysis.holding_period"></div>
+            <div class="text-sm text-ink-600 mt-1" x-text="report.analysis.holding_period_reason"></div>
+          </div>
+          <div class="surface-elevated p-4">
+            <div class="text-[11px] text-ink-500 uppercase tracking-wider">매크로 레짐</div>
+            <div class="serif text-xl mt-1" x-text="report.analysis.macro_regime || '—'"></div>
+          </div>
+        </div>
+
+        <!-- 수급 동향 -->
+        <div class="surface-elevated p-5">
+          <div class="serif text-lg font-semibold mb-3">시장 수급 (US Market Flow)</div>
+          <div class="grid grid-cols-3 gap-4">
+            <div>
+              <div class="text-[11px] text-ink-500 uppercase tracking-wider">기관 (Institutional)</div>
+              <div class="mt-1.5 flex items-center gap-2">
+                <span class="pill" :class="flowTone(report.analysis.flow_institutional)" x-text="report.analysis.flow_institutional"></span>
+              </div>
+              <div class="text-sm text-ink-600 mt-2 leading-relaxed" x-text="report.analysis.flow_institutional_reason"></div>
+            </div>
+            <div>
+              <div class="text-[11px] text-ink-500 uppercase tracking-wider">개인 (Retail)</div>
+              <div class="mt-1.5">
+                <span class="pill" :class="flowTone(report.analysis.flow_retail)" x-text="report.analysis.flow_retail"></span>
+              </div>
+            </div>
+            <div>
+              <div class="text-[11px] text-ink-500 uppercase tracking-wider">특이사항</div>
+              <div class="text-sm text-ink-700 mt-2 leading-relaxed" x-text="report.analysis.flow_special"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 마켓 컨텍스트 + 뉴스 -->
+        <div class="surface-elevated p-5">
+          <div class="serif text-lg font-semibold mb-2">실시간 마켓 컨텍스트</div>
+          <p class="text-ink-800 leading-relaxed" x-text="report.analysis.market_context"></p>
+          <div class="divider my-4"></div>
+          <div class="text-[11px] text-ink-500 uppercase tracking-wider mb-2">관련 헤드라인</div>
+          <ul class="space-y-2">
+            <template x-for="n in report.news" :key="n.url">
+              <li class="text-sm leading-relaxed">
+                <a :href="n.url" target="_blank" class="text-ink-800 hover:text-coral-600 transition">
+                  <span x-text="n.headline"></span>
+                </a>
+                <span class="text-ink-500 text-xs ml-1.5" x-text="'· '+n.source"></span>
+              </li>
+            </template>
+          </ul>
+        </div>
+
+        <!-- 차트 -->
+        <div class="surface-elevated p-2 overflow-hidden">
+          <iframe :src="'https://s.tradingview.com/widgetembed/?frameElementId=tv&symbol=' + (isKR(selected)?'KRX:'+selected:selected) + '&interval=15&theme=light&style=1&hide_side_toolbar=1'"
+                  class="w-full rounded-2xl" style="height:440px;border:0"></iframe>
+        </div>
+
+      </div>
+    </template>
+  </section>
+
+  <!-- ── 알림 ──────────────────────────────────────── -->
+  <aside class="col-span-3 space-y-4">
+    <div class="surface-elevated p-5 sticky top-24">
+      <div class="flex items-center justify-between mb-1">
+        <h2 class="serif text-xl font-semibold">실시간 알림</h2>
+        <span class="pill pill-coral" x-text="alerts.length + ' 건'"></span>
+      </div>
+      <p class="text-xs text-ink-600 leading-relaxed mb-3">
+        진입가/목표가/손절가 도달 시 브라우저 푸시.
+        <button @click="enableNotif" class="text-coral-600 underline underline-offset-2 hover:text-coral-700">알림 권한 켜기</button>
+      </p>
+      <div class="divider mb-3"></div>
+      <ul class="space-y-2 max-h-[70vh] overflow-y-auto scroll-soft pr-1">
+        <template x-for="(a,i) in alerts" :key="i">
+          <li class="surface p-3 flash-in">
+            <div class="flex items-center justify-between mb-1">
+              <span class="serif font-semibold text-base" x-text="a.symbol"></span>
+              <span class="pill" :class="alertTone(a.kind)" x-text="alertLabel(a.kind)"></span>
+            </div>
+            <div class="text-sm text-ink-800 leading-snug" x-text="a.message"></div>
+            <div class="text-[11px] text-ink-500 font-mono mt-1.5"
+                 x-text="new Date((a.ts||a.created_at||0)*1000||Date.now()).toLocaleTimeString()"></div>
+          </li>
+        </template>
+        <template x-if="alerts.length===0">
+          <li class="text-center text-ink-500 text-sm py-6">알림이 발생하면 여기에 표시됩니다.</li>
+        </template>
+      </ul>
+    </div>
+  </aside>
+</main>
+
+<footer class="max-w-[1400px] mx-auto px-8 py-8 text-xs text-ink-500">
+  <div class="divider mb-4"></div>
+  본 도구는 참고용 리서치이며 매매 판단은 사용자 책임입니다.
+  &nbsp;·&nbsp; Powered by Claude Opus · Finnhub · Alpaca
+</footer>
+
+<audio id="ding" preload="auto">
+  <source src="data:audio/wav;base64,UklGRoQEAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YWAEAACAg" type="audio/wav">
+</audio>
+
+<script>
+function app(){
+  return {
+    form: { symbol:'', capital: 1000, risk_pct: 1 },
+    watch: [], ticks: {}, alerts: [], selected: null, report: null,
+    loading: false, wsConnected: false, now: '',
+    init(){
+      this.refresh(); this.connect();
+      const tick = () => this.now = new Date().toLocaleString('ko-KR', { hour12:false });
+      tick(); setInterval(tick, 1000);
+    },
+    async refresh(){
+      this.watch = await (await fetch('/api/watchlist')).json();
+      const a = await (await fetch('/api/alerts')).json();
+      this.alerts = a.map(x => ({...x, ts: x.created_at}));
+    },
+    connect(){
+      const ws = new WebSocket(`ws://${location.host}/ws`);
+      ws.onopen = ()=> this.wsConnected = true;
+      ws.onclose = ()=> { this.wsConnected = false; setTimeout(()=>this.connect(), 2000); };
+      ws.onmessage = (e)=>{
+        const m = JSON.parse(e.data);
+        if(m.type==='tick') this.ticks[m.symbol] = m;
+        else if(m.type==='alert'){
+          this.alerts.unshift({...m, ts: Date.now()/1000});
+          this.notify(m);
+        }
+      };
+    },
+    select(sym){ this.selected = sym; this.report = null; this.runAnalyze(); },
+    async addWatch(){
+      if(!this.form.symbol) return;
+      const sym = this.form.symbol.toUpperCase();
+      await fetch('/api/watchlist', { method:'POST',
+        headers:{'content-type':'application/json'},
+        body: JSON.stringify({...this.form, symbol: sym})});
+      this.selected = sym;
+      this.form.symbol = '';
+      await this.refresh();
+      this.runAnalyze();
+    },
+    async removeWatch(){
+      if(!this.selected || !confirm(this.selected + ' 제거할까요?')) return;
+      await fetch('/api/watchlist/'+this.selected, {method:'DELETE'});
+      this.selected = null; this.report = null;
+      await this.refresh();
+    },
+    async runAnalyze(){
+      if(!this.selected) return;
+      this.loading = true;
+      try{
+        const r = await fetch('/api/analyze/'+this.selected, {method:'POST'});
+        if(!r.ok) throw new Error(await r.text());
+        this.report = await r.json();
+      }catch(e){ alert('분석 실패: '+e.message); }
+      finally{ this.loading = false; }
+    },
+    enableNotif(){ if('Notification' in window) Notification.requestPermission(); },
+    notify(m){
+      try { document.getElementById('ding').play().catch(()=>{}); } catch{}
+      if('Notification' in window && Notification.permission==='granted'){
+        new Notification(`Toss · ${m.symbol} ${this.alertLabel(m.kind)}`, { body: m.message });
+      }
+    },
+    positionTone(p){
+      if(!p) return 'bg-cream-300';
+      if(p.includes('적극 매수')||p.includes('분할 매수')) return 'bg-olive-500';
+      if(p.includes('적극 매도')||p.includes('분할 매도')) return 'bg-rust-500';
+      return 'bg-cream-400';
+    },
+    flowTone(f){
+      if(!f) return 'pill-stone';
+      if(f.includes('매수')||f.includes('강한')) return 'pill-olive';
+      if(f.includes('매도')) return 'pill-rust';
+      return 'pill-stone';
+    },
+    alertTone(k){
+      if(k==='BUY') return 'pill-olive';
+      if(k==='SL'||k==='SELL') return 'pill-rust';
+      if(k==='TP') return 'pill-coral';
+      return 'pill-stone';
+    },
+    alertLabel(k){
+      return ({BUY:'매수 신호', TP:'익절 도달', SL:'손절 이탈', SELL:'매도 신호'})[k] || k;
+    },
+    isKR(sym){ return sym && /^\d{6}$/.test(sym); },
+    cur(sym){ return this.isKR(sym) ? '₩' : '$'; },
+  }
+}
+</script>
+</body>
+</html>
