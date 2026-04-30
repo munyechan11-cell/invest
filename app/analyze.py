@@ -1,6 +1,7 @@
-"""Claude로 시세+뉴스+수급 종합 → 월가 기관급 퀀트 리포트 JSON."""
+import os, json, logging, httpx, time as _time
 from __future__ import annotations
-import os, json
+
+log = logging.getLogger("analyze")
 
 
 SYSTEM = """# ROLE
@@ -66,7 +67,6 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0
 
 def analyze(symbol: str, snapshot: dict, news: list[dict],
             flow: dict, profile: dict) -> dict:
-    import httpx, time as _time
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY 환경변수가 설정되지 않았습니다.")
@@ -107,20 +107,27 @@ def analyze(symbol: str, snapshot: dict, news: list[dict],
 
     # 429 에러 시 최대 3회 재시도 (15초, 35초, 75초 대기)
     last_err = None
+    data = None
     for attempt in range(3):
-        with httpx.Client(timeout=60) as c:
-            r = c.post(f"{GEMINI_URL}?key={api_key}", json=body)
-            if r.status_code == 429:
-                wait = 15 * (2 ** attempt) + 5 # 20s, 35s, 65s 수준
-                log.warning(f"429 Too Many Requests. Retrying in {wait}s...")
-                _time.sleep(wait)
-                last_err = r
-                continue
-            r.raise_for_status()
-            data = r.json()
-            break
-    else:
-        last_err.raise_for_status()
+        try:
+            with httpx.Client(timeout=60) as c:
+                r = c.post(f"{GEMINI_URL}?key={api_key}", json=body)
+                if r.status_code == 429:
+                    wait = 15 * (2 ** attempt) + 5 
+                    log.warning(f"Gemini API 429 Error. Retrying in {wait}s (Attempt {attempt+1}/3)")
+                    _time.sleep(wait)
+                    last_err = r
+                    continue
+                r.raise_for_status()
+                data = r.json()
+                break
+        except Exception as e:
+            log.error(f"Gemini API Request failed: {e}")
+            last_err = e
+            _time.sleep(2)
+            
+    if data is None:
+        raise RuntimeError(f"AI 분석 호출 실패: {last_err}")
 
     text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
     # 코드펜스 제거
