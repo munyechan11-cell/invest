@@ -147,27 +147,36 @@ def analyze_rules(symbol: str, snapshot: dict, news: list[dict],
 
     confidence = min(95, max(20, int(40 + abs(score) * 0.6)))
 
+    # ── 액션 플랜 (초단타/데이트레이딩용 타이트한 설정)
+    # 1일 이내 매매를 위해 변동성 폭을 줄임 (Target: 1.5~3%, Stop: 1~2%)
+    if position.endswith("매수"):
+        target = price * 1.025  # 약 2.5% 수익 목표
+        stop = price * 0.985    # 약 1.5% 손절 라인
+    elif position.endswith("매도"):
+        target = price * 0.975  # 약 2.5% 하락 목표
+        stop = price * 1.015    # 약 1.5% 반등 시 손절
+    else:
+        target = price * 1.03
+        stop = price * 0.97
+
     return {
+        "engine": "rules",
         "position": position,
         "position_emoji": emoji,
-        "rationale": (f"기술지표 종합 점수 {score:+.0f}. "
-                      f"{', '.join(triggers[:3]) if triggers else '뚜렷한 시그널 부재'}. "
-                      f"BB 위치 {bb_pos:.0%}, RSI {rsi:.0f}."),
-        "frameworks_triggered": triggers[:6] or ["기술적 중립"],
-        "target_price": target,
-        "reentry_or_stop_label": sr_label,
-        "reentry_or_stop_price": stop,
-        "r_multiple": r_mult,
-        "holding_period": horizon,
-        "holding_period_reason": hreason,
+        "rationale": (f"{symbol} 초단타 스캔: 기술지표 점수 {score:+.0f}. "
+                      f"{'강력 수급 및 모멘텀 포착' if score > 20 else '변동성 활용 단기 매매 구간'}. "
+                      f"RSI {rsi:.0f}, BB {bb_pos:.0%}."),
+        "frameworks_triggered": triggers[:4] or ["Momentum Day-Trade"],
+        "target_price": rnd(target),
+        "reentry_or_stop_label": "손절가 (1일 이내)",
+        "reentry_or_stop_price": rnd(stop),
+        "r_multiple": f"1:{abs(target-price)/abs(price-stop):.1f}" if abs(price-stop)>0.01 else "1:1.5",
+        "holding_period": "24시간 이내",
+        "holding_period_reason": "당일 변동성 활용 및 일일 매도 원칙 준수",
         "flow_institutional": flow_inst,
         "flow_institutional_reason": flow_inst_reason,
-        "flow_special": (f"거래량 {rv:.2f}x · BB 위치 {bb_pos:.0%}"
-                         if rv >= 1.3 else "특이사항 없음"),
-        "macro_regime": "AI 분석 미사용 — 기술지표 단독 평가",
         "market_context": market_ctx,
-        "confidence": confidence,
-        "engine": "rules",   # ← 어떤 엔진이 분석했는지 표시
+        "confidence": min(abs(score) + 40, 95)
     }
 
 

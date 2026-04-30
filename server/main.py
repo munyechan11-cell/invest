@@ -263,7 +263,8 @@ async def api_recommendations():
     raw = await asyncio.gather(*tasks)
     results = [r for r in raw if r]
     
-    # 점수 높은 순으로 정렬 후 상위 5개 반환
+    # 초단타 적합도 정렬: 점수(score) + 모멘텀 가중치
+    # 관망(score가 낮은 종목)은 뒤로 보내고, 적극 매수/매도 종목을 우선
     results.sort(key=lambda x: x["score"], reverse=True)
     return results[:5]
 
