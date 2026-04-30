@@ -179,12 +179,14 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
             snap_task, news_task, profile_task, flow_task
         )
 
-        ana = await asyncio.to_thread(analyze, symbol, snap, news, flow, profile)
+        watch = next((w for w in await db.list_watch(user["id"]) if w["symbol"] == symbol), None)
+        risk_val = watch["risk_pct"] if watch else 1.0
+
+        ana = await asyncio.to_thread(analyze, symbol, snap, news, flow, profile, risk_val)
         await db.save_plan(symbol, ana)
         # 워치리스트 목록에도 포지션 저장
         await db.update_watch_position(symbol, user["id"], ana["position"], ana["position_emoji"])
 
-        watch = next((w for w in await db.list_watch(user["id"]) if w["symbol"] == symbol), None)
         sizing = None
         if watch and ana.get("reentry_or_stop_price"):
             s = shares_for(watch["capital"], watch["risk_pct"],

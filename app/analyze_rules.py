@@ -8,8 +8,10 @@ from __future__ import annotations
 
 
 def analyze_rules(symbol: str, snapshot: dict, news: list[dict],
-                  flow: dict, profile: dict) -> dict:
+                  flow: dict, profile: dict, risk_pct: float = 1.0) -> dict:
     is_kr = symbol.isdigit() and len(symbol) == 6
+    # 리스크 배수 설정: 기본 1.0% 기준 (0.5배 ~ 3.0배 사이로 제한)
+    risk_multiplier = max(0.5, min(risk_pct / 1.0, 3.0))
     ind = snapshot.get("indicators") or {}
     q = snapshot.get("quote") or {}
     price = float(q.get("price") or 0)
@@ -100,22 +102,7 @@ def analyze_rules(symbol: str, snapshot: dict, news: list[dict],
     else:
         position, emoji = "관망", "⚪"
 
-    # ── 타겟/스탑 — BB 폭 기반 변동성 정규화
     rnd = (lambda v: int(round(v))) if is_kr else (lambda v: round(v, 2))
-    bb_half = max((bb_up - bb_dn) / 2, price * 0.005)
-
-    if position in ("적극 매수", "분할 매수"):
-        target = rnd(price + bb_half * 0.8)
-        stop = rnd(max(price - bb_half * 0.5, bb_dn))
-        sr_label = "손절가"
-    elif position in ("적극 매도", "분할 매도"):
-        target = rnd(price - bb_half * 0.8)
-        stop = rnd(min(price + bb_half * 0.5, bb_up))
-        sr_label = "재진입가"
-    else:
-        target = rnd(bb_up * 0.99)
-        stop = rnd(bb_dn * 1.01)
-        sr_label = "재진입가"
 
     risk = abs(price - stop)
     reward = abs(target - price)
@@ -147,17 +134,23 @@ def analyze_rules(symbol: str, snapshot: dict, news: list[dict],
 
     confidence = min(95, max(20, int(40 + abs(score) * 0.6)))
 
-    # ── 액션 플랜 (초단타/데이트레이딩용 타이트한 설정)
-    # 1일 이내 매매를 위해 변동성 폭을 줄임 (Target: 1.5~3%, Stop: 1~2%)
+    # ── 액션 플랜 (초단타 + 사용자 리스크 연동 설정)
     if position.endswith("매수"):
-        target = price * 1.025  # 약 2.5% 수익 목표
-        stop = price * 0.985    # 약 1.5% 손절 라인
+        target = price * (1 + 0.025 * risk_multiplier)
+        stop = price * (1 - 0.015 * risk_multiplier)
+        sr_label = "손절가 (1일 이내)"
     elif position.endswith("매도"):
-        target = price * 0.975  # 약 2.5% 하락 목표
-        stop = price * 1.015    # 약 1.5% 반등 시 손절
+        target = price * (1 - 0.025 * risk_multiplier)
+        stop = price * (1 + 0.015 * risk_multiplier)
+        sr_label = "손절가 (1일 이내)"
     else:
         target = price * 1.03
         stop = price * 0.97
+        sr_label = "재진입가"
+
+    risk_val = abs(price - stop)
+    reward_val = abs(target - price)
+    r_mult = f"1:{reward_val/risk_val:.1f}" if risk_val > 0.01 else "1:1.5"
 
     return {
         "engine": "rules",
@@ -168,9 +161,9 @@ def analyze_rules(symbol: str, snapshot: dict, news: list[dict],
                       f"RSI {rsi:.0f}, BB {bb_pos:.0%}."),
         "frameworks_triggered": triggers[:4] or ["Momentum Day-Trade"],
         "target_price": rnd(target),
-        "reentry_or_stop_label": "손절가 (1일 이내)",
+        "reentry_or_stop_label": sr_label,
         "reentry_or_stop_price": rnd(stop),
-        "r_multiple": f"1:{abs(target-price)/abs(price-stop):.1f}" if abs(price-stop)>0.01 else "1:1.5",
+        "r_multiple": r_mult,
         "holding_period": "24시간 이내",
         "holding_period_reason": "당일 변동성 활용 및 일일 매도 원칙 준수",
         "flow_institutional": flow_inst,

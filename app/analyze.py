@@ -67,16 +67,17 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0
 
 
 def analyze(symbol: str, snapshot: dict, news: list[dict],
-            flow: dict, profile: dict) -> dict:
+            flow: dict, profile: dict, risk_pct: float = 1.0) -> dict:
     from .analyze_rules import analyze_rules
 
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
         log.warning("GEMINI_API_KEY 미설정 — 룰 기반 분석으로 대체")
-        return analyze_rules(symbol, snapshot, news, flow, profile)
+        return analyze_rules(symbol, snapshot, news, flow, profile, risk_pct)
 
     payload = {
         "ticker": f"{symbol} ({profile.get('name','')})",
+        "user_risk_tolerance": f"{risk_pct}% (손실 감수 수준)",
         "market_data": {
             "price": snapshot["quote"]["price"],
             "day_low": snapshot["quote"]["day_low"],
@@ -143,7 +144,7 @@ def analyze(symbol: str, snapshot: dict, news: list[dict],
 
     if data is None:
         log.warning(f"AI 분석 실패({last_err}) — 룰 기반 분석으로 자동 대체")
-        result = analyze_rules(symbol, snapshot, news, flow, profile)
+        result = analyze_rules(symbol, snapshot, news, flow, profile, risk_pct)
         result["fallback_reason"] = last_err
         return result
 
@@ -158,6 +159,6 @@ def analyze(symbol: str, snapshot: dict, news: list[dict],
         return parsed
     except Exception as e:
         log.error(f"AI 응답 파싱 실패: {e} — 룰 기반으로 대체")
-        result = analyze_rules(symbol, snapshot, news, flow, profile)
+        result = analyze_rules(symbol, snapshot, news, flow, profile, risk_pct)
         result["fallback_reason"] = f"parse: {e}"
         return result
