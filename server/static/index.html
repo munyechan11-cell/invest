@@ -406,8 +406,9 @@ function app(){
     form: { symbol:'', capital: '', currency: 'USD', risk_pct: 1 },
     watch: [], ticks: {}, alerts: [], selected: null, report: null,
     loading: false, wsConnected: false, now: '',
+    krwRate: 1400, // 기본 환율 (API 실패 시 대비)
     init(){
-      this.refresh(); this.connect();
+      this.refresh(); this.connect(); this.fetchExchangeRate();
       const tick = () => this.now = new Date().toLocaleString('ko-KR', { hour12:false });
       tick(); setInterval(tick, 1000);
     },
@@ -415,6 +416,17 @@ function app(){
       this.watch = await (await fetch('/api/watchlist')).json();
       const a = await (await fetch('/api/alerts')).json();
       this.alerts = a.map(x => ({...x, ts: x.created_at}));
+    },
+    async fetchExchangeRate() {
+      try {
+        const res = await fetch('https://open.er-api.com/v6/latest/USD');
+        const data = await res.json();
+        if (data && data.rates && data.rates.KRW) {
+          this.krwRate = data.rates.KRW;
+        }
+      } catch (e) {
+        console.error('환율 연동 실패', e);
+      }
     },
     connect(){
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -467,13 +479,13 @@ function app(){
       if(!this.form.symbol) return;
       const sym = this.form.symbol.toUpperCase().trim();
       
-      // 통화 변환 (원화 <-> 달러)
+      // 통화 변환 (원화 <-> 달러) 실시간 환율 적용
       let finalCapital = parseFloat(this.form.capital) || 1000; // 빈칸이면 기본값 1000
       const isKoreanStock = this.isKR(sym);
       if (this.form.currency === 'KRW' && !isKoreanStock) {
-        finalCapital = finalCapital / 1400; // 대략 환율 1400원
+        finalCapital = finalCapital / this.krwRate; 
       } else if (this.form.currency === 'USD' && isKoreanStock) {
-        finalCapital = finalCapital * 1400;
+        finalCapital = finalCapital * this.krwRate;
       }
 
       await fetch('/api/watchlist', { method:'POST',
