@@ -169,9 +169,9 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
         # 2. 병렬 데이터 수집 (속도 최적화: 4가지 소스를 동시에 호출)
         log.info(f"Fetching data in parallel for {symbol}")
         snap_task = asyncio.to_thread(get_snapshot, symbol)
-        news_task = alerts_mod.fetch_news(symbol) # async function
-        profile_task = alerts_mod.fetch_profile(symbol) # async function
-        flow_task = alerts_mod.fetch_market_flow(symbol) # async function
+        news_task = fetch_news(symbol) # app.news에서 가져온 async 함수
+        profile_task = fetch_profile(symbol) # app.news에서 가져온 async 함수
+        flow_task = fetch_market_flow(symbol) # app.news에서 가져온 async 함수
         
         # get_snapshot은 동기 함수이므로 to_thread 활용, 나머지는 async
         snap, news, profile, flow = await asyncio.gather(
