@@ -9,7 +9,9 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT UNIQUE NOT NULL,
+  display_name TEXT NOT NULL DEFAULT '',
   pw_hash TEXT NOT NULL,
+  is_admin INTEGER NOT NULL DEFAULT 0,
   created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS watchlist (
@@ -53,29 +55,43 @@ def _hash(pw: str) -> str:
 async def init():
     async with aiosqlite.connect(DB) as c:
         await c.executescript(SCHEMA)
-        # 기존 watchlist에 user_id 컬럼이 없을 수 있으므로 안전하게 마이그레이션
-        try:
-            await c.execute("SELECT user_id FROM watchlist LIMIT 1")
-        except Exception:
-            await c.execute("ALTER TABLE watchlist ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
+        # 마이그레이션: 기존 테이블에 새 컬럼 추가
+        for col, table, default in [
+            ("user_id", "watchlist", "INTEGER NOT NULL DEFAULT 0"),
+            ("display_name", "users", "TEXT NOT NULL DEFAULT ''"),
+            ("is_admin", "users", "INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            try:
+                await c.execute(f"SELECT {col} FROM {table} LIMIT 1")
+            except Exception:
+                await c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {default}")
         await c.commit()
 
 
 # ── 유저 ──────────────────────────────────────────────────
-async def register(username: str, password: str) -> dict | None:
+async def check_username(username: str) -> bool:
+    """True면 이미 존재하는 아이디."""
     async with aiosqlite.connect(DB) as c:
-        # 중복 체크
+        row = await (await c.execute(
+            "SELECT id FROM users WHERE username=?", (username,)
+        )).fetchone()
+        return row is not None
+
+
+async def register(username: str, password: str, display_name: str = "") -> dict | None:
+    async with aiosqlite.connect(DB) as c:
         existing = await (await c.execute(
             "SELECT id FROM users WHERE username=?", (username,)
         )).fetchone()
         if existing:
             return None
+        is_admin = 1 if username == "admin" else 0
         cursor = await c.execute(
-            "INSERT INTO users(username, pw_hash, created_at) VALUES(?,?,?)",
-            (username, _hash(password), time.time()),
+            "INSERT INTO users(username, display_name, pw_hash, is_admin, created_at) VALUES(?,?,?,?,?)",
+            (username, display_name, _hash(password), is_admin, time.time()),
         )
         await c.commit()
-        return {"id": cursor.lastrowid, "username": username}
+        return {"id": cursor.lastrowid, "username": username, "display_name": display_name, "is_admin": is_admin}
 
 
 async def login(username: str, password: str) -> dict | None:
@@ -85,7 +101,29 @@ async def login(username: str, password: str) -> dict | None:
             "SELECT * FROM users WHERE username=? AND pw_hash=?",
             (username, _hash(password)),
         )).fetchone()
-        return {"id": row["id"], "username": row["username"]} if row else None
+        if not row:
+            return None
+        return {"id": row["id"], "username": row["username"],
+                "display_name": row["display_name"], "is_admin": row["is_admin"]}
+
+
+# ── 관리자 ────────────────────────────────────────────────
+async def list_users() -> list[dict]:
+    async with aiosqlite.connect(DB) as c:
+        c.row_factory = aiosqlite.Row
+        rows = await (await c.execute(
+            "SELECT id, username, display_name, is_admin, created_at FROM users ORDER BY id"
+        )).fetchall()
+        return [dict(r) for r in rows]
+
+
+async def delete_user(user_id: int) -> bool:
+    async with aiosqlite.connect(DB) as c:
+        await c.execute("DELETE FROM users WHERE id=? AND is_admin=0", (user_id,))
+        await c.execute("DELETE FROM watchlist WHERE user_id=?", (user_id,))
+        await c.execute("DELETE FROM trades WHERE user_id=?", (user_id,))
+        await c.commit()
+        return True
 
 
 # ── 워치리스트 ────────────────────────────────────────────

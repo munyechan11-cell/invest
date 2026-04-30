@@ -64,11 +64,22 @@ async def root():
 class AuthIn(BaseModel):
     username: str
     password: str
+    display_name: str = ""
+
+
+class CheckIn(BaseModel):
+    username: str
+
+
+@app.post("/api/check-username")
+async def api_check(body: CheckIn):
+    taken = await db.check_username(body.username)
+    return {"taken": taken}
 
 
 @app.post("/api/register")
 async def api_register(body: AuthIn):
-    result = await db.register(body.username, body.password)
+    result = await db.register(body.username, body.password, body.display_name)
     if not result:
         raise HTTPException(409, "이미 존재하는 아이디입니다.")
     return result
@@ -80,6 +91,18 @@ async def api_login(body: AuthIn):
     if not result:
         raise HTTPException(401, "아이디 또는 비밀번호가 틀렸습니다.")
     return result
+
+
+# ─── Admin ─────────────────────────────────────────────────────────
+@app.get("/api/admin/users")
+async def api_admin_users():
+    return await db.list_users()
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def api_admin_del_user(user_id: int):
+    await db.delete_user(user_id)
+    return {"ok": True}
 
 
 # ─── REST ──────────────────────────────────────────────────────────

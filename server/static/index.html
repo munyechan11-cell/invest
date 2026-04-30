@@ -70,18 +70,85 @@
 </head>
 <body x-data="app()" x-init="init()" class="min-h-screen">
 
-<!-- 로그인 오버레이 -->
+<!-- 로그인/회원가입 오버레이 -->
 <div x-show="!user" class="overlay">
   <div class="modal space-y-4">
     <div class="text-center">
       <div class="serif text-3xl font-semibold mb-1">Toss</div>
       <div class="text-sm text-ink-500">투자 분석 플랫폼</div>
     </div>
-    <input x-model="authForm.username" placeholder="아이디" class="input w-full">
-    <input x-model="authForm.password" type="password" placeholder="비밀번호" class="input w-full">
-    <button @click="doLogin" class="btn btn-primary w-full">로그인</button>
-    <button @click="doRegister" class="btn btn-ghost w-full">회원가입</button>
+
+    <!-- 로그인 모드 -->
+    <template x-if="authMode==='login'">
+      <div class="space-y-3">
+        <input x-model="authForm.username" placeholder="아이디" class="input w-full">
+        <input x-model="authForm.password" type="password" placeholder="비밀번호" class="input w-full" @keydown.enter="doLogin">
+        <button @click="doLogin" class="btn btn-primary w-full">로그인</button>
+        <button @click="authMode='register'; regStep=1" class="btn btn-ghost w-full">회원가입</button>
+      </div>
+    </template>
+
+    <!-- 회원가입 1단계: 아이디 -->
+    <template x-if="authMode==='register' && regStep===1">
+      <div class="space-y-3">
+        <div class="text-sm text-ink-600">1단계 — 아이디 설정</div>
+        <div class="flex gap-2">
+          <input x-model="authForm.username" placeholder="사용할 아이디" class="input flex-1">
+          <button @click="checkId" class="btn btn-ghost text-xs">중복확인</button>
+        </div>
+        <div x-show="idCheckMsg" class="text-xs" :class="idAvailable?'ticker-up':'text-red-400'" x-text="idCheckMsg"></div>
+        <button @click="regStep=2" :disabled="!idAvailable" class="btn btn-primary w-full" :class="!idAvailable&&'opacity-40 cursor-not-allowed'">다음</button>
+        <button @click="authMode='login'" class="btn btn-ghost w-full text-xs">← 로그인으로</button>
+      </div>
+    </template>
+
+    <!-- 회원가입 2단계: 비밀번호 -->
+    <template x-if="authMode==='register' && regStep===2">
+      <div class="space-y-3">
+        <div class="text-sm text-ink-600">2단계 — 비밀번호 설정</div>
+        <input x-model="authForm.password" type="password" placeholder="비밀번호" class="input w-full">
+        <input x-model="authForm.password2" type="password" placeholder="비밀번호 재입력" class="input w-full">
+        <div x-show="authForm.password && authForm.password2 && authForm.password !== authForm.password2" class="text-xs text-red-400">비밀번호가 일치하지 않습니다</div>
+        <button @click="regStep=3" :disabled="!authForm.password || authForm.password !== authForm.password2" class="btn btn-primary w-full">다음</button>
+        <button @click="regStep=1" class="btn btn-ghost w-full text-xs">← 이전</button>
+      </div>
+    </template>
+
+    <!-- 회원가입 3단계: 이름 -->
+    <template x-if="authMode==='register' && regStep===3">
+      <div class="space-y-3">
+        <div class="text-sm text-ink-600">3단계 — 이름 입력</div>
+        <input x-model="authForm.display_name" placeholder="사용할 이름 (예: 홍길동)" class="input w-full">
+        <button @click="doRegister" :disabled="!authForm.display_name" class="btn btn-primary w-full">가입 완료</button>
+        <button @click="regStep=2" class="btn btn-ghost w-full text-xs">← 이전</button>
+      </div>
+    </template>
+
     <div x-show="authError" class="text-sm text-red-400 text-center" x-text="authError"></div>
+  </div>
+</div>
+
+<!-- 관리자 패널 모달 -->
+<div x-show="showAdminPanel" class="overlay" @click.self="showAdminPanel=false">
+  <div class="modal space-y-4" style="width:500px">
+    <div class="flex justify-between items-center">
+      <div class="serif text-xl font-semibold">회원 관리 (관리자)</div>
+      <button @click="showAdminPanel=false" class="text-ink-500 text-xl">✕</button>
+    </div>
+    <div class="max-h-80 overflow-y-auto scroll-soft space-y-2">
+      <template x-for="u in adminUsers" :key="u.id">
+        <div class="surface p-3 flex justify-between items-center">
+          <div>
+            <div class="font-semibold text-sm" x-text="u.display_name || u.username"></div>
+            <div class="text-xs text-ink-500">@<span x-text="u.username"></span> · <span x-text="new Date(u.created_at*1000).toLocaleDateString()"></span></div>
+          </div>
+          <div class="flex gap-2 items-center">
+            <span x-show="u.is_admin" class="pill pill-coral text-xs">관리자</span>
+            <button x-show="!u.is_admin" @click="deleteUser(u.id)" class="btn btn-ghost text-xs text-red-400 py-1 px-2">삭제</button>
+          </div>
+        </div>
+      </template>
+    </div>
   </div>
 </div>
 
@@ -119,7 +186,8 @@
       </div>
       <div class="text-sm text-ink-600 font-mono" x-text="now"></div>
       <div x-show="user" class="flex items-center gap-2">
-        <span class="text-sm text-ink-600" x-text="user?.username"></span>
+        <span class="text-sm text-ink-600" x-text="user?.display_name || user?.username"></span>
+        <button x-show="user?.is_admin" @click="openAdmin" class="btn btn-ghost text-xs py-1 px-2">관리</button>
         <button @click="doLogout" class="btn btn-ghost text-xs py-1 px-2">로그아웃</button>
       </div>
     </div>
@@ -464,8 +532,15 @@ function app(){
     krwRate: 1400,
     // 인증
     user: JSON.parse(localStorage.getItem('toss_user') || 'null'),
-    authForm: { username: '', password: '' },
+    authForm: { username: '', password: '', password2: '', display_name: '' },
     authError: '',
+    authMode: 'login',
+    regStep: 1,
+    idAvailable: false,
+    idCheckMsg: '',
+    // 관리자
+    showAdminPanel: false,
+    adminUsers: [],
     // 매매기록
     showTradeModal: false,
     tradeForm: { symbol: '', trade_type: 'BUY', shares: 0, price: 0, note: '' },
@@ -477,6 +552,13 @@ function app(){
       this.connect(); this.fetchExchangeRate();
       const tick = () => this.now = new Date().toLocaleString('ko-KR', { hour12:false });
       tick(); setInterval(tick, 1000);
+    },
+    async checkId() {
+      if(!this.authForm.username) { this.idCheckMsg = '아이디를 입력하세요'; this.idAvailable = false; return; }
+      const r = await fetch('/api/check-username', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({username: this.authForm.username}) });
+      const d = await r.json();
+      this.idAvailable = !d.taken;
+      this.idCheckMsg = d.taken ? '이미 사용 중인 아이디입니다' : '사용 가능한 아이디입니다 ✓';
     },
     async doLogin() {
       this.authError = '';
@@ -495,10 +577,20 @@ function app(){
         if(!r.ok) { this.authError = (await r.json()).detail; return; }
         this.user = await r.json();
         localStorage.setItem('toss_user', JSON.stringify(this.user));
+        this.authMode = 'login'; this.regStep = 1;
         this.refresh(); this.loadTrades();
       } catch(e) { this.authError = '서버 연결 실패'; }
     },
     doLogout() { this.user = null; localStorage.removeItem('toss_user'); this.watch = []; this.trades = []; },
+    async openAdmin() {
+      this.adminUsers = await (await fetch('/api/admin/users')).json();
+      this.showAdminPanel = true;
+    },
+    async deleteUser(uid) {
+      if(!confirm('이 회원을 삭제하시겠습니까?')) return;
+      await fetch('/api/admin/users/'+uid, { method:'DELETE' });
+      this.adminUsers = await (await fetch('/api/admin/users')).json();
+    },
     uid() { return this.user?.id || 0; },
     async refresh(){
       this.watch = await (await fetch('/api/watchlist?user_id='+this.uid())).json();
