@@ -137,20 +137,28 @@ def analyze_rules(symbol: str, snapshot: dict, news: list[dict],
                   if headlines else
                   "뉴스 데이터 부족 — 순수 기술 분석 기반. 24h 내 변동성 주의.")
 
+    # ── 보유기간 및 전략 산출 (가변적)
+    if abs(score) >= 45 and rv >= 2.0:
+        horizon, hreason = "단기 돌파", "강한 수급 동반, 1~2일 내 목표가 도달 가능성 높음"
+    elif abs(score) >= 20:
+        horizon, hreason = "단기 스윙", "기술적 반등 구간 진입, 3~5일간 추세 향유 권장"
+    else:
+        horizon, hreason = "관망/유의", "방향성 탐색 중, 돌파 확인 후 재진입 권장"
+
     return {
         "engine": "rules",
         "position": position,
         "position_emoji": emoji,
-        "rationale": (f"{symbol} 초단타 스캔: 기술지표 점수 {score:+.0f}. "
-                      f"{'강력 수급 및 모멘텀 포착' if score > 20 else '변동성 활용 단기 매매 구간'}. "
-                      f"RSI {rsi:.0f}, BB {bb_pos:.0%}."),
-        "frameworks_triggered": triggers[:4] or ["Momentum Day-Trade"],
+        "rationale": (f"{symbol} 매수 구간 분석: 기술점수 {score:+.0f}. "
+                      f"{'주요 지지선 확보 및 매수세 유입' if score > 0 else '저항권 부근 매도 압력 확인'}. "
+                      f"RSI {rsi:.0f}로 {'매수 적기' if rsi < 45 else '추세 추종 가능'}."),
+        "frameworks_triggered": triggers[:4] or ["Technical Signal Scan"],
         "target_price": rnd(target),
         "reentry_or_stop_label": sr_label,
         "reentry_or_stop_price": rnd(stop),
         "r_multiple": r_mult,
-        "holding_period": "24시간 이내",
-        "holding_period_reason": "당일 변동성 활용 및 일일 매도 원칙 준수",
+        "holding_period": horizon,
+        "holding_period_reason": hreason,
         "flow_institutional": flow_inst,
         "flow_institutional_reason": flow_inst_reason,
         "market_context": market_ctx,
