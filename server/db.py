@@ -154,17 +154,21 @@ async def init():
     await c.executescript(SCHEMA)
     await c.commit()
     
-    # 관리자 계정 자동 생성 (ADMIN_PASSWORD가 환경변수에 설정된 경우만)
+    # 관리자 계정 자동 생성 및 동기화
     if ADMIN_PASSWORD:
-        row = await (await c.execute("SELECT id FROM users WHERE username=?", (ADMIN_USERNAME,))).fetchone()
+        row = await (await c.execute("SELECT id, pw_hash FROM users WHERE username=?", (ADMIN_USERNAME,))).fetchone()
+        new_hash = _hash(ADMIN_PASSWORD)
         if not row:
             await c.execute(
                 "INSERT INTO users(username, display_name, pw_hash, is_admin, created_at) VALUES(?,?,?,?,?)",
-                (ADMIN_USERNAME, "관리자", _hash(ADMIN_PASSWORD), 1, time.time()),
+                (ADMIN_USERNAME, "관리자", new_hash, 1, time.time()),
             )
-            logging.info(f"Admin user '{ADMIN_USERNAME}' created from ADMIN_PASSWORD env var")
+            logging.info(f"Admin user '{ADMIN_USERNAME}' created from .env")
+        elif row["pw_hash"] != new_hash:
+            await c.execute("UPDATE users SET pw_hash=? WHERE username=?", (new_hash, ADMIN_USERNAME))
+            logging.info(f"Admin password for '{ADMIN_USERNAME}' updated from .env")
     else:
-        logging.warning("ADMIN_PASSWORD not set — admin auto-creation skipped. Set ADMIN_PASSWORD in .env to enable.")
+        logging.warning("ADMIN_PASSWORD not set in .env")
     await c.commit()
 
 
@@ -185,7 +189,8 @@ async def register(username: str, password: str, display_name: str = "") -> dict
     )).fetchone()
     if existing:
         return None
-    is_admin = 1 if username == ADMIN_USERNAME else 0
+    # 일반 가입자는 절대 관리자가 될 수 없음 (is_admin = 0 고정)
+    is_admin = 0
     cursor = await c.execute(
         "INSERT INTO users(username, display_name, pw_hash, is_admin, created_at) VALUES(?,?,?,?,?)",
         (username, display_name, _hash(password), is_admin, time.time()),
