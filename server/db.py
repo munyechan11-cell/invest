@@ -64,16 +64,18 @@ async def init():
 # ── 유저 ──────────────────────────────────────────────────
 async def register(username: str, password: str) -> dict | None:
     async with aiosqlite.connect(DB) as c:
-        try:
-            await c.execute(
-                "INSERT INTO users(username, pw_hash, created_at) VALUES(?,?,?)",
-                (username, _hash(password), time.time()),
-            )
-            await c.commit()
-            uid = (await (await c.execute("SELECT last_insert_rowid()")).fetchone())[0]
-            return {"id": uid, "username": username}
-        except Exception:
+        # 중복 체크
+        existing = await (await c.execute(
+            "SELECT id FROM users WHERE username=?", (username,)
+        )).fetchone()
+        if existing:
             return None
+        cursor = await c.execute(
+            "INSERT INTO users(username, pw_hash, created_at) VALUES(?,?,?)",
+            (username, _hash(password), time.time()),
+        )
+        await c.commit()
+        return {"id": cursor.lastrowid, "username": username}
 
 
 async def login(username: str, password: str) -> dict | None:

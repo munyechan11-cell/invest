@@ -124,6 +124,7 @@ def get_snapshot(symbol: str) -> dict:
         timeframe=TimeFrame.Minute,
         start=end - timedelta(days=4), end=end,
         limit=2000,
+        feed='iex',
     )).df
     if isinstance(intraday.index, pd.MultiIndex):
         intraday = intraday.xs(symbol, level=0)
@@ -137,6 +138,7 @@ def get_snapshot(symbol: str) -> dict:
         symbol_or_symbols=symbol,
         timeframe=TimeFrame.Day,
         start=end - timedelta(days=160), end=end,
+        feed='iex',
     )).df
     if isinstance(daily.index, pd.MultiIndex):
         daily = daily.xs(symbol, level=0)
