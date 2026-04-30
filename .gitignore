@@ -1,7 +1,37 @@
+# Secrets
 .env
+.env.local
+.env.*.local
+
+# DB (사용자 계정/워치리스트 — 절대 공개 금지)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+toss.db
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Virtualenv
 .venv/
 venv/
+env/
+
+# IDE
 .idea/
 .vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / temp
+*.log
+logs/

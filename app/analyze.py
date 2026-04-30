@@ -1,5 +1,5 @@
-import os, json, logging, httpx, time as _time
 from __future__ import annotations
+import os, json, logging, httpx, time as _time
 
 log = logging.getLogger("analyze")
 

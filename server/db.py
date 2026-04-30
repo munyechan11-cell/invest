@@ -6,7 +6,10 @@ DB = Path(__file__).resolve().parent.parent / "toss.db"
 _conn: aiosqlite.Connection | None = None
 
 # 보안 설정
-SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "toss_super_secret_key_1111")
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "")
+if not SECRET_KEY:
+    SECRET_KEY = secrets.token_urlsafe(32)
+    logging.warning("JWT_SECRET_KEY not set — using random per-process key (sessions reset on restart)")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 
 
@@ -84,8 +87,8 @@ CREATE TABLE IF NOT EXISTS trades (
 """
 
 
-ADMIN_USERNAME = "munyechan11"
-ADMIN_PASSWORD = "m!4041317"
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "munyechan11")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")  # .env에 ADMIN_PASSWORD 설정 필요
 
 
 async def init():
@@ -102,13 +105,17 @@ async def init():
         except Exception:
             await c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {default}")
     
-    # 관리자 계정 자동 생성
-    row = await (await c.execute("SELECT id FROM users WHERE username=?", (ADMIN_USERNAME,))).fetchone()
-    if not row:
-        await c.execute(
-            "INSERT INTO users(username, display_name, pw_hash, is_admin, created_at) VALUES(?,?,?,?,?)",
-            (ADMIN_USERNAME, "관리자", _hash(ADMIN_PASSWORD), 1, time.time()),
-        )
+    # 관리자 계정 자동 생성 (ADMIN_PASSWORD가 환경변수에 설정된 경우만)
+    if ADMIN_PASSWORD:
+        row = await (await c.execute("SELECT id FROM users WHERE username=?", (ADMIN_USERNAME,))).fetchone()
+        if not row:
+            await c.execute(
+                "INSERT INTO users(username, display_name, pw_hash, is_admin, created_at) VALUES(?,?,?,?,?)",
+                (ADMIN_USERNAME, "관리자", _hash(ADMIN_PASSWORD), 1, time.time()),
+            )
+            logging.info(f"Admin user '{ADMIN_USERNAME}' created from ADMIN_PASSWORD env var")
+    else:
+        logging.warning("ADMIN_PASSWORD not set — admin auto-creation skipped. Set ADMIN_PASSWORD in .env to enable.")
     await c.commit()
 
 

@@ -1,7 +1,7 @@
 """실시간 가격 폴링 + 알림 트리거."""
 from __future__ import annotations
 import asyncio, time, logging
-from app.market import fetch_realtime_quote
+from app.market import fetch_realtime_quote, market_of
 from server import db
 from server.sizing import shares_for, split_plan
 
@@ -10,6 +10,13 @@ log = logging.getLogger("alerts")
 POLL_SEC = 6           # 워치리스트당 폴링 주기
 COOLDOWN_SEC = 300     # 같은 알림 재발송 방지
 _last_sent: dict[tuple[str, str], float] = {}
+
+
+def _fmt(symbol: str, price: float) -> str:
+    """KR이면 ₩123,456, US면 $123.45 형식."""
+    if market_of(symbol) == "KR":
+        return f"₩{int(price):,}"
+    return f"${price:.2f}"
 
 
 def _cool(symbol: str, kind: str) -> bool:
@@ -31,15 +38,19 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
     sr_price = plan.get("reentry_or_stop_price")
     capital = item["capital"]; risk_pct = item["risk_pct"]
 
+    pf = _fmt(sym, price)
+    fmt_sr = _fmt(sym, float(sr_price)) if sr_price else ""
+    fmt_tp = _fmt(sym, float(target)) if target else ""
+
     # 매수 조건: 분할매수/적극매수에서, 재진입가 부근 또는 그 아래
     if pos in ("분할 매수", "적극 매수") and sr_price:
         if price <= float(sr_price) * 1.003:  # 0.3% 안쪽이면 트리거
             if not _cool(sym, f"BUY_{user_id}"):
                 size = shares_for(capital, risk_pct, price, float(sr_price) * 0.97)
                 splits = split_plan(size["shares"])
-                msg = (f"💚 지금 {pos}! ${price:.2f} 도달 — "
+                msg = (f"💚 지금 {pos}! {pf} 도달 — "
                        f"권장 {size['shares']}주 (분할: {splits}), "
-                       f"투입 ${size['notional']:.0f}, 최대손실 ${size['max_loss']:.0f}")
+                       f"투입 {_fmt(sym, size['notional'])}, 최대손실 {_fmt(sym, size['max_loss'])}")
                 await db.add_alert(sym, "BUY", msg, price)
                 await broadcast({"type": "alert", "symbol": sym, "kind": "BUY",
                                  "message": msg, "price": price, "user_id": user_id})
@@ -47,7 +58,7 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
     # 익절: 목표가 도달
     if target and price >= float(target):
         if not _cool(sym, f"TP_{user_id}"):
-            msg = f"🎯 목표가 도달! ${price:.2f} ≥ ${target} — 매도/익절 권장"
+            msg = f"🎯 목표가 도달! {pf} ≥ {fmt_tp} — 매도/익절 권장"
             await db.add_alert(sym, "TP", msg, price)
             await broadcast({"type": "alert", "symbol": sym, "kind": "TP",
                              "message": msg, "price": price, "user_id": user_id})
@@ -55,7 +66,7 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
     # 손절: 손절가 이탈 (매수계열에서만)
     if pos in ("분할 매수", "적극 매수") and sr_label == "손절가" and sr_price and price <= float(sr_price):
         if not _cool(sym, f"SL_{user_id}"):
-            msg = f"🛑 손절선 이탈! ${price:.2f} ≤ ${sr_price} — 즉시 매도"
+            msg = f"🛑 손절선 이탈! {pf} ≤ {fmt_sr} — 즉시 매도"
             await db.add_alert(sym, "SL", msg, price)
             await broadcast({"type": "alert", "symbol": sym, "kind": "SL",
                              "message": msg, "price": price, "user_id": user_id})
@@ -63,7 +74,7 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
     # 매도 권고에서 강한 추가 하락 → 추가 매도 알림
     if pos in ("분할 매도", "적극 매도") and target and price >= float(target):
         if not _cool(sym, f"SELL_{user_id}"):
-            msg = f"🔴 매도 신호 가격대 도달! ${price:.2f} — {pos}"
+            msg = f"🔴 매도 신호 가격대 도달! {pf} — {pos}"
             await db.add_alert(sym, "SELL", msg, price)
             await broadcast({"type": "alert", "symbol": sym, "kind": "SELL",
                              "message": msg, "price": price, "user_id": user_id})

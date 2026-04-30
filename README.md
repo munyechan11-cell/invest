@@ -32,7 +32,20 @@ python -m server.main
 같은 알림은 5분 쿨다운.
 
 ## API 키
-- Anthropic, Alpaca(시세 캔들), Finnhub(실시간 quote/뉴스), Telegram(옵션)
+`.env.example` 참고. 필수: Gemini(또는 Anthropic), Alpaca, Finnhub, KIS, Naver, DART.
+
+## 배포 (Render — 무료티어 가능)
+1. 이 repo를 GitHub에 푸시
+2. https://render.com 가입 → New → Blueprint → 이 repo 선택
+3. `render.yaml` 자동 인식 → 환경변수 입력란에 `.env`의 키들 그대로 붙여넣기
+4. `JWT_SECRET_KEY`는 Render가 자동 생성, `ADMIN_PASSWORD`는 강한 비번으로 직접 입력
+5. Deploy → `https://toss-quant.onrender.com` 발급
+> 무료티어는 15분 무사용 시 슬립. 깨어날 때 30초 지연. 24/7 원하면 Starter $7/월.
+
+## 배포 (Railway 대안)
+1. https://railway.app → New Project → Deploy from GitHub
+2. Variables 탭에 `.env` 키 입력
+3. Settings → Networking → Generate Domain
 
 ## 한계
 - 다크풀 정확 데이터는 무료 소스 부재 — 거래량 vs 20일평균 + 뉴스/인사이더로 추론
