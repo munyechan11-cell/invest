@@ -86,7 +86,43 @@ CREATE TABLE IF NOT EXISTS trades (
   note TEXT DEFAULT '',
   created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS portfolio (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  entry_price REAL NOT NULL,
+  shares REAL NOT NULL,
+  krw_invested REAL NOT NULL DEFAULT 0,
+  created_at REAL NOT NULL
+);
 """
+
+
+# ── 포트폴리오 (보유 종목) ──────────────────────────────────────
+async def add_to_portfolio(user_id: int, symbol: str, entry_price: float, krw_invested: float, shares: float = 0):
+    c = await get_db()
+    # 수량이 0이면 원화/달러가로 추정 (옵션)
+    if shares <= 0 and entry_price > 0:
+        shares = krw_invested / (entry_price * 1400) # 대략적 추정 (UI에서 입력받는 것이 정확)
+    
+    await c.execute(
+        "INSERT INTO portfolio(user_id, symbol, entry_price, shares, krw_invested, created_at) "
+        "VALUES(?,?,?,?,?,?)",
+        (user_id, symbol.upper(), entry_price, shares, krw_invested, time.time())
+    )
+    await c.commit()
+
+async def list_portfolio(user_id: int) -> list[dict]:
+    c = await get_db()
+    rows = await (await c.execute(
+        "SELECT * FROM portfolio WHERE user_id=? ORDER BY created_at DESC", (user_id,)
+    )).fetchall()
+    return [dict(r) for r in rows]
+
+async def remove_from_portfolio(pid: int, user_id: int):
+    c = await get_db()
+    await c.execute("DELETE FROM portfolio WHERE id=? AND user_id=?", (pid, user_id))
+    await c.commit()
 
 
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "munyechan11")
@@ -113,6 +149,10 @@ async def init():
             await c.execute(f"SELECT {col} FROM watchlist LIMIT 1")
         except Exception:
             await c.execute(f"ALTER TABLE watchlist ADD COLUMN {col} {default}")
+    
+    # 포트폴리오 테이블 생성 (스키마에 이미 있으나 혹시 모르니Script 실행)
+    await c.executescript(SCHEMA)
+    await c.commit()
     
     # 관리자 계정 자동 생성 (ADMIN_PASSWORD가 환경변수에 설정된 경우만)
     if ADMIN_PASSWORD:

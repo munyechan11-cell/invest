@@ -188,10 +188,10 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
         await db.update_watch_position(symbol, user["id"], ana["position"], ana["position_emoji"])
 
         sizing = None
-        if watch and ana.get("reentry_or_stop_price"):
+        if watch and ana.get("stop_price"):
             s = shares_for(watch["capital"], watch["risk_pct"],
-                           float(ana.get("target_price") or snap["quote"]["price"]),
-                           float(ana["reentry_or_stop_price"]))
+                           float(ana.get("entry_price") or snap["quote"]["price"]),
+                           float(ana["stop_price"]))
             sizing = {**s, "splits": split_plan(s["shares"])}
 
         await broadcast({"type": "analysis", "symbol": symbol, "user_id": user["id"]})
@@ -228,7 +228,46 @@ async def api_list_trades(user: dict = Depends(get_current_user)):
 
 @app.get("/api/portfolio")
 async def api_portfolio(user: dict = Depends(get_current_user)):
-    return await db.portfolio_summary(user["id"])
+    """실시간 시세와 추천 포지션이 포함된 내 포트폴리오"""
+    holdings = await db.list_portfolio(user["id"])
+    if not holdings: return []
+    
+    results = []
+    for h in holdings:
+        symbol = h["symbol"]
+        try:
+            # 실시간 시세와 캐시된 분석 결과 가져오기
+            snap = await asyncio.to_thread(get_snapshot, symbol)
+            plan = await db.get_plan(symbol)
+            
+            cur_price = snap["quote"]["price"]
+            pnl = (cur_price - h["entry_price"]) * h["shares"]
+            pnl_pct = (cur_price / h["entry_price"] - 1) * 100 if h["entry_price"] > 0 else 0
+            
+            results.append({
+                **h,
+                "current_price": cur_price,
+                "change_pct": snap["quote"]["change_pct"],
+                "pnl": round(pnl, 2),
+                "pnl_pct": round(pnl_pct, 2),
+                "position": plan["position"] if plan else "관망",
+                "emoji": plan["position_emoji"] if plan else "⚪"
+            })
+        except:
+            results.append({**h, "current_price": 0, "pnl": 0, "pnl_pct": 0, "position": "Error", "emoji": "❓"})
+    
+    return results
+
+@app.post("/api/portfolio")
+async def api_add_portfolio(data: dict, user: dict = Depends(get_current_user)):
+    # data: symbol, entry_price, krw_invested, shares
+    await db.add_to_portfolio(user["id"], data["symbol"], data["entry_price"], data["krw_invested"], data.get("shares", 0))
+    return {"ok": True}
+
+@app.delete("/api/portfolio/{pid}")
+async def api_remove_portfolio(pid: int, user: dict = Depends(get_current_user)):
+    await db.remove_from_portfolio(pid, user["id"])
+    return {"ok": True}
 
 
 @app.get("/api/alerts")

@@ -40,25 +40,18 @@ SYSTEM = """# ROLE
 3. **Specifics**: 목표가와 손절가를 기술적 근거(피벗, 매물대)에 기반하여 정교하게 제시.
 
 # OUTPUT (Strict JSON Schema)
-반드시 아래 JSON 스키마로만 응답(마크다운/주석/코드펜스 금지):
-
 {
-  "position": "적극 매수|분할 매수|관망|분할 매도|적극 매도",
-  "position_emoji": "🟢|🟡|⚪|🟠|🔴",
-  "rationale": "포지션 선정의 핵심 근거 3문장 이내 (전문 용어 활용)",
-  "frameworks_triggered": ["예: Squeeze Momentum 돌파", "외국인 평단가 지지", "Order Flow Imbalance 확인"],
-  "target_price": 숫자,
-  "reentry_or_stop_label": "재진입가|손절가",
-  "reentry_or_stop_price": 숫자,
-  "r_multiple": "예: 1:2.8",
-  "holding_period": "초단타|단기|스윙",
-  "holding_period_reason": "시간 단위 근거",
-  "flow_institutional": "기관 우위|중립|개인 우위",
-  "flow_institutional_reason": "데이터 기반 근거",
-  "flow_special": "특이 수급/옵션 등 특이사항",
-  "macro_regime": "현재 거시경제 테마 반영",
-  "market_context": "24시간 내 핵심 리스크 및 기회 요인 요약",
-  "confidence": 0~100
+  "position": "적극 매수" | "분할 매수" | "관망" | "분할 매도" | "적극 매도",
+  "position_emoji": "🟢" | "🟡" | "⚪" | "🟠" | "🔴",
+  "news_summary": "현재 주가 등락의 핵심 원인 요약 (호재/악재 중심)",
+  "rationale": "분석 근거 (기술적/수급적/거시적)",
+  "entry_price": 0.0,
+  "target_price": 0.0,
+  "stop_price": 0.0,
+  "r_multiple": "1:X.X",
+  "holding_period": "X일/X주",
+  "holding_period_reason": "근거",
+  "confidence": 0-100
 }
 """
 

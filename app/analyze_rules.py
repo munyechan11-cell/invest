@@ -149,19 +149,16 @@ def analyze_rules(symbol: str, snapshot: dict, news: list[dict],
         "engine": "rules",
         "position": position,
         "position_emoji": emoji,
+        "news_summary": market_ctx,
         "rationale": (f"{symbol} 매수 구간 분석: 기술점수 {score:+.0f}. "
                       f"{'주요 지지선 확보 및 매수세 유입' if score > 0 else '저항권 부근 매도 압력 확인'}. "
                       f"RSI {rsi:.0f}로 {'매수 적기' if rsi < 45 else '추세 추종 가능'}."),
-        "frameworks_triggered": triggers[:4] or ["Technical Signal Scan"],
+        "entry_price": price,
         "target_price": rnd(target),
-        "reentry_or_stop_label": sr_label,
-        "reentry_or_stop_price": rnd(stop),
+        "stop_price": rnd(stop),
         "r_multiple": r_mult,
         "holding_period": horizon,
         "holding_period_reason": hreason,
-        "flow_institutional": flow_inst,
-        "flow_institutional_reason": flow_inst_reason,
-        "market_context": market_ctx,
         "confidence": min(abs(score) + 40, 95)
     }
 
