@@ -46,7 +46,7 @@ async def broadcast(payload: dict):
 
 # ─── lifespan ──────────────────────────────────────────────────────
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     await db.init()
     task = asyncio.create_task(alerts_mod.worker(broadcast))
     log.info("Toss server ready")
@@ -121,12 +121,12 @@ async def check_admin(user: dict = Depends(get_current_user)):
 
 # ─── Admin ─────────────────────────────────────────────────────────
 @app.get("/api/admin/users")
-async def api_admin_users(admin: dict = Depends(check_admin)):
+async def api_admin_users(_: dict = Depends(check_admin)):
     return await db.list_users()
 
 
 @app.delete("/api/admin/users/{user_id}")
-async def api_admin_del_user(user_id: int, admin: dict = Depends(check_admin)):
+async def api_admin_del_user(user_id: int, _: dict = Depends(check_admin)):
     await db.delete_user(user_id)
     return {"ok": True}
 
@@ -196,9 +196,9 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
 
     except Exception as e:
         log.error(f"Analyze error for {symbol}: {e}")
-        if "429" in str(e):
-            raise HTTPException(429, "분석 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
-        raise HTTPException(500, f"분석 중 오류 발생: {str(e)}")
+        # 데이터 수집 실패는 진짜 에러이므로 그대로 던짐.
+        # AI 실패는 analyze() 내부에서 룰 기반으로 자동 폴백되므로 여기까진 안 옴.
+        raise HTTPException(500, f"데이터 수집 실패: {str(e)}")
 
 
 # ─── Trades ────────────────────────────────────────────────────────

@@ -67,9 +67,12 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0
 
 def analyze(symbol: str, snapshot: dict, news: list[dict],
             flow: dict, profile: dict) -> dict:
+    from .analyze_rules import analyze_rules
+
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY 환경변수가 설정되지 않았습니다.")
+        log.warning("GEMINI_API_KEY 미설정 — 룰 기반 분석으로 대체")
+        return analyze_rules(symbol, snapshot, news, flow, profile)
 
     payload = {
         "ticker": f"{symbol} ({profile.get('name','')})",
@@ -105,34 +108,55 @@ def analyze(symbol: str, snapshot: dict, news: list[dict],
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2000},
     }
 
-    # 429 에러 시 최대 3회 재시도 (15초, 35초, 75초 대기)
-    last_err = None
+    # AI 호출 — 실패 시 빠르게 룰 기반 폴백 (최대 ~5초 대기)
     data = None
-    for attempt in range(3):
+    last_err = None
+    for attempt in range(2):  # 1회 + 1회 재시도
         try:
-            with httpx.Client(timeout=60) as c:
+            with httpx.Client(timeout=20) as c:
                 r = c.post(f"{GEMINI_URL}?key={api_key}", json=body)
                 if r.status_code == 429:
-                    wait = 15 * (2 ** attempt) + 5 
-                    log.warning(f"Gemini API 429 Error. Retrying in {wait}s (Attempt {attempt+1}/3)")
-                    _time.sleep(wait)
-                    last_err = r
-                    continue
+                    log.warning(f"Gemini 429 (attempt {attempt+1}/2) — quota 소진 가능성")
+                    last_err = "429 quota"
+                    if attempt == 0:
+                        _time.sleep(3)
+                        continue
+                    break
+                if r.status_code >= 500:
+                    log.warning(f"Gemini {r.status_code} — 재시도")
+                    last_err = f"{r.status_code}"
+                    if attempt == 0:
+                        _time.sleep(2)
+                        continue
+                    break
                 r.raise_for_status()
                 data = r.json()
                 break
         except Exception as e:
-            log.error(f"Gemini API Request failed: {e}")
-            last_err = e
-            _time.sleep(2)
-            
-    if data is None:
-        raise RuntimeError(f"AI 분석 호출 실패: {last_err}")
+            log.error(f"Gemini 호출 예외: {e}")
+            last_err = str(e)
+            if attempt == 0:
+                _time.sleep(2)
+                continue
+            break
 
-    text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    # 코드펜스 제거
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:]
-    return json.loads(text)
+    if data is None:
+        log.warning(f"AI 분석 실패({last_err}) — 룰 기반 분석으로 자동 대체")
+        result = analyze_rules(symbol, snapshot, news, flow, profile)
+        result["fallback_reason"] = last_err
+        return result
+
+    try:
+        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.lower().startswith("json"):
+                text = text[4:]
+        parsed = json.loads(text)
+        parsed.setdefault("engine", "ai")
+        return parsed
+    except Exception as e:
+        log.error(f"AI 응답 파싱 실패: {e} — 룰 기반으로 대체")
+        result = analyze_rules(symbol, snapshot, news, flow, profile)
+        result["fallback_reason"] = f"parse: {e}"
+        return result
