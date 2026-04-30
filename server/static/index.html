@@ -288,8 +288,14 @@
       </ul>
     </div>
 
-    <div class="surface-elevated p-4">
-      <div class="serif text-sm font-semibold text-ink-800 mb-2">내 포트폴리오</div>
+      <div class="surface-elevated p-4">
+        <div class="flex items-center justify-between mb-4">
+          <div class="serif text-sm font-semibold text-ink-800">내 포트폴리오</div>
+          <label class="cursor-pointer text-[10px] bg-coral-500/10 text-coral-500 px-2 py-1 rounded hover:bg-coral-500/20 transition-colors">
+            📸 사진으로 등록
+            <input type="file" class="hidden" accept="image/*" @change="uploadPortfolioImage">
+          </label>
+        </div>
       <div class="grid grid-cols-2 gap-2 text-sm">
         <div><span class="text-ink-500">총 투자</span><br><span class="font-mono" x-text="'$'+portfolio.total_invested.toLocaleString()"></span></div>
         <div><span class="text-ink-500">총 회수</span><br><span class="font-mono" x-text="'$'+portfolio.total_returned.toLocaleString()"></span></div>
@@ -911,6 +917,30 @@ function app(){
       } catch(e) { console.error('추천 로드 실패', e); }
     },
 
+    async uploadPortfolioImage(e) {
+      const file = e.target.files[0];
+      if(!file) return;
+      
+      this.loading = true;
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const r = await this.api('/api/portfolio/upload', { method:'POST', body: formData });
+        const d = await r.json();
+        if(d.ok) {
+          alert(d.msg);
+          await this.loadHoldings();
+        } else {
+          alert(d.msg);
+        }
+      } catch(err) {
+        alert('이미지 분석 실패: ' + err.message);
+      } finally {
+        this.loading = false;
+        e.target.value = ''; // 초기화
+      }
+    },
     async loadHoldings() {
       try {
         const r = await this.api('/api/portfolio');

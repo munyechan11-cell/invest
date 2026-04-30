@@ -269,6 +269,33 @@ async def api_remove_portfolio(pid: int, user: dict = Depends(get_current_user))
     await db.remove_from_portfolio(pid, user["id"])
     return {"ok": True}
 
+from app.ocr_portfolio import extract_portfolio_from_image
+from fastapi import UploadFile, File
+
+@app.post("/api/portfolio/upload")
+async def api_upload_portfolio(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """포트폴리오 스크린샷을 분석하여 일괄 등록"""
+    content = await file.read()
+    holdings = await asyncio.to_thread(extract_portfolio_from_image, content)
+    
+    if not holdings:
+        return {"ok": False, "msg": "이미지에서 종목 정보를 추출하지 못했습니다."}
+    
+    count = 0
+    for h in holdings:
+        try:
+            # 기본값 처리 및 정규화
+            symbol = str(h.get("symbol", "")).upper()
+            price = float(h.get("entry_price", 0))
+            krw = float(h.get("krw_invested", 0))
+            if symbol and price > 0:
+                await db.add_to_portfolio(user["id"], symbol, price, krw)
+                count += 1
+        except Exception as e:
+            log.error(f"보유종목 일괄 등록 중 스킵: {symbol}, {e}")
+            
+    return {"ok": True, "count": count, "msg": f"{count}개의 종목이 포트폴리오에 등록되었습니다."}
+
 
 @app.get("/api/alerts")
 async def api_alerts(_: dict = Depends(get_current_user)):
