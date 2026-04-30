@@ -52,10 +52,14 @@ def _hash(pw: str) -> str:
     return hashlib.sha256(pw.encode()).hexdigest()
 
 
+ADMIN_USERNAME = "munyechan11"
+ADMIN_PASSWORD = "m!4041317"
+
+
 async def init():
     async with aiosqlite.connect(DB) as c:
         await c.executescript(SCHEMA)
-        # 마이그레이션: 기존 테이블에 새 컬럼 추가
+        # 마이그레이션
         for col, table, default in [
             ("user_id", "watchlist", "INTEGER NOT NULL DEFAULT 0"),
             ("display_name", "users", "TEXT NOT NULL DEFAULT ''"),
@@ -65,6 +69,13 @@ async def init():
                 await c.execute(f"SELECT {col} FROM {table} LIMIT 1")
             except Exception:
                 await c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {default}")
+        # 관리자 계정 자동 생성
+        row = await (await c.execute("SELECT id FROM users WHERE username=?", (ADMIN_USERNAME,))).fetchone()
+        if not row:
+            await c.execute(
+                "INSERT INTO users(username, display_name, pw_hash, is_admin, created_at) VALUES(?,?,?,?,?)",
+                (ADMIN_USERNAME, "관리자", _hash(ADMIN_PASSWORD), 1, time.time()),
+            )
         await c.commit()
 
 
@@ -85,7 +96,7 @@ async def register(username: str, password: str, display_name: str = "") -> dict
         )).fetchone()
         if existing:
             return None
-        is_admin = 1 if username == "admin" else 0
+        is_admin = 1 if username == ADMIN_USERNAME else 0
         cursor = await c.execute(
             "INSERT INTO users(username, display_name, pw_hash, is_admin, created_at) VALUES(?,?,?,?,?)",
             (username, display_name, _hash(password), is_admin, time.time()),

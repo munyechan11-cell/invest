@@ -185,10 +185,19 @@
         <span x-text="wsConnected ? '실시간 스트림 연결됨' : '연결 끊김 — 재시도 중'"></span>
       </div>
       <div class="text-sm text-ink-600 font-mono" x-text="now"></div>
-      <div x-show="user" class="flex items-center gap-2">
-        <span class="text-sm text-ink-600" x-text="user?.display_name || user?.username"></span>
-        <button x-show="user?.is_admin" @click="openAdmin" class="btn btn-ghost text-xs py-1 px-2">관리</button>
-        <button @click="doLogout" class="btn btn-ghost text-xs py-1 px-2">로그아웃</button>
+      <div x-show="user" class="relative" @click.outside="showProfileMenu=false">
+        <button @click="showProfileMenu=!showProfileMenu" class="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-[#222] transition">
+          <div class="w-7 h-7 rounded-full bg-coral-500 flex items-center justify-center text-xs font-bold text-black" x-text="(user?.display_name||user?.username||'?')[0]"></div>
+          <span class="text-sm text-ink-700" x-text="user?.display_name || user?.username"></span>
+        </button>
+        <div x-show="showProfileMenu" class="absolute right-0 mt-2 w-48 bg-[#111] border border-[#333] rounded-lg shadow-xl overflow-hidden z-30">
+          <div class="px-4 py-3 border-b border-[#222]">
+            <div class="text-sm font-semibold" x-text="user?.display_name"></div>
+            <div class="text-xs text-ink-500" x-text="'@'+user?.username"></div>
+          </div>
+          <button x-show="user?.is_admin" @click="openAdmin(); showProfileMenu=false" class="w-full text-left px-4 py-2.5 text-sm hover:bg-[#222] text-coral-400">회원 관리</button>
+          <button @click="doLogout(); showProfileMenu=false" class="w-full text-left px-4 py-2.5 text-sm hover:bg-[#222] text-red-400">로그아웃</button>
+        </div>
       </div>
     </div>
   </div>
@@ -540,6 +549,7 @@ function app(){
     idCheckMsg: '',
     // 관리자
     showAdminPanel: false,
+    showProfileMenu: false,
     adminUsers: [],
     // 매매기록
     showTradeModal: false,
