@@ -258,7 +258,10 @@ async def ws(websocket: WebSocket):
 
 def run():
     import uvicorn
-    uvicorn.run("server.main:app", host="127.0.0.1", port=8000, reload=False)
+    # Render는 PORT 환경변수를 통해 포트를 지정해줍니다. 기본값은 8000.
+    port = int(os.environ.get("PORT", 8000))
+    # 127.0.0.1이 아닌 0.0.0.0으로 열어야 외부에서 접속이 가능합니다.
+    uvicorn.run("server.main:app", host="0.0.0.0", port=port, reload=False)
 
 
 if __name__ == "__main__":
