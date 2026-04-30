@@ -155,20 +155,22 @@ async def init():
     await c.commit()
     
     # 관리자 계정 자동 생성 및 동기화
-    if ADMIN_PASSWORD:
-        row = await (await c.execute("SELECT id, pw_hash FROM users WHERE username=?", (ADMIN_USERNAME,))).fetchone()
-        new_hash = _hash(ADMIN_PASSWORD)
+    admin_user = os.environ.get("ADMIN_USERNAME", "admin")
+    admin_pw = os.environ.get("ADMIN_PASSWORD", "admin1234")
+    
+    if admin_pw:
+        row = await (await c.execute("SELECT id, pw_hash FROM users WHERE username=?", (admin_user,))).fetchone()
+        new_hash = _hash(admin_pw)
         if not row:
             await c.execute(
                 "INSERT INTO users(username, display_name, pw_hash, is_admin, created_at) VALUES(?,?,?,?,?)",
-                (ADMIN_USERNAME, "관리자", new_hash, 1, time.time()),
+                (admin_user, "관리자", new_hash, 1, time.time()),
             )
-            logging.info(f"Admin user '{ADMIN_USERNAME}' created from .env")
-        elif row["pw_hash"] != new_hash:
-            await c.execute("UPDATE users SET pw_hash=? WHERE username=?", (new_hash, ADMIN_USERNAME))
-            logging.info(f"Admin password for '{ADMIN_USERNAME}' updated from .env")
-    else:
-        logging.warning("ADMIN_PASSWORD not set in .env")
+            logging.info(f"Admin user '{admin_user}' created from .env")
+        elif dict(row)["pw_hash"] != new_hash:
+            await c.execute("UPDATE users SET pw_hash=? WHERE username=?", (new_hash, admin_user))
+            logging.info(f"Admin password for '{admin_user}' updated from .env")
+    
     await c.commit()
 
 
