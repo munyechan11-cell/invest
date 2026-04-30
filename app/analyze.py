@@ -81,12 +81,12 @@ SYSTEM = """# ROLE
 }
 """
 
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent"
 
 
 def analyze(symbol: str, snapshot: dict, news: list[dict],
             flow: dict, profile: dict) -> dict:
-    import httpx
+    import httpx, time as _time
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY 환경변수가 설정되지 않았습니다.")
@@ -125,10 +125,21 @@ def analyze(symbol: str, snapshot: dict, news: list[dict],
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2000},
     }
 
-    with httpx.Client(timeout=60) as c:
-        r = c.post(f"{GEMINI_URL}?key={api_key}", json=body)
-        r.raise_for_status()
-        data = r.json()
+    # 429 에러 시 최대 3회 재시도 (5초, 10초, 20초 대기)
+    last_err = None
+    for attempt in range(3):
+        with httpx.Client(timeout=60) as c:
+            r = c.post(f"{GEMINI_URL}?key={api_key}", json=body)
+            if r.status_code == 429:
+                wait = 5 * (2 ** attempt)
+                _time.sleep(wait)
+                last_err = r
+                continue
+            r.raise_for_status()
+            data = r.json()
+            break
+    else:
+        last_err.raise_for_status()
 
     text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
     # 코드펜스 제거
