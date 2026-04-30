@@ -63,10 +63,45 @@
   ::selection { background:#10b981; color:#000000; }
   .scroll-soft::-webkit-scrollbar { width:8px; }
   .scroll-soft::-webkit-scrollbar-thumb { background:#333333; border-radius:8px; }
+  .overlay { position:fixed; inset:0; z-index:50; background:rgba(0,0,0,0.85); display:flex; align-items:center; justify-content:center; }
+  .modal { background:#0a0a0a; border:1px solid #333; border-radius:16px; padding:32px; width:360px; }
 </style>
 <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
 <body x-data="app()" x-init="init()" class="min-h-screen">
+
+<!-- 로그인 오버레이 -->
+<div x-show="!user" class="overlay">
+  <div class="modal space-y-4">
+    <div class="text-center">
+      <div class="serif text-3xl font-semibold mb-1">Toss</div>
+      <div class="text-sm text-ink-500">투자 분석 플랫폼</div>
+    </div>
+    <input x-model="authForm.username" placeholder="아이디" class="input w-full">
+    <input x-model="authForm.password" type="password" placeholder="비밀번호" class="input w-full">
+    <button @click="doLogin" class="btn btn-primary w-full">로그인</button>
+    <button @click="doRegister" class="btn btn-ghost w-full">회원가입</button>
+    <div x-show="authError" class="text-sm text-red-400 text-center" x-text="authError"></div>
+  </div>
+</div>
+
+<!-- 매매기록 모달 -->
+<div x-show="showTradeModal" class="overlay" @click.self="showTradeModal=false">
+  <div class="modal space-y-4">
+    <div class="serif text-xl font-semibold">매매 기록 추가</div>
+    <div class="text-sm text-ink-500" x-text="tradeForm.symbol"></div>
+    <select x-model="tradeForm.trade_type" class="input w-full bg-[#111]">
+      <option value="BUY">매수 (진입)</option>
+      <option value="익절">익절 (이익 실현)</option>
+      <option value="손절">손절 (손실 확정)</option>
+      <option value="청산">청산 (전량 매도)</option>
+    </select>
+    <input x-model.number="tradeForm.shares" type="number" placeholder="수량 (주)" class="input w-full">
+    <input x-model.number="tradeForm.price" type="number" placeholder="가격" class="input w-full">
+    <input x-model="tradeForm.note" placeholder="메모 (선택)" class="input w-full">
+    <button @click="submitTrade" class="btn btn-primary w-full">기록 저장</button>
+  </div>
+</div>
 
 <header class="px-8 py-5 border-b border-cream-200 bg-cream-50/70 backdrop-blur sticky top-0 z-20">
   <div class="max-w-[1400px] mx-auto flex items-center justify-between">
@@ -83,6 +118,10 @@
         <span x-text="wsConnected ? '실시간 스트림 연결됨' : '연결 끊김 — 재시도 중'"></span>
       </div>
       <div class="text-sm text-ink-600 font-mono" x-text="now"></div>
+      <div x-show="user" class="flex items-center gap-2">
+        <span class="text-sm text-ink-600" x-text="user?.username"></span>
+        <button @click="doLogout" class="btn btn-ghost text-xs py-1 px-2">로그아웃</button>
+      </div>
     </div>
   </div>
 </header>
@@ -148,12 +187,28 @@
       </ul>
     </div>
 
-    <div class="surface p-4">
-      <div class="text-xs text-ink-600 leading-relaxed">
-        <div class="serif text-sm font-semibold text-ink-800 mb-1.5">평가 프레임워크</div>
-        AQR Factor Investing · O'Neil CANSLIM · Wyckoff · VWAP/Anchored VWAP ·
-        Smart Money Flow · Bridgewater 매크로 레짐 · Kelly Sizing
+    <!-- 포트폴리오 요약 -->
+    <div class="surface-elevated p-4">
+      <div class="serif text-sm font-semibold text-ink-800 mb-2">내 포트폴리오</div>
+      <div class="grid grid-cols-2 gap-2 text-sm">
+        <div><span class="text-ink-500">총 투자</span><br><span class="font-mono" x-text="'$'+portfolio.total_invested.toLocaleString()"></span></div>
+        <div><span class="text-ink-500">총 회수</span><br><span class="font-mono" x-text="'$'+portfolio.total_returned.toLocaleString()"></span></div>
+        <div><span class="text-ink-500">손익</span><br><span class="font-mono" :class="portfolio.total_pnl>=0?'ticker-up':'ticker-down'" x-text="(portfolio.total_pnl>=0?'+':'')+portfolio.total_pnl.toLocaleString()"></span></div>
+        <div><span class="text-ink-500">수익률</span><br><span class="font-mono" :class="portfolio.total_pnl_pct>=0?'ticker-up':'ticker-down'" x-text="(portfolio.total_pnl_pct>=0?'+':'')+portfolio.total_pnl_pct+'%'"></span></div>
       </div>
+      <button @click="showTradeModal=true; tradeForm.symbol=selected||''" class="btn btn-ghost w-full mt-3 text-xs">+ 매매 기록 추가</button>
+    </div>
+
+    <!-- 매매 히스토리 -->
+    <div class="surface p-4 max-h-48 overflow-y-auto scroll-soft">
+      <div class="serif text-sm font-semibold text-ink-800 mb-2">최근 매매</div>
+      <template x-for="t in trades" :key="t.id">
+        <div class="flex justify-between text-xs py-1 border-b border-[#222]">
+          <span><span class="font-semibold" x-text="t.symbol"></span> <span :class="t.trade_type==='BUY'?'ticker-up':'ticker-down'" x-text="t.trade_type"></span></span>
+          <span class="font-mono" x-text="t.shares+'주 @'+t.price.toLocaleString()"></span>
+        </div>
+      </template>
+      <template x-if="trades.length===0"><div class="text-xs text-ink-500 text-center py-2">매매 기록이 없습니다</div></template>
     </div>
   </section>
 
@@ -406,16 +461,60 @@ function app(){
     form: { symbol:'', capital: '', capital_str: '', currency: 'USD', risk_pct: 1 },
     watch: [], ticks: {}, alerts: [], selected: null, report: null,
     loading: false, wsConnected: false, now: '',
-    krwRate: 1400, // 기본 환율 (API 실패 시 대비)
+    krwRate: 1400,
+    // 인증
+    user: JSON.parse(localStorage.getItem('toss_user') || 'null'),
+    authForm: { username: '', password: '' },
+    authError: '',
+    // 매매기록
+    showTradeModal: false,
+    tradeForm: { symbol: '', trade_type: 'BUY', shares: 0, price: 0, note: '' },
+    trades: [],
+    portfolio: { total_invested:0, total_returned:0, total_pnl:0, total_pnl_pct:0, trades_count:0 },
+
     init(){
-      this.refresh(); this.connect(); this.fetchExchangeRate();
+      if(this.user) { this.refresh(); this.loadTrades(); }
+      this.connect(); this.fetchExchangeRate();
       const tick = () => this.now = new Date().toLocaleString('ko-KR', { hour12:false });
       tick(); setInterval(tick, 1000);
     },
+    async doLogin() {
+      this.authError = '';
+      try {
+        const r = await fetch('/api/login', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(this.authForm) });
+        if(!r.ok) { this.authError = (await r.json()).detail; return; }
+        this.user = await r.json();
+        localStorage.setItem('toss_user', JSON.stringify(this.user));
+        this.refresh(); this.loadTrades();
+      } catch(e) { this.authError = '서버 연결 실패'; }
+    },
+    async doRegister() {
+      this.authError = '';
+      try {
+        const r = await fetch('/api/register', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(this.authForm) });
+        if(!r.ok) { this.authError = (await r.json()).detail; return; }
+        this.user = await r.json();
+        localStorage.setItem('toss_user', JSON.stringify(this.user));
+        this.refresh(); this.loadTrades();
+      } catch(e) { this.authError = '서버 연결 실패'; }
+    },
+    doLogout() { this.user = null; localStorage.removeItem('toss_user'); this.watch = []; this.trades = []; },
+    uid() { return this.user?.id || 0; },
     async refresh(){
-      this.watch = await (await fetch('/api/watchlist')).json();
+      this.watch = await (await fetch('/api/watchlist?user_id='+this.uid())).json();
       const a = await (await fetch('/api/alerts')).json();
       this.alerts = a.map(x => ({...x, ts: x.created_at}));
+    },
+    async loadTrades() {
+      this.trades = await (await fetch('/api/trades?user_id='+this.uid())).json();
+      this.portfolio = await (await fetch('/api/portfolio?user_id='+this.uid())).json();
+    },
+    async submitTrade() {
+      if(!this.tradeForm.shares || !this.tradeForm.price) return alert('수량과 가격을 입력하세요');
+      await fetch('/api/trades', { method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({...this.tradeForm, user_id: this.uid()}) });
+      this.showTradeModal = false;
+      this.loadTrades();
     },
     async fetchExchangeRate() {
       try {
@@ -500,7 +599,7 @@ function app(){
 
       await fetch('/api/watchlist', { method:'POST',
         headers:{'content-type':'application/json'},
-        body: JSON.stringify({...this.form, symbol: sym, capital: finalCapital})});
+        body: JSON.stringify({...this.form, symbol: sym, capital: finalCapital, user_id: this.uid()})});
       this.selected = sym;
       this.form.symbol = '';
       await this.refresh();
@@ -508,7 +607,7 @@ function app(){
     },
     async removeWatch(){
       if(!this.selected || !confirm(this.selected + ' 제거할까요?')) return;
-      await fetch('/api/watchlist/'+this.selected, {method:'DELETE'});
+      await fetch('/api/watchlist/'+this.selected+'?user_id='+this.uid(), {method:'DELETE'});
       this.selected = null; this.report = null;
       await this.refresh();
     },

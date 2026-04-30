@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -60,27 +60,50 @@ async def root():
     return FileResponse(STATIC / "index.html")
 
 
+# ─── Auth ──────────────────────────────────────────────────────────
+class AuthIn(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/register")
+async def api_register(body: AuthIn):
+    result = await db.register(body.username, body.password)
+    if not result:
+        raise HTTPException(409, "이미 존재하는 아이디입니다.")
+    return result
+
+
+@app.post("/api/login")
+async def api_login(body: AuthIn):
+    result = await db.login(body.username, body.password)
+    if not result:
+        raise HTTPException(401, "아이디 또는 비밀번호가 틀렸습니다.")
+    return result
+
+
 # ─── REST ──────────────────────────────────────────────────────────
 class WatchIn(BaseModel):
     symbol: str
     capital: float = Field(gt=0)
-    risk_pct: float = Field(default=1.0, gt=0, le=10)
+    risk_pct: float = Field(default=1.0, gt=0, le=100)
+    user_id: int = 0
 
 
 @app.get("/api/watchlist")
-async def api_list():
-    return await db.list_watch()
+async def api_list(user_id: int = 0):
+    return await db.list_watch(user_id)
 
 
 @app.post("/api/watchlist")
 async def api_add(item: WatchIn):
-    await db.upsert_watch(item.symbol, item.capital, item.risk_pct)
+    await db.upsert_watch(item.symbol, item.capital, item.risk_pct, item.user_id)
     return {"ok": True}
 
 
 @app.delete("/api/watchlist/{symbol}")
-async def api_del(symbol: str):
-    await db.remove_watch(symbol)
+async def api_del(symbol: str, user_id: int = 0):
+    await db.remove_watch(symbol, user_id)
     return {"ok": True}
 
 
@@ -111,6 +134,33 @@ async def api_analyze(symbol: str):
     await broadcast({"type": "analysis", "symbol": symbol})
     return {"snapshot": snap, "analysis": ana,
             "profile": profile, "news": news[:5], "sizing": sizing}
+
+
+# ─── 매매기록 ──────────────────────────────────────────────────────
+class TradeIn(BaseModel):
+    user_id: int
+    symbol: str
+    trade_type: str  # BUY, 익절, 손절, 청산
+    shares: float
+    price: float
+    note: str = ""
+
+
+@app.post("/api/trades")
+async def api_add_trade(body: TradeIn):
+    tid = await db.add_trade(body.user_id, body.symbol, body.trade_type,
+                             body.shares, body.price, body.note)
+    return {"ok": True, "trade_id": tid}
+
+
+@app.get("/api/trades")
+async def api_list_trades(user_id: int = 0):
+    return await db.list_trades(user_id)
+
+
+@app.get("/api/portfolio")
+async def api_portfolio(user_id: int = 0):
+    return await db.portfolio_summary(user_id)
 
 
 @app.get("/api/alerts")
