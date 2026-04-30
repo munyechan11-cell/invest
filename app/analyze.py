@@ -105,13 +105,14 @@ def analyze(symbol: str, snapshot: dict, news: list[dict],
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2000},
     }
 
-    # 429 에러 시 최대 3회 재시도 (5초, 10초, 20초 대기)
+    # 429 에러 시 최대 3회 재시도 (15초, 35초, 75초 대기)
     last_err = None
     for attempt in range(3):
         with httpx.Client(timeout=60) as c:
             r = c.post(f"{GEMINI_URL}?key={api_key}", json=body)
             if r.status_code == 429:
-                wait = 5 * (2 ** attempt)
+                wait = 15 * (2 ** attempt) + 5 # 20s, 35s, 65s 수준
+                log.warning(f"429 Too Many Requests. Retrying in {wait}s...")
                 _time.sleep(wait)
                 last_err = r
                 continue

@@ -217,8 +217,9 @@ async def list_all_watch() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-# ── 분석 계획 ─────────────────────────────────────────────
+# ── 분석 계획 및 캐시 ─────────────────────────────────────────────
 async def save_plan(symbol: str, payload: dict):
+    """분석 결과를 저장하고 캐시 타임스탬프를 갱신"""
     c = await get_db()
     await c.execute(
         "INSERT INTO plans(symbol,payload,updated_at) VALUES(?,?,?) "
@@ -228,12 +229,21 @@ async def save_plan(symbol: str, payload: dict):
     await c.commit()
 
 
-async def get_plan(symbol: str) -> dict | None:
+async def get_plan(symbol: str, max_age_sec: int = 600) -> dict | None:
+    """최근 분석 결과가 있으면 반환 (캐시 기능)"""
     c = await get_db()
     row = await (await c.execute(
-        "SELECT payload FROM plans WHERE symbol=?", (symbol.upper(),)
+        "SELECT payload, updated_at FROM plans WHERE symbol=?", (symbol.upper(),)
     )).fetchone()
-    return json.loads(row[0]) if row else None
+    if not row:
+        return None
+    
+    payload, updated_at = row
+    # 설정한 시간(기본 10분) 이내의 데이터만 유효한 캐시로 간주
+    if time.time() - updated_at > max_age_sec:
+        return None
+        
+    return json.loads(payload)
 
 
 async def all_plans() -> dict[str, dict]:

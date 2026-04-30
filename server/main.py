@@ -155,30 +155,54 @@ async def api_del(symbol: str, user: dict = Depends(get_current_user)):
 @app.post("/api/analyze/{symbol}")
 async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
     symbol = symbol.upper()
-    try:
+    
+    # 1. 캐시 확인 (10분 이내 데이터가 있으면 AI 호출 생략하여 429 방지)
+    cached = await db.get_plan(symbol, max_age_sec=600)
+    if cached:
+        log.info(f"Using cached analysis for {symbol}")
+        # 시세는 최신 정보를 위해 새로 가져옴
         snap = await asyncio.to_thread(get_snapshot, symbol)
-        news, profile, flow = await asyncio.gather(
-            fetch_news(symbol), fetch_profile(symbol), fetch_market_flow(symbol)
+        await broadcast({"type": "analysis", "symbol": symbol, "user_id": user["id"]})
+        return {"snapshot": snap, "analysis": cached, "cached": True}
+
+    try:
+        # 2. 병렬 데이터 수집 (속도 최적화: 4가지 소스를 동시에 호출)
+        log.info(f"Fetching data in parallel for {symbol}")
+        snap_task = asyncio.to_thread(get_snapshot, symbol)
+        news_task = alerts_mod.fetch_news(symbol) # async function
+        profile_task = alerts_mod.fetch_profile(symbol) # async function
+        flow_task = alerts_mod.fetch_market_flow(symbol) # async function
+        
+        # get_snapshot은 동기 함수이므로 to_thread 활용, 나머지는 async
+        snap, news, profile, flow = await asyncio.gather(
+            snap_task, news_task, profile_task, flow_task
         )
+        
+        # 3. AI 분석 수행 (동기 함수이므로 thread에서 실행)
         ana = await asyncio.to_thread(analyze, symbol, snap, news, flow, profile)
+        
+        # 결과 저장 (캐싱)
+        await db.save_plan(symbol, ana)
+
+        # 사이징 미리 계산
+        watch = next((w for w in await db.list_watch(user["id"]) if w["symbol"] == symbol), None)
+        sizing = None
+        if watch and ana.get("reentry_or_stop_price"):
+            s = shares_for(watch["capital"], watch["risk_pct"],
+                           float(ana.get("target_price") or snap["quote"]["price"]),
+                           float(ana["reentry_or_stop_price"]))
+            sizing = {**s, "splits": split_plan(s["shares"])}
+
+        await broadcast({"type": "analysis", "symbol": symbol, "user_id": user["id"]})
+        return {"snapshot": snap, "analysis": ana,
+                "profile": profile, "news": news[:5], "sizing": sizing, "cached": False}
+                
     except Exception as e:
-        log.exception("analyze failed")
-        raise HTTPException(500, str(e))
-
-    await db.save_plan(symbol, ana)
-
-    # 사이징 미리 계산해서 같이 반환
-    watch = next((w for w in await db.list_watch(user["id"]) if w["symbol"] == symbol), None)
-    sizing = None
-    if watch and ana.get("reentry_or_stop_price"):
-        s = shares_for(watch["capital"], watch["risk_pct"],
-                       float(ana.get("target_price") or snap["quote"]["price"]),
-                       float(ana["reentry_or_stop_price"]))
-        sizing = {**s, "splits": split_plan(s["shares"])}
-
-    await broadcast({"type": "analysis", "symbol": symbol, "user_id": user["id"]})
-    return {"snapshot": snap, "analysis": ana,
-            "profile": profile, "news": news[:5], "sizing": sizing}
+        log.error(f"Analyze error for {symbol}: {e}")
+        # 429 에러 발생 시 사용자에게 친절한 안내
+        if "429" in str(e):
+            raise HTTPException(429, "분석 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요 (캐시가 생성될 예정입니다).")
+        raise HTTPException(500, f"분석 중 오류 발생: {str(e)}")
 
 
 # ─── 매매기록 ──────────────────────────────────────────────────────
