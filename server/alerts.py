@@ -2,8 +2,8 @@
 from __future__ import annotations
 import asyncio, time, logging
 from app.market import fetch_realtime_quote
-from . import db
-from .sizing import shares_for, split_plan
+from server import db
+from server.sizing import shares_for, split_plan
 
 log = logging.getLogger("alerts")
 

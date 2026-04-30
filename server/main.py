@@ -14,8 +14,8 @@ from pydantic import BaseModel, Field
 from app.market import get_snapshot
 from app.news import fetch_news, fetch_profile, fetch_market_flow
 from app.analyze import analyze
-from . import db, alerts as alerts_mod
-from .sizing import shares_for, split_plan
+from server import db, alerts as alerts_mod
+from server.sizing import shares_for, split_plan
 
 security = HTTPBearer()
 
