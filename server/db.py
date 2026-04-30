@@ -4,6 +4,24 @@ import aiosqlite, json, time, hashlib, secrets
 from pathlib import Path
 
 DB = Path(__file__).resolve().parent.parent / "toss.db"
+_conn: aiosqlite.Connection | None = None
+
+
+def _hash(pw: str) -> str:
+    """PBKDF2 SHA256 해싱 - 단순 SHA256보다 훨씬 안전"""
+    import hashlib, binascii
+    salt = b"toss_quant_platform_salt"  # 고정 솔트 (유저별 솔트가 더 좋으나 우선 업그레이드)
+    dk = hashlib.pbkdf2_hmac('sha256', pw.encode(), salt, 100000)
+    return binascii.hexlify(dk).decode()
+
+
+async def get_db() -> aiosqlite.Connection:
+    global _conn
+    if _conn is None:
+        _conn = await aiosqlite.connect(DB)
+        _conn.row_factory = aiosqlite.Row
+    return _conn
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -48,187 +66,194 @@ CREATE TABLE IF NOT EXISTS trades (
 """
 
 
-def _hash(pw: str) -> str:
-    return hashlib.sha256(pw.encode()).hexdigest()
-
-
 ADMIN_USERNAME = "munyechan11"
 ADMIN_PASSWORD = "m!4041317"
 
 
 async def init():
-    async with aiosqlite.connect(DB) as c:
-        await c.executescript(SCHEMA)
-        # 마이그레이션
-        for col, table, default in [
-            ("user_id", "watchlist", "INTEGER NOT NULL DEFAULT 0"),
-            ("display_name", "users", "TEXT NOT NULL DEFAULT ''"),
-            ("is_admin", "users", "INTEGER NOT NULL DEFAULT 0"),
-        ]:
-            try:
-                await c.execute(f"SELECT {col} FROM {table} LIMIT 1")
-            except Exception:
-                await c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {default}")
-        # 관리자 계정 자동 생성
-        row = await (await c.execute("SELECT id FROM users WHERE username=?", (ADMIN_USERNAME,))).fetchone()
-        if not row:
-            await c.execute(
-                "INSERT INTO users(username, display_name, pw_hash, is_admin, created_at) VALUES(?,?,?,?,?)",
-                (ADMIN_USERNAME, "관리자", _hash(ADMIN_PASSWORD), 1, time.time()),
-            )
-        await c.commit()
+    c = await get_db()
+    await c.executescript(SCHEMA)
+    # 마이그레이션
+    for col, table, default in [
+        ("user_id", "watchlist", "INTEGER NOT NULL DEFAULT 0"),
+        ("display_name", "users", "TEXT NOT NULL DEFAULT ''"),
+        ("is_admin", "users", "INTEGER NOT NULL DEFAULT 0"),
+    ]:
+        try:
+            await c.execute(f"SELECT {col} FROM {table} LIMIT 1")
+        except Exception:
+            await c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {default}")
+    
+    # 관리자 계정 자동 생성
+    row = await (await c.execute("SELECT id FROM users WHERE username=?", (ADMIN_USERNAME,))).fetchone()
+    if not row:
+        await c.execute(
+            "INSERT INTO users(username, display_name, pw_hash, is_admin, created_at) VALUES(?,?,?,?,?)",
+            (ADMIN_USERNAME, "관리자", _hash(ADMIN_PASSWORD), 1, time.time()),
+        )
+    await c.commit()
 
 
 # ── 유저 ──────────────────────────────────────────────────
 async def check_username(username: str) -> bool:
     """True면 이미 존재하는 아이디."""
-    async with aiosqlite.connect(DB) as c:
-        row = await (await c.execute(
-            "SELECT id FROM users WHERE username=?", (username,)
-        )).fetchone()
-        return row is not None
+    c = await get_db()
+    row = await (await c.execute(
+        "SELECT id FROM users WHERE username=?", (username,)
+    )).fetchone()
+    return row is not None
 
 
 async def register(username: str, password: str, display_name: str = "") -> dict | None:
-    async with aiosqlite.connect(DB) as c:
-        existing = await (await c.execute(
-            "SELECT id FROM users WHERE username=?", (username,)
-        )).fetchone()
-        if existing:
-            return None
-        is_admin = 1 if username == ADMIN_USERNAME else 0
-        cursor = await c.execute(
-            "INSERT INTO users(username, display_name, pw_hash, is_admin, created_at) VALUES(?,?,?,?,?)",
-            (username, display_name, _hash(password), is_admin, time.time()),
-        )
-        await c.commit()
-        return {"id": cursor.lastrowid, "username": username, "display_name": display_name, "is_admin": is_admin}
+    c = await get_db()
+    existing = await (await c.execute(
+        "SELECT id FROM users WHERE username=?", (username,)
+    )).fetchone()
+    if existing:
+        return None
+    is_admin = 1 if username == ADMIN_USERNAME else 0
+    cursor = await c.execute(
+        "INSERT INTO users(username, display_name, pw_hash, is_admin, created_at) VALUES(?,?,?,?,?)",
+        (username, display_name, _hash(password), is_admin, time.time()),
+    )
+    await c.commit()
+    return {"id": cursor.lastrowid, "username": username, "display_name": display_name, "is_admin": is_admin}
 
 
 async def login(username: str, password: str) -> dict | None:
-    async with aiosqlite.connect(DB) as c:
-        c.row_factory = aiosqlite.Row
-        row = await (await c.execute(
-            "SELECT * FROM users WHERE username=? AND pw_hash=?",
-            (username, _hash(password)),
-        )).fetchone()
-        if not row:
-            return None
-        return {"id": row["id"], "username": row["username"],
-                "display_name": row["display_name"], "is_admin": row["is_admin"]}
+    c = await get_db()
+    row = await (await c.execute(
+        "SELECT * FROM users WHERE username=? AND pw_hash=?",
+        (username, _hash(password)),
+    )).fetchone()
+    if not row:
+        return None
+    return {"id": row["id"], "username": row["username"],
+            "display_name": row["display_name"], "is_admin": row["is_admin"]}
 
 
 # ── 관리자 ────────────────────────────────────────────────
 async def list_users() -> list[dict]:
-    async with aiosqlite.connect(DB) as c:
-        c.row_factory = aiosqlite.Row
-        rows = await (await c.execute(
-            "SELECT id, username, display_name, is_admin, created_at FROM users ORDER BY id"
-        )).fetchall()
-        return [dict(r) for r in rows]
+    c = await get_db()
+    rows = await (await c.execute(
+        "SELECT id, username, display_name, is_admin, created_at FROM users ORDER BY id"
+    )).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_user_by_id(user_id: int) -> dict | None:
+    c = await get_db()
+    row = await (await c.execute(
+        "SELECT * FROM users WHERE id=?", (user_id,)
+    )).fetchone()
+    return dict(row) if row else None
 
 
 async def delete_user(user_id: int) -> bool:
-    async with aiosqlite.connect(DB) as c:
-        await c.execute("DELETE FROM users WHERE id=? AND is_admin=0", (user_id,))
-        await c.execute("DELETE FROM watchlist WHERE user_id=?", (user_id,))
-        await c.execute("DELETE FROM trades WHERE user_id=?", (user_id,))
-        await c.commit()
-        return True
+    c = await get_db()
+    await c.execute("DELETE FROM users WHERE id=? AND is_admin=0", (user_id,))
+    await c.execute("DELETE FROM watchlist WHERE user_id=?", (user_id,))
+    await c.execute("DELETE FROM trades WHERE user_id=?", (user_id,))
+    await c.commit()
+    return True
 
 
 # ── 워치리스트 ────────────────────────────────────────────
 async def upsert_watch(symbol: str, capital: float, risk_pct: float, user_id: int = 0):
-    async with aiosqlite.connect(DB) as c:
-        await c.execute(
-            "INSERT INTO watchlist(symbol,capital,risk_pct,added_at,user_id) VALUES(?,?,?,?,?) "
-            "ON CONFLICT(symbol,user_id) DO UPDATE SET capital=excluded.capital, risk_pct=excluded.risk_pct",
-            (symbol.upper(), capital, risk_pct, time.time(), user_id),
-        )
-        await c.commit()
+    c = await get_db()
+    await c.execute(
+        "INSERT INTO watchlist(symbol,capital,risk_pct,added_at,user_id) VALUES(?,?,?,?,?) "
+        "ON CONFLICT(symbol,user_id) DO UPDATE SET capital=excluded.capital, risk_pct=excluded.risk_pct",
+        (symbol.upper(), capital, risk_pct, time.time(), user_id),
+    )
+    await c.commit()
 
 
 async def remove_watch(symbol: str, user_id: int = 0):
-    async with aiosqlite.connect(DB) as c:
-        await c.execute("DELETE FROM watchlist WHERE symbol=? AND user_id=?", (symbol.upper(), user_id))
-        await c.commit()
+    c = await get_db()
+    await c.execute("DELETE FROM watchlist WHERE symbol=? AND user_id=?", (symbol.upper(), user_id))
+    await c.commit()
 
 
 async def list_watch(user_id: int = 0) -> list[dict]:
-    async with aiosqlite.connect(DB) as c:
-        c.row_factory = aiosqlite.Row
-        rows = await (await c.execute(
-            "SELECT * FROM watchlist WHERE user_id=? ORDER BY added_at DESC", (user_id,)
-        )).fetchall()
-        return [dict(r) for r in rows]
+    c = await get_db()
+    rows = await (await c.execute(
+        "SELECT * FROM watchlist WHERE user_id=? ORDER BY added_at DESC", (user_id,)
+    )).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def list_all_watch() -> list[dict]:
+    """모든 유저의 워치리스트 항목을 가져옴 (알림 워커용)"""
+    c = await get_db()
+    rows = await (await c.execute("SELECT * FROM watchlist")).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ── 분석 계획 ─────────────────────────────────────────────
 async def save_plan(symbol: str, payload: dict):
-    async with aiosqlite.connect(DB) as c:
-        await c.execute(
-            "INSERT INTO plans(symbol,payload,updated_at) VALUES(?,?,?) "
-            "ON CONFLICT(symbol) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at",
-            (symbol.upper(), json.dumps(payload, ensure_ascii=False), time.time()),
-        )
-        await c.commit()
+    c = await get_db()
+    await c.execute(
+        "INSERT INTO plans(symbol,payload,updated_at) VALUES(?,?,?) "
+        "ON CONFLICT(symbol) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at",
+        (symbol.upper(), json.dumps(payload, ensure_ascii=False), time.time()),
+    )
+    await c.commit()
 
 
 async def get_plan(symbol: str) -> dict | None:
-    async with aiosqlite.connect(DB) as c:
-        row = await (await c.execute(
-            "SELECT payload FROM plans WHERE symbol=?", (symbol.upper(),)
-        )).fetchone()
-        return json.loads(row[0]) if row else None
+    c = await get_db()
+    row = await (await c.execute(
+        "SELECT payload FROM plans WHERE symbol=?", (symbol.upper(),)
+    )).fetchone()
+    return json.loads(row[0]) if row else None
 
 
 async def all_plans() -> dict[str, dict]:
-    async with aiosqlite.connect(DB) as c:
-        rows = await (await c.execute("SELECT symbol, payload FROM plans")).fetchall()
-        return {s: json.loads(p) for s, p in rows}
+    c = await get_db()
+    rows = await (await c.execute("SELECT symbol, payload FROM plans")).fetchall()
+    return {s: json.loads(p) for s, p in rows}
 
 
 # ── 알림 ──────────────────────────────────────────────────
 async def add_alert(symbol: str, kind: str, message: str, price: float | None):
-    async with aiosqlite.connect(DB) as c:
-        await c.execute(
-            "INSERT INTO alerts(symbol,kind,message,price,created_at) VALUES(?,?,?,?,?)",
-            (symbol.upper(), kind, message, price, time.time()),
-        )
-        await c.commit()
+    c = await get_db()
+    await c.execute(
+        "INSERT INTO alerts(symbol,kind,message,price,created_at) VALUES(?,?,?,?,?)",
+        (symbol.upper(), kind, message, price, time.time()),
+    )
+    await c.commit()
 
 
 async def recent_alerts(limit: int = 50) -> list[dict]:
-    async with aiosqlite.connect(DB) as c:
-        c.row_factory = aiosqlite.Row
-        rows = await (await c.execute(
-            "SELECT * FROM alerts ORDER BY id DESC LIMIT ?", (limit,)
-        )).fetchall()
-        return [dict(r) for r in rows]
+    c = await get_db()
+    rows = await (await c.execute(
+        "SELECT * FROM alerts ORDER BY id DESC LIMIT ?", (limit,)
+    )).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ── 매매기록 ──────────────────────────────────────────────
 async def add_trade(user_id: int, symbol: str, trade_type: str,
                     shares: float, price: float, note: str = "") -> int:
     """매매기록 추가. trade_type: BUY, 익절, 손절, 청산"""
-    async with aiosqlite.connect(DB) as c:
-        await c.execute(
-            "INSERT INTO trades(user_id,symbol,trade_type,shares,price,note,created_at) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (user_id, symbol.upper(), trade_type, shares, price, note, time.time()),
-        )
-        await c.commit()
-        tid = (await (await c.execute("SELECT last_insert_rowid()")).fetchone())[0]
-        return tid
+    c = await get_db()
+    await c.execute(
+        "INSERT INTO trades(user_id,symbol,trade_type,shares,price,note,created_at) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (user_id, symbol.upper(), trade_type, shares, price, note, time.time()),
+    )
+    await c.commit()
+    tid = (await (await c.execute("SELECT last_insert_rowid()")).fetchone())[0]
+    return tid
 
 
 async def list_trades(user_id: int) -> list[dict]:
-    async with aiosqlite.connect(DB) as c:
-        c.row_factory = aiosqlite.Row
-        rows = await (await c.execute(
-            "SELECT * FROM trades WHERE user_id=? ORDER BY created_at DESC", (user_id,)
-        )).fetchall()
-        return [dict(r) for r in rows]
+    c = await get_db()
+    rows = await (await c.execute(
+        "SELECT * FROM trades WHERE user_id=? ORDER BY created_at DESC", (user_id,)
+    )).fetchall()
+    return [dict(r) for r in rows]
 
 
 async def portfolio_summary(user_id: int) -> dict:

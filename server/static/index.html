@@ -621,28 +621,32 @@ function app(){
     },
     doLogout() { this.user = null; localStorage.removeItem('toss_user'); this.watch = []; this.trades = []; },
     async openAdmin() {
-      this.adminUsers = await (await fetch('/api/admin/users')).json();
-      this.showAdminPanel = true;
+      const r = await fetch('/api/admin/users', { headers: {'X-User-Id': this.uid()} });
+      if(r.ok) { this.adminUsers = await r.json(); this.showAdminPanel = true; }
+      else { alert('권한이 없습니다.'); }
     },
     async deleteUser(uid) {
       if(!confirm('이 회원을 삭제하시겠습니까?')) return;
-      await fetch('/api/admin/users/'+uid, { method:'DELETE' });
-      this.adminUsers = await (await fetch('/api/admin/users')).json();
+      await fetch('/api/admin/users/'+uid, { method:'DELETE', headers: {'X-User-Id': this.uid()} });
+      this.openAdmin();
     },
     uid() { return this.user?.id || 0; },
     async refresh(){
-      this.watch = await (await fetch('/api/watchlist?user_id='+this.uid())).json();
-      const a = await (await fetch('/api/alerts')).json();
+      this.watch = await (await fetch('/api/watchlist?user_id='+this.uid(), { headers: {'X-User-Id': this.uid()} })).json();
+      const a = await (await fetch('/api/alerts', { headers: {'X-User-Id': this.uid()} })).json();
       this.alerts = a.map(x => ({...x, ts: x.created_at}));
     },
     async loadTrades() {
-      this.trades = await (await fetch('/api/trades?user_id='+this.uid())).json();
-      this.portfolio = await (await fetch('/api/portfolio?user_id='+this.uid())).json();
+      this.trades = await (await fetch('/api/trades?user_id='+this.uid(), { headers: {'X-User-Id': this.uid()} })).json();
+      this.portfolio = await (await fetch('/api/portfolio?user_id='+this.uid(), { headers: {'X-User-Id': this.uid()} })).json();
     },
     async submitTrade() {
       if(!this.tradeForm.shares || !this.tradeForm.price) return alert('수량과 가격을 입력하세요');
-      await fetch('/api/trades', { method:'POST', headers:{'content-type':'application/json'},
-        body: JSON.stringify({...this.tradeForm, user_id: this.uid()}) });
+      await fetch('/api/trades', { 
+        method:'POST', 
+        headers:{'content-type':'application/json', 'X-User-Id': this.uid()},
+        body: JSON.stringify({...this.tradeForm, user_id: this.uid()}) 
+      });
       this.showTradeModal = false;
       this.loadTrades();
     },
@@ -728,7 +732,7 @@ function app(){
       }
 
       await fetch('/api/watchlist', { method:'POST',
-        headers:{'content-type':'application/json'},
+        headers:{'content-type':'application/json', 'X-User-Id': this.uid()},
         body: JSON.stringify({...this.form, symbol: sym, capital: finalCapital, user_id: this.uid()})});
       this.selected = sym;
       this.form.symbol = '';
@@ -737,7 +741,10 @@ function app(){
     },
     async removeWatch(){
       if(!this.selected || !confirm(this.selected + ' 제거할까요?')) return;
-      await fetch('/api/watchlist/'+this.selected+'?user_id='+this.uid(), {method:'DELETE'});
+      await fetch('/api/watchlist/'+this.selected+'?user_id='+this.uid(), {
+        method:'DELETE',
+        headers: {'X-User-Id': this.uid()}
+      });
       this.selected = null; this.report = null;
       await this.refresh();
     },
@@ -745,7 +752,10 @@ function app(){
       if(!this.selected) return;
       this.loading = true;
       try{
-        const r = await fetch('/api/analyze/'+this.selected, {method:'POST'});
+        const r = await fetch('/api/analyze/'+this.selected, {
+          method:'POST',
+          headers: {'X-User-Id': this.uid()}
+        });
         if(!r.ok) throw new Error(await r.text());
         this.report = await r.json();
       }catch(e){ alert('분석 실패: '+e.message); }

@@ -94,13 +94,26 @@ async def api_login(body: AuthIn):
 
 
 # ─── Admin ─────────────────────────────────────────────────────────
+async def check_admin(request: Request):
+    """간이 관리자 권한 확인 (실제 운영시엔 JWT 추천)"""
+    uid = request.headers.get("X-User-Id")
+    if not uid:
+        raise HTTPException(401, "로그인이 필요합니다.")
+    user = await db.get_user_by_id(int(uid))
+    if not user or not user.get("is_admin"):
+        raise HTTPException(403, "관리자 권한이 없습니다.")
+    return user
+
+
 @app.get("/api/admin/users")
-async def api_admin_users():
+async def api_admin_users(request: Request):
+    await check_admin(request)
     return await db.list_users()
 
 
 @app.delete("/api/admin/users/{user_id}")
-async def api_admin_del_user(user_id: int):
+async def api_admin_del_user(user_id: int, request: Request):
+    await check_admin(request)
     await db.delete_user(user_id)
     return {"ok": True}
 

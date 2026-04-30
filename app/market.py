@@ -119,27 +119,35 @@ def get_snapshot(symbol: str) -> dict:
     end = datetime.now(timezone.utc)
 
     # 분봉(최근 4일) - 일중 VWAP
-    intraday = cli.get_stock_bars(StockBarsRequest(
+    res = cli.get_stock_bars(StockBarsRequest(
         symbol_or_symbols=symbol,
         timeframe=TimeFrame.Minute,
         start=end - timedelta(days=4), end=end,
         limit=2000,
         feed='iex',
-    )).df
-    if isinstance(intraday.index, pd.MultiIndex):
-        intraday = intraday.xs(symbol, level=0)
-    intraday5 = intraday.resample("5min").agg({
-        "open": "first", "high": "max", "low": "min",
-        "close": "last", "volume": "sum",
-    }).dropna()
+    ))
+    if not res.data or symbol not in res.data or len(res.data[symbol]) == 0:
+        intraday5 = pd.DataFrame()
+    else:
+        intraday = res.df
+        if isinstance(intraday.index, pd.MultiIndex):
+            intraday = intraday.xs(symbol, level=0)
+        intraday5 = intraday.resample("5min").agg({
+            "open": "first", "high": "max", "low": "min",
+            "close": "last", "volume": "sum",
+        }).dropna()
 
     # 일봉(120일)
-    daily = cli.get_stock_bars(StockBarsRequest(
+    res_daily = cli.get_stock_bars(StockBarsRequest(
         symbol_or_symbols=symbol,
         timeframe=TimeFrame.Day,
         start=end - timedelta(days=160), end=end,
         feed='iex',
-    )).df
+    ))
+    if not res_daily.data or symbol not in res_daily.data or len(res_daily.data[symbol]) == 0:
+        raise RuntimeError(f"Daily data unavailable for {symbol}")
+    
+    daily = res_daily.df
     if isinstance(daily.index, pd.MultiIndex):
         daily = daily.xs(symbol, level=0)
 
@@ -147,11 +155,12 @@ def get_snapshot(symbol: str) -> dict:
     if len(today_bars):
         last_date = today_bars.index[-1].date()
         today_bars = today_bars[today_bars.index.date == last_date]
+    
     vwap = _vwap(today_bars) if len(today_bars) >= 5 else float(daily["close"].iloc[-1])
 
-    rsi14 = _rsi(daily["close"], 14)
-    macd, sig, hist = _macd(daily["close"])
-    ma20, bb_up, bb_dn = _bbands(daily["close"])
+    rsi14 = _rsi(daily["close"], 14) if len(daily) >= 14 else 50.0
+    macd, sig, hist = _macd(daily["close"]) if len(daily) >= 26 else (0, 0, 0)
+    ma20, bb_up, bb_dn = _bbands(daily["close"]) if len(daily) >= 20 else (float(daily["close"].iloc[-1]), 0, 0)
 
     today_volume = int(today_bars["volume"].sum()) if len(today_bars) else int(daily["volume"].iloc[-1])
     avg_vol_20d = float(daily["volume"].tail(20).mean())
