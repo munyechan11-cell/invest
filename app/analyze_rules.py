@@ -102,19 +102,24 @@ def analyze_rules(symbol: str, snapshot: dict, news: list[dict],
     else:
         position, emoji = "관망", "⚪"
 
-    rnd = (lambda v: int(round(v))) if is_kr else (lambda v: round(v, 2))
-
-    risk = abs(price - stop)
-    reward = abs(target - price)
-    r_mult = f"1:{reward/risk:.1f}" if risk > 0.0001 else "1:1.0"
-
-    # ── 보유기간 추정
-    if abs(score) >= 45 and rv >= 1.5:
-        horizon, hreason = "초단타", "강한 모멘텀 + 거래량 급증으로 1~2시간 내 결판"
-    elif abs(score) >= 18:
-        horizon, hreason = "단기", "기술적 시그널이 1~3일 안에 소화될 구간"
+    # ── 액션 플랜 (초단타 + 사용자 리스크 연동 설정)
+    if position.endswith("매수"):
+        target = price * (1 + 0.025 * risk_multiplier)
+        stop = price * (1 - 0.015 * risk_multiplier)
+        sr_label = "손절가 (1일 이내)"
+    elif position.endswith("매도"):
+        target = price * (1 - 0.025 * risk_multiplier)
+        stop = price * (1 + 0.015 * risk_multiplier)
+        sr_label = "손절가 (1일 이내)"
     else:
-        horizon, hreason = "스윙", "방향성 약해 1주 추세 확인 권장"
+        target = price * 1.03
+        stop = price * 0.97
+        sr_label = "재진입가"
+
+    rnd = (lambda v: int(round(v))) if is_kr else (lambda v: round(v, 2))
+    risk_val = abs(price - stop)
+    reward_val = abs(target - price)
+    r_mult = f"1:{reward_val/risk_val:.1f}" if risk_val > 0.01 else "1:1.5"
 
     # ── 수급 라벨 (한국은 실제 데이터, 미국은 RV로 추론)
     if is_kr:
@@ -131,26 +136,6 @@ def analyze_rules(symbol: str, snapshot: dict, news: list[dict],
     market_ctx = (f"최신 헤드라인: {' / '.join(headlines)}. 기술적 신호 우선 판단."
                   if headlines else
                   "뉴스 데이터 부족 — 순수 기술 분석 기반. 24h 내 변동성 주의.")
-
-    confidence = min(95, max(20, int(40 + abs(score) * 0.6)))
-
-    # ── 액션 플랜 (초단타 + 사용자 리스크 연동 설정)
-    if position.endswith("매수"):
-        target = price * (1 + 0.025 * risk_multiplier)
-        stop = price * (1 - 0.015 * risk_multiplier)
-        sr_label = "손절가 (1일 이내)"
-    elif position.endswith("매도"):
-        target = price * (1 - 0.025 * risk_multiplier)
-        stop = price * (1 + 0.015 * risk_multiplier)
-        sr_label = "손절가 (1일 이내)"
-    else:
-        target = price * 1.03
-        stop = price * 0.97
-        sr_label = "재진입가"
-
-    risk_val = abs(price - stop)
-    reward_val = abs(target - price)
-    r_mult = f"1:{reward_val/risk_val:.1f}" if risk_val > 0.01 else "1:1.5"
 
     return {
         "engine": "rules",
