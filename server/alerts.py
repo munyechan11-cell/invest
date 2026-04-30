@@ -70,31 +70,42 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
 
 
 async def worker(broadcast):
-    """단일 background task. 모든 유저의 워치리스트 순회하며 폴링."""
-    log.info("alert worker started")
+    """최적화된 병렬 폴링 워커. 세마포어를 사용하여 속도와 안정성 동시 확보."""
+    log.info("alert worker started (concurrent mode)")
+    sem = asyncio.Semaphore(5) # 동시 실행 5개로 제한 (Rate Limit 고려)
+
+    async def poll_one(sym, items_group, plan):
+        async with sem:
+            try:
+                q = await asyncio.to_thread(fetch_realtime_quote, sym)
+                # 틱 송출
+                await broadcast({"type": "tick", "symbol": sym, "price": q.price,
+                                 "change_pct": q.change_pct, "ts": q.ts})
+                
+                # 각 유저별 조건 평가
+                for it in items_group:
+                    await _evaluate_item(it, plan, q, broadcast)
+            except Exception as e:
+                log.warning(f"polling error {sym}: {e}")
+
     while True:
         try:
             items = await db.list_all_watch()
             plans = await db.all_plans()
             
-            # 심볼별로 그룹화하여 시세 조회 최소화
-            symbols = list(set(it["symbol"] for it in items))
-            quotes = {}
-            for sym in symbols:
-                try:
-                    q = await asyncio.to_thread(fetch_realtime_quote, sym)
-                    quotes[sym] = q
-                    # 틱 송출 (모든 유저 대상)
-                    await broadcast({"type": "tick", "symbol": sym, "price": q.price,
-                                     "change_pct": q.change_pct, "ts": q.ts})
-                except Exception as e:
-                    log.warning("quote fail %s: %s", sym, e)
-                await asyncio.sleep(0.2) # Rate limit cushion
-
+            # 심볼별로 유저 그룹화
+            from collections import defaultdict
+            grouped = defaultdict(list)
             for it in items:
-                sym = it["symbol"]
-                if sym in quotes and sym in plans:
-                    await _evaluate_item(it, plans[sym], quotes[sym], broadcast)
+                grouped[it["symbol"]].append(it)
+
+            tasks = []
+            for sym, user_items in grouped.items():
+                if sym in plans:
+                    tasks.append(poll_one(sym, user_items, plans[sym]))
+            
+            if tasks:
+                await asyncio.gather(*tasks)
             
         except Exception:
             log.exception("worker loop error")

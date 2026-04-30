@@ -591,6 +591,13 @@ function app(){
       const tick = () => this.now = new Date().toLocaleString('ko-KR', { hour12:false });
       tick(); setInterval(tick, 1000);
     },
+    async api(url, opt={}){
+      const headers = opt.headers || {};
+      if(this.user?.access_token) headers['Authorization'] = `Bearer ${this.user.access_token}`;
+      const r = await fetch(url, { ...opt, headers });
+      if(r.status === 401) { this.doLogout(); throw new Error('세션이 만료되었습니다.'); }
+      return r;
+    },
     async checkId() {
       if(!this.authForm.username) { this.idCheckMsg = '아이디를 입력하세요'; this.idAvailable = false; return; }
       const r = await fetch('/api/check-username', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({username: this.authForm.username}) });
@@ -602,8 +609,9 @@ function app(){
       this.authError = '';
       try {
         const r = await fetch('/api/login', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(this.authForm) });
-        if(!r.ok) { this.authError = (await r.json()).detail; return; }
-        this.user = await r.json();
+        const d = await r.json();
+        if(!r.ok) { this.authError = d.detail; return; }
+        this.user = d;
         localStorage.setItem('toss_user', JSON.stringify(this.user));
         this.refresh(); this.loadTrades();
       } catch(e) { this.authError = '서버 연결 실패'; }
@@ -612,8 +620,9 @@ function app(){
       this.authError = '';
       try {
         const r = await fetch('/api/register', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(this.authForm) });
-        if(!r.ok) { this.authError = (await r.json()).detail; return; }
-        this.user = await r.json();
+        const d = await r.json();
+        if(!r.ok) { this.authError = d.detail; return; }
+        this.user = d;
         localStorage.setItem('toss_user', JSON.stringify(this.user));
         this.authMode = 'login'; this.regStep = 1;
         this.refresh(); this.loadTrades();
@@ -621,31 +630,41 @@ function app(){
     },
     doLogout() { this.user = null; localStorage.removeItem('toss_user'); this.watch = []; this.trades = []; },
     async openAdmin() {
-      const r = await fetch('/api/admin/users', { headers: {'X-User-Id': this.uid()} });
+      const r = await this.api('/api/admin/users');
       if(r.ok) { this.adminUsers = await r.json(); this.showAdminPanel = true; }
       else { alert('권한이 없습니다.'); }
     },
     async deleteUser(uid) {
       if(!confirm('이 회원을 삭제하시겠습니까?')) return;
-      await fetch('/api/admin/users/'+uid, { method:'DELETE', headers: {'X-User-Id': this.uid()} });
+      await this.api('/api/admin/users/'+uid, { method:'DELETE' });
       this.openAdmin();
     },
     uid() { return this.user?.id || 0; },
     async refresh(){
-      this.watch = await (await fetch('/api/watchlist?user_id='+this.uid(), { headers: {'X-User-Id': this.uid()} })).json();
-      const a = await (await fetch('/api/alerts', { headers: {'X-User-Id': this.uid()} })).json();
-      this.alerts = a.map(x => ({...x, ts: x.created_at}));
+      try {
+        const [r1, r2] = await Promise.all([
+          this.api('/api/watchlist'),
+          this.api('/api/alerts')
+        ]);
+        this.watch = await r1.json();
+        const a = await r2.json();
+        this.alerts = a.map(x => ({...x, ts: x.created_at}));
+      } catch(e) { console.error(e); }
     },
     async loadTrades() {
-      this.trades = await (await fetch('/api/trades?user_id='+this.uid(), { headers: {'X-User-Id': this.uid()} })).json();
-      this.portfolio = await (await fetch('/api/portfolio?user_id='+this.uid(), { headers: {'X-User-Id': this.uid()} })).json();
+      const [r1, r2] = await Promise.all([
+        this.api('/api/trades'),
+        this.api('/api/portfolio')
+      ]);
+      this.trades = await r1.json();
+      this.portfolio = await r2.json();
     },
     async submitTrade() {
       if(!this.tradeForm.shares || !this.tradeForm.price) return alert('수량과 가격을 입력하세요');
-      await fetch('/api/trades', { 
+      await this.api('/api/trades', { 
         method:'POST', 
-        headers:{'content-type':'application/json', 'X-User-Id': this.uid()},
-        body: JSON.stringify({...this.tradeForm, user_id: this.uid()}) 
+        headers:{'content-type':'application/json'},
+        body: JSON.stringify(this.tradeForm) 
       });
       this.showTradeModal = false;
       this.loadTrades();
@@ -731,9 +750,9 @@ function app(){
         finalCapital = finalCapital * this.krwRate;
       }
 
-      await fetch('/api/watchlist', { method:'POST',
-        headers:{'content-type':'application/json', 'X-User-Id': this.uid()},
-        body: JSON.stringify({...this.form, symbol: sym, capital: finalCapital, user_id: this.uid()})});
+      await this.api('/api/watchlist', { method:'POST',
+        headers:{'content-type':'application/json'},
+        body: JSON.stringify({...this.form, symbol: sym, capital: finalCapital})});
       this.selected = sym;
       this.form.symbol = '';
       await this.refresh();
@@ -741,10 +760,7 @@ function app(){
     },
     async removeWatch(){
       if(!this.selected || !confirm(this.selected + ' 제거할까요?')) return;
-      await fetch('/api/watchlist/'+this.selected+'?user_id='+this.uid(), {
-        method:'DELETE',
-        headers: {'X-User-Id': this.uid()}
-      });
+      await this.api('/api/watchlist/'+this.selected, { method:'DELETE' });
       this.selected = null; this.report = null;
       await this.refresh();
     },
@@ -752,10 +768,7 @@ function app(){
       if(!this.selected) return;
       this.loading = true;
       try{
-        const r = await fetch('/api/analyze/'+this.selected, {
-          method:'POST',
-          headers: {'X-User-Id': this.uid()}
-        });
+        const r = await this.api('/api/analyze/'+this.selected, {method:'POST'});
         if(!r.ok) throw new Error(await r.text());
         this.report = await r.json();
       }catch(e){ alert('분석 실패: '+e.message); }

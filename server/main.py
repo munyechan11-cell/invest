@@ -5,9 +5,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
 from app.market import get_snapshot
@@ -15,6 +16,8 @@ from app.news import fetch_news, fetch_profile, fetch_market_flow
 from app.analyze import analyze
 from . import db, alerts as alerts_mod
 from .sizing import shares_for, split_plan
+
+security = HTTPBearer()
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO,
@@ -93,27 +96,33 @@ async def api_login(body: AuthIn):
     return result
 
 
-# ─── Admin ─────────────────────────────────────────────────────────
-async def check_admin(request: Request):
-    """간이 관리자 권한 확인 (실제 운영시엔 JWT 추천)"""
-    uid = request.headers.get("X-User-Id")
-    if not uid:
-        raise HTTPException(401, "로그인이 필요합니다.")
-    user = await db.get_user_by_id(int(uid))
-    if not user or not user.get("is_admin"):
+# ─── Auth Dependency ───────────────────────────────────────────────
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    payload = db.decode_token(token)
+    if not payload:
+        raise HTTPException(401, "유효하지 않거나 만료된 토큰입니다.")
+    uid = int(payload.get("sub", 0))
+    user = await db.get_user_by_id(uid)
+    if not user:
+        raise HTTPException(401, "사용자를 찾을 수 없습니다.")
+    return user
+
+
+async def check_admin(user: dict = Depends(get_current_user)):
+    if not user.get("is_admin"):
         raise HTTPException(403, "관리자 권한이 없습니다.")
     return user
 
 
+# ─── Admin ─────────────────────────────────────────────────────────
 @app.get("/api/admin/users")
-async def api_admin_users(request: Request):
-    await check_admin(request)
+async def api_admin_users(admin: dict = Depends(check_admin)):
     return await db.list_users()
 
 
 @app.delete("/api/admin/users/{user_id}")
-async def api_admin_del_user(user_id: int, request: Request):
-    await check_admin(request)
+async def api_admin_del_user(user_id: int, admin: dict = Depends(check_admin)):
     await db.delete_user(user_id)
     return {"ok": True}
 
@@ -127,24 +136,24 @@ class WatchIn(BaseModel):
 
 
 @app.get("/api/watchlist")
-async def api_list(user_id: int = 0):
-    return await db.list_watch(user_id)
+async def api_list(user: dict = Depends(get_current_user)):
+    return await db.list_watch(user["id"])
 
 
 @app.post("/api/watchlist")
-async def api_add(item: WatchIn):
-    await db.upsert_watch(item.symbol, item.capital, item.risk_pct, item.user_id)
+async def api_add(item: WatchIn, user: dict = Depends(get_current_user)):
+    await db.upsert_watch(item.symbol, item.capital, item.risk_pct, user["id"])
     return {"ok": True}
 
 
 @app.delete("/api/watchlist/{symbol}")
-async def api_del(symbol: str, user_id: int = 0):
-    await db.remove_watch(symbol, user_id)
+async def api_del(symbol: str, user: dict = Depends(get_current_user)):
+    await db.remove_watch(symbol, user["id"])
     return {"ok": True}
 
 
 @app.post("/api/analyze/{symbol}")
-async def api_analyze(symbol: str):
+async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
     symbol = symbol.upper()
     try:
         snap = await asyncio.to_thread(get_snapshot, symbol)
@@ -159,7 +168,7 @@ async def api_analyze(symbol: str):
     await db.save_plan(symbol, ana)
 
     # 사이징 미리 계산해서 같이 반환
-    watch = next((w for w in await db.list_watch() if w["symbol"] == symbol), None)
+    watch = next((w for w in await db.list_watch(user["id"]) if w["symbol"] == symbol), None)
     sizing = None
     if watch and ana.get("reentry_or_stop_price"):
         s = shares_for(watch["capital"], watch["risk_pct"],
@@ -167,7 +176,7 @@ async def api_analyze(symbol: str):
                        float(ana["reentry_or_stop_price"]))
         sizing = {**s, "splits": split_plan(s["shares"])}
 
-    await broadcast({"type": "analysis", "symbol": symbol})
+    await broadcast({"type": "analysis", "symbol": symbol, "user_id": user["id"]})
     return {"snapshot": snap, "analysis": ana,
             "profile": profile, "news": news[:5], "sizing": sizing}
 
@@ -183,20 +192,20 @@ class TradeIn(BaseModel):
 
 
 @app.post("/api/trades")
-async def api_add_trade(body: TradeIn):
-    tid = await db.add_trade(body.user_id, body.symbol, body.trade_type,
+async def api_add_trade(body: TradeIn, user: dict = Depends(get_current_user)):
+    tid = await db.add_trade(user["id"], body.symbol, body.trade_type,
                              body.shares, body.price, body.note)
     return {"ok": True, "trade_id": tid}
 
 
 @app.get("/api/trades")
-async def api_list_trades(user_id: int = 0):
-    return await db.list_trades(user_id)
+async def api_list_trades(user: dict = Depends(get_current_user)):
+    return await db.list_trades(user["id"])
 
 
 @app.get("/api/portfolio")
-async def api_portfolio(user_id: int = 0):
-    return await db.portfolio_summary(user_id)
+async def api_portfolio(user: dict = Depends(get_current_user)):
+    return await db.portfolio_summary(user["id"])
 
 
 @app.get("/api/alerts")

@@ -1,18 +1,42 @@
 """SQLite — 유저 + 워치리스트 + 매매기록 + 분석 계획."""
 from __future__ import annotations
-import aiosqlite, json, time, hashlib, secrets
+import aiosqlite, json, time, hashlib, secrets, os
 from pathlib import Path
 
 DB = Path(__file__).resolve().parent.parent / "toss.db"
 _conn: aiosqlite.Connection | None = None
 
+# 보안 설정 (JWT)
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "toss_super_secret_key_1111")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 1주일
+
 
 def _hash(pw: str) -> str:
     """PBKDF2 SHA256 해싱 - 단순 SHA256보다 훨씬 안전"""
     import hashlib, binascii
-    salt = b"toss_quant_platform_salt"  # 고정 솔트 (유저별 솔트가 더 좋으나 우선 업그레이드)
+    salt = b"toss_quant_platform_v2_salt" 
     dk = hashlib.pbkdf2_hmac('sha256', pw.encode(), salt, 100000)
     return binascii.hexlify(dk).decode()
+
+
+def create_access_token(data: dict) -> str:
+    """JWT 토큰 생성"""
+    import jwt
+    from datetime import datetime, timedelta
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_token(token: str) -> dict | None:
+    """JWT 토큰 검증"""
+    import jwt
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except:
+        return None
 
 
 async def get_db() -> aiosqlite.Connection:
@@ -117,7 +141,9 @@ async def register(username: str, password: str, display_name: str = "") -> dict
         (username, display_name, _hash(password), is_admin, time.time()),
     )
     await c.commit()
-    return {"id": cursor.lastrowid, "username": username, "display_name": display_name, "is_admin": is_admin}
+    user_id = cursor.lastrowid
+    token = create_access_token({"sub": str(user_id), "username": username})
+    return {"id": user_id, "username": username, "display_name": display_name, "is_admin": is_admin, "access_token": token}
 
 
 async def login(username: str, password: str) -> dict | None:
@@ -128,8 +154,9 @@ async def login(username: str, password: str) -> dict | None:
     )).fetchone()
     if not row:
         return None
+    token = create_access_token({"sub": str(row["id"]), "username": row["username"]})
     return {"id": row["id"], "username": row["username"],
-            "display_name": row["display_name"], "is_admin": row["is_admin"]}
+            "display_name": row["display_name"], "is_admin": row["is_admin"], "access_token": token}
 
 
 # ── 관리자 ────────────────────────────────────────────────
