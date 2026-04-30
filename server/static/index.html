@@ -304,6 +304,31 @@
       </template>
       <template x-if="trades.length===0"><div class="text-xs text-ink-500 text-center py-2">매매 기록이 없습니다</div></template>
     </div>
+
+    <!-- 실시간 미주 추천 -->
+    <div class="surface-elevated p-4">
+      <div class="flex items-center justify-between mb-3">
+        <div class="serif text-sm font-semibold text-ink-800">실시간 미주 AI 추천</div>
+        <button @click="loadRecommendations()" class="text-[10px] text-coral-500 hover:underline">갱신</button>
+      </div>
+      <div class="space-y-2">
+        <template x-for="r in recommendations" :key="r.symbol">
+          <div @click="select(r.symbol)" class="flex items-center justify-between p-2 rounded-lg hover:bg-cream-100 cursor-pointer border border-transparent hover:border-coral-500/20 transition">
+            <div class="flex items-center gap-2">
+              <span class="text-lg" x-text="r.emoji"></span>
+              <span class="font-bold text-sm" x-text="r.symbol"></span>
+            </div>
+            <div class="text-right">
+              <div class="text-xs font-mono" x-text="'$'+r.price.toLocaleString()"></div>
+              <div class="text-[10px] font-mono" :class="r.change_pct>=0?'ticker-up':'ticker-down'" x-text="(r.change_pct>=0?'+':'')+r.change_pct.toFixed(2)+'%' "></div>
+            </div>
+          </div>
+        </template>
+        <template x-if="recommendations.length===0">
+          <div class="text-center py-4 text-xs text-ink-500">분석 중...</div>
+        </template>
+      </div>
+    </div>
   </section>
 
   <!-- ── 메인 리포트 ─────────────────────────────────── -->
@@ -592,9 +617,10 @@ function app(){
     tradeForm: { symbol: '', trade_type: 'BUY', shares: 0, price: 0, note: '' },
     trades: [],
     portfolio: { total_invested:0, total_returned:0, total_pnl:0, total_pnl_pct:0, trades_count:0 },
+    recommendations: [],
 
     init(){
-      if(this.user) { this.refresh(); this.loadTrades(); }
+      if(this.user) { this.refresh(); this.loadTrades(); this.loadRecommendations(); }
       this.connect(); this.fetchExchangeRate();
       const tick = () => this.now = new Date().toLocaleString('ko-KR', { hour12:false });
       tick(); setInterval(tick, 1000);
@@ -816,6 +842,13 @@ function app(){
         this.form.capital = '';
         this.form.capital_str = '';
       }
+    },
+
+    async loadRecommendations() {
+      try {
+        const r = await this.api('/api/recommendations');
+        if(r.ok) this.recommendations = await r.json();
+      } catch(e) { console.error('추천 로드 실패', e); }
     },
 
     select(sym){ this.selected = sym; this.report = null; this.mobileTab = 'report'; this.runAnalyze(); },

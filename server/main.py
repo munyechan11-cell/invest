@@ -234,6 +234,40 @@ async def api_alerts(_: dict = Depends(get_current_user)):
     return await db.recent_alerts()
 
 
+@app.get("/api/recommendations")
+async def api_recommendations():
+    """주요 종목 중 실시간 점수가 높은 TOP 5 추천"""
+    # 스캔 대상: 주요 미주 우량주
+    targets = ["NVDA", "TSLA", "AAPL", "COST", "PLTR", "MSFT", "AMZN", "GOOGL", "META", "AMD"]
+    results = []
+    
+    async def scan(sym):
+        try:
+            # get_snapshot은 동기 함수이므로 to_thread 사용
+            snap = await asyncio.to_thread(get_snapshot, sym)
+            from app.analyze_rules import analyze_rules
+            # 수급/뉴스는 빈값으로 퀵 스캔 (기술지표 위주)
+            ana = analyze_rules(sym, snap, [], {}, {})
+            return {
+                "symbol": sym, 
+                "price": snap["quote"]["price"], 
+                "change_pct": snap["quote"]["change_pct"],
+                "position": ana["position"], 
+                "emoji": ana["position_emoji"],
+                "score": ana.get("confidence", 0)
+            }
+        except Exception:
+            return None
+
+    tasks = [scan(s) for s in targets]
+    raw = await asyncio.gather(*tasks)
+    results = [r for r in raw if r]
+    
+    # 점수 높은 순으로 정렬 후 상위 5개 반환
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results[:5]
+
+
 # ─── WebSocket ─────────────────────────────────────────────────────
 @app.websocket("/ws")
 async def ws(websocket: WebSocket):
