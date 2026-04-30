@@ -1,9 +1,7 @@
 """Claude로 시세+뉴스+수급 종합 → 월가 기관급 퀀트 리포트 JSON."""
 from __future__ import annotations
 import os, json
-from anthropic import Anthropic
 
-_client: Anthropic | None = None
 
 SYSTEM = """# ROLE
 당신은 월스트리트 헤지펀드/투자은행의 시니어 퀀트 애널리스트이자 단기 트레이딩 전략가다.
@@ -83,16 +81,16 @@ SYSTEM = """# ROLE
 }
 """
 
-
-def _client_get() -> Anthropic:
-    global _client
-    if _client is None:
-        _client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    return _client
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 
 def analyze(symbol: str, snapshot: dict, news: list[dict],
             flow: dict, profile: dict) -> dict:
+    import httpx
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY 환경변수가 설정되지 않았습니다.")
+
     payload = {
         "ticker": f"{symbol} ({profile.get('name','')})",
         "market_data": {
@@ -120,13 +118,20 @@ def analyze(symbol: str, snapshot: dict, news: list[dict],
             "country": profile.get("country"),
         },
     }
-    msg = _client_get().messages.create(
-        model="claude-opus-4-7",
-        max_tokens=2000,
-        system=SYSTEM,
-        messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
-    )
-    text = "".join(b.text for b in msg.content if hasattr(b, "text")).strip()
+
+    body = {
+        "system_instruction": {"parts": [{"text": SYSTEM}]},
+        "contents": [{"parts": [{"text": json.dumps(payload, ensure_ascii=False)}]}],
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2000},
+    }
+
+    with httpx.Client(timeout=60) as c:
+        r = c.post(f"{GEMINI_URL}?key={api_key}", json=body)
+        r.raise_for_status()
+        data = r.json()
+
+    text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    # 코드펜스 제거
     if text.startswith("```"):
         text = text.strip("`")
         if text.lower().startswith("json"):
