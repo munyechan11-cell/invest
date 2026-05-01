@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from app.market import get_snapshot
 from app.news import fetch_news, fetch_profile, fetch_market_flow
 from app.analyze import analyze
+from app.search import search_symbols
 from server import db, alerts as alerts_mod
 from server.sizing import shares_for, split_plan
 
@@ -129,6 +130,14 @@ async def api_admin_users(_: dict = Depends(check_admin)):
 async def api_admin_del_user(user_id: int, _: dict = Depends(check_admin)):
     await db.delete_user(user_id)
     return {"ok": True}
+
+
+# ─── Search ────────────────────────────────────────────────────────
+@app.get("/api/search")
+async def api_search(q: str = "", limit: int = 10,
+                     _: dict = Depends(get_current_user)):
+    """티커/종목명 통합 검색 — 한국어/영어/숫자 모두 지원, 한·미 동시."""
+    return await search_symbols(q, limit=limit)
 
 
 # ─── Watchlist ─────────────────────────────────────────────────────

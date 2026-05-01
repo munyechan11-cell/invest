@@ -227,8 +227,11 @@
           <div x-show="showDropdown && searchResults.length > 0" class="absolute z-10 w-full mt-1 bg-[#111111] border border-[#333333] rounded-lg shadow-xl overflow-hidden">
             <template x-for="res in searchResults" :key="res.symbol">
               <div @click="selectStock(res)" class="px-4 py-2.5 hover:bg-[#222222] cursor-pointer flex justify-between items-center">
-                <span class="text-sm font-semibold" x-text="res.symbol"></span>
-                <span class="text-xs text-ink-500" x-text="res.name"></span>
+                <div class="flex items-center gap-2">
+                  <span class="text-sm font-semibold" x-text="res.symbol"></span>
+                  <span x-show="res.market" class="text-[10px] px-1 rounded bg-[#222] text-ink-500" x-text="res.market"></span>
+                </div>
+                <div class="text-xs text-ink-500 truncate text-right max-w-[60%]" x-text="res.name + (res.exchange ? ' · ' + res.exchange : '')"></div>
               </div>
             </template>
           </div>
@@ -802,105 +805,27 @@ function app(){
       };
     },
     
-    // 자동완성 데이터
-    stockDb: [
-      { symbol: 'COST', name: 'Costco 코스트코' },
-      { symbol: 'TSLA', name: 'Tesla 테슬라' },
-      { symbol: 'AAPL', name: 'Apple 애플' },
-      { symbol: 'NVDA', name: 'Nvidia 엔비디아' },
-      { symbol: 'MSFT', name: 'Microsoft 마이크로소프트' },
-      { symbol: 'AMZN', name: 'Amazon 아마존' },
-      { symbol: 'GOOGL', name: 'Alphabet 구글' },
-      { symbol: 'META', name: 'Meta 메타' },
-      { symbol: 'MSTR', name: 'MicroStrategy 마이크로스트레티지' },
-      { symbol: 'AVGO', name: 'Broadcom 브로드컴' },
-      { symbol: 'AMD', name: 'AMD 에이엠디' },
-      { symbol: 'NFLX', name: 'Netflix 넷플릭스' },
-      { symbol: 'TSM', name: 'TSMC 티에스엠씨' },
-      { symbol: 'BRK.B', name: 'Berkshire Hathaway 버크셔해서웨이' },
-      { symbol: 'V', name: 'Visa 비자' },
-      { symbol: 'MA', name: 'Mastercard 마스터카드' },
-      { symbol: 'LLY', name: 'Eli Lilly 일라이릴리' },
-      { symbol: 'JPM', name: 'JPMorgan 체이스' },
-      { symbol: 'UNH', name: 'UnitedHealth 유나이티드헬스' },
-      { symbol: 'XOM', name: 'Exxon Mobil 엑슨모빌' },
-      { symbol: 'HD', name: 'Home Depot 홈디포' },
-      { symbol: 'PG', name: 'P&G 피앤지' },
-      { symbol: 'CVX', name: 'Chevron 셰브론' },
-      { symbol: 'KO', name: 'Coca-Cola 코카콜라' },
-      { symbol: 'PEP', name: 'Pepsi 펩시' },
-      { symbol: 'ORCL', name: 'Oracle 오라클' },
-      { symbol: 'ADBE', name: 'Adobe 어도비' },
-      { symbol: 'CRM', name: 'Salesforce 세일즈포스' },
-      { symbol: 'INTC', name: 'Intel 인텔' },
-      { symbol: 'PLTR', name: 'Palantir 팔란티어' },
-      { symbol: 'DIS', name: 'Disney 디즈니' },
-      { symbol: 'PYPL', name: 'PayPal 페이팔' },
-      { symbol: 'SQ', name: 'Block 블록' },
-      { symbol: 'U', name: 'Unity 유니티' },
-      { symbol: 'ABNB', name: 'Airbnb 에어비앤비' },
-      { symbol: 'COIN', name: 'Coinbase 코인베이스' },
-      { symbol: 'MARA', name: 'Marathon Digital 마라톤' },
-      { symbol: 'SOFI', name: 'SoFi 소파이' },
-      { symbol: 'SHOP', name: 'Shopify 쇼피파이' },
-      { symbol: '005930', name: '삼성전자' },
-      { symbol: '000660', name: 'SK하이닉스' },
-      { symbol: '005935', name: '삼성전자우' },
-      { symbol: '373220', name: 'LG에너지솔루션' },
-      { symbol: '207940', name: '삼성바이오로직스' },
-      { symbol: '005380', name: '현대차' },
-      { symbol: '068270', name: '셀트리온' },
-      { symbol: '000270', name: '기아' },
-      { symbol: '105560', name: 'KB금융' },
-      { symbol: '051910', name: 'LG화학' },
-      { symbol: '055550', name: '신한지주' },
-      { symbol: '035420', name: 'NAVER 네이버' },
-      { symbol: '006400', name: '삼성SDI' },
-      { symbol: '012330', name: '현대모비스' },
-      { symbol: '005490', name: 'POSCO홀딩스' },
-      { symbol: '035720', name: '카카오' },
-      { symbol: '032830', name: '삼성생명' },
-      { symbol: '086790', name: '하나금융지주' },
-      { symbol: '000810', name: '삼성화재' },
-      { symbol: '010130', name: '고려아연' },
-      { symbol: '066570', name: 'LG전자' },
-      { symbol: '015760', name: '한국전력' },
-      { symbol: '402340', name: 'SK스퀘어' },
-      { symbol: '028260', name: '삼성물산' },
-      { symbol: '034730', name: 'SK' },
-      { symbol: '003550', name: 'LG' },
-      { symbol: '011200', name: 'HMM' },
-      { symbol: '017670', name: 'SK텔레콤' },
-      { symbol: '316140', name: '우리금융지주' },
-      { symbol: '323410', name: '카카오뱅크' },
-      { symbol: '018260', name: '삼성에스디에스' },
-      { symbol: '009150', name: '삼성전기' },
-      { symbol: '010950', name: 'S-Oil' },
-      { symbol: '033780', name: 'KT&G' },
-      { symbol: '259960', name: '크래프톤' },
-      { symbol: '003670', name: '포스코퓨처엠' },
-      { symbol: '011070', name: 'LG이노텍' },
-      { symbol: '302440', name: 'SK바이오사이언스' },
-      { symbol: '352820', name: '하이브' },
-      { symbol: '096770', name: 'SK이노베이션' },
-      { symbol: '271560', name: '오리온' },
-      { symbol: '004020', name: '현대제철' },
-      { symbol: '024110', name: '기업은행' },
-      { symbol: '000100', name: '유한양행' },
-      { symbol: '009830', name: '한화솔루션' },
-      { symbol: '086280', name: '현대글로비스' },
-      { symbol: '011170', name: '롯데케미칼' },
-    ],
+    // 자동완성 (실시간 API 연동)
     showDropdown: false,
     searchResults: [],
+    _searchTimer: null,
     
     searchStocks() {
-      const q = this.form.symbol.toLowerCase().trim();
-      if(!q) { this.searchResults = []; return; }
-      this.searchResults = this.stockDb.filter(s => 
-        s.symbol.toLowerCase().includes(q) || s.name.toLowerCase().includes(q)
-      ).slice(0, 5);
-      this.showDropdown = true;
+      const q = this.form.symbol.trim();
+      if(!q) { this.searchResults = []; this.showDropdown = false; return; }
+      
+      clearTimeout(this._searchTimer);
+      this._searchTimer = setTimeout(async () => {
+        try {
+          const r = await this.api(`/api/search?q=${encodeURIComponent(q)}&limit=5`);
+          if (r.ok) {
+            this.searchResults = await r.json();
+            this.showDropdown = true;
+          }
+        } catch (e) {
+          console.error('검색 연동 실패', e);
+        }
+      }, 300);
     },
     selectStock(res) {
       this.form.symbol = res.symbol;
