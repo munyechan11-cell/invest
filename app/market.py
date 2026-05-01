@@ -74,10 +74,14 @@ def _bbands(close: pd.Series, period: int = 20, k: float = 2.0):
 
 
 def fetch_realtime_quote(symbol: str) -> Quote:
-    """미국주식 실시간 — KR 티커는 자동으로 KIS로 위임."""
+    """미국주식 실시간 — KR 티커는 KIS 시도 후 실패 시 Yahoo로 폴백."""
     if market_of(symbol) == "KR":
-        from .market_kr import fetch_realtime_quote as _kr
-        k = _kr(symbol)
+        try:
+            from .market_kr import fetch_realtime_quote as _kr
+            k = _kr(symbol)
+        except Exception:
+            from .market_kr_yahoo import fetch_realtime_quote as _yh
+            k = _yh(symbol)
         return Quote(symbol=k.symbol, price=k.price, day_high=k.day_high,
                      day_low=k.day_low, day_open=k.day_open,
                      prev_close=k.prev_close, change_pct=k.change_pct, ts=k.ts)

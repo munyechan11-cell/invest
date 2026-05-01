@@ -1,14 +1,16 @@
-"""한국 시장 — 한국투자증권(KIS) Open API.
+"""한국 시장 — 한국투자증권(KIS) Open API + Yahoo Finance 폴백.
 
-엔드포인트: https://openapi.koreainvestment.com:9443 (실전)
-            https://openapivts.koreainvestment.com:29443 (모의)
+KIS 우선 시도 (외국인/기관/개인 수급 + 실시간 시세 제공).
+KIS 키 미설정/실패 시 Yahoo Finance로 자동 폴백 — 사이트 절대 안 죽음.
 """
 from __future__ import annotations
-import os, time
+import os, time, logging
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 
 import httpx
+
+log = logging.getLogger("market_kr")
 
 _KIS_REAL = "https://openapi.koreainvestment.com:9443"
 _KIS_MOCK = "https://openapivts.koreainvestment.com:29443"
@@ -142,12 +144,18 @@ def fetch_daily_candles(symbol: str, days: int = 100) -> list[dict]:
 
 
 def get_snapshot_kr(symbol: str) -> dict:
-    """한국주식 시세+지표+수급 묶음."""
+    """한국주식 스냅샷. KIS 우선 → 실패 시 Yahoo Finance로 자동 폴백."""
     import pandas as pd, numpy as np
 
-    quote = fetch_realtime_quote(symbol)
-    candles = fetch_daily_candles(symbol)
-    flow = fetch_investor_flow(symbol)
+    # ── KIS 시도
+    try:
+        quote = fetch_realtime_quote(symbol)
+        candles = fetch_daily_candles(symbol)
+        flow = fetch_investor_flow(symbol)
+    except Exception as e:
+        log.warning(f"KIS 실패 ({symbol}): {e} → Yahoo Finance로 폴백")
+        from .market_kr_yahoo import get_snapshot_kr_yahoo
+        return get_snapshot_kr_yahoo(symbol)
 
     if len(candles) < 30:
         # 지표 계산 불가 — 기본값
