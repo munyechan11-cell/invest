@@ -154,12 +154,24 @@ async def init():
     await c.executescript(SCHEMA)
     await c.commit()
     
-    # 관리자 계정 자동 생성 및 동기화
-    admin_user = os.environ.get("ADMIN_USERNAME", "admin")
-    admin_pw = os.environ.get("ADMIN_PASSWORD", "admin1234")
-    
-    if admin_pw:
-        row = await (await c.execute("SELECT id, pw_hash FROM users WHERE username=?", (admin_user,))).fetchone()
+    # 관리자 계정 자동 생성 및 동기화 (보안: 디폴트 비번 절대 금지)
+    admin_user = os.environ.get("ADMIN_USERNAME", "").strip()
+    admin_pw = os.environ.get("ADMIN_PASSWORD", "").strip()
+
+    if not admin_user or not admin_pw:
+        logging.warning(
+            "ADMIN_USERNAME 또는 ADMIN_PASSWORD가 비어있음 — 관리자 자동 생성 건너뜀. "
+            "관리자가 필요하면 .env에 두 값을 모두 설정하세요."
+        )
+    elif len(admin_pw) < 8:
+        logging.error(
+            f"ADMIN_PASSWORD가 너무 짧습니다(8자 미만) — 보안상 관리자 생성 거부. "
+            f".env에 강한 비밀번호를 설정하세요."
+        )
+    else:
+        row = await (await c.execute(
+            "SELECT id, pw_hash FROM users WHERE username=?", (admin_user,)
+        )).fetchone()
         new_hash = _hash(admin_pw)
         if not row:
             await c.execute(
@@ -170,7 +182,7 @@ async def init():
         elif dict(row)["pw_hash"] != new_hash:
             await c.execute("UPDATE users SET pw_hash=? WHERE username=?", (new_hash, admin_user))
             logging.info(f"Admin password for '{admin_user}' updated from .env")
-    
+
     await c.commit()
 
 

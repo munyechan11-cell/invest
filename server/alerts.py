@@ -34,50 +34,65 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
 
     pos = (plan.get("position") or "").strip()
     target = plan.get("target_price")
-    sr_label = plan.get("reentry_or_stop_label")
-    sr_price = plan.get("reentry_or_stop_price")
+    # 새 스키마(stop_price/entry_price) + 구 스키마(reentry_or_stop_price) 모두 호환
+    stop_price = plan.get("stop_price") or plan.get("reentry_or_stop_price")
+    entry_price = plan.get("entry_price") or stop_price
     capital = item["capital"]; risk_pct = item["risk_pct"]
 
     pf = _fmt(sym, price)
-    fmt_sr = _fmt(sym, float(sr_price)) if sr_price else ""
+    fmt_stop = _fmt(sym, float(stop_price)) if stop_price else ""
     fmt_tp = _fmt(sym, float(target)) if target else ""
+    fmt_entry = _fmt(sym, float(entry_price)) if entry_price else ""
 
-    # 매수 조건: 분할매수/적극매수에서, 재진입가 부근 또는 그 아래
-    if pos in ("분할 매수", "적극 매수") and sr_price:
-        if price <= float(sr_price) * 1.003:  # 0.3% 안쪽이면 트리거
+    is_buy = pos in ("분할 매수", "적극 매수")
+    is_sell = pos in ("분할 매도", "적극 매도")
+
+    # 매수 신호: 매수 포지션에서 진입가 부근 (±0.3%) 도달
+    if is_buy and entry_price:
+        if abs(price - float(entry_price)) / float(entry_price) <= 0.003:
             if not _cool(sym, f"BUY_{user_id}"):
-                size = shares_for(capital, risk_pct, price, float(sr_price) * 0.97)
+                stop_for_size = float(stop_price) if stop_price else price * 0.97
+                size = shares_for(capital, risk_pct, price, stop_for_size)
                 splits = split_plan(size["shares"])
-                msg = (f"💚 지금 {pos}! {pf} 도달 — "
+                msg = (f"💚 지금 {pos}! {pf} (진입가 {fmt_entry} 도달) — "
                        f"권장 {size['shares']}주 (분할: {splits}), "
                        f"투입 {_fmt(sym, size['notional'])}, 최대손실 {_fmt(sym, size['max_loss'])}")
                 await db.add_alert(sym, "BUY", msg, price)
                 await broadcast({"type": "alert", "symbol": sym, "kind": "BUY",
                                  "message": msg, "price": price, "user_id": user_id})
 
-    # 익절: 목표가 도달
-    if target and price >= float(target):
+    # 익절(매수): 목표가 ≥ 도달
+    if is_buy and target and price >= float(target):
         if not _cool(sym, f"TP_{user_id}"):
             msg = f"🎯 목표가 도달! {pf} ≥ {fmt_tp} — 매도/익절 권장"
             await db.add_alert(sym, "TP", msg, price)
             await broadcast({"type": "alert", "symbol": sym, "kind": "TP",
                              "message": msg, "price": price, "user_id": user_id})
 
-    # 손절: 손절가 이탈 (매수계열에서만)
-    if pos in ("분할 매수", "적극 매수") and sr_label == "손절가" and sr_price and price <= float(sr_price):
+    # 손절(매수): 손절가 ≤ 이탈
+    if is_buy and stop_price and price <= float(stop_price):
         if not _cool(sym, f"SL_{user_id}"):
-            msg = f"🛑 손절선 이탈! {pf} ≤ {fmt_sr} — 즉시 매도"
+            msg = f"🛑 손절선 이탈! {pf} ≤ {fmt_stop} — 즉시 매도"
             await db.add_alert(sym, "SL", msg, price)
             await broadcast({"type": "alert", "symbol": sym, "kind": "SL",
                              "message": msg, "price": price, "user_id": user_id})
 
-    # 매도 권고에서 강한 추가 하락 → 추가 매도 알림
-    if pos in ("분할 매도", "적극 매도") and target and price >= float(target):
-        if not _cool(sym, f"SELL_{user_id}"):
-            msg = f"🔴 매도 신호 가격대 도달! {pf} — {pos}"
-            await db.add_alert(sym, "SELL", msg, price)
-            await broadcast({"type": "alert", "symbol": sym, "kind": "SELL",
+    # 매도 익절: 매도 포지션에서 목표가(하락) 이하로 도달
+    if is_sell and target and price <= float(target):
+        if not _cool(sym, f"TP_{user_id}"):
+            msg = f"🎯 매도 목표가 도달! {pf} ≤ {fmt_tp} — 환매/청산 권장"
+            await db.add_alert(sym, "TP", msg, price)
+            await broadcast({"type": "alert", "symbol": sym, "kind": "TP",
                              "message": msg, "price": price, "user_id": user_id})
+
+    # 매도 신호: 매도 포지션에서 진입가 부근 도달
+    if is_sell and entry_price:
+        if abs(price - float(entry_price)) / float(entry_price) <= 0.003:
+            if not _cool(sym, f"SELL_{user_id}"):
+                msg = f"🔴 매도 진입가 도달! {pf} — {pos}"
+                await db.add_alert(sym, "SELL", msg, price)
+                await broadcast({"type": "alert", "symbol": sym, "kind": "SELL",
+                                 "message": msg, "price": price, "user_id": user_id})
 
 
 async def worker(broadcast):
