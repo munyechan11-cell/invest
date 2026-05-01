@@ -177,6 +177,82 @@ def _ensure_flow_fields(ana: dict, snap: dict, symbol: str) -> dict:
     rv = float(q.get("relative_volume") or 1.0)
     above_vwap = bool(ind.get("above_vwap"))
 
+    # ── 한국주식: KIS 매수/매도 상세 데이터 그대로 노출 (프론트가 표로 그림)
+    if is_kr:
+        flow_kr = snap.get("flow_kr") or {}
+        if any(k in flow_kr for k in ("foreign_buy", "foreign_sell")):
+            # 매수/매도 분리 데이터 있음
+            ana["flow_table"] = {
+                "foreign": {
+                    "buy": int(flow_kr.get("foreign_buy") or 0),
+                    "sell": int(flow_kr.get("foreign_sell") or 0),
+                    "net": int(flow_kr.get("foreign_net_qty") or 0),
+                },
+                "institutional": {
+                    "buy": int(flow_kr.get("institutional_buy") or 0),
+                    "sell": int(flow_kr.get("institutional_sell") or 0),
+                    "net": int(flow_kr.get("institutional_net_qty") or 0),
+                },
+                "retail": {
+                    "buy": int(flow_kr.get("retail_buy") or 0),
+                    "sell": int(flow_kr.get("retail_sell") or 0),
+                    "net": int(flow_kr.get("retail_net_qty") or 0),
+                },
+                "total_buy": int(flow_kr.get("total_buy") or 0),
+                "total_sell": int(flow_kr.get("total_sell") or 0),
+                "date": flow_kr.get("date"),
+            }
+            # ── 스마트머니(외국인+기관) vs 개인 비교
+            #    주식시장은 매수=매도(zero-sum)이므로 단순 총합 비교는 무의미.
+            #    의미있는 시그널: 누가 사고 누가 파는가 → 외국인+기관이 사면 매수 우위.
+            f = ana["flow_table"]["foreign"]
+            i = ana["flow_table"]["institutional"]
+            r = ana["flow_table"]["retail"]
+            smart_buy = f["buy"] + i["buy"]
+            smart_sell = f["sell"] + i["sell"]
+            smart_net = f["net"] + i["net"]    # 외국인+기관 합산 순매수
+            retail_net = r["net"]
+
+            ana["flow_table"]["smart_buy"] = smart_buy
+            ana["flow_table"]["smart_sell"] = smart_sell
+            ana["flow_table"]["smart_net"] = smart_net
+            ana["flow_table"]["retail_only_net"] = retail_net
+
+            # 우위 판정: 1) 외국인+기관 순매수 방향 + 2) 의미있는 절대 규모
+            #   - 일거래량 대비 5% 이상이어야 시그널로 인정 (노이즈 제거)
+            total_vol = ana["flow_table"]["total_buy"]   # = total_sell (zero-sum)
+            min_signal = max(total_vol * 0.05, 50000)    # 최소 5% 또는 5만주
+
+            denom = max(abs(smart_net) + abs(retail_net), 1)
+            smart_strength = abs(smart_net) / denom * 100
+
+            if abs(smart_net) < min_signal:
+                ana["flow_table"]["dominance"] = "방향성 약함"
+                ana["flow_table"]["dominance_emoji"] = "⚪"
+                ana["flow_table"]["dominance_detail"] = (
+                    f"외국인·기관 순매수 {smart_net:+,}주 (거래량 대비 미미) "
+                    "— 추세 형성 전 관망 단계"
+                )
+            elif smart_net > 0:
+                ana["flow_table"]["dominance"] = "스마트머니 매수 우위"
+                ana["flow_table"]["dominance_emoji"] = "🟢"
+                ana["flow_table"]["dominance_detail"] = (
+                    f"외국인·기관이 +{smart_net:,}주 순매수, 개인 {retail_net:+,}주 "
+                    "→ 상승 시그널 (개인 매도 vs 기관 매집 패턴)"
+                    if retail_net < 0 else
+                    f"외국인·기관 +{smart_net:,}주, 개인 {retail_net:+,}주 동반 매수 → 강한 매수세"
+                )
+            else:
+                ana["flow_table"]["dominance"] = "스마트머니 매도 우위"
+                ana["flow_table"]["dominance_emoji"] = "🔴"
+                ana["flow_table"]["dominance_detail"] = (
+                    f"외국인·기관이 {smart_net:,}주 순매도, 개인 {retail_net:+,}주 추격매수 "
+                    "→ 하락 시그널 (분배 단계 의심)"
+                    if retail_net > 0 else
+                    f"외국인·기관 {smart_net:,}주, 개인 {retail_net:+,}주 동반 매도 → 강한 매도세"
+                )
+            ana["flow_table"]["smart_strength_pct"] = round(smart_strength, 1)
+
     # 이미 필드가 있으면 그대로 둠 (AI가 의미 있게 채운 경우 보존)
     if not ana.get("flow_institutional"):
         if is_kr:

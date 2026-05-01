@@ -93,7 +93,13 @@ def fetch_realtime_quote(symbol: str) -> KRQuote:
 
 
 def fetch_investor_flow(symbol: str) -> dict:
-    """투자자별 매매동향 — 한국시장 고유: 외국인/기관/개인 순매수."""
+    """투자자별 매매동향 — 외국인/기관/개인의 매수·매도 수량 및 순매수.
+
+    KIS inquire-investor(FHKST01010900) 응답 필드:
+    - frgn_seln_vol/shnu_vol/ntby_qty: 외국인 매도/매수/순매수 수량
+    - orgn_seln_vol/shnu_vol/ntby_qty: 기관 매도/매수/순매수 수량
+    - prsn_seln_vol/shnu_vol/ntby_qty: 개인 매도/매수/순매수 수량
+    """
     r = httpx.get(
         f"{_base()}/uapi/domestic-stock/v1/quotations/inquire-investor",
         params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol},
@@ -106,12 +112,37 @@ def fetch_investor_flow(symbol: str) -> dict:
     rows = d.get("output", []) or []
     if not rows:
         return {}
-    today = rows[0]
+    t = rows[0]
+
+    def _i(k: str) -> int:
+        try:
+            return int(t.get(k, 0) or 0)
+        except (ValueError, TypeError):
+            return 0
+
+    foreign_buy = _i("frgn_shnu_vol")
+    foreign_sell = _i("frgn_seln_vol")
+    inst_buy = _i("orgn_shnu_vol")
+    inst_sell = _i("orgn_seln_vol")
+    retail_buy = _i("prsn_shnu_vol")
+    retail_sell = _i("prsn_seln_vol")
+
     return {
-        "date": today.get("stck_bsop_date"),
-        "foreign_net_qty": int(today.get("frgn_ntby_qty", 0) or 0),
-        "institutional_net_qty": int(today.get("orgn_ntby_qty", 0) or 0),
-        "retail_net_qty": int(today.get("prsn_ntby_qty", 0) or 0),
+        "date": t.get("stck_bsop_date"),
+        # 매수/매도 수량 분리
+        "foreign_buy": foreign_buy,
+        "foreign_sell": foreign_sell,
+        "institutional_buy": inst_buy,
+        "institutional_sell": inst_sell,
+        "retail_buy": retail_buy,
+        "retail_sell": retail_sell,
+        # 순매수 (KIS 직접값 우선, 없으면 매수-매도)
+        "foreign_net_qty": _i("frgn_ntby_qty") or (foreign_buy - foreign_sell),
+        "institutional_net_qty": _i("orgn_ntby_qty") or (inst_buy - inst_sell),
+        "retail_net_qty": _i("prsn_ntby_qty") or (retail_buy - retail_sell),
+        # 총량
+        "total_buy": foreign_buy + inst_buy + retail_buy,
+        "total_sell": foreign_sell + inst_sell + retail_sell,
     }
 
 
