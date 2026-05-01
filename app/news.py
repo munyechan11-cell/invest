@@ -58,6 +58,15 @@ async def fetch_news(symbol: str, days: int = 3, limit: int = 8) -> list[dict]:
                             "url": n.get("url", ""),
                             "ts": n.get("created_at", ""),
                         })
+
+    # 미국 뉴스 → 한국어 번역 (Gemini 사용, 실패 시 원문)
+    if items:
+        try:
+            from .translate import translate_news_to_korean
+            items = await translate_news_to_korean(items)
+        except Exception:
+            pass  # 번역 실패해도 원문 그대로 반환
+
     return items
 
 

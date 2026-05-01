@@ -7,7 +7,7 @@ from server.sizing import shares_for, split_plan
 
 log = logging.getLogger("alerts")
 
-POLL_SEC = 6           # 워치리스트당 폴링 주기
+POLL_SEC = 5           # 실시간 폴링 주기 (포트폴리오 자동 업데이트 5초)
 COOLDOWN_SEC = 300     # 같은 알림 재발송 방지
 _last_sent: dict[tuple[str, str], float] = {}
 
@@ -96,43 +96,75 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
 
 
 async def worker(broadcast):
-    """최적화된 병렬 폴링 워커. 세마포어를 사용하여 속도와 안정성 동시 확보."""
-    log.info("alert worker started (concurrent mode)")
-    sem = asyncio.Semaphore(5) # 동시 실행 5개로 제한 (Rate Limit 고려)
+    """병렬 폴링 워커 — 워치리스트 + 포트폴리오 합집합을 5초마다 갱신."""
+    log.info(f"alert worker started — polling every {POLL_SEC}s (watchlist + portfolio)")
+    sem = asyncio.Semaphore(5)  # Finnhub/KIS 레이트 리밋 보호
 
-    async def poll_one(sym, items_group, plan):
+    from collections import defaultdict
+
+    async def poll_one(sym: str, watch_items: list[dict], port_items: list[dict], plan: dict | None):
         async with sem:
             try:
                 q = await asyncio.to_thread(fetch_realtime_quote, sym)
-                # 틱 송출
-                await broadcast({"type": "tick", "symbol": sym, "price": q.price,
-                                 "change_pct": q.change_pct, "ts": q.ts})
-                
-                # 각 유저별 조건 평가
-                for it in items_group:
-                    await _evaluate_item(it, plan, q, broadcast)
             except Exception as e:
                 log.warning(f"polling error {sym}: {e}")
+                return
+
+            # ── 모든 구독자에게 가격 틱 송출 (포트폴리오·워치리스트 모두 사용)
+            await broadcast({
+                "type": "tick", "symbol": sym,
+                "price": q.price, "change_pct": q.change_pct, "ts": q.ts,
+                "in_portfolio": bool(port_items),
+                "in_watchlist": bool(watch_items),
+            })
+
+            # ── 포트폴리오 보유종목별 평가손익 계산 + 송출
+            for p in port_items:
+                entry = float(p.get("entry_price") or 0)
+                shares = float(p.get("shares") or 0)
+                if entry > 0 and shares > 0:
+                    pnl = (q.price - entry) * shares
+                    pnl_pct = (q.price / entry - 1) * 100
+                    await broadcast({
+                        "type": "portfolio_pnl",
+                        "user_id": p.get("user_id"),
+                        "portfolio_id": p.get("id"),
+                        "symbol": sym,
+                        "current_price": q.price,
+                        "entry_price": entry,
+                        "shares": shares,
+                        "pnl": round(pnl, 2),
+                        "pnl_pct": round(pnl_pct, 2),
+                        "ts": q.ts,
+                    })
+
+            # ── 워치리스트 종목이면 알림 조건 평가
+            if plan:
+                for it in watch_items:
+                    await _evaluate_item(it, plan, q, broadcast)
 
     while True:
         try:
-            items = await db.list_all_watch()
+            watch = await db.list_all_watch()
+            port = await db.list_all_portfolio()
             plans = await db.all_plans()
-            
-            # 심볼별로 유저 그룹화
-            from collections import defaultdict
-            grouped = defaultdict(list)
-            for it in items:
-                grouped[it["symbol"]].append(it)
 
-            tasks = []
-            for sym, user_items in grouped.items():
-                if sym in plans:
-                    tasks.append(poll_one(sym, user_items, plans[sym]))
-            
-            if tasks:
+            wl_grouped: dict[str, list] = defaultdict(list)
+            for it in watch:
+                wl_grouped[it["symbol"]].append(it)
+
+            port_grouped: dict[str, list] = defaultdict(list)
+            for it in port:
+                port_grouped[it["symbol"]].append(it)
+
+            all_symbols = set(wl_grouped.keys()) | set(port_grouped.keys())
+
+            if all_symbols:
+                tasks = [poll_one(sym, wl_grouped.get(sym, []),
+                                  port_grouped.get(sym, []), plans.get(sym))
+                         for sym in all_symbols]
                 await asyncio.gather(*tasks)
-            
+
         except Exception:
             log.exception("worker loop error")
         await asyncio.sleep(POLL_SEC)

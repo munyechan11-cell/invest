@@ -125,6 +125,13 @@ async def remove_from_portfolio(pid: int, user_id: int):
     await c.commit()
 
 
+async def list_all_portfolio() -> list[dict]:
+    """모든 유저의 포트폴리오 항목 (실시간 폴링 워커용)."""
+    c = await get_db()
+    rows = await (await c.execute("SELECT * FROM portfolio")).fetchall()
+    return [dict(r) for r in rows]
+
+
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "munyechan11")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")  # .env에 ADMIN_PASSWORD 설정 필요
 
