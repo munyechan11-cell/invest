@@ -143,7 +143,7 @@ async def api_search(q: str = "", limit: int = 10,
 # ─── Watchlist ─────────────────────────────────────────────────────
 class WatchIn(BaseModel):
     symbol: str
-    capital: float = Field(gt=0)
+    capital: float = Field(default=0, ge=0)   # 0이면 투자금 미입력 → 사이징 생략
     risk_pct: float = Field(default=1.0, gt=0, le=100)
 
 
@@ -162,6 +162,78 @@ async def api_add(item: WatchIn, user: dict = Depends(get_current_user)):
 async def api_del(symbol: str, user: dict = Depends(get_current_user)):
     await db.remove_watch(symbol, user["id"])
     return {"ok": True}
+
+
+# ─── Analyze 보조: 시장 수급 deterministic 보강 ──────────────────
+def _ensure_flow_fields(ana: dict, snap: dict, symbol: str) -> dict:
+    """AI 응답에 flow_institutional 등이 빠져있으면 시세/수급 데이터로 채워 넣는다.
+
+    한국시장: KIS의 외국인/기관 순매수 수량 직접 사용 (공식 KRX 데이터)
+    미국시장: 거래량(RV) + VWAP 위치로 추론 (다크풀 무료 데이터 부재)
+    """
+    is_kr = symbol.isdigit() and len(symbol) == 6
+    q = snap.get("quote") or {}
+    ind = snap.get("indicators") or {}
+    rv = float(q.get("relative_volume") or 1.0)
+    above_vwap = bool(ind.get("above_vwap"))
+
+    # 이미 필드가 있으면 그대로 둠 (AI가 의미 있게 채운 경우 보존)
+    if not ana.get("flow_institutional"):
+        if is_kr:
+            flow_kr = snap.get("flow_kr") or {}
+            foreign = int(flow_kr.get("foreign_net_qty") or 0)
+            inst = int(flow_kr.get("institutional_net_qty") or 0)
+            retail = int(flow_kr.get("retail_net_qty") or 0)
+            net = foreign + inst
+            if net > 0:
+                ana["flow_institutional"] = "기관 우위"
+            elif net < 0:
+                ana["flow_institutional"] = "개인 우위"
+            else:
+                ana["flow_institutional"] = "중립"
+            if foreign or inst:
+                ana["flow_institutional_reason"] = (
+                    f"외국인 {foreign:+,}주, 기관 {inst:+,}주 순매수 (KRX 공식)"
+                )
+            else:
+                ana["flow_institutional_reason"] = "수급 데이터 미수신 (KIS 폴백 모드)"
+            ana.setdefault("flow_retail",
+                           "매수세" if retail > 0 else "매도세" if retail < 0 else "중립")
+        else:
+            if rv >= 1.5 and above_vwap:
+                ana["flow_institutional"] = "기관 우위"
+                ana["flow_institutional_reason"] = (
+                    f"거래량 {rv:.2f}x 급증 + VWAP 상회 → 기관 매집 시그널"
+                )
+            elif rv >= 1.5 and not above_vwap:
+                ana["flow_institutional"] = "개인 우위"
+                ana["flow_institutional_reason"] = (
+                    f"거래량 {rv:.2f}x 급증 + VWAP 하회 → 개인 추격매도/패닉셀 가능"
+                )
+            else:
+                ana["flow_institutional"] = "중립"
+                ana["flow_institutional_reason"] = (
+                    f"거래량 {rv:.2f}x · VWAP {'상회' if above_vwap else '하회'} (특이 시그널 없음)"
+                )
+            ana.setdefault("flow_retail",
+                           "매수세" if rv >= 1.5 and above_vwap else
+                           "매도세" if rv >= 1.5 and not above_vwap else "중립")
+
+    # 특이사항 보강
+    if not ana.get("flow_special"):
+        notes = []
+        if rv >= 2.0:
+            notes.append(f"거래량 {rv:.1f}x 폭발")
+        elif rv >= 1.5:
+            notes.append(f"거래량 {rv:.1f}x 급증")
+        if is_kr:
+            flow_kr = snap.get("flow_kr") or {}
+            f = int(flow_kr.get("foreign_net_qty") or 0)
+            if abs(f) >= 100000:
+                notes.append(f"외국인 {f:+,}주")
+        ana["flow_special"] = " · ".join(notes) if notes else "특이사항 없음"
+
+    return ana
 
 
 # ─── Analyze ───────────────────────────────────────────────────────
@@ -192,12 +264,15 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
         risk_val = watch["risk_pct"] if watch else 1.0
 
         ana = await asyncio.to_thread(analyze, symbol, snap, news, flow, profile, risk_val)
+        # AI 응답에 시장수급 필드가 빠져있으면 deterministic 계산해서 주입 (항상 표시 보장)
+        ana = _ensure_flow_fields(ana, snap, symbol)
         await db.save_plan(symbol, ana)
         # 워치리스트 목록에도 포지션 저장
         await db.update_watch_position(symbol, user["id"], ana["position"], ana["position_emoji"])
 
+        # 투자금이 입력된 경우만 사이징 계산 (capital > 0)
         sizing = None
-        if watch and ana.get("stop_price"):
+        if watch and watch.get("capital", 0) > 0 and ana.get("stop_price"):
             s = shares_for(watch["capital"], watch["risk_pct"],
                            float(ana.get("entry_price") or snap["quote"]["price"]),
                            float(ana["stop_price"]))

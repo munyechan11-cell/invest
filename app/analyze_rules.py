@@ -132,10 +132,30 @@ def analyze_rules(symbol: str, snapshot: dict, news: list[dict],
                      else "중립")
         flow_inst_reason = f"RV {rv:.2f}x · VWAP {'상회' if above_vwap else '하회'} 기반 추정"
 
-    headlines = [n.get("headline", "")[:50] for n in (news or [])[:2] if n.get("headline")]
-    market_ctx = (f"최신 헤드라인: {' / '.join(headlines)}. 기술적 신호 우선 판단."
-                  if headlines else
-                  "뉴스 데이터 부족 — 순수 기술 분석 기반. 24h 내 변동성 주의.")
+    # 뉴스 요약은 무조건 한국어로. 영문 원문을 그대로 인용하지 않는다.
+    news_count = sum(1 for n in (news or []) if n.get("headline"))
+    if news_count == 0:
+        market_ctx = "관련 뉴스 데이터 없음 — 순수 기술 분석 기반 판단. 24시간 내 변동성 주의."
+    else:
+        # 한글 비율로 번역 가능 여부 판단 (Gemini 번역 성공 시 헤드라인이 이미 한국어)
+        sample = " ".join(n.get("headline", "") for n in (news or [])[:2])
+        kr_ratio = sum(1 for c in sample if "가" <= c <= "힣") / max(len(sample), 1)
+
+        if kr_ratio >= 0.4:
+            # 헤드라인이 한국어로 번역되어 있음 — 요약에 인용
+            top = [n.get("headline", "").strip()[:60] for n in (news or [])[:2] if n.get("headline")]
+            market_ctx = f"최신 뉴스: {' / '.join(top)}. 기술적 신호와 종합 판단."
+        else:
+            # 영문 헤드라인 → 인용하지 않고 카운트만
+            sentiment_hint = ""
+            if score > 15:
+                sentiment_hint = "최근 뉴스 흐름은 긍정적 시그널과 부합. "
+            elif score < -15:
+                sentiment_hint = "최근 뉴스 흐름은 매도 압력과 함께 발생. "
+            market_ctx = (
+                f"최근 24시간 관련 뉴스 {news_count}건 확인됨. "
+                f"{sentiment_hint}순수 기술 분석 우선, 뉴스 영향은 보조 지표로 활용."
+            )
 
     # ── 보유기간 및 전략 산출 (가변적)
     if abs(score) >= 45 and rv >= 2.0:
