@@ -651,11 +651,48 @@
           </template>
         </div>
 
-        <!-- 마켓 컨텍스트 + 뉴스 -->
+        <!-- 뉴스 분석: 호재 / 악재 / 종합 -->
         <div class="surface-elevated p-5">
-          <div class="serif text-lg font-semibold mb-2">실시간 마켓 컨텍스트</div>
-          <p class="text-ink-800 leading-relaxed" x-text="report.analysis.market_context"></p>
+          <div class="flex items-baseline justify-between mb-3">
+            <div class="serif text-lg font-semibold">뉴스 분석 — 왜 좋은가 / 왜 나쁜가</div>
+            <div class="pill text-[11px]"
+                 :class="report.analysis.news_verdict?.includes('호재') ? 'pill-olive' : (report.analysis.news_verdict?.includes('악재') ? 'pill-rust' : 'pill-stone')"
+                 x-text="report.analysis.news_verdict || '재료 분석 중'"></div>
+          </div>
+
+          <!-- 한 줄 요약 (가장 먼저 읽히는 핵심) -->
+          <p class="text-ink-800 leading-relaxed text-base mb-4"
+             x-text="report.analysis.news_summary || report.analysis.market_context || '최신 뉴스 분석 중'"></p>
+
+          <!-- 호재 / 악재 구조화 -->
+          <div class="grid grid-cols-2 gap-3"
+               x-show="(report.analysis.news_positive?.length || 0) + (report.analysis.news_negative?.length || 0) > 0">
+            <div class="surface p-3" x-show="report.analysis.news_positive?.length">
+              <div class="text-[10px] text-emerald-500 uppercase tracking-wider font-bold mb-2">▲ 호재 요인</div>
+              <ul class="space-y-1.5 text-sm">
+                <template x-for="p in (report.analysis.news_positive || [])">
+                  <li class="text-ink-800 leading-snug flex gap-1.5">
+                    <span class="text-emerald-500 shrink-0">·</span>
+                    <span x-text="p"></span>
+                  </li>
+                </template>
+              </ul>
+            </div>
+            <div class="surface p-3" x-show="report.analysis.news_negative?.length">
+              <div class="text-[10px] text-rose-500 uppercase tracking-wider font-bold mb-2">▼ 악재 요인</div>
+              <ul class="space-y-1.5 text-sm">
+                <template x-for="n in (report.analysis.news_negative || [])">
+                  <li class="text-ink-800 leading-snug flex gap-1.5">
+                    <span class="text-rose-500 shrink-0">·</span>
+                    <span x-text="n"></span>
+                  </li>
+                </template>
+              </ul>
+            </div>
+          </div>
+
           <div class="divider my-4"></div>
+
           <div class="text-[11px] text-ink-500 uppercase tracking-wider mb-2">관련 헤드라인</div>
           <ul class="space-y-2">
             <template x-for="n in report.news" :key="n.url">
@@ -666,7 +703,34 @@
                 <span class="text-ink-500 text-xs ml-1.5" x-text="'· '+n.source"></span>
               </li>
             </template>
+            <template x-if="!report.news?.length">
+              <li class="text-xs text-ink-500">관련 뉴스 없음</li>
+            </template>
           </ul>
+        </div>
+
+        <!-- 매매 실행 증권사 추천 -->
+        <div class="surface-elevated p-5" x-show="report.analysis.brokers?.length">
+          <div class="flex items-baseline justify-between mb-3">
+            <div class="serif text-lg font-semibold">실제 매매할 증권사 추천</div>
+            <div class="text-[11px] text-ink-500" x-text="isKR(selected) ? '한국 주식' : '미국 주식 (한국 거주자 기준)'"></div>
+          </div>
+          <div class="grid grid-cols-2 gap-2.5">
+            <template x-for="b in (report.analysis.brokers || [])" :key="b.name">
+              <a :href="b.url" target="_blank"
+                 class="surface p-3 hover:border-coral-500/50 transition-colors flex flex-col gap-1.5">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-semibold text-sm text-ink-800" x-text="b.name"></span>
+                  <span class="pill pill-coral text-[10px] shrink-0" x-text="b.tag"></span>
+                </div>
+                <div class="text-[11px] font-mono text-ink-600">수수료 <span x-text="b.fee"></span></div>
+                <div class="text-xs text-ink-700 leading-snug" x-text="b.note"></div>
+              </a>
+            </template>
+          </div>
+          <div class="text-[10px] text-ink-500 mt-3">
+            ⓘ 추천 클릭 시 해당 증권사 페이지로 이동. 수수료는 변동 가능. 직접 가입 후 종목 검색 → 매수.
+          </div>
         </div>
 
         <!-- 차트 -->
@@ -906,7 +970,37 @@ function app(){
       ws.onclose = ()=> { this.wsConnected = false; setTimeout(()=>this.connect(), 2000); };
       ws.onmessage = (e)=>{
         const m = JSON.parse(e.data);
-        if(m.type==='tick') this.ticks[m.symbol] = m;
+        if(m.type==='tick') {
+          this.ticks[m.symbol] = m;
+          // 워치리스트 카드의 가격도 자동 갱신됨 (Alpine 반응성)
+          // 보유 종목에 같은 심볼이 있으면 가격 부분 동기화
+          this.holdings.forEach(h => {
+            if(h.symbol === m.symbol) {
+              h.current_price = m.price;
+              if(h.entry_price > 0) {
+                h.pnl = (m.price - h.entry_price) * (h.shares || 0);
+                h.pnl_pct = (m.price / h.entry_price - 1) * 100;
+              }
+            }
+          });
+        }
+        else if(m.type==='portfolio_pnl') {
+          // 백엔드 워커가 계산한 손익 → 해당 보유종목 즉시 반영
+          const idx = this.holdings.findIndex(h => h.id === m.portfolio_id || h.symbol === m.symbol);
+          if(idx >= 0) {
+            this.holdings[idx] = {
+              ...this.holdings[idx],
+              current_price: m.current_price,
+              entry_price: m.entry_price,
+              shares: m.shares,
+              pnl: m.pnl,
+              pnl_pct: m.pnl_pct,
+              updated_at: m.ts,
+            };
+            // 전체 포트폴리오 합계도 재계산
+            this.recalcPortfolioTotals();
+          }
+        }
         else if(m.type==='alert'){
           this.alerts.unshift({...m, ts: Date.now()/1000});
           this.notify(m);
@@ -981,6 +1075,21 @@ function app(){
         this.loading = false;
         e.target.value = ''; // 초기화
       }
+    },
+    recalcPortfolioTotals() {
+      // 보유종목 합계로 포트폴리오 카드 즉시 갱신
+      let invested = 0, current = 0;
+      this.holdings.forEach(h => {
+        const sh = parseFloat(h.shares) || 0;
+        const ep = parseFloat(h.entry_price) || 0;
+        const cp = parseFloat(h.current_price) || ep;
+        invested += sh * ep;
+        current += sh * cp;
+      });
+      this.portfolio.total_invested = Math.round(invested);
+      this.portfolio.total_returned = Math.round(current);
+      this.portfolio.total_pnl = Math.round(current - invested);
+      this.portfolio.total_pnl_pct = invested > 0 ? +((current/invested - 1) * 100).toFixed(2) : 0;
     },
     async loadHoldings() {
       try {

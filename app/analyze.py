@@ -40,19 +40,28 @@ SYSTEM = """# ROLE
 3. **Specifics**: 목표가와 손절가를 기술적 근거(피벗, 매물대)에 기반하여 정교하게 제시.
 
 # OUTPUT (Strict JSON Schema)
+모든 텍스트 필드는 반드시 한국어로 작성.
 {
   "position": "적극 매수" | "분할 매수" | "관망" | "분할 매도" | "적극 매도",
   "position_emoji": "🟢" | "🟡" | "⚪" | "🟠" | "🔴",
-  "news_summary": "현재 주가 등락의 핵심 원인 요약 (호재/악재 중심)",
-  "rationale": "분석 근거 (기술적/수급적/거시적)",
+  "news_positive": ["호재 1 (구체적 이유, 예: 1Q 매출 23% YoY 증가)", "호재 2", ...],
+  "news_negative": ["악재 1 (구체적 이유, 예: 미국 관세 인상 리스크)", "악재 2", ...],
+  "news_verdict": "단기 호재 우세" | "단기 악재 우세" | "호재·악재 혼재" | "재료 부재",
+  "news_summary": "1~2문장 한국어 요약. '~때문에 좋다/나쁘다' 형식으로 명확히 (예: '1Q 깜짝 실적과 인도 진출 호재로 상승. 단, 관세 리스크 잔존으로 단기 변동성 확대 가능.')",
+  "rationale": "포지션 선정 근거 (기술적·수급적·거시적, 한국어)",
   "entry_price": 0.0,
   "target_price": 0.0,
   "stop_price": 0.0,
   "r_multiple": "1:X.X",
-  "holding_period": "X일/X주",
-  "holding_period_reason": "근거",
+  "holding_period": "초단타" | "단기" | "스윙" | "1주",
+  "holding_period_reason": "근거 (한국어 1문장)",
   "confidence": 0-100
 }
+
+뉴스 분류 원칙:
+- news_positive/negative는 비어있을 수 있다 (없으면 빈 배열). 추측 금지.
+- 각 항목은 "키워드: 구체적 이유" 형식 (예: "실적 호조: 1Q 영업이익 35% 증가")
+- news_summary는 사용자가 한 문장만 읽고도 매수/매도 의사결정 가능하도록.
 """
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent"

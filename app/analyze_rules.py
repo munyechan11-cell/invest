@@ -132,29 +132,83 @@ def analyze_rules(symbol: str, snapshot: dict, news: list[dict],
                      else "중립")
         flow_inst_reason = f"RV {rv:.2f}x · VWAP {'상회' if above_vwap else '하회'} 기반 추정"
 
-    # 뉴스 요약은 무조건 한국어로. 영문 원문을 그대로 인용하지 않는다.
+    # 뉴스 호재/악재 키워드 분류 (한+영 동시 매칭)
+    POS_KW = (
+        "호재", "상승", "신고가", "급등", "강세", "수주", "계약", "신제품",
+        "협력", "제휴", "흑자", "이익", "성장", "매출", "기대", "긍정", "확장", "출시",
+        "beat", "surge", "jump", "rally", "soar", "growth", "profit", "deal",
+        "expand", "strong", "upgrade", "launch", "milestone", "outperform",
+    )
+    NEG_KW = (
+        "악재", "하락", "신저가", "급락", "약세", "손실", "적자", "리콜",
+        "소송", "규제", "우려", "부진", "감소", "축소", "하향", "리스크", "철수", "지연",
+        "drop", "fall", "loss", "miss", "miss", "weakness", "recall", "lawsuit",
+        "downgrade", "slump", "warning", "concern", "delay", "decline", "underperform",
+    )
+
+    pos_items: list[str] = []
+    neg_items: list[str] = []
+    for n in (news or []):
+        h = (n.get("headline") or "").strip()
+        if not h:
+            continue
+        h_lower = h.lower()
+        if any(k in h_lower for k in [w.lower() for w in POS_KW]):
+            pos_items.append(h[:80])
+        elif any(k in h_lower for k in [w.lower() for w in NEG_KW]):
+            neg_items.append(h[:80])
+
     news_count = sum(1 for n in (news or []) if n.get("headline"))
+    pos_n, neg_n = len(pos_items), len(neg_items)
+
+    # verdict 판정
+    if pos_n > 0 and neg_n == 0:
+        news_verdict = "단기 호재 우세"
+    elif neg_n > 0 and pos_n == 0:
+        news_verdict = "단기 악재 우세"
+    elif pos_n > 0 and neg_n > 0:
+        news_verdict = "호재·악재 혼재"
+    else:
+        news_verdict = "재료 부재"
+
+    # 한국어 요약 — 영문 헤드라인 인용 회피, 카운트와 방향만 명시
+    sample = " ".join((n.get("headline") or "") for n in (news or [])[:3])
+    kr_ratio = sum(1 for c in sample if "가" <= c <= "힣") / max(len(sample), 1)
+
     if news_count == 0:
         market_ctx = "관련 뉴스 데이터 없음 — 순수 기술 분석 기반 판단. 24시간 내 변동성 주의."
+    elif kr_ratio >= 0.4:
+        # 한국어 헤드라인 — 직접 인용 가능
+        cited = [n.get("headline", "").strip()[:50] for n in (news or [])[:2] if n.get("headline")]
+        why = ""
+        if pos_n and not neg_n:
+            why = f" 호재 {pos_n}건으로 매수 우위."
+        elif neg_n and not pos_n:
+            why = f" 악재 {neg_n}건으로 매도 압력."
+        elif pos_n and neg_n:
+            why = f" 호재 {pos_n} / 악재 {neg_n}건 혼재 — 변동성 확대 가능."
+        market_ctx = f"최근 뉴스: {' / '.join(cited)}.{why}"
     else:
-        # 한글 비율로 번역 가능 여부 판단 (Gemini 번역 성공 시 헤드라인이 이미 한국어)
-        sample = " ".join(n.get("headline", "") for n in (news or [])[:2])
-        kr_ratio = sum(1 for c in sample if "가" <= c <= "힣") / max(len(sample), 1)
-
-        if kr_ratio >= 0.4:
-            # 헤드라인이 한국어로 번역되어 있음 — 요약에 인용
-            top = [n.get("headline", "").strip()[:60] for n in (news or [])[:2] if n.get("headline")]
-            market_ctx = f"최신 뉴스: {' / '.join(top)}. 기술적 신호와 종합 판단."
+        # 영문 헤드라인 → 카운트와 분류 결과만 한국어로
+        if pos_n and not neg_n:
+            market_ctx = (
+                f"최근 24시간 관련 뉴스 {news_count}건 중 호재 시그널 {pos_n}건 (실적·신제품·계약 등). "
+                "기술 분석과 함께 매수 시그널 강화."
+            )
+        elif neg_n and not pos_n:
+            market_ctx = (
+                f"최근 24시간 관련 뉴스 {news_count}건 중 악재 시그널 {neg_n}건 (규제·리콜·실적 부진 등). "
+                "기술 반등에도 단기 매도 압력 잔존."
+            )
+        elif pos_n and neg_n:
+            market_ctx = (
+                f"최근 24시간 뉴스 {news_count}건: 호재 {pos_n} / 악재 {neg_n}건 혼재. "
+                "방향성 약함 — 기술적 돌파 확인 후 진입 권장."
+            )
         else:
-            # 영문 헤드라인 → 인용하지 않고 카운트만
-            sentiment_hint = ""
-            if score > 15:
-                sentiment_hint = "최근 뉴스 흐름은 긍정적 시그널과 부합. "
-            elif score < -15:
-                sentiment_hint = "최근 뉴스 흐름은 매도 압력과 함께 발생. "
             market_ctx = (
                 f"최근 24시간 관련 뉴스 {news_count}건 확인됨. "
-                f"{sentiment_hint}순수 기술 분석 우선, 뉴스 영향은 보조 지표로 활용."
+                "뚜렷한 호재·악재 키워드 부재 — 기술 분석 우선."
             )
 
     # ── 보유기간 및 전략 산출 (가변적)
@@ -170,7 +224,10 @@ def analyze_rules(symbol: str, snapshot: dict, news: list[dict],
         "position": position,
         "position_emoji": emoji,
         "news_summary": market_ctx,
-        "rationale": (f"{symbol} 매수 구간 분석: 기술점수 {score:+.0f}. "
+        "news_positive": pos_items[:5],
+        "news_negative": neg_items[:5],
+        "news_verdict": news_verdict,
+        "rationale": (f"기술점수 {score:+.0f}. "
                       f"{'주요 지지선 확보 및 매수세 유입' if score > 0 else '저항권 부근 매도 압력 확인'}. "
                       f"RSI {rsi:.0f}로 {'매수 적기' if rsi < 45 else '추세 추종 가능'}."),
         "entry_price": price,

@@ -164,6 +164,35 @@ async def api_del(symbol: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+# ─── Analyze 보조: 매매 실행 증권사 추천 (한국 거주자 기준) ──────
+_BROKERS_KR = [
+    {"name": "토스증권", "fee": "온라인 0.015%", "url": "https://tossinvest.com",
+     "note": "수수료 최저, MTS 직관적", "tag": "수수료 최저"},
+    {"name": "키움증권", "fee": "0.015%", "url": "https://www.kiwoom.com",
+     "note": "거래량 1위, 신용·대주 풍부", "tag": "유동성 최고"},
+    {"name": "미래에셋증권", "fee": "0.014%", "url": "https://securities.miraeasset.com",
+     "note": "리서치 리포트 우수", "tag": "리서치"},
+    {"name": "삼성증권", "fee": "0.014%", "url": "https://www.samsungpop.com",
+     "note": "대형 우량주 중심 매매에 적합", "tag": "대형주"},
+]
+_BROKERS_US = [
+    {"name": "토스증권 (해외주식)", "fee": "0.07%", "url": "https://tossinvest.com",
+     "note": "한국에서 미국주식 거래 가장 간편, 환전 자동", "tag": "초보 추천"},
+    {"name": "미래에셋증권 (해외주식)", "fee": "0.25% (이벤트 시 0.07%)", "url": "https://securities.miraeasset.com",
+     "note": "정규장+프리/애프터마켓 모두 지원", "tag": "프리마켓"},
+    {"name": "키움증권 (영웅문Global)", "fee": "0.07~0.25%", "url": "https://www.kiwoom.com",
+     "note": "전문가 차트, 옵션/ETF 다양", "tag": "전문가"},
+    {"name": "Interactive Brokers (IBKR)", "fee": "$0.005/주 (최소 $1)", "url": "https://www.interactivebrokers.com",
+     "note": "글로벌 최저 수수료, 단 영문 가입 필요", "tag": "초저비용"},
+]
+
+
+def _attach_brokers(ana: dict, symbol: str) -> dict:
+    is_kr = symbol.isdigit() and len(symbol) == 6
+    ana["brokers"] = _BROKERS_KR if is_kr else _BROKERS_US
+    return ana
+
+
 # ─── Analyze 보조: 시장 수급 deterministic 보강 ──────────────────
 def _ensure_flow_fields(ana: dict, snap: dict, symbol: str) -> dict:
     """AI 응답에 flow_institutional 등이 빠져있으면 시세/수급 데이터로 채워 넣는다.
@@ -322,6 +351,9 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
     if cached:
         log.info(f"Using cached analysis for {symbol}")
         snap = await asyncio.to_thread(get_snapshot, symbol)
+        # 캐시에도 시장수급/증권사 보강 (오래된 캐시여도 항상 표시)
+        cached = _ensure_flow_fields(cached, snap, symbol)
+        cached = _attach_brokers(cached, symbol)
         await broadcast({"type": "analysis", "symbol": symbol, "user_id": user["id"]})
         return {"snapshot": snap, "analysis": cached, "cached": True}
 
@@ -340,8 +372,9 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
         risk_val = watch["risk_pct"] if watch else 1.0
 
         ana = await asyncio.to_thread(analyze, symbol, snap, news, flow, profile, risk_val)
-        # AI 응답에 시장수급 필드가 빠져있으면 deterministic 계산해서 주입 (항상 표시 보장)
+        # AI 응답에 시장수급/증권사 필드가 빠져있으면 deterministic 계산해서 주입
         ana = _ensure_flow_fields(ana, snap, symbol)
+        ana = _attach_brokers(ana, symbol)
         await db.save_plan(symbol, ana)
         # 워치리스트 목록에도 포지션 저장
         await db.update_watch_position(symbol, user["id"], ana["position"], ana["position_emoji"])
