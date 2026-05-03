@@ -80,18 +80,87 @@ async def fetch_market_flow(symbol: str) -> dict:
 
 
 async def _fetch_market_flow_us(symbol: str) -> dict:
-    """기관/애널리스트 권고 등 수급 근사 (다크풀은 무료 소스 부재)."""
+    """기관/애널리스트 권고 + 어닝 캘린더 + 인사이더 거래 (Finnhub 무료)."""
     key = os.environ.get("FINNHUB_API_KEY")
     if not key:
         return {}
+    sym = symbol.upper()
     out: dict = {}
+    from datetime import datetime, timedelta
+
     async with httpx.AsyncClient(timeout=15) as c:
+        # 1) 애널리스트 추천 분포
         rec = await c.get(f"{FINNHUB}/stock/recommendation",
-                          params={"symbol": symbol.upper(), "token": key})
+                          params={"symbol": sym, "token": key})
         if rec.status_code == 200 and rec.json():
-            out["analyst_recommendation"] = rec.json()[0]
+            latest = rec.json()[0]
+            sb = int(latest.get("strongBuy") or 0)
+            b = int(latest.get("buy") or 0)
+            h = int(latest.get("hold") or 0)
+            s = int(latest.get("sell") or 0)
+            ss = int(latest.get("strongSell") or 0)
+            total = sb + b + h + s + ss
+            if total > 0:
+                buy_pct = (sb + b) / total * 100
+                if buy_pct >= 70:
+                    consensus = "강력 매수"
+                elif buy_pct >= 50:
+                    consensus = "매수"
+                elif buy_pct >= 30:
+                    consensus = "보유"
+                else:
+                    consensus = "매도"
+                out["analyst_consensus"] = {
+                    "strong_buy": sb, "buy": b, "hold": h, "sell": s, "strong_sell": ss,
+                    "total": total, "buy_pct": round(buy_pct, 1),
+                    "consensus": consensus, "period": latest.get("period"),
+                }
+
+        # 2) 애널리스트 목표가
+        pt = await c.get(f"{FINNHUB}/stock/price-target",
+                         params={"symbol": sym, "token": key})
+        if pt.status_code == 200:
+            d = pt.json() or {}
+            if d.get("targetMean"):
+                out["price_target"] = {
+                    "high": d.get("targetHigh"),
+                    "low": d.get("targetLow"),
+                    "mean": d.get("targetMean"),
+                    "median": d.get("targetMedian"),
+                    "last_updated": d.get("lastUpdated"),
+                }
+
+        # 3) 다음 어닝 발표일 (90일 이내)
+        today = datetime.utcnow().date()
+        end = today + timedelta(days=90)
+        ec = await c.get(f"{FINNHUB}/calendar/earnings", params={
+            "symbol": sym, "from": today.isoformat(),
+            "to": end.isoformat(), "token": key,
+        })
+        if ec.status_code == 200:
+            items = (ec.json() or {}).get("earningsCalendar") or []
+            if items:
+                nxt = items[0]
+                date_str = nxt.get("date")
+                if date_str:
+                    try:
+                        d_dt = datetime.strptime(date_str, "%Y-%m-%d").date()
+                        days_until = (d_dt - today).days
+                        out["earnings_next"] = {
+                            "date": date_str,
+                            "days_until": days_until,
+                            "eps_estimate": nxt.get("epsEstimate"),
+                            "revenue_estimate": nxt.get("revenueEstimate"),
+                            "year": nxt.get("year"),
+                            "quarter": nxt.get("quarter"),
+                            "hour": nxt.get("hour"),  # bmo/amc
+                        }
+                    except Exception:
+                        pass
+
+        # 4) 인사이더 거래 (기존 유지)
         ins = await c.get(f"{FINNHUB}/stock/insider-transactions",
-                          params={"symbol": symbol.upper(), "token": key})
+                          params={"symbol": sym, "token": key})
         if ins.status_code == 200:
             data = (ins.json() or {}).get("data", [])[:5]
             out["insider_recent"] = [

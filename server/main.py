@@ -20,6 +20,9 @@ from app.market import get_snapshot
 from app.news import fetch_news, fetch_profile, fetch_market_flow
 from app.analyze import analyze
 from app.search import search_symbols
+from app.intelligence import (
+    compute_toss_score, explain_move, compute_multi_tf, detect_patterns,
+)
 from server import db, alerts as alerts_mod
 from server.sizing import shares_for, split_plan
 
@@ -193,6 +196,47 @@ def _attach_brokers(ana: dict, symbol: str) -> dict:
     return ana
 
 
+def _attach_intelligence(ana: dict, snap: dict, news: list[dict], flow: dict) -> dict:
+    """경쟁 AI 플랫폼 핵심 5기능 일괄 주입.
+
+    1. TOSS Score (단일 종합 점수 0-100)
+    2. Move Explainer (왜 움직였나 1문장)
+    3. Multi-TF Consensus (1H/1D/1W 시그널 일치도)
+    4. Chart Patterns (자동 인식)
+    5. Earnings/Analyst (flow에서 추출)
+    """
+    try:
+        ana["toss_score"] = compute_toss_score(snap, ana)
+    except Exception as e:
+        log.warning(f"toss_score 실패: {e}")
+
+    try:
+        ana["move_explainer"] = explain_move(snap, news, ana)
+    except Exception as e:
+        log.warning(f"move_explainer 실패: {e}")
+
+    try:
+        ana["multi_tf"] = compute_multi_tf(snap)
+    except Exception as e:
+        log.warning(f"multi_tf 실패: {e}")
+
+    try:
+        ana["patterns"] = detect_patterns(snap)
+    except Exception as e:
+        log.warning(f"patterns 실패: {e}")
+
+    # flow에서 어닝/애널리스트를 ana로 끌어올림 (프론트가 한 곳에서 읽도록)
+    if flow:
+        if flow.get("analyst_consensus"):
+            ana["analyst_consensus"] = flow["analyst_consensus"]
+        if flow.get("price_target"):
+            ana["price_target"] = flow["price_target"]
+        if flow.get("earnings_next"):
+            ana["earnings_next"] = flow["earnings_next"]
+
+    return ana
+
+
 # ─── Analyze 보조: 시장 수급 deterministic 보강 ──────────────────
 def _ensure_flow_fields(ana: dict, snap: dict, symbol: str) -> dict:
     """AI 응답에 flow_institutional 등이 빠져있으면 시세/수급 데이터로 채워 넣는다.
@@ -351,8 +395,10 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
     if cached:
         log.info(f"Using cached analysis for {symbol}")
         snap = await asyncio.to_thread(get_snapshot, symbol)
-        # 캐시에도 시장수급/증권사 보강 (오래된 캐시여도 항상 표시)
+        # 캐시에도 시장수급/지능/증권사 보강 (캐시 시점엔 없었던 필드 보충)
         cached = _ensure_flow_fields(cached, snap, symbol)
+        # 어닝·애널리스트는 캐시 path에 flow가 없으니 빈 dict로 호출 → 패턴/스코어만 보강
+        cached = _attach_intelligence(cached, snap, [], {})
         cached = _attach_brokers(cached, symbol)
         await broadcast({"type": "analysis", "symbol": symbol, "user_id": user["id"]})
         return {"snapshot": snap, "analysis": cached, "cached": True}
@@ -372,8 +418,9 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
         risk_val = watch["risk_pct"] if watch else 1.0
 
         ana = await asyncio.to_thread(analyze, symbol, snap, news, flow, profile, risk_val)
-        # AI 응답에 시장수급/증권사 필드가 빠져있으면 deterministic 계산해서 주입
+        # AI 응답에 시장수급/증권사/지능 필드가 빠져있으면 deterministic 계산해서 주입
         ana = _ensure_flow_fields(ana, snap, symbol)
+        ana = _attach_intelligence(ana, snap, news, flow)
         ana = _attach_brokers(ana, symbol)
         await db.save_plan(symbol, ana)
         # 워치리스트 목록에도 포지션 저장

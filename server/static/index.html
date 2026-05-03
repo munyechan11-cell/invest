@@ -462,6 +462,113 @@
           <div class="text-sm font-medium leading-relaxed" x-text="report.analysis.news_summary"></div>
         </div>
 
+        <!-- ⭐ TOSS Score — 단일 종합 점수 (헤드라인) -->
+        <template x-if="report.analysis.toss_score">
+          <div class="surface-elevated p-5 relative overflow-hidden">
+            <div class="flex items-center gap-5">
+              <!-- 점수 원형 표시 -->
+              <div class="relative shrink-0">
+                <div class="w-28 h-28 rounded-full flex flex-col items-center justify-center"
+                     :style="'background: conic-gradient(' +
+                            (report.analysis.toss_score.score >= 60 ? '#10b981' :
+                             report.analysis.toss_score.score >= 45 ? '#f59e0b' : '#ef4444') +
+                            ' ' + (report.analysis.toss_score.score * 3.6) + 'deg, #1a1a1a 0deg)'">
+                  <div class="w-24 h-24 rounded-full bg-[#0a0a0a] flex flex-col items-center justify-center">
+                    <div class="text-4xl font-bold font-mono"
+                         :class="report.analysis.toss_score.score >= 60 ? 'text-emerald-500' :
+                                 report.analysis.toss_score.score >= 45 ? 'text-amber-500' : 'text-rose-500'"
+                         x-text="report.analysis.toss_score.score"></div>
+                    <div class="text-[10px] text-ink-500 uppercase tracking-wider">/100</div>
+                  </div>
+                </div>
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 mb-1">
+                  <span class="text-[10px] uppercase tracking-widest text-ink-500">TOSS Score</span>
+                  <span class="px-2 py-0.5 rounded text-xs font-bold font-mono"
+                        :class="report.analysis.toss_score.score >= 60 ? 'bg-emerald-500/20 text-emerald-500' :
+                                report.analysis.toss_score.score >= 45 ? 'bg-amber-500/20 text-amber-500' : 'bg-rose-500/20 text-rose-500'"
+                        x-text="report.analysis.toss_score.grade"></span>
+                </div>
+                <div class="serif text-2xl font-semibold mb-2"
+                     x-text="report.analysis.toss_score.color + ' ' + report.analysis.toss_score.label"></div>
+                <!-- 5차원 breakdown 미니 막대 -->
+                <div class="space-y-1">
+                  <template x-for="(v, k) in report.analysis.toss_score.breakdown" :key="k">
+                    <div class="flex items-center gap-2 text-[11px]">
+                      <span class="w-20 text-ink-600 shrink-0" x-text="k"></span>
+                      <div class="flex-1 h-1.5 rounded-full overflow-hidden bg-[#1a1a1a] relative">
+                        <div class="absolute h-full top-0"
+                             :style="'left:50%; width:' + Math.min(Math.abs(v) * 1.5, 50) + '%; background:' + (v >= 0 ? '#10b981' : '#ef4444') + '; transform-origin:left; transform:' + (v < 0 ? 'scaleX(-1)' : 'none')"></div>
+                        <div class="absolute h-full w-px bg-ink-600/30 top-0" style="left:50%"></div>
+                      </div>
+                      <span class="w-10 text-right font-mono shrink-0"
+                            :class="v >= 0 ? 'text-emerald-500' : 'text-rose-500'"
+                            x-text="(v >= 0 ? '+' : '') + v"></span>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- ⭐ Move Explainer — "왜 움직였나" 한 줄 -->
+        <template x-if="report.analysis.move_explainer">
+          <div class="surface-elevated p-4 border-l-4 border-coral-500">
+            <div class="text-[10px] uppercase tracking-widest text-ink-500 mb-1">오늘 왜 움직였나</div>
+            <div class="text-base font-semibold text-ink-800" x-text="report.analysis.move_explainer"></div>
+          </div>
+        </template>
+
+        <!-- ⭐ Multi-Timeframe Consensus — 3개 시간대 신호등 -->
+        <template x-if="report.analysis.multi_tf">
+          <div class="surface-elevated p-5">
+            <div class="flex items-baseline justify-between mb-3">
+              <div class="serif text-lg font-semibold">시간대별 컨센서스</div>
+              <div class="text-[11px] text-ink-500">1H · 1D · 1W</div>
+            </div>
+            <div class="grid grid-cols-3 gap-3 mb-3">
+              <template x-for="tf in [['1H', report.analysis.multi_tf.h1], ['1D', report.analysis.multi_tf.d1], ['1W', report.analysis.multi_tf.w1]]">
+                <div class="surface p-3 text-center">
+                  <div class="text-[10px] text-ink-500 uppercase tracking-wider mb-1" x-text="tf[0]"></div>
+                  <div class="text-2xl font-bold mb-1"
+                       :class="tf[1].signal==='BUY' ? 'text-emerald-500' : tf[1].signal==='SELL' ? 'text-rose-500' : 'text-amber-500'"
+                       x-text="tf[1].signal==='BUY' ? '🟢 매수' : tf[1].signal==='SELL' ? '🔴 매도' : '🟡 관망'"></div>
+                  <div class="text-[10px] text-ink-500 font-mono" x-text="'강도 ' + tf[1].strength"></div>
+                </div>
+              </template>
+            </div>
+            <div class="text-sm font-semibold text-center py-2 rounded-lg"
+                 :class="report.analysis.multi_tf.signal.includes('BUY') ? 'bg-emerald-500/10 text-emerald-500' :
+                         report.analysis.multi_tf.signal.includes('SELL') ? 'bg-rose-500/10 text-rose-500' : 'bg-amber-500/10 text-amber-500'"
+                 x-text="report.analysis.multi_tf.verdict"></div>
+          </div>
+        </template>
+
+        <!-- ⭐ Chart Patterns — 자동 인식된 차트 패턴 -->
+        <template x-if="report.analysis.patterns?.length">
+          <div class="surface-elevated p-5">
+            <div class="flex items-baseline justify-between mb-3">
+              <div class="serif text-lg font-semibold">감지된 차트 패턴</div>
+              <div class="text-[11px] text-ink-500" x-text="report.analysis.patterns.length + '개'"></div>
+            </div>
+            <div class="space-y-2">
+              <template x-for="p in report.analysis.patterns" :key="p.name">
+                <div class="surface p-3 border-l-4"
+                     :class="p.type==='bullish' ? 'border-emerald-500' : p.type==='bearish' ? 'border-rose-500' : 'border-amber-500'">
+                  <div class="flex items-center gap-2 mb-1">
+                    <span class="text-base"
+                          x-text="p.type==='bullish' ? '🟢' : p.type==='bearish' ? '🔴' : '🟡'"></span>
+                    <span class="font-semibold text-sm" x-text="p.name"></span>
+                  </div>
+                  <div class="text-xs text-ink-700 leading-snug" x-text="p.desc"></div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+
         <!-- 포지션 카드 (강조) -->
         <div class="surface-elevated p-6 relative overflow-hidden">
           <div class="absolute -right-16 -top-16 w-56 h-56 rounded-full opacity-30"
@@ -476,6 +583,37 @@
             <p class="text-ink-800 leading-relaxed whitespace-pre-wrap" x-text="report.analysis.rationale"></p>
           </div>
         </div>
+
+        <!-- ⭐ Earnings + Analyst Consensus (미국주식만, 데이터 있을 때) -->
+        <template x-if="report.analysis.earnings_next || report.analysis.analyst_consensus">
+          <div class="surface-elevated p-5 grid grid-cols-2 gap-5">
+            <!-- 어닝 D-day -->
+            <div x-show="report.analysis.earnings_next">
+              <div class="text-[10px] uppercase tracking-widest text-ink-500 mb-2">다음 실적 발표</div>
+              <div class="font-mono text-3xl font-bold"
+                   :class="report.analysis.earnings_next?.days_until <= 7 ? 'text-amber-500' : 'text-ink-800'"
+                   x-text="'D-' + (report.analysis.earnings_next?.days_until ?? '?')"></div>
+              <div class="text-sm text-ink-700 mt-1" x-text="report.analysis.earnings_next?.date"></div>
+              <div class="text-xs text-ink-500 mt-1"
+                   x-text="'EPS 예상 ' + (report.analysis.earnings_next?.eps_estimate ?? 'N/A')"></div>
+            </div>
+            <!-- 애널리스트 컨센서스 -->
+            <div x-show="report.analysis.analyst_consensus">
+              <div class="text-[10px] uppercase tracking-widest text-ink-500 mb-2">월가 애널리스트</div>
+              <div class="font-semibold text-xl mb-1"
+                   x-text="report.analysis.analyst_consensus?.consensus + ' ' + (report.analysis.analyst_consensus?.buy_pct ?? 0).toFixed(0) + '%'"></div>
+              <div class="text-xs text-ink-600 font-mono">
+                매수 <span class="text-emerald-500" x-text="(report.analysis.analyst_consensus?.strong_buy ?? 0) + (report.analysis.analyst_consensus?.buy ?? 0)"></span>
+                · 보유 <span class="text-amber-500" x-text="report.analysis.analyst_consensus?.hold ?? 0"></span>
+                · 매도 <span class="text-rose-500" x-text="(report.analysis.analyst_consensus?.sell ?? 0) + (report.analysis.analyst_consensus?.strong_sell ?? 0)"></span>
+              </div>
+              <div class="text-xs text-ink-500 mt-2" x-show="report.analysis.price_target?.mean">
+                평균 목표가 <span class="font-mono font-semibold text-ink-800"
+                              x-text="cur(selected) + (report.analysis.price_target?.mean ?? 0).toLocaleString()"></span>
+              </div>
+            </div>
+          </div>
+        </template>
 
         <!-- 액션 플랜 -->
         <div class="grid grid-cols-3 gap-3">
