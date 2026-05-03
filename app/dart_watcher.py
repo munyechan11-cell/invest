@@ -8,13 +8,21 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 import httpx
 
 log = logging.getLogger("dart_watcher")
 
 POLL_SEC = 600   # 10분마다 체크 (DART API 한도 보호)
+_MAX_SEEN_PER_SYM = 500
 _seen: dict[str, set[str]] = {}   # symbol → 알림 발송된 rcept_no 집합
+
+
+def _gc_seen():
+    """심볼당 _seen 최대 N개로 제한 (메모리 누수 방지)."""
+    for sym, st in list(_seen.items()):
+        if len(st) > _MAX_SEEN_PER_SYM:
+            # 최근 절반만 남김 (set이라 순서 없으니 임의로)
+            _seen[sym] = set(list(st)[: _MAX_SEEN_PER_SYM // 2])
 
 
 def _is_kr(symbol: str) -> bool:
@@ -135,8 +143,12 @@ async def worker(broadcast):
 
     # 첫 실행 시 지금 시점까지의 공시는 '본 것'으로 간주 (스팸 방지)
     bootstrap = True
+    loop_count = 0
 
     while True:
+        loop_count += 1
+        if loop_count % 10 == 0:
+            _gc_seen()
         try:
             # 워치리스트 + 포트폴리오의 KR 종목들 수집
             symbols: dict[str, str] = {}  # symbol → name (best effort)

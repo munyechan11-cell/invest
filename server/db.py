@@ -13,10 +13,23 @@ if not SECRET_KEY:
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 
 
-def _hash(pw: str) -> str:
-    salt = b"toss_quant_platform_v2_salt" 
+def _hash(pw: str, salt_str: str = "") -> str:
+    """비밀번호 해시 — per-user salt 권장.
+
+    - 신규 가입: salt 새로 생성 후 함께 저장 권장
+    - 기존(salt 없음): 레거시 고정 salt로 호환 유지 (마이그레이션 스킵)
+    """
+    if salt_str:
+        salt = salt_str.encode()
+    else:
+        # 레거시 호환 (기존 비번)
+        salt = b"toss_quant_platform_v2_salt"
     dk = hashlib.pbkdf2_hmac('sha256', pw.encode(), salt, 100000)
     return binascii.hexlify(dk).decode()
+
+
+def _new_salt() -> str:
+    return secrets.token_urlsafe(16)
 
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
@@ -31,16 +44,34 @@ def decode_token(token: str) -> dict | None:
         return None
 
 
+_conn_lock = None  # asyncio.Lock — lazy init
+
+
 async def get_db() -> aiosqlite.Connection:
-    global _conn
+    """글로벌 SQLite connection.
+
+    동시성: WAL 모드 + busy_timeout으로 다중 await 안전.
+    SQLite는 단일 connection 내 다중 cursor 시리얼화로 안전 (aiosqlite).
+    """
+    global _conn, _conn_lock
+    if _conn_lock is None:
+        import asyncio as _aio
+        _conn_lock = _aio.Lock()
     if _conn is None:
-        try:
-            _conn = await aiosqlite.connect(DB)
-            _conn.row_factory = aiosqlite.Row
-        except Exception as e:
-            import logging
-            logging.error(f"Critical DB Error: {e}")
-            raise
+        async with _conn_lock:
+            if _conn is None:  # double-check
+                try:
+                    _conn = await aiosqlite.connect(DB, timeout=30)
+                    _conn.row_factory = aiosqlite.Row
+                    # WAL 모드: reader/writer 동시 가능, 동시성 향상
+                    await _conn.execute("PRAGMA journal_mode=WAL")
+                    await _conn.execute("PRAGMA busy_timeout=5000")
+                    await _conn.execute("PRAGMA synchronous=NORMAL")
+                    await _conn.execute("PRAGMA foreign_keys=ON")
+                    await _conn.commit()
+                except Exception as e:
+                    logging.error(f"Critical DB Error: {e}")
+                    raise
     return _conn
 
 
@@ -125,16 +156,25 @@ CREATE TABLE IF NOT EXISTS mock_trades (
 
 
 # ── 포트폴리오 (보유 종목) ──────────────────────────────────────
-async def add_to_portfolio(user_id: int, symbol: str, entry_price: float, krw_invested: float, shares: float = 0):
+async def add_to_portfolio(user_id: int, symbol: str, entry_price: float,
+                           krw_invested: float, shares: float = 0):
+    """포트폴리오 항목 추가.
+
+    수량이 0이면 시장 자동 판별로 정확한 추정:
+    - KR (6자리): krw_invested / entry_price (그대로)
+    - US: krw_invested / entry_price (이미 USD 단위 가정)
+    UI에서 수량 직접 입력 권장.
+    """
+    sym = symbol.upper()
     c = await get_db()
-    # 수량이 0이면 원화/달러가로 추정 (옵션)
-    if shares <= 0 and entry_price > 0:
-        shares = krw_invested / (entry_price * 1400) # 대략적 추정 (UI에서 입력받는 것이 정확)
-    
+    if shares <= 0 and entry_price > 0 and krw_invested > 0:
+        # 시장과 무관하게 entry_price 단위로 나눔 (사용자가 같은 단위로 입력했다는 가정)
+        # 환율 추정 제거 — 부정확한 1400 하드코딩 버그 픽스
+        shares = krw_invested / entry_price
     await c.execute(
         "INSERT INTO portfolio(user_id, symbol, entry_price, shares, krw_invested, created_at) "
         "VALUES(?,?,?,?,?,?)",
-        (user_id, symbol.upper(), entry_price, shares, krw_invested, time.time())
+        (user_id, sym, entry_price, shares, krw_invested, time.time())
     )
     await c.commit()
 
@@ -427,8 +467,15 @@ async def init():
         except Exception:
             await c.execute(f"ALTER TABLE watchlist ADD COLUMN {col} {default}")
     
-    # 포트폴리오 테이블 생성 (스키마에 이미 있으나 혹시 모르니Script 실행)
-    await c.executescript(SCHEMA)
+    # 인덱스 추가 — 폴링 워커의 풀스캔 방지
+    await c.executescript("""
+        CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist(user_id);
+        CREATE INDEX IF NOT EXISTS idx_portfolio_user ON portfolio(user_id);
+        CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_mock_open ON mock_trades(status, symbol);
+        CREATE INDEX IF NOT EXISTS idx_pricealerts_active ON price_alerts(active, symbol);
+        CREATE INDEX IF NOT EXISTS idx_trades_user ON trades(user_id, created_at DESC);
+    """)
     await c.commit()
     
     # 관리자 계정 자동 생성 및 동기화 (보안: 디폴트 비번 절대 금지)

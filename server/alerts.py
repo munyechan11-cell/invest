@@ -10,7 +10,22 @@ log = logging.getLogger("alerts")
 
 POLL_SEC = 5           # 실시간 폴링 주기 (포트폴리오 자동 업데이트 5초)
 COOLDOWN_SEC = 300     # 같은 알림 재발송 방지
+_MAX_COOL_ENTRIES = 1000  # 메모리 누수 방지 한계
 _last_sent: dict[tuple[str, str], float] = {}
+
+
+def _gc_cool():
+    """_last_sent 정리 — 만료된 항목 제거 + 한계 초과 시 절반 비우기."""
+    now = time.time()
+    # 만료된 것 모두 제거 (TTL × 3 지난 것)
+    expired = [k for k, ts in _last_sent.items() if now - ts > COOLDOWN_SEC * 3]
+    for k in expired:
+        _last_sent.pop(k, None)
+    # 그래도 너무 많으면 오래된 절반
+    if len(_last_sent) > _MAX_COOL_ENTRIES:
+        sorted_items = sorted(_last_sent.items(), key=lambda x: x[1])
+        for k, _ in sorted_items[: len(_last_sent) // 2]:
+            _last_sent.pop(k, None)
 
 
 async def _push_telegram(symbol: str, kind: str, price: float, message: str,
@@ -277,8 +292,14 @@ async def worker(broadcast):
                     }
                     await _evaluate_item(synthetic, plan, q, broadcast)
 
+    loop_count = 0
     while True:
         try:
+            # 매 60회(=5분)마다 cooldown 메모리 정리
+            loop_count += 1
+            if loop_count % 60 == 0:
+                _gc_cool()
+
             watch = await db.list_all_watch()
             port = await db.list_all_portfolio()
             plans = await db.all_plans()

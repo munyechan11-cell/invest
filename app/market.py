@@ -97,6 +97,15 @@ def _fetch_us_quote(symbol: str) -> Quote:
         r.raise_for_status()
         d = r.json()
     if not d or d.get("c") in (0, None):
+        # 정규장 시작 직후 등 0 응답 시 prev_close로 폴백 (사용자 에러 방지)
+        pc = float(d.get("pc") or 0)
+        if pc > 0:
+            return Quote(
+                symbol=symbol.upper(), price=pc,
+                day_high=pc, day_low=pc, day_open=pc,
+                prev_close=pc, change_pct=0.0,
+                ts=datetime.now(timezone.utc).isoformat(),
+            )
         raise RuntimeError(f"Finnhub quote unavailable for {symbol}")
     price = float(d["c"]); pc = float(d["pc"])
     return Quote(

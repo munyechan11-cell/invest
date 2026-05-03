@@ -22,23 +22,38 @@ def _base() -> str:
 
 
 def _token_get() -> str:
+    """KIS access token — 만료 5분 전부터 사전 갱신, 발급 실패 시 1회 재시도."""
     app_key = os.environ.get("KIS_APP_KEY")
     app_secret = os.environ.get("KIS_APP_SECRET")
     if not app_key or not app_secret:
         raise RuntimeError("한국 주식 분석을 위해 KIS_APP_KEY와 KIS_APP_SECRET 환경변수 설정이 필요합니다.")
-        
-    if _token["value"] and _token["exp"] > time.time() + 60:
+
+    # 사전 갱신: 만료 5분 전부터 새 토큰 발급
+    if _token["value"] and _token["exp"] > time.time() + 300:
         return _token["value"]
-    r = httpx.post(f"{_base()}/oauth2/tokenP", json={
-        "grant_type": "client_credentials",
-        "appkey": app_key,
-        "appsecret": app_secret,
-    }, timeout=15)
-    r.raise_for_status()
-    d = r.json()
-    _token["value"] = d["access_token"]
-    _token["exp"] = time.time() + int(d.get("expires_in", 21600))
-    return _token["value"]
+
+    last_err = None
+    for attempt in range(2):
+        try:
+            r = httpx.post(f"{_base()}/oauth2/tokenP", json={
+                "grant_type": "client_credentials",
+                "appkey": app_key,
+                "appsecret": app_secret,
+            }, timeout=15)
+            r.raise_for_status()
+            d = r.json()
+            _token["value"] = d["access_token"]
+            _token["exp"] = time.time() + int(d.get("expires_in", 21600))
+            return _token["value"]
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(1)
+    # 갱신 실패 + 옛 토큰이라도 있으면 일단 사용 (graceful degradation)
+    if _token["value"]:
+        log.warning(f"KIS token refresh failed: {last_err} — using stale token")
+        return _token["value"]
+    raise RuntimeError(f"KIS token issue failed: {last_err}")
 
 
 def _headers(tr_id: str) -> dict:

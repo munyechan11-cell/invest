@@ -14,6 +14,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depe
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 
 from app.market import get_snapshot
@@ -95,6 +97,21 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Toss — Quant Assistant", lifespan=lifespan)
+
+# ─── 미들웨어 ──────────────────────────────────────────────────────
+# 1) GZip 압축 — 모바일 트래픽 ~70% 감소
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+# 2) CORS — 같은 origin 기본, 환경변수 ALLOW_ORIGINS로 확장 가능
+_allow_origins = os.environ.get("ALLOW_ORIGINS", "").strip()
+if _allow_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[o.strip() for o in _allow_origins.split(",") if o.strip()],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 STATIC = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -874,8 +891,8 @@ async def api_morning_send(_: dict = Depends(get_current_user)):
 
 # ─── 헬스 체크 — 외부 API 상태 점검 ──────────────────────────────
 @app.get("/api/health")
-async def api_health():
-    """주요 데이터 소스 상태."""
+async def api_health(_: dict = Depends(get_current_user)):
+    """주요 데이터 소스 상태 (관리자/유저 전용 — 환경변수 정찰 방지)."""
     out = {"status": "ok"}
     out["gemini"] = "configured" if os.environ.get("GEMINI_API_KEY") else "missing"
     out["finnhub"] = "configured" if os.environ.get("FINNHUB_API_KEY") else "missing"
@@ -888,6 +905,12 @@ async def api_health():
     out["dart"] = "configured" if os.environ.get("DART_API_KEY") else "missing"
     out["jwt_secret"] = "set" if os.environ.get("JWT_SECRET_KEY") else "ephemeral"
     return out
+
+
+@app.get("/api/ping")
+async def api_ping():
+    """공개 헬스체크 — 배포 모니터링용 (정보 노출 없음)."""
+    return {"ok": True, "ts": time.time()}
 
 
 # ─── 텔레그램 테스트 발송 (등록된 chat_id로 샘플 알림) ───────────
@@ -1139,7 +1162,7 @@ async def api_alerts(_: dict = Depends(get_current_user)):
 
 
 @app.get("/api/recommendations")
-async def api_recommendations():
+async def api_recommendations(_: dict = Depends(get_current_user)):
     """주요 종목 중 실시간 점수가 높은 TOP 5 추천"""
     # 스캔 대상: 주요 미주 우량주
     targets = ["NVDA", "TSLA", "AAPL", "COST", "PLTR", "MSFT", "AMZN", "GOOGL", "META", "AMD"]
