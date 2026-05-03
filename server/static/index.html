@@ -249,15 +249,42 @@
     <!-- 봇 OK, 등록 단계 -->
     <template x-if="tgInfo && tgInfo.configured">
       <div class="space-y-3">
+
+        <!-- 🔍 진단 결과 -->
+        <template x-if="tgDiag">
+          <div class="surface p-3 space-y-2">
+            <div class="flex items-center justify-between">
+              <div class="text-[10px] uppercase tracking-wider text-ink-500 font-bold">🔍 진단 결과</div>
+              <button @click="runDiagnose()" :disabled="diagLoading"
+                      class="text-[10px] text-coral-500 hover:underline"
+                      x-text="diagLoading ? '진단중…' : '다시 진단'"></button>
+            </div>
+            <template x-for="step in tgDiag.steps">
+              <div class="text-xs flex items-start gap-2">
+                <span class="shrink-0 mt-0.5"
+                      x-text="step.status==='ok' ? '✅' : step.status==='warn' ? '⚠️' : '❌'"></span>
+                <div>
+                  <div class="font-semibold text-ink-700" x-text="step.name"></div>
+                  <div class="text-ink-500 text-[11px] leading-snug" x-text="step.detail"></div>
+                </div>
+              </div>
+            </template>
+            <div x-show="tgDiag.next_action" class="mt-2 pt-2 border-t border-[#222] text-xs leading-relaxed"
+                 :class="tgDiag.next_action?.includes('✅') ? 'text-emerald-400' : 'text-amber-400'"
+                 x-text="'➜ ' + tgDiag.next_action"></div>
+          </div>
+        </template>
+
         <!-- 이미 등록됨 -->
         <template x-if="tgInfo.subscribed">
           <div class="surface p-4 border-l-4 border-emerald-500">
             <div class="font-semibold text-emerald-500 mb-1">✅ 알림 연결됨</div>
             <div class="text-sm text-ink-700">chat_id: <code x-text="tgInfo.my_chat_id"></code></div>
             <div class="text-xs text-ink-500 mt-1">매수/매도/익절/손절 시그널이 텔레그램으로 즉시 푸시됩니다.</div>
-            <div class="flex gap-2 mt-3">
+            <div class="flex gap-2 mt-3 flex-wrap">
               <button @click="testTelegram()" class="btn btn-ghost text-xs">테스트 메시지 발송</button>
-              <button @click="unsubscribeTelegram()" class="btn btn-ghost text-xs text-red-400">알림 해지</button>
+              <button @click="runDiagnose()" class="btn btn-ghost text-xs">🔍 진단</button>
+              <button @click="unsubscribeTelegram()" class="btn btn-ghost text-xs text-red-400">해지</button>
             </div>
           </div>
         </template>
@@ -1717,6 +1744,8 @@ function app(){
     tgInfo: null,
     tgCandidates: [],
     tgChatIdInput: '',
+    tgDiag: null,
+    diagLoading: false,
 
     // 모의 시그널 트래커
     mockStats: null,
@@ -2014,10 +2043,31 @@ function app(){
     // ─── 텔레그램 알림 ─────────────────────────────────
     async openTelegramSetup() {
       this.showTelegramSetup = true;
+      this.tgDiag = null;
       try {
         const r = await this.api('/api/telegram/info');
         this.tgInfo = await r.json();
       } catch(e) { this.tgInfo = { configured: false }; }
+      // 자동 진단도 함께 (열자마자 모든 단계 체크)
+      this.runDiagnose();
+    },
+
+    async runDiagnose() {
+      this.diagLoading = true;
+      try {
+        const r = await this.api('/api/telegram/diagnose');
+        if (r.ok) {
+          this.tgDiag = await r.json();
+          // chat_id가 자동 정리됐을 수 있으니 info 갱신
+          const r2 = await this.api('/api/telegram/info');
+          if (r2.ok) this.tgInfo = await r2.json();
+          // 후보가 있으면 표시
+          if (this.tgDiag.candidates?.length) {
+            this.tgCandidates = this.tgDiag.candidates;
+          }
+        }
+      } catch(e) { console.error(e); }
+      finally { this.diagLoading = false; }
     },
     async discoverTelegram() {
       try {

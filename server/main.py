@@ -551,6 +551,116 @@ async def api_telegram_info(user: dict = Depends(get_current_user)):
     }
 
 
+@app.get("/api/telegram/diagnose")
+async def api_telegram_diagnose(user: dict = Depends(get_current_user)):
+    """텔레그램 풀 진단 — 단계별 상태 + 실제 발송 테스트.
+
+    1) TOKEN 설정 확인
+    2) 봇 정보 fetch (TOKEN 유효성)
+    3) 본인 chat_id 저장 여부
+    4) 실제 테스트 메시지 발송 (가장 확실한 검증)
+    5) 봇과 최근 대화한 chat_id 후보
+    6) 다음 단계 권장
+    """
+    diag = {
+        "steps": [],
+        "next_action": None,
+        "bot_info": None,
+        "candidates": [],
+    }
+
+    # Step 1: TOKEN
+    has_token = telegram_alert.is_configured()
+    diag["steps"].append({
+        "name": "TELEGRAM_BOT_TOKEN 환경변수",
+        "status": "ok" if has_token else "fail",
+        "detail": "설정됨" if has_token else "Render Environment에 미설정",
+    })
+    if not has_token:
+        diag["next_action"] = "Render → Environment → TELEGRAM_BOT_TOKEN 추가 후 자동 재배포 대기 (5분)"
+        return diag
+
+    # Step 2: Bot info (TOKEN 유효성)
+    bot = await telegram_alert.get_me()
+    if bot and bot.get("username"):
+        diag["bot_info"] = {
+            "username": bot.get("username"),
+            "name": bot.get("first_name"),
+            "url": f"https://t.me/{bot['username']}",
+        }
+        diag["steps"].append({
+            "name": "봇 정보 조회",
+            "status": "ok",
+            "detail": f"@{bot['username']} ({bot.get('first_name', '')})",
+        })
+    else:
+        diag["steps"].append({
+            "name": "봇 정보 조회",
+            "status": "fail",
+            "detail": "TOKEN이 잘못됨 — BotFather에서 토큰 재확인 필요",
+        })
+        diag["next_action"] = "BotFather → /mybots → 본인 봇 → API Token 확인 후 Render 환경변수 갱신"
+        return diag
+
+    # Step 3: 본인 chat_id
+    chat_id = await db.get_telegram_chat_id(user["id"])
+    diag["steps"].append({
+        "name": "내 chat_id 등록",
+        "status": "ok" if chat_id else "warn",
+        "detail": f"chat_id: {chat_id}" if chat_id else "아직 등록 안 됨",
+    })
+
+    # Step 5: 봇과 최근 대화한 후보 조회 (chat_id 등록 안 됐을 때 도움)
+    candidates = await telegram_alert.discover_chat_ids()
+    diag["candidates"] = candidates
+
+    # Step 4: 실제 발송 테스트 (chat_id 있을 때)
+    if chat_id:
+        send_res = await telegram_alert.send(
+            chat_id,
+            "🔍 <b>Toss 진단 메시지</b>\n\n이 메시지가 보이면 텔레그램 알림이 정상 작동 중입니다.",
+        )
+        if send_res.get("ok"):
+            diag["steps"].append({
+                "name": "실제 메시지 발송 테스트",
+                "status": "ok",
+                "detail": "✅ 텔레그램에 진단 메시지 도착했어야 함 (앱 확인)",
+            })
+            diag["next_action"] = "✅ 모든 단계 정상. 텔레그램 앱 열어서 진단 메시지 확인하세요."
+        else:
+            err = send_res.get("error", "")
+            # 가장 흔한 케이스: chat_id가 옛 봇 거 → 새 봇은 모름
+            invalid_chat = "chat not found" in err.lower() or "bot was blocked" in err.lower()
+            diag["steps"].append({
+                "name": "실제 메시지 발송 테스트",
+                "status": "fail",
+                "detail": f"❌ 발송 실패: {err}",
+            })
+            if invalid_chat:
+                # 옛 chat_id 자동 정리
+                await db.set_telegram_chat_id(user["id"], "")
+                diag["next_action"] = (
+                    "❌ 옛 chat_id가 새 봇에 매칭 안 됨. 자동으로 chat_id 초기화함. "
+                    f"이제 텔레그램에서 @{bot['username']} 검색 → /start 입력 → 다시 [등록] 클릭"
+                )
+            else:
+                diag["next_action"] = f"❌ 발송 실패 — {err}. BotFather에서 봇 상태 확인 권장."
+    else:
+        # chat_id 없음 — 후보 있으면 안내
+        if candidates:
+            diag["next_action"] = (
+                f"📲 봇과 대화 OK ({len(candidates)}명 발견). "
+                "프로필 → 텔레그램 알림 → 본인 chat_id 클릭하여 [등록]"
+            )
+        else:
+            diag["next_action"] = (
+                f"📱 텔레그램에서 @{bot['username']} 검색 → /start 입력 → "
+                "다시 이 페이지로 돌아와 [등록] 클릭"
+            )
+
+    return diag
+
+
 @app.get("/api/telegram/discover")
 async def api_telegram_discover(_: dict = Depends(get_current_user)):
     """봇과 최근 대화한 chat_id 후보 — 본인 ID 찾기 도우미."""
