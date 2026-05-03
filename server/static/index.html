@@ -469,6 +469,43 @@
       <template x-if="trades.length===0"><div class="text-xs text-ink-500 text-center py-2">매매 기록이 없습니다</div></template>
     </div>
 
+    <!-- 🔥 오늘의 TOP 매수 후보 (스마트 스캐너) -->
+    <div class="surface p-4 space-y-2">
+      <div class="flex items-baseline justify-between">
+        <div class="serif text-sm font-semibold text-ink-800">🔥 오늘의 TOP 매수 후보</div>
+        <button @click="loadTopPicks(true)" :disabled="picksLoading"
+                class="text-[10px] text-coral-500 hover:underline"
+                x-text="picksLoading ? '분석중…' : '새로고침'"></button>
+      </div>
+      <div class="text-[10px] text-ink-500 mb-1">
+        한+미 인기 40종목 자동 분석 · 5분 캐시 · TOSS Score 상위
+      </div>
+      <template x-for="p in topPicks" :key="p.symbol">
+        <div @click="select(p.symbol)" class="surface-elevated p-2.5 cursor-pointer hover:border-coral-500/50 border border-transparent transition">
+          <div class="flex items-center justify-between mb-1">
+            <div class="flex items-center gap-1.5">
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-bold font-mono"
+                    :class="p.toss_score >= 70 ? 'bg-emerald-500/20 text-emerald-500' : 'bg-amber-500/20 text-amber-500'"
+                    x-text="p.grade"></span>
+              <span class="font-semibold text-sm" x-text="p.name"></span>
+            </div>
+            <span class="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-ink-600 font-mono"
+                  x-text="p.market"></span>
+          </div>
+          <div class="flex justify-between items-center text-[11px]">
+            <span class="font-mono"
+                  :class="p.change_pct >= 0 ? 'ticker-up' : 'ticker-down'"
+                  x-text="(p.change_pct >= 0 ? '+' : '') + p.change_pct.toFixed(2) + '%'"></span>
+            <span class="text-ink-600 font-mono" x-text="'TOSS ' + p.toss_score.toFixed(0)"></span>
+            <span x-text="p.position_emoji + ' ' + p.position"></span>
+          </div>
+        </div>
+      </template>
+      <template x-if="!topPicks.length && !picksLoading">
+        <div class="text-xs text-ink-500 text-center py-2">자동 스캔 대기중…</div>
+      </template>
+    </div>
+
     <!-- 모의 시그널 성과 (옵션 D — 만 19세 후 실전 검증용 트랙레코드) -->
     <div class="surface p-4 space-y-2.5" x-show="mockStats">
       <div class="flex items-baseline justify-between">
@@ -599,15 +636,27 @@
             </div>
           </div>
 
-          <!-- 시장 상태 표시 -->
-          <template x-if="report.market_status">
-            <div class="flex items-center gap-2 mt-3 text-[11px]">
-              <span class="w-1.5 h-1.5 rounded-full"
-                    :class="report.market_status.is_open ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-600'"></span>
-              <span :class="report.market_status.is_open ? 'text-emerald-500' : 'text-ink-500'"
-                    x-text="report.market_status.is_open ? '🟢 ' + report.market_status.label + ' (실시간)' : '⚫ ' + report.market_status.label + ' (시세 정지)'"></span>
-            </div>
-          </template>
+          <!-- 시장 상태 + 섹터 상대강도 표시 -->
+          <div class="flex items-center gap-3 mt-3 text-[11px] flex-wrap">
+            <template x-if="report.market_status">
+              <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full"
+                      :class="report.market_status.is_open ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-600'"></span>
+                <span :class="report.market_status.is_open ? 'text-emerald-500' : 'text-ink-500'"
+                      x-text="report.market_status.is_open ? '🟢 ' + report.market_status.label : '⚫ ' + report.market_status.label"></span>
+              </div>
+            </template>
+            <template x-if="report.analysis.relative_strength">
+              <div class="flex items-center gap-1.5"
+                   :title="'1일 ' + report.analysis.relative_strength.target_1d_pct + '% vs ' + report.analysis.relative_strength.benchmark_symbol + ' ' + report.analysis.relative_strength.bench_1d_pct + '%'">
+                <span x-text="report.analysis.relative_strength.emoji"></span>
+                <span :class="report.analysis.relative_strength.vs_1d_pct >= 0 ? 'text-emerald-500' : 'text-rose-500'">
+                  <span x-text="report.analysis.relative_strength.label"></span>
+                  <span class="text-ink-500" x-text="'(' + (report.analysis.relative_strength.vs_1d_pct >= 0 ? '+' : '') + report.analysis.relative_strength.vs_1d_pct + '% vs ' + report.analysis.relative_strength.benchmark_symbol + ')'"></span>
+                </span>
+              </div>
+            </template>
+          </div>
 
           <div class="flex gap-2 mt-5 flex-wrap">
             <button @click="runAnalyze()" class="btn btn-primary">재분석</button>
@@ -1278,6 +1327,10 @@ function app(){
     backtestLoading: false,
     backtestHoldDays: 3,
 
+    // TOP 매수 후보 (스마트 스캐너)
+    topPicks: [],
+    picksLoading: false,
+
     init(){
       if(this.user) {
         this.refresh();
@@ -1285,6 +1338,7 @@ function app(){
         this.loadRecommendations();
         this.loadHoldings();
         this.loadMockStats();
+        this.loadTopPicks();  // 스마트 스캐너 (백그라운드)
         this.openTelegramSetup().catch(()=>{}); this.showTelegramSetup = false;
         // 5초마다 포트폴리오 실시간 갱신
         setInterval(() => this.loadHoldings(), 5000);
@@ -1554,6 +1608,19 @@ function app(){
       } catch(e) {
         alert('❌ 오류: ' + e.message);
       }
+    },
+
+    // ─── 스마트 스캐너 (TOP 매수 후보) ────────────────
+    async loadTopPicks(force = false) {
+      this.picksLoading = true;
+      try {
+        const r = await this.api(`/api/scan/today?market=BOTH&limit=8${force ? '&force=true' : ''}`);
+        if (r.ok) {
+          const d = await r.json();
+          this.topPicks = d.picks || [];
+        }
+      } catch(e) {}
+      finally { this.picksLoading = false; }
     },
 
     // ─── 백테스트 ─────────────────────────────────────

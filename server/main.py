@@ -22,11 +22,13 @@ from app.analyze import analyze
 from app.search import search_symbols
 from app.intelligence import (
     compute_toss_score, explain_move, compute_multi_tf, detect_patterns,
+    compute_relative_strength, get_benchmark_symbol,
 )
 from app.trade_kis import auto_order, is_live as kis_is_live
-from app import telegram_alert
+from app import telegram_alert, morning_brief
 from app.market_hours import market_status_for
 from app.backtest import backtest as run_backtest
+from app.scanner import get_top_picks
 from server import db, alerts as alerts_mod
 from server.sizing import shares_for, split_plan
 
@@ -78,12 +80,14 @@ async def broadcast(payload: dict):
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await db.init()
-    task = asyncio.create_task(alerts_mod.worker(broadcast))
-    log.info("Toss server ready")
+    task1 = asyncio.create_task(alerts_mod.worker(broadcast))
+    task2 = asyncio.create_task(morning_brief.daily_scheduler())
+    log.info("Toss server ready (alerts + morning brief 09:00 KST)")
     try:
         yield
     finally:
-        task.cancel()
+        task1.cancel()
+        task2.cancel()
 
 
 app = FastAPI(title="Toss — Quant Assistant", lifespan=lifespan)
@@ -433,14 +437,20 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
 
     try:
         log.info(f"Fetching data in parallel for {symbol}")
+        bench_sym, bench_name = get_benchmark_symbol(symbol)
         snap_task = _cached_snapshot(symbol)
         news_task = fetch_news(symbol)
         profile_task = fetch_profile(symbol)
         flow_task = fetch_market_flow(symbol)
+        bench_task = _cached_snapshot(bench_sym)  # 섹터 RS 비교용 벤치마크
 
-        snap, news, profile, flow = await asyncio.gather(
-            snap_task, news_task, profile_task, flow_task
+        snap, news, profile, flow, bench_snap = await asyncio.gather(
+            snap_task, news_task, profile_task, flow_task, bench_task,
+            return_exceptions=True,
         )
+        # 벤치마크는 실패해도 분석은 진행
+        if isinstance(bench_snap, Exception):
+            bench_snap = None
 
         watch = next((w for w in await db.list_watch(user["id"]) if w["symbol"] == symbol), None)
         risk_val = watch["risk_pct"] if watch else 1.0
@@ -450,6 +460,14 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
         ana = _ensure_flow_fields(ana, snap, symbol)
         ana = _attach_intelligence(ana, snap, news, flow)
         ana = _attach_brokers(ana, symbol)
+
+        # 섹터 상대강도 — 벤치마크 받은 경우만
+        if bench_snap and isinstance(bench_snap, dict):
+            try:
+                ana["relative_strength"] = compute_relative_strength(snap, bench_snap, bench_name)
+            except Exception as e:
+                log.warning(f"RS 계산 실패: {e}")
+
         await db.save_plan(symbol, ana)
         # 워치리스트 목록에도 포지션 저장
         await db.update_watch_position(symbol, user["id"], ana["position"], ana["position_emoji"])
@@ -589,6 +607,51 @@ async def api_backtest(symbol: str, hold_days: int = 3,
     if hold_days < 1 or hold_days > 30:
         raise HTTPException(400, "hold_days는 1~30")
     return await asyncio.to_thread(run_backtest, symbol.upper(), hold_days)
+
+
+# ─── 스마트 스캐너 — 인기 40종목 자동 분석 → TOP 후보 ────────────
+@app.get("/api/scan/today")
+async def api_scan_today(market: str = "BOTH", limit: int = 5,
+                         force: bool = False,
+                         _: dict = Depends(get_current_user)):
+    """KR/US/BOTH 인기 종목 스캔 → TOSS Score 상위 N개. 5분 캐시."""
+    if market not in ("KR", "US", "BOTH"):
+        raise HTTPException(400, "market은 KR/US/BOTH")
+    picks = await get_top_picks(force=force, market=market, limit=limit)
+    return {"picks": picks, "count": len(picks)}
+
+
+# ─── 모닝 브리프 ─────────────────────────────────────────────────
+@app.get("/api/morning-brief/preview")
+async def api_morning_preview(_: dict = Depends(get_current_user)):
+    """모닝 브리프 미리보기 (HTML 텍스트)."""
+    text = await morning_brief.generate_brief()
+    return {"text": text}
+
+
+@app.post("/api/morning-brief/send-now")
+async def api_morning_send(_: dict = Depends(get_current_user)):
+    """수동으로 지금 모닝 브리프 발송 (테스트용)."""
+    sent = await morning_brief.send_to_all()
+    return {"ok": True, "sent_to": sent}
+
+
+# ─── 헬스 체크 — 외부 API 상태 점검 ──────────────────────────────
+@app.get("/api/health")
+async def api_health():
+    """주요 데이터 소스 상태."""
+    out = {"status": "ok"}
+    out["gemini"] = "configured" if os.environ.get("GEMINI_API_KEY") else "missing"
+    out["finnhub"] = "configured" if os.environ.get("FINNHUB_API_KEY") else "missing"
+    out["alpaca"] = "configured" if os.environ.get("ALPACA_API_KEY") else "missing"
+    out["kis"] = "configured" if os.environ.get("KIS_APP_KEY") else "missing"
+    out["kis_account"] = "set" if os.environ.get("KIS_ACCOUNT_NO") else "missing"
+    out["kis_live"] = "ENABLED" if kis_is_live() else "PAPER"
+    out["telegram"] = "configured" if telegram_alert.is_configured() else "missing"
+    out["naver"] = "configured" if os.environ.get("NAVER_CLIENT_ID") else "missing"
+    out["dart"] = "configured" if os.environ.get("DART_API_KEY") else "missing"
+    out["jwt_secret"] = "set" if os.environ.get("JWT_SECRET_KEY") else "ephemeral"
+    return out
 
 
 # ─── 텔레그램 테스트 발송 (등록된 chat_id로 샘플 알림) ───────────

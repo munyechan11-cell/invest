@@ -5,6 +5,7 @@
 3. Multi-Timeframe Consensus — Tickeron의 1H/1D/1W 시그널 일치도
 4. Chart Pattern Detection — Trade Ideas 스타일 패턴 자동 인식
 5. Earnings Calendar (Finnhub) — Yahoo/Bloomberg 스타일 D-day
+6. Sector Relative Strength — Bloomberg 스타일 벤치마크 대비 강세
 """
 from __future__ import annotations
 import logging
@@ -325,3 +326,55 @@ def detect_patterns(snap: dict) -> list[dict]:
             })
 
     return patterns
+
+
+# ───────────────────────────────────────────────────────────────────
+# 6. SECTOR RELATIVE STRENGTH (벤치마크 대비)
+# ───────────────────────────────────────────────────────────────────
+def compute_relative_strength(snap: dict, benchmark_snap: dict, benchmark_name: str) -> dict:
+    """타겟 종목의 1일·5일 변동률 vs 벤치마크 비교."""
+    q = snap.get("quote") or {}
+    bq = benchmark_snap.get("quote") or {}
+    target_1d = float(q.get("change_pct") or 0)
+    bench_1d = float(bq.get("change_pct") or 0)
+    diff_1d = target_1d - bench_1d
+
+    target_closes = snap.get("recent_closes") or []
+    bench_closes = benchmark_snap.get("recent_closes") or []
+    if len(target_closes) >= 5 and len(bench_closes) >= 5:
+        t5 = (target_closes[-1] / target_closes[-5] - 1) * 100
+        b5 = (bench_closes[-1] / bench_closes[-5] - 1) * 100
+        diff_5d = t5 - b5
+    else:
+        diff_5d = 0
+        t5 = b5 = 0
+
+    if diff_1d >= 1.5:
+        label, emoji = "강한 상대 우위", "🟢"
+    elif diff_1d >= 0.3:
+        label, emoji = "약한 상대 우위", "🟢"
+    elif diff_1d <= -1.5:
+        label, emoji = "강한 상대 약세", "🔴"
+    elif diff_1d <= -0.3:
+        label, emoji = "약한 상대 약세", "🟠"
+    else:
+        label, emoji = "벤치마크 동조", "⚪"
+
+    return {
+        "benchmark_symbol": benchmark_name,
+        "label": label,
+        "emoji": emoji,
+        "target_1d_pct": round(target_1d, 2),
+        "bench_1d_pct": round(bench_1d, 2),
+        "vs_1d_pct": round(diff_1d, 2),
+        "target_5d_pct": round(t5, 2),
+        "bench_5d_pct": round(b5, 2),
+        "vs_5d_pct": round(diff_5d, 2),
+    }
+
+
+def get_benchmark_symbol(symbol: str) -> tuple[str, str]:
+    """심볼 → 벤치마크 (티커, 표시명)."""
+    if symbol.isdigit() and len(symbol) == 6:
+        return ("069500", "KOSPI 200")  # KODEX 200
+    return ("SPY", "S&P 500")
