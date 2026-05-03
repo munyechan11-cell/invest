@@ -140,6 +140,57 @@ async def remove_from_portfolio(pid: int, user_id: int):
     await c.commit()
 
 
+async def get_portfolio_item(pid: int, user_id: int) -> dict | None:
+    c = await get_db()
+    row = await (await c.execute(
+        "SELECT * FROM portfolio WHERE id=? AND user_id=?", (pid, user_id)
+    )).fetchone()
+    return dict(row) if row else None
+
+
+async def average_down(pid: int, user_id: int,
+                       additional_shares: float, additional_price: float) -> dict | None:
+    """추매 — 새 평단가 자동 계산 (가중 평균).
+
+    new_avg = (old_shares * old_avg + new_shares * new_price) / total_shares
+    """
+    c = await get_db()
+    row = await (await c.execute(
+        "SELECT shares, entry_price, krw_invested FROM portfolio WHERE id=? AND user_id=?",
+        (pid, user_id)
+    )).fetchone()
+    if not row:
+        return None
+    old = dict(row)
+    old_shares = float(old["shares"] or 0)
+    old_avg = float(old["entry_price"] or 0)
+    old_invested = float(old["krw_invested"] or (old_shares * old_avg))
+
+    if additional_shares <= 0 or additional_price <= 0:
+        return {"error": "추가 수량과 가격은 0보다 커야 합니다"}
+
+    new_invested = old_invested + (additional_shares * additional_price)
+    new_shares = old_shares + additional_shares
+    new_avg = new_invested / new_shares if new_shares > 0 else additional_price
+
+    await c.execute(
+        "UPDATE portfolio SET shares=?, entry_price=?, krw_invested=? WHERE id=?",
+        (new_shares, new_avg, new_invested, pid)
+    )
+    await c.commit()
+    return {
+        "ok": True,
+        "old_shares": old_shares,
+        "old_avg": round(old_avg, 2),
+        "added_shares": additional_shares,
+        "added_price": additional_price,
+        "new_shares": new_shares,
+        "new_avg": round(new_avg, 2),
+        "avg_change_pct": round((new_avg / old_avg - 1) * 100, 2) if old_avg > 0 else 0,
+        "total_invested": round(new_invested, 2),
+    }
+
+
 async def list_all_portfolio() -> list[dict]:
     """모든 유저의 포트폴리오 항목 (실시간 폴링 워커용)."""
     c = await get_db()

@@ -842,6 +842,55 @@ async def api_remove_portfolio(pid: int, user: dict = Depends(get_current_user))
     await db.remove_from_portfolio(pid, user["id"])
     return {"ok": True}
 
+
+@app.post("/api/portfolio/{pid}/add")
+async def api_average_down(pid: int, data: dict, user: dict = Depends(get_current_user)):
+    """추매 — 평단가 자동 재계산 (가중 평균)."""
+    add_shares = float(data.get("shares") or 0)
+    add_price = float(data.get("price") or 0)
+    if add_shares <= 0 or add_price <= 0:
+        raise HTTPException(400, "shares와 price는 0보다 커야 합니다")
+
+    result = await db.average_down(pid, user["id"], add_shares, add_price)
+    if not result:
+        raise HTTPException(404, "포지션을 찾을 수 없거나 권한이 없습니다")
+    if result.get("error"):
+        raise HTTPException(400, result["error"])
+
+    # 텔레그램 알림 (추매 결과)
+    item = await db.get_portfolio_item(pid, user["id"])
+    if item:
+        sym = item["symbol"]
+        chat_id = await db.get_telegram_chat_id(user["id"])
+        if chat_id and telegram_alert.is_configured():
+            asyncio.create_task(_notify_average_down(chat_id, sym, result))
+
+    return result
+
+
+async def _notify_average_down(chat_id: str, symbol: str, r: dict):
+    """추매 텔레그램 알림 — 새 평단가 + 변화율."""
+    is_kr = symbol.isdigit() and len(symbol) == 6
+    cur = "₩" if is_kr else "$"
+    fmt = (lambda v: f"{cur}{int(v):,}") if is_kr else (lambda v: f"{cur}{v:.2f}")
+
+    direction = "🟢 평단가 하락 (물타기 성공)" if r["new_avg"] < r["old_avg"] else "🟠 평단가 상승 (불타기)"
+
+    msg = (
+        f"<b>📥 추매 완료 — {symbol}</b>\n"
+        f"\n"
+        f"{direction}\n"
+        f"\n"
+        f"기존 보유: <code>{r['old_shares']:g}주 @ {fmt(r['old_avg'])}</code>\n"
+        f"이번 추매: <code>+{r['added_shares']:g}주 @ {fmt(r['added_price'])}</code>\n"
+        f"\n"
+        f"<b>새 평단가: {fmt(r['new_avg'])}</b> "
+        f"({r['avg_change_pct']:+.2f}%)\n"
+        f"총 보유: <b>{r['new_shares']:g}주</b>\n"
+        f"총 투입: <b>{fmt(r['total_invested'])}</b>"
+    )
+    await telegram_alert.send(chat_id, msg)
+
 from app.ocr_portfolio import extract_portfolio_from_image
 from fastapi import UploadFile, File
 

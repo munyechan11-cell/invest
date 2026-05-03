@@ -547,19 +547,50 @@
       <!-- 실시간 보유 종목 (사이드바 통합) -->
       <template x-if="holdings.length > 0">
         <div class="mt-4 pt-4 border-t border-[#222] space-y-2">
-          <div class="text-[10px] text-ink-500 uppercase font-bold tracking-widest">실시간 보유 현황</div>
+          <div class="flex items-baseline justify-between">
+            <div class="text-[10px] text-ink-500 uppercase font-bold tracking-widest">실시간 보유 현황</div>
+            <div class="text-[10px] text-ink-500" x-text="holdings.length + '종목'"></div>
+          </div>
           <template x-for="h in holdings" :key="h.id">
-            <div class="surface p-2.5 border border-[#222] hover:border-coral-500/30 transition-colors cursor-pointer" @click="select(h.symbol)">
-              <div class="flex justify-between items-start mb-1">
-                <div class="flex items-center gap-1.5">
-                  <span class="font-bold text-sm" x-text="h.symbol"></span>
-                  <span class="text-[10px] px-1 rounded bg-zinc-800" :class="positionTone(h.position)" x-text="h.emoji"></span>
+            <div class="surface p-3 border border-[#222] hover:border-coral-500/30 transition-colors">
+              <div @click="select(h.symbol)" class="cursor-pointer">
+                <div class="flex justify-between items-start mb-1.5">
+                  <div class="flex items-center gap-1.5">
+                    <span class="font-bold text-sm" x-text="h.symbol"></span>
+                    <span class="text-[9px] px-1 py-0.5 rounded font-mono"
+                          :class="isKR(h.symbol) ? 'bg-blue-500/20 text-blue-400' : 'bg-zinc-700/50 text-zinc-400'"
+                          x-text="isKR(h.symbol) ? 'KR' : 'US'"></span>
+                  </div>
+                  <div class="text-xs font-mono font-bold"
+                       :class="h.pnl_pct >= 0 ? 'ticker-up' : 'ticker-down'"
+                       x-text="(h.pnl_pct>=0?'+':'')+h.pnl_pct.toFixed(2)+'%'"></div>
                 </div>
-                <div class="text-[10px] font-mono" :class="h.pnl_pct >= 0 ? 'ticker-up' : 'ticker-down'" x-text="(h.pnl_pct>=0?'+':'')+h.pnl_pct.toFixed(1)+'%'"></div>
+                <div class="grid grid-cols-3 gap-1 text-[10px]">
+                  <div>
+                    <div class="text-ink-500">현재가</div>
+                    <div class="font-mono font-semibold" x-text="cur(h.symbol)+h.current_price.toLocaleString()"></div>
+                  </div>
+                  <div>
+                    <div class="text-ink-500">평단가</div>
+                    <div class="font-mono" x-text="cur(h.symbol)+(h.entry_price ?? 0).toLocaleString()"></div>
+                  </div>
+                  <div>
+                    <div class="text-ink-500">수량</div>
+                    <div class="font-mono" x-text="(h.shares ?? 0).toLocaleString()+'주'"></div>
+                  </div>
+                </div>
               </div>
-              <div class="flex justify-between items-baseline">
-                <div class="text-[10px] text-ink-500" x-text="cur(h.symbol)+h.current_price.toLocaleString()"></div>
-                <button @click.stop="removePortfolio(h.id)" class="text-ink-400 hover:text-rust-500 text-xs">×</button>
+              <div class="flex gap-1 mt-2 pt-2 border-t border-[#222]">
+                <button @click.stop="openAvgDown(h)"
+                        class="flex-1 text-[11px] py-1.5 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 font-semibold transition">
+                  ➕ 추매
+                </button>
+                <button @click.stop="select(h.symbol)"
+                        class="flex-1 text-[11px] py-1.5 rounded bg-coral-500/10 hover:bg-coral-500/20 text-coral-500 font-semibold transition">
+                  📊 분석
+                </button>
+                <button @click.stop="removePortfolio(h.id)"
+                        class="text-[11px] py-1.5 px-3 rounded bg-rust-500/10 hover:bg-rust-500/20 text-rust-500 transition">×</button>
               </div>
             </div>
           </template>
@@ -1347,6 +1378,95 @@
     </template>
   </section>
 
+  <!-- ── 포트폴리오 전용 화면 (모바일 탭 전용) ─────────── -->
+  <section class="md:hidden" :class="mobileTab!=='portfolio'&&'hidden'">
+    <div class="surface-elevated p-4 mb-4" x-show="portfolio">
+      <div class="text-[10px] text-ink-500 uppercase tracking-wider mb-1">포트폴리오 종합</div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <div class="text-[11px] text-ink-500">총 투자</div>
+          <div class="font-mono text-lg font-bold" x-text="'₩' + (portfolio?.total_invested ?? 0).toLocaleString()"></div>
+        </div>
+        <div>
+          <div class="text-[11px] text-ink-500">총 평가</div>
+          <div class="font-mono text-lg font-bold" x-text="'₩' + (portfolio?.total_returned ?? 0).toLocaleString()"></div>
+        </div>
+        <div>
+          <div class="text-[11px] text-ink-500">손익</div>
+          <div class="font-mono text-lg font-bold"
+               :class="(portfolio?.total_pnl ?? 0) >= 0 ? 'ticker-up' : 'ticker-down'"
+               x-text="((portfolio?.total_pnl ?? 0) >= 0 ? '+' : '') + (portfolio?.total_pnl ?? 0).toLocaleString()"></div>
+        </div>
+        <div>
+          <div class="text-[11px] text-ink-500">수익률</div>
+          <div class="font-mono text-lg font-bold"
+               :class="(portfolio?.total_pnl_pct ?? 0) >= 0 ? 'ticker-up' : 'ticker-down'"
+               x-text="((portfolio?.total_pnl_pct ?? 0) >= 0 ? '+' : '') + (portfolio?.total_pnl_pct ?? 0) + '%'"></div>
+        </div>
+      </div>
+    </div>
+
+    <template x-if="!holdings.length">
+      <div class="surface p-8 text-center text-ink-500 text-sm">
+        보유 종목이 없습니다.<br>
+        분석 페이지에서 [포트폴리오 담기]로 추가하세요.
+      </div>
+    </template>
+
+    <div class="space-y-2.5">
+      <template x-for="h in holdings" :key="h.id">
+        <div class="surface-elevated p-3.5">
+          <div @click="select(h.symbol); mobileTab='report'" class="cursor-pointer">
+            <div class="flex justify-between items-start mb-2">
+              <div class="flex items-center gap-2">
+                <span class="font-bold text-base" x-text="h.symbol"></span>
+                <span class="text-[9px] px-1 py-0.5 rounded font-mono"
+                      :class="isKR(h.symbol) ? 'bg-blue-500/20 text-blue-400' : 'bg-zinc-700/50 text-zinc-400'"
+                      x-text="isKR(h.symbol) ? 'KR' : 'US'"></span>
+              </div>
+              <div class="text-base font-mono font-bold"
+                   :class="h.pnl_pct >= 0 ? 'ticker-up' : 'ticker-down'"
+                   x-text="(h.pnl_pct>=0?'+':'')+h.pnl_pct.toFixed(2)+'%'"></div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 text-xs mb-2">
+              <div>
+                <div class="text-ink-500">평단가</div>
+                <div class="font-mono font-semibold" x-text="cur(h.symbol)+(h.entry_price ?? 0).toLocaleString()"></div>
+              </div>
+              <div>
+                <div class="text-ink-500">현재가</div>
+                <div class="font-mono font-semibold"
+                     :class="h.current_price >= h.entry_price ? 'ticker-up' : 'ticker-down'"
+                     x-text="cur(h.symbol)+(h.current_price ?? 0).toLocaleString()"></div>
+              </div>
+              <div>
+                <div class="text-ink-500">평가손익</div>
+                <div class="font-mono font-semibold"
+                     :class="(h.pnl ?? 0) >= 0 ? 'ticker-up' : 'ticker-down'"
+                     x-text="((h.pnl ?? 0) >= 0 ? '+' : '') + cur(h.symbol)+Math.abs(h.pnl ?? 0).toLocaleString()"></div>
+              </div>
+            </div>
+            <div class="text-[11px] text-ink-500" x-text="(h.shares ?? 0).toLocaleString() + '주 보유 · 투입 ' + cur(h.symbol) + (((h.shares ?? 0) * (h.entry_price ?? 0)) || 0).toLocaleString()"></div>
+          </div>
+          <div class="flex gap-2 mt-3 pt-3 border-t border-[#222]">
+            <button @click="openAvgDown(h)"
+                    class="flex-1 py-2 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 text-sm font-bold transition">
+              ➕ 추매
+            </button>
+            <button @click="select(h.symbol); mobileTab='report'"
+                    class="flex-1 py-2 rounded-lg bg-coral-500/15 hover:bg-coral-500/25 text-coral-500 text-sm font-bold transition">
+              📊 분석
+            </button>
+            <button @click="removePortfolio(h.id)"
+                    class="py-2 px-4 rounded-lg bg-rust-500/15 hover:bg-rust-500/25 text-rust-500 text-sm transition">
+              ✕
+            </button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>
+
   <!-- ── 알림 ───────────────────────────────────────── -->
   <aside class="md:col-span-3 space-y-4" :class="mobileTab!=='alerts'&&'hidden md:block'">
     <div class="surface-elevated p-4 md:p-5 md:sticky md:top-24">
@@ -1389,18 +1509,20 @@
   <button @click="mobileTab='report'" :class="mobileTab==='report'&&'active'">
     <span class="tab-icon">📊</span>
     <span>분석</span>
-    <span x-show="selected" class="text-[9px] opacity-60" x-text="selected"></span>
+  </button>
+  <button @click="mobileTab='portfolio'" :class="mobileTab==='portfolio'&&'active'">
+    <span class="tab-icon">💼</span>
+    <span>포트폴리오</span>
+    <span x-show="holdings.length" class="text-[9px] opacity-60" x-text="'(' + holdings.length + ')'"></span>
   </button>
   <button @click="mobileTab='alerts'" :class="mobileTab==='alerts'&&'active' + ' relative'">
     <span class="tab-icon">🔔</span>
     <span>알림</span>
-    <span x-show="alerts.length" class="text-[9px] opacity-60" x-text="'(' + alerts.length + ')'"></span>
     <span x-show="alerts.length" class="absolute top-2 right-1/3 w-2 h-2 rounded-full bg-coral-500 animate-pulse"></span>
   </button>
   <button @click="openTelegramSetup()">
     <span class="tab-icon">📲</span>
-    <span :class="tgInfo?.subscribed && 'text-emerald-500'">텔레그램</span>
-    <span x-show="tgInfo?.subscribed" class="text-[9px] text-emerald-500">●</span>
+    <span :class="tgInfo?.subscribed && 'text-emerald-500'">알림설정</span>
   </button>
 </nav>
 
@@ -1413,28 +1535,124 @@
   <!-- 포트폴리오 추가 모달 -->
   <div x-show="showPortModal" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-ink-900/60 backdrop-blur-sm" x-cloak>
     <div class="surface-elevated w-full max-w-sm p-6 shadow-2xl" @click.away="showPortModal = false">
-      <div class="serif text-xl font-bold mb-4">포트폴리오 추가</div>
+      <div class="serif text-xl font-bold mb-1">포트폴리오 담기</div>
+      <div class="text-xs text-ink-500 mb-4">매수가·평단가·수량 입력</div>
       <div class="space-y-4">
         <div>
           <label class="text-[11px] text-ink-500 uppercase font-bold">종목</label>
           <input type="text" x-model="portForm.symbol" class="input w-full bg-cream-50" readonly>
         </div>
         <div>
-          <label class="text-[11px] text-ink-500 uppercase font-bold">실시간 매수 가격 (USD)</label>
-          <input type="number" step="0.01" x-model.number="portForm.entry_price" class="input w-full" placeholder="0.00">
+          <label class="text-[11px] text-ink-500 uppercase font-bold">
+            평단가 <span class="text-coral-500" x-text="isKR(portForm.symbol) ? '(원)' : '(달러)'"></span>
+          </label>
+          <input type="number" step="0.01" x-model.number="portForm.entry_price"
+                 class="input w-full text-lg font-mono"
+                 :placeholder="isKR(portForm.symbol) ? '예: 72000' : '예: 245.30'">
+          <div class="text-[10px] text-ink-500 mt-1">매수한 1주당 평균 가격 (Average Cost)</div>
         </div>
         <div>
-          <label class="text-[11px] text-ink-500 uppercase font-bold">원화 투자 금액 (KRW)</label>
-          <input type="number" x-model.number="portForm.krw_invested" class="input w-full" placeholder="예: 1000000">
+          <label class="text-[11px] text-ink-500 uppercase font-bold">보유 수량 (주)</label>
+          <input type="number" step="0.001" x-model.number="portForm.shares"
+                 class="input w-full text-lg font-mono" placeholder="예: 10">
         </div>
         <div>
-          <label class="text-[11px] text-ink-500 uppercase font-bold">보유 수량 (Shares)</label>
-          <input type="number" step="0.001" x-model.number="portForm.shares" class="input w-full" placeholder="미입력 시 투자액으로 자동계산">
+          <label class="text-[11px] text-ink-500 uppercase font-bold">총 투자 금액
+            <span class="text-ink-600 normal-case font-normal">(자동 계산 — 수정 가능)</span>
+          </label>
+          <input type="number" x-model.number="portForm.krw_invested"
+                 class="input w-full text-lg font-mono"
+                 :placeholder="(portForm.entry_price * portForm.shares || 0).toLocaleString()">
+          <div class="text-[10px] text-ink-500 mt-1" x-show="portForm.entry_price && portForm.shares">
+            평단가 × 수량 = <span class="font-mono font-bold"
+              x-text="(isKR(portForm.symbol)?'₩':'$') + (portForm.entry_price * portForm.shares).toLocaleString()"></span>
+          </div>
         </div>
       </div>
       <div class="flex gap-2 mt-6">
         <button @click="addToPortfolio()" class="btn btn-primary flex-1">포트폴리오 담기</button>
         <button @click="showPortModal = false" class="btn btn-ghost">취소</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 추매(물타기/불타기) 모달 -->
+  <div x-show="showAvgDownModal" class="overlay" @click.self="showAvgDownModal=false" x-cloak>
+    <div class="modal space-y-4" style="max-width:480px">
+      <div class="flex justify-between items-center">
+        <div>
+          <div class="serif text-xl font-bold" x-text="'추매 — ' + (avgDownTarget?.symbol || '')"></div>
+          <div class="text-xs text-ink-500">평단가 자동 재계산</div>
+        </div>
+        <button @click="showAvgDownModal=false" class="text-ink-500 text-xl">✕</button>
+      </div>
+
+      <!-- 현재 보유 -->
+      <div class="surface p-3" x-show="avgDownTarget">
+        <div class="text-[10px] text-ink-500 uppercase tracking-wider mb-1">현재 보유</div>
+        <div class="grid grid-cols-3 gap-2 text-sm">
+          <div>
+            <div class="text-[10px] text-ink-500">수량</div>
+            <div class="font-mono font-bold" x-text="(avgDownTarget?.shares ?? 0).toLocaleString() + '주'"></div>
+          </div>
+          <div>
+            <div class="text-[10px] text-ink-500">평단가</div>
+            <div class="font-mono font-bold" x-text="cur(avgDownTarget?.symbol || '') + (avgDownTarget?.entry_price ?? 0).toLocaleString()"></div>
+          </div>
+          <div>
+            <div class="text-[10px] text-ink-500">현재가</div>
+            <div class="font-mono font-bold"
+                 :class="(avgDownTarget?.current_price ?? 0) >= (avgDownTarget?.entry_price ?? 0) ? 'ticker-up' : 'ticker-down'"
+                 x-text="cur(avgDownTarget?.symbol || '') + (avgDownTarget?.current_price ?? 0).toLocaleString()"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 추가 매수 입력 -->
+      <div class="space-y-3">
+        <div>
+          <label class="text-[11px] text-ink-500 uppercase font-bold">추가 매수가</label>
+          <input type="number" step="0.01" x-model.number="avgDownForm.price"
+                 class="input w-full text-lg font-mono"
+                 :placeholder="'현재가 ' + cur(avgDownTarget?.symbol || '') + (avgDownTarget?.current_price ?? 0).toLocaleString()">
+          <button @click="avgDownForm.price = avgDownTarget?.current_price"
+                  class="text-[10px] text-coral-500 hover:underline mt-1">현재가로 채우기 →</button>
+        </div>
+        <div>
+          <label class="text-[11px] text-ink-500 uppercase font-bold">추가 매수 수량</label>
+          <input type="number" step="0.001" x-model.number="avgDownForm.shares"
+                 class="input w-full text-lg font-mono" placeholder="예: 5">
+        </div>
+      </div>
+
+      <!-- 새 평단가 미리보기 (실시간 계산) -->
+      <div x-show="avgDownPreview" class="surface p-3 border-l-4"
+           :class="(avgDownPreview?.new_avg ?? 0) < (avgDownPreview?.old_avg ?? 0) ? 'border-emerald-500' : 'border-amber-500'">
+        <div class="text-[10px] uppercase tracking-wider mb-2"
+             :class="(avgDownPreview?.new_avg ?? 0) < (avgDownPreview?.old_avg ?? 0) ? 'text-emerald-500' : 'text-amber-500'"
+             x-text="(avgDownPreview?.new_avg ?? 0) < (avgDownPreview?.old_avg ?? 0) ? '🟢 물타기 (평단가 ↓)' : '🟠 불타기 (평단가 ↑)'"></div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <div class="text-[10px] text-ink-500">새 평단가</div>
+            <div class="font-mono text-lg font-bold"
+                 x-text="cur(avgDownTarget?.symbol || '') + (avgDownPreview?.new_avg ?? 0).toLocaleString()"></div>
+            <div class="text-[10px]"
+                 :class="(avgDownPreview?.avg_change_pct ?? 0) <= 0 ? 'ticker-up' : 'ticker-down'"
+                 x-text="((avgDownPreview?.avg_change_pct ?? 0) >= 0 ? '+' : '') + (avgDownPreview?.avg_change_pct ?? 0).toFixed(2) + '%'"></div>
+          </div>
+          <div>
+            <div class="text-[10px] text-ink-500">총 보유</div>
+            <div class="font-mono text-lg font-bold" x-text="(avgDownPreview?.new_shares ?? 0).toLocaleString() + '주'"></div>
+            <div class="text-[10px] text-ink-500"
+                 x-text="'투입 ' + cur(avgDownTarget?.symbol || '') + (avgDownPreview?.total_invested ?? 0).toLocaleString()"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex gap-2">
+        <button @click="confirmAvgDown()" :disabled="!avgDownForm.price || !avgDownForm.shares"
+                class="btn btn-primary flex-1">추매 확정</button>
+        <button @click="showAvgDownModal=false" class="btn btn-ghost">취소</button>
       </div>
     </div>
   </div>
@@ -1470,6 +1688,29 @@ function app(){
     holdings: [],
     showPortModal: false,
     portForm: { symbol: '', krw_invested: 0, entry_price: 0, shares: 0 },
+
+    // 추매 (물타기/불타기)
+    showAvgDownModal: false,
+    avgDownTarget: null,   // {id, symbol, shares, entry_price, current_price}
+    avgDownForm: { price: 0, shares: 0 },
+
+    get avgDownPreview() {
+      if (!this.avgDownTarget || !this.avgDownForm.price || !this.avgDownForm.shares) return null;
+      const oldShares = parseFloat(this.avgDownTarget.shares) || 0;
+      const oldAvg = parseFloat(this.avgDownTarget.entry_price) || 0;
+      const addS = parseFloat(this.avgDownForm.shares) || 0;
+      const addP = parseFloat(this.avgDownForm.price) || 0;
+      const newShares = oldShares + addS;
+      const newInvested = (oldShares * oldAvg) + (addS * addP);
+      const newAvg = newShares > 0 ? newInvested / newShares : addP;
+      return {
+        old_avg: oldAvg,
+        new_avg: Math.round(newAvg * 100) / 100,
+        new_shares: newShares,
+        total_invested: Math.round(newInvested),
+        avg_change_pct: oldAvg > 0 ? ((newAvg / oldAvg - 1) * 100) : 0,
+      };
+    },
 
     // 텔레그램 알림
     showTelegramSetup: false,
@@ -1887,6 +2128,44 @@ function app(){
       this.showPortModal = false;
       await this.loadHoldings();
     },
+    // ─── 추매 (물타기/불타기) ─────────────────────────
+    openAvgDown(holding) {
+      this.avgDownTarget = {
+        id: holding.id,
+        symbol: holding.symbol,
+        shares: holding.shares || 0,
+        entry_price: holding.entry_price || 0,
+        current_price: holding.current_price || 0,
+      };
+      this.avgDownForm = { price: holding.current_price || 0, shares: 0 };
+      this.showAvgDownModal = true;
+    },
+    async confirmAvgDown() {
+      if (!this.avgDownTarget || !this.avgDownForm.price || !this.avgDownForm.shares) return;
+      try {
+        const r = await this.api(`/api/portfolio/${this.avgDownTarget.id}/add`, {
+          method: 'POST', headers: {'content-type': 'application/json'},
+          body: JSON.stringify(this.avgDownForm)
+        });
+        if (!r.ok) {
+          const err = await r.json();
+          alert('추매 실패: ' + (err.detail || JSON.stringify(err)));
+          return;
+        }
+        const result = await r.json();
+        this.showAvgDownModal = false;
+        await this.loadHoldings();
+        const dirIcon = result.new_avg < result.old_avg ? '🟢 물타기' : '🟠 불타기';
+        alert(`✅ 추매 완료 (${dirIcon})\n\n` +
+              `기존 평단: ${this.cur(this.avgDownTarget.symbol)}${result.old_avg.toLocaleString()}\n` +
+              `새 평단: ${this.cur(this.avgDownTarget.symbol)}${result.new_avg.toLocaleString()} (${result.avg_change_pct >= 0 ? '+' : ''}${result.avg_change_pct.toFixed(2)}%)\n` +
+              `총 보유: ${result.new_shares.toLocaleString()}주\n` +
+              `총 투입: ${this.cur(this.avgDownTarget.symbol)}${result.total_invested.toLocaleString()}`);
+      } catch(e) {
+        alert('오류: ' + e.message);
+      }
+    },
+
     async removePortfolio(id) {
       if(!confirm('포트폴리오에서 제거할까요?')) return;
       await this.api('/api/portfolio/'+id, { method:'DELETE' });
