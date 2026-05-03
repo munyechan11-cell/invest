@@ -767,8 +767,32 @@ async def api_portfolio(user: dict = Depends(get_current_user)):
 @app.post("/api/portfolio")
 async def api_add_portfolio(data: dict, user: dict = Depends(get_current_user)):
     # data: symbol, entry_price, krw_invested, shares
-    await db.add_to_portfolio(user["id"], data["symbol"], data["entry_price"], data["krw_invested"], data.get("shares", 0))
+    sym = data["symbol"].upper()
+    await db.add_to_portfolio(user["id"], sym, data["entry_price"], data["krw_invested"], data.get("shares", 0))
+
+    # 알림이 작동하려면 분석 plan이 DB에 있어야 함
+    # 포트폴리오 추가 시 plan 없으면 백그라운드로 분석 실행 (TP/SL 알림 활성화)
+    existing_plan = await db.get_plan(sym, max_age_sec=3600)
+    if not existing_plan:
+        asyncio.create_task(_background_analyze_for_alerts(sym, user["id"]))
+
     return {"ok": True}
+
+
+async def _background_analyze_for_alerts(symbol: str, user_id: int):
+    """포트폴리오 추가 시 백그라운드 분석 → plan 생성 → 알림 활성화."""
+    try:
+        snap = await _cached_snapshot(symbol)
+        news = await fetch_news(symbol)
+        profile = await fetch_profile(symbol)
+        flow = await fetch_market_flow(symbol)
+        ana = await asyncio.to_thread(analyze, symbol, snap, news, flow, profile, 1.0)
+        ana = _ensure_flow_fields(ana, snap, symbol)
+        ana = _attach_intelligence(ana, snap, news, flow)
+        await db.save_plan(symbol, ana)
+        log.info(f"포트폴리오 추가 → 백그라운드 분석 완료: {symbol} (user {user_id})")
+    except Exception as e:
+        log.warning(f"포트폴리오 백그라운드 분석 실패 {symbol}: {e}")
 
 @app.delete("/api/portfolio/{pid}")
 async def api_remove_portfolio(pid: int, user: dict = Depends(get_current_user)):

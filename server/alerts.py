@@ -209,10 +209,31 @@ async def worker(broadcast):
                         "ts": q.ts,
                     })
 
-            # ── 워치리스트 종목이면 알림 조건 평가
+            # ── 알림 평가: 워치리스트 + 포트폴리오 둘 다 (이전엔 워치만)
             if plan:
+                # 워치리스트: 분석 시 입력한 capital/risk_pct 사용
                 for it in watch_items:
                     await _evaluate_item(it, plan, q, broadcast)
+
+                # 포트폴리오: 보유종목용 합성 item으로 평가
+                #  - capital은 실제 매수금액(krw_invested or shares*entry)
+                #  - 같은 user에 같은 symbol이 워치+포트 둘 다 있어도 _cool 쿨다운으로 중복 방지
+                already_alerted_users = {it.get("user_id") for it in watch_items}
+                for p in port_items:
+                    uid = p.get("user_id")
+                    if uid in already_alerted_users:
+                        continue  # 워치에서 이미 알림 발송됨 (중복 회피)
+                    entry = float(p.get("entry_price") or 0)
+                    shares = float(p.get("shares") or 0)
+                    notional = entry * shares if entry and shares else float(p.get("krw_invested") or 0)
+                    synthetic = {
+                        "symbol": p["symbol"],
+                        "user_id": uid,
+                        "capital": notional or 1000,  # 비어있어도 알림은 발송
+                        "risk_pct": 1.0,
+                        "_source": "portfolio",
+                    }
+                    await _evaluate_item(synthetic, plan, q, broadcast)
 
     while True:
         try:

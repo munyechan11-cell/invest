@@ -81,14 +81,83 @@
   .scroll-soft::-webkit-scrollbar-thumb { background:#333333; border-radius:8px; }
   .overlay { position:fixed; inset:0; z-index:50; background:rgba(0,0,0,0.85); display:flex; align-items:center; justify-content:center; padding:16px; }
   .modal { background:#0a0a0a; border:1px solid #333; border-radius:16px; padding:32px; width:360px; max-width:100%; max-height:90vh; overflow-y:auto; }
-  /* 모바일 탭 네비 */
+  /* ────────── 모바일 UX 강화 ────────── */
   .mobile-tabs { display:none; }
   @media (max-width: 768px) {
-    .mobile-tabs { display:flex; position:fixed; bottom:0; left:0; right:0; z-index:30; background:#0a0a0a; border-top:1px solid #222; padding:8px 0; padding-bottom: env(safe-area-inset-bottom, 8px); }
-    .mobile-tabs button { flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; font-size:10px; color:#6b7280; padding:4px 0; }
+    /* 본문 패딩 (하단 탭바 회피) */
+    body { font-size: 15px; }
+    main { padding-bottom: 80px !important; }
+
+    /* 모달 풀스크린 슬라이드업 */
+    .overlay { padding: 0; align-items: flex-end; }
+    .modal {
+      padding: 20px 16px 24px;
+      width: 100%;
+      max-width: 100%;
+      border-radius: 16px 16px 0 0;
+      max-height: 92vh;
+      animation: slideUp 0.25s ease-out;
+    }
+    @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+
+    /* 터치 타겟 최소 44px (Apple HIG) */
+    .btn { min-height: 44px; padding: 12px 16px; font-size: 15px; }
+    .input { min-height: 44px; padding: 12px 14px; font-size: 16px; }  /* iOS 줌 방지 16px */
+    button { min-height: 36px; }
+
+    /* 카드 간격 + 패딩 더 여유롭게 */
+    .surface, .surface-elevated { border-radius: 14px; }
+
+    /* 사이드바·메인·우측 카드 모두 위에서부터 단일 컬럼 */
+    main > section, main > aside { width: 100% !important; }
+
+    /* 워치리스트·포트폴리오 카드 터치 영역 확대 */
+    main li { min-height: 60px; }
+
+    /* 분석 카드 폰트/패딩 모바일 최적화 */
+    .serif.text-3xl { font-size: 1.75rem !important; }
+    .serif.text-4xl { font-size: 2rem !important; }
+    .text-4xl { font-size: 2rem !important; }
+
+    /* TOSS Score 원형 게이지 모바일 축소 */
+    .toss-circle { width: 96px !important; height: 96px !important; }
+
+    /* 차트 iframe 모바일 높이 축소 */
+    iframe { height: 280px !important; }
+
+    /* 하단 탭바 */
+    .mobile-tabs {
+      display:flex; position:fixed; bottom:0; left:0; right:0; z-index:30;
+      background:#0a0a0a; border-top:1px solid #222;
+      padding:6px 0;
+      padding-bottom: max(env(safe-area-inset-bottom, 6px), 6px);
+    }
+    .mobile-tabs button {
+      flex:1; display:flex; flex-direction:column; align-items:center; gap:2px;
+      font-size:10px; color:#6b7280; padding:8px 0; min-height: 56px;
+    }
     .mobile-tabs button.active { color:#10b981; }
-    .modal { padding:24px 20px; width:100%; border-radius:12px; }
-    main { padding-bottom: 70px !important; }
+    .mobile-tabs button .tab-icon { font-size: 22px; line-height: 1; }
+
+    /* 헤더 슬림 */
+    header { padding: 8px 0 !important; }
+    header h1 { font-size: 1.1rem !important; }
+
+    /* 시장 지수 ticker 모바일 */
+    [class*="overflow-x-auto"] { -webkit-overflow-scrolling: touch; }
+
+    /* 그리드 mobile-friendly */
+    .grid-cols-3, .grid-cols-4 { gap: 0.5rem !important; }
+
+    /* 텔레그램 모달 등 폼 입력란 줌 방지 */
+    input[type="text"], input[type="number"], input[type="password"], select { font-size: 16px !important; }
+  }
+
+  /* 작은 모바일 (≤375px iPhone SE) */
+  @media (max-width: 375px) {
+    .surface, .surface-elevated { padding: 10px !important; }
+    .text-xl { font-size: 1.05rem !important; }
+    .text-2xl { font-size: 1.2rem !important; }
   }
 </style>
 <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
@@ -407,7 +476,7 @@
               <div class="text-[10px] text-ink-500 mb-1">
                 리스크 비율 <span class="text-ink-600">(자본 대비 손실 허용 한도)</span>
               </div>
-              <input x-model.number="form.risk_pct" type="number" step="0.1" min="0.1" max="10" placeholder="기본 1.0%" class="input w-full">
+              <input x-model.number="form.risk_pct" type="number" step="0.5" min="0.1" max="100" placeholder="기본 1.0% (보수적) · 10%+ 공격적" class="input w-full">
             </div>
           </div>
         </details>
@@ -1006,15 +1075,25 @@
           <div class="surface-elevated p-5">
             <div class="flex items-center gap-2 mb-3">
               <div class="serif text-lg font-semibold">권장 포지션</div>
-              <span class="pill pill-coral">capital × risk%</span>
+              <span class="pill pill-coral">투자금 최대 활용</span>
             </div>
-            <div class="grid grid-cols-4 gap-4">
+
+            <!-- 입력 자금 vs 실제 투입 비교 -->
+            <div class="text-[11px] text-ink-500 mb-3" x-show="report.sizing.capital_input">
+              내가 입력한 자금: <span class="font-mono font-bold text-ink-700" x-text="cur(selected) + report.sizing.capital_input.toLocaleString()"></span>
+              · 실제 투입: <span class="font-mono font-bold text-emerald-500" x-text="cur(selected) + report.sizing.notional.toLocaleString()"></span>
+              <span x-show="report.sizing.capital_input - report.sizing.notional > 0"
+                    class="text-ink-500"
+                    x-text="' (잔액 ' + cur(selected) + (report.sizing.capital_input - report.sizing.notional).toLocaleString() + ')'"></span>
+            </div>
+
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
               <div>
                 <div class="text-[11px] text-ink-500 uppercase tracking-wider">총 주식수</div>
                 <div class="font-mono text-2xl mt-1" x-text="report.sizing.shares + '주'"></div>
               </div>
               <div>
-                <div class="text-[11px] text-ink-500 uppercase tracking-wider">분할 청크</div>
+                <div class="text-[11px] text-ink-500 uppercase tracking-wider">분할 청크 (3분할)</div>
                 <div class="font-mono text-2xl mt-1" x-text="report.sizing.splits.join(' / ')"></div>
               </div>
               <div>
@@ -1022,9 +1101,24 @@
                 <div class="font-mono text-2xl mt-1" x-text="cur(selected)+report.sizing.notional.toLocaleString()"></div>
               </div>
               <div>
-                <div class="text-[11px] text-ink-500 uppercase tracking-wider">최대 손실</div>
+                <div class="text-[11px] text-ink-500 uppercase tracking-wider">
+                  최대 손실 (실제 <span x-text="report.sizing.actual_risk_pct + '%'"></span>)
+                </div>
                 <div class="font-mono text-2xl mt-1 text-rust-500" x-text="cur(selected)+report.sizing.max_loss.toLocaleString()"></div>
               </div>
+            </div>
+
+            <!-- 리스크 한도 초과 경고 + 안전 옵션 -->
+            <div x-show="report.sizing.warning"
+                 class="mt-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-sm text-amber-400 leading-relaxed"
+                 x-text="report.sizing.warning"></div>
+
+            <!-- 분할 매수 가이드 -->
+            <div class="mt-3 p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-xs text-ink-700 leading-relaxed" x-show="report.sizing.shares > 0">
+              💡 <b>분할 매수 권장</b>: 진입가 도달 시 1차 (<span x-text="report.sizing.splits[0]"></span>주) →
+              -1% 추가 하락 시 2차 (<span x-text="report.sizing.splits[1] || 0"></span>주) →
+              -2% 추가 하락 시 3차 (<span x-text="report.sizing.splits[2] || 0"></span>주).
+              평단가 낮춰서 안전 마진 확보.
             </div>
           </div>
         </template>
@@ -1288,17 +1382,25 @@
 <!-- 모바일 하단 탭 -->
 <nav class="mobile-tabs">
   <button @click="mobileTab='watch'" :class="mobileTab==='watch'&&'active'">
-    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h7v7H3zM13 3h4v4h-4zM13 13h4v4h-4zM3 14h7v3H3z"/></svg>
-    종목
+    <span class="tab-icon">📋</span>
+    <span>종목</span>
+    <span x-show="watch.length" class="text-[9px] opacity-60" x-text="'(' + watch.length + ')'"></span>
   </button>
   <button @click="mobileTab='report'" :class="mobileTab==='report'&&'active'">
-    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h12v12H4z"/><path d="M7 12V9m3 3V7m3 5V5"/></svg>
-    분석
+    <span class="tab-icon">📊</span>
+    <span>분석</span>
+    <span x-show="selected" class="text-[9px] opacity-60" x-text="selected"></span>
   </button>
-  <button @click="mobileTab='alerts'" :class="mobileTab==='alerts'&&'active'">
-    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2a6 6 0 016 6c0 4 2 5 2 5H2s2-1 2-5a6 6 0 016-6zM8 17h4"/></svg>
-    알림
-    <span x-show="alerts.length" class="absolute -top-1 right-1/4 w-2 h-2 rounded-full bg-coral-500"></span>
+  <button @click="mobileTab='alerts'" :class="mobileTab==='alerts'&&'active' + ' relative'">
+    <span class="tab-icon">🔔</span>
+    <span>알림</span>
+    <span x-show="alerts.length" class="text-[9px] opacity-60" x-text="'(' + alerts.length + ')'"></span>
+    <span x-show="alerts.length" class="absolute top-2 right-1/3 w-2 h-2 rounded-full bg-coral-500 animate-pulse"></span>
+  </button>
+  <button @click="openTelegramSetup()">
+    <span class="tab-icon">📲</span>
+    <span :class="tgInfo?.subscribed && 'text-emerald-500'">텔레그램</span>
+    <span x-show="tgInfo?.subscribed" class="text-[9px] text-emerald-500">●</span>
   </button>
 </nav>
 
