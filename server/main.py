@@ -24,6 +24,7 @@ from app.intelligence import (
     compute_toss_score, explain_move, compute_multi_tf, detect_patterns,
 )
 from app.trade_kis import auto_order, is_live as kis_is_live
+from app import telegram_alert
 from server import db, alerts as alerts_mod
 from server.sizing import shares_for, split_plan
 
@@ -482,6 +483,75 @@ async def api_trade_mode(_: dict = Depends(get_current_user)):
         "max_usd": float(os.environ.get("MAX_ORDER_AMOUNT_USD", "200")),
         "account_set": bool(os.environ.get("KIS_ACCOUNT_NO", "").strip()),
     }
+
+
+# ─── Telegram 푸시 알림 ────────────────────────────────────────
+class TelegramChatIn(BaseModel):
+    chat_id: str
+
+
+@app.get("/api/telegram/info")
+async def api_telegram_info(user: dict = Depends(get_current_user)):
+    """텔레그램 봇 설정 상태 + 본인 chat_id."""
+    bot = await telegram_alert.get_me()
+    my_chat_id = await db.get_telegram_chat_id(user["id"])
+    return {
+        "configured": telegram_alert.is_configured(),
+        "bot_username": bot.get("username"),
+        "bot_name": bot.get("first_name"),
+        "my_chat_id": my_chat_id,
+        "subscribed": bool(my_chat_id),
+    }
+
+
+@app.get("/api/telegram/discover")
+async def api_telegram_discover(_: dict = Depends(get_current_user)):
+    """봇과 최근 대화한 chat_id 후보 — 본인 ID 찾기 도우미."""
+    if not telegram_alert.is_configured():
+        raise HTTPException(400, "TELEGRAM_BOT_TOKEN 환경변수가 설정되지 않았습니다")
+    return {"candidates": await telegram_alert.discover_chat_ids()}
+
+
+@app.post("/api/telegram/subscribe")
+async def api_telegram_subscribe(body: TelegramChatIn, user: dict = Depends(get_current_user)):
+    """본인 chat_id 등록 + 테스트 메시지 즉시 발송."""
+    if not telegram_alert.is_configured():
+        raise HTTPException(400, "TELEGRAM_BOT_TOKEN 미설정 — 관리자 설정 필요")
+    chat_id = body.chat_id.strip()
+    if not chat_id:
+        raise HTTPException(400, "chat_id 비어있음")
+
+    test_msg = (
+        "✅ <b>Toss 알림 연결 완료</b>\n\n"
+        f"안녕하세요 <b>{user.get('display_name') or user.get('username')}</b>님,\n"
+        "이제 매수/매도/익절/손절 시그널이 발생할 때마다\n"
+        "이 채팅으로 즉시 푸시됩니다.\n\n"
+        "📈 워치리스트와 포트폴리오를 분석하면 자동으로\n"
+        "    실시간 알림이 시작됩니다."
+    )
+    res = await telegram_alert.send(chat_id, test_msg)
+    if not res["ok"]:
+        raise HTTPException(400, f"테스트 발송 실패: {res['error']}")
+
+    await db.set_telegram_chat_id(user["id"], chat_id)
+    return {"ok": True, "chat_id": chat_id}
+
+
+@app.delete("/api/telegram/subscribe")
+async def api_telegram_unsubscribe(user: dict = Depends(get_current_user)):
+    await db.set_telegram_chat_id(user["id"], "")
+    return {"ok": True}
+
+
+# ─── 모의 트레이드 트래커 (시그널 성과 검증) ────────────────────
+@app.get("/api/mock-trades")
+async def api_mock_trades(user: dict = Depends(get_current_user)):
+    return await db.list_user_mock_trades(user["id"])
+
+
+@app.get("/api/mock-trades/stats")
+async def api_mock_stats(user: dict = Depends(get_current_user)):
+    return await db.mock_trade_stats(user["id"])
 
 
 @app.post("/api/trade/order")

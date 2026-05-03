@@ -95,6 +95,21 @@ CREATE TABLE IF NOT EXISTS portfolio (
   krw_invested REAL NOT NULL DEFAULT 0,
   created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS mock_trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  side TEXT NOT NULL,
+  entry_price REAL NOT NULL,
+  target_price REAL,
+  stop_price REAL,
+  exit_price REAL,
+  exit_reason TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  pnl_pct REAL,
+  opened_at REAL NOT NULL,
+  closed_at REAL
+);
 """
 
 
@@ -132,6 +147,145 @@ async def list_all_portfolio() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+# ── Telegram 알림 ─────────────────────────────────────────
+async def set_telegram_chat_id(user_id: int, chat_id: str):
+    c = await get_db()
+    await c.execute("UPDATE users SET telegram_chat_id=? WHERE id=?",
+                    (chat_id.strip(), user_id))
+    await c.commit()
+
+
+async def get_telegram_chat_id(user_id: int) -> str:
+    c = await get_db()
+    row = await (await c.execute(
+        "SELECT telegram_chat_id FROM users WHERE id=?", (user_id,)
+    )).fetchone()
+    return (dict(row).get("telegram_chat_id") if row else "") or ""
+
+
+async def all_telegram_subscribers() -> list[tuple[int, str]]:
+    """알림 발송 대상 (user_id, chat_id) 목록."""
+    c = await get_db()
+    rows = await (await c.execute(
+        "SELECT id, telegram_chat_id FROM users WHERE telegram_chat_id != ''"
+    )).fetchall()
+    return [(r["id"], r["telegram_chat_id"]) for r in rows]
+
+
+# ── 모의 트레이드 (시그널 성과 트래커) ────────────────────
+async def open_mock_trade(user_id: int, symbol: str, side: str,
+                          entry: float, target: float | None,
+                          stop: float | None) -> int:
+    c = await get_db()
+    cursor = await c.execute(
+        "INSERT INTO mock_trades(user_id,symbol,side,entry_price,target_price,stop_price,opened_at) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (user_id, symbol.upper(), side, entry, target, stop, time.time())
+    )
+    await c.commit()
+    return cursor.lastrowid
+
+
+async def open_mock_trade_for_all(symbol: str, side: str,
+                                  entry: float, target: float | None,
+                                  stop: float | None) -> int:
+    """모의 트레이드 추적이 켜진 모든 유저에게 자동 기록."""
+    c = await get_db()
+    rows = await (await c.execute(
+        "SELECT id FROM users WHERE mock_trade_enabled=1"
+    )).fetchall()
+    count = 0
+    for r in rows:
+        # 같은 종목 같은 방향 미완료 트레이드 중복 방지
+        existing = await (await c.execute(
+            "SELECT id FROM mock_trades WHERE user_id=? AND symbol=? AND side=? AND status='open'",
+            (r["id"], symbol.upper(), side)
+        )).fetchone()
+        if existing:
+            continue
+        await c.execute(
+            "INSERT INTO mock_trades(user_id,symbol,side,entry_price,target_price,stop_price,opened_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (r["id"], symbol.upper(), side, entry, target, stop, time.time())
+        )
+        count += 1
+    await c.commit()
+    return count
+
+
+async def list_open_mock_trades() -> list[dict]:
+    """워커에서 가격 도달 체크용."""
+    c = await get_db()
+    rows = await (await c.execute(
+        "SELECT * FROM mock_trades WHERE status='open'"
+    )).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def close_mock_trade(trade_id: int, exit_price: float, exit_reason: str):
+    c = await get_db()
+    row = await (await c.execute(
+        "SELECT entry_price, side FROM mock_trades WHERE id=?", (trade_id,)
+    )).fetchone()
+    if not row:
+        return
+    entry = float(row["entry_price"])
+    side = row["side"]
+    if entry <= 0:
+        pnl_pct = 0
+    elif side == "buy":
+        pnl_pct = (exit_price / entry - 1) * 100
+    else:  # sell (숏)
+        pnl_pct = (entry / exit_price - 1) * 100 if exit_price > 0 else 0
+    await c.execute(
+        "UPDATE mock_trades SET exit_price=?, exit_reason=?, status='closed', "
+        "pnl_pct=?, closed_at=? WHERE id=?",
+        (exit_price, exit_reason, round(pnl_pct, 2), time.time(), trade_id)
+    )
+    await c.commit()
+
+
+async def list_user_mock_trades(user_id: int, limit: int = 100) -> list[dict]:
+    c = await get_db()
+    rows = await (await c.execute(
+        "SELECT * FROM mock_trades WHERE user_id=? ORDER BY opened_at DESC LIMIT ?",
+        (user_id, limit)
+    )).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def mock_trade_stats(user_id: int) -> dict:
+    c = await get_db()
+    rows = await (await c.execute(
+        "SELECT pnl_pct, exit_reason, status FROM mock_trades WHERE user_id=?",
+        (user_id,)
+    )).fetchall()
+    closed = [dict(r) for r in rows if r["status"] == "closed" and r["pnl_pct"] is not None]
+    open_count = sum(1 for r in rows if r["status"] == "open")
+
+    if not closed:
+        return {
+            "total_signals": len(rows), "open": open_count, "closed": 0,
+            "wins": 0, "losses": 0, "win_rate": 0,
+            "avg_return_pct": 0, "best_pct": 0, "worst_pct": 0,
+            "cumulative_pct": 0,
+        }
+
+    pnls = [r["pnl_pct"] for r in closed]
+    wins = sum(1 for p in pnls if p > 0)
+    losses = sum(1 for p in pnls if p <= 0)
+    return {
+        "total_signals": len(rows),
+        "open": open_count, "closed": len(closed),
+        "wins": wins, "losses": losses,
+        "win_rate": round(wins / len(pnls) * 100, 1) if pnls else 0,
+        "avg_return_pct": round(sum(pnls) / len(pnls), 2),
+        "best_pct": round(max(pnls), 2),
+        "worst_pct": round(min(pnls), 2),
+        "cumulative_pct": round(sum(pnls), 2),
+    }
+
+
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "munyechan11")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")  # .env에 ADMIN_PASSWORD 설정 필요
 
@@ -144,6 +298,8 @@ async def init():
         ("user_id", "watchlist", "INTEGER NOT NULL DEFAULT 0"),
         ("display_name", "users", "TEXT NOT NULL DEFAULT ''"),
         ("is_admin", "users", "INTEGER NOT NULL DEFAULT 0"),
+        ("telegram_chat_id", "users", "TEXT NOT NULL DEFAULT ''"),
+        ("mock_trade_enabled", "users", "INTEGER NOT NULL DEFAULT 1"),
     ]:
         try:
             await c.execute(f"SELECT {col} FROM {table} LIMIT 1")

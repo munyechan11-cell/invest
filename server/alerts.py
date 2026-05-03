@@ -1,7 +1,8 @@
-"""실시간 가격 폴링 + 알림 트리거."""
+"""실시간 가격 폴링 + 알림 트리거 (브라우저·Telegram·모의 트레이드 추적)."""
 from __future__ import annotations
 import asyncio, time, logging
 from app.market import fetch_realtime_quote, market_of
+from app import telegram_alert
 from server import db
 from server.sizing import shares_for, split_plan
 
@@ -10,6 +11,31 @@ log = logging.getLogger("alerts")
 POLL_SEC = 5           # 실시간 폴링 주기 (포트폴리오 자동 업데이트 5초)
 COOLDOWN_SEC = 300     # 같은 알림 재발송 방지
 _last_sent: dict[tuple[str, str], float] = {}
+
+
+async def _push_telegram(symbol: str, kind: str, price: float, message: str,
+                         plan: dict | None = None):
+    """알림을 Telegram으로 푸시 — 등록된 모든 사용자에게 발송."""
+    if not telegram_alert.is_configured():
+        return
+    try:
+        subs = await db.all_telegram_subscribers()
+    except Exception:
+        return
+    if not subs:
+        return
+
+    is_kr = symbol.isdigit() and len(symbol) == 6
+    text = telegram_alert.format_alert(
+        symbol, kind, price, message,
+        toss_score=(plan or {}).get("toss_score") if plan else None,
+        entry=(plan or {}).get("entry_price"),
+        target=(plan or {}).get("target_price"),
+        stop=(plan or {}).get("stop_price"),
+        is_kr=is_kr,
+    )
+    for _user_id, chat_id in subs:
+        await telegram_alert.send(chat_id, text)
 
 
 def _fmt(symbol: str, price: float) -> str:
@@ -52,14 +78,25 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
         if abs(price - float(entry_price)) / float(entry_price) <= 0.003:
             if not _cool(sym, f"BUY_{user_id}"):
                 stop_for_size = float(stop_price) if stop_price else price * 0.97
-                size = shares_for(capital, risk_pct, price, stop_for_size)
-                splits = split_plan(size["shares"])
-                msg = (f"💚 지금 {pos}! {pf} (진입가 {fmt_entry} 도달) — "
-                       f"권장 {size['shares']}주 (분할: {splits}), "
-                       f"투입 {_fmt(sym, size['notional'])}, 최대손실 {_fmt(sym, size['max_loss'])}")
+                size = shares_for(capital, risk_pct, price, stop_for_size) if capital > 0 else {"shares": 0, "notional": 0, "max_loss": 0}
+                splits = split_plan(size["shares"]) if capital > 0 else []
+                if capital > 0:
+                    msg = (f"💚 지금 {pos}! {pf} (진입가 {fmt_entry} 도달) — "
+                           f"권장 {size['shares']}주 (분할: {splits}), "
+                           f"투입 {_fmt(sym, size['notional'])}, 최대손실 {_fmt(sym, size['max_loss'])}")
+                else:
+                    msg = f"💚 지금 {pos}! {pf} (진입가 {fmt_entry} 도달) — 토스에서 매수 진행"
                 await db.add_alert(sym, "BUY", msg, price)
                 await broadcast({"type": "alert", "symbol": sym, "kind": "BUY",
                                  "message": msg, "price": price, "user_id": user_id})
+                await _push_telegram(sym, "BUY", price, msg, plan)
+                # 모의 트레이드 자동 시작 — 추후 TP/SL 도달 시 자동 청산
+                try:
+                    await db.open_mock_trade_for_all(sym, "buy", price,
+                                                    float(target) if target else None,
+                                                    float(stop_price) if stop_price else None)
+                except Exception as e:
+                    log.warning(f"mock_trade open fail: {e}")
 
     # 익절(매수): 목표가 ≥ 도달
     if is_buy and target and price >= float(target):
@@ -68,6 +105,7 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
             await db.add_alert(sym, "TP", msg, price)
             await broadcast({"type": "alert", "symbol": sym, "kind": "TP",
                              "message": msg, "price": price, "user_id": user_id})
+            await _push_telegram(sym, "TP", price, msg, plan)
 
     # 손절(매수): 손절가 ≤ 이탈
     if is_buy and stop_price and price <= float(stop_price):
@@ -76,6 +114,7 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
             await db.add_alert(sym, "SL", msg, price)
             await broadcast({"type": "alert", "symbol": sym, "kind": "SL",
                              "message": msg, "price": price, "user_id": user_id})
+            await _push_telegram(sym, "SL", price, msg, plan)
 
     # 매도 익절: 매도 포지션에서 목표가(하락) 이하로 도달
     if is_sell and target and price <= float(target):
@@ -84,6 +123,7 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
             await db.add_alert(sym, "TP", msg, price)
             await broadcast({"type": "alert", "symbol": sym, "kind": "TP",
                              "message": msg, "price": price, "user_id": user_id})
+            await _push_telegram(sym, "TP", price, msg, plan)
 
     # 매도 신호: 매도 포지션에서 진입가 부근 도달
     if is_sell and entry_price:
@@ -93,6 +133,34 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
                 await db.add_alert(sym, "SELL", msg, price)
                 await broadcast({"type": "alert", "symbol": sym, "kind": "SELL",
                                  "message": msg, "price": price, "user_id": user_id})
+                await _push_telegram(sym, "SELL", price, msg, plan)
+
+
+async def _check_mock_trades(symbol: str, price: float):
+    """오픈된 모의 트레이드의 TP/SL 도달 자동 청산."""
+    try:
+        opens = await db.list_open_mock_trades()
+    except Exception:
+        return
+    for t in opens:
+        if t["symbol"] != symbol:
+            continue
+        side = t["side"]
+        target = t.get("target_price")
+        stop = t.get("stop_price")
+        try:
+            if side == "buy":
+                if target and price >= float(target):
+                    await db.close_mock_trade(t["id"], price, "TP")
+                elif stop and price <= float(stop):
+                    await db.close_mock_trade(t["id"], price, "SL")
+            else:  # sell
+                if target and price <= float(target):
+                    await db.close_mock_trade(t["id"], price, "TP")
+                elif stop and price >= float(stop):
+                    await db.close_mock_trade(t["id"], price, "SL")
+        except Exception as e:
+            log.warning(f"mock close fail {t['id']}: {e}")
 
 
 async def worker(broadcast):
@@ -117,6 +185,9 @@ async def worker(broadcast):
                 "in_portfolio": bool(port_items),
                 "in_watchlist": bool(watch_items),
             })
+
+            # ── 오픈된 모의 트레이드 자동 청산 체크
+            await _check_mock_trades(sym, q.price)
 
             # ── 포트폴리오 보유종목별 평가손익 계산 + 송출
             for p in port_items:
