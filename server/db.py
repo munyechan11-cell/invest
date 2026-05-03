@@ -95,6 +95,17 @@ CREATE TABLE IF NOT EXISTS portfolio (
   krw_invested REAL NOT NULL DEFAULT 0,
   created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS price_alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  target_price REAL NOT NULL,
+  condition TEXT NOT NULL DEFAULT '>=',
+  note TEXT NOT NULL DEFAULT '',
+  active INTEGER NOT NULL DEFAULT 1,
+  triggered_at REAL,
+  created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS mock_trades (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
@@ -196,6 +207,58 @@ async def list_all_portfolio() -> list[dict]:
     c = await get_db()
     rows = await (await c.execute("SELECT * FROM portfolio")).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── 사용자 지정 가격 알림 ──────────────────────────────────
+async def add_price_alert(user_id: int, symbol: str, target_price: float,
+                          condition: str = ">=", note: str = "") -> int:
+    if condition not in (">=", "<=", "=="):
+        condition = ">="
+    c = await get_db()
+    cur = await c.execute(
+        "INSERT INTO price_alerts(user_id,symbol,target_price,condition,note,created_at) "
+        "VALUES(?,?,?,?,?,?)",
+        (user_id, symbol.upper(), target_price, condition, note, time.time())
+    )
+    await c.commit()
+    return cur.lastrowid
+
+
+async def list_user_price_alerts(user_id: int, only_active: bool = True) -> list[dict]:
+    c = await get_db()
+    q = "SELECT * FROM price_alerts WHERE user_id=?"
+    if only_active:
+        q += " AND active=1"
+    q += " ORDER BY created_at DESC"
+    rows = await (await c.execute(q, (user_id,))).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def list_active_price_alerts() -> list[dict]:
+    """워커가 가격 도달 체크용 — 모든 유저의 활성 알림."""
+    c = await get_db()
+    rows = await (await c.execute(
+        "SELECT * FROM price_alerts WHERE active=1"
+    )).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def trigger_price_alert(alert_id: int):
+    c = await get_db()
+    await c.execute(
+        "UPDATE price_alerts SET active=0, triggered_at=? WHERE id=?",
+        (time.time(), alert_id)
+    )
+    await c.commit()
+
+
+async def delete_price_alert(alert_id: int, user_id: int):
+    c = await get_db()
+    await c.execute(
+        "DELETE FROM price_alerts WHERE id=? AND user_id=?",
+        (alert_id, user_id)
+    )
+    await c.commit()
 
 
 # ── Telegram 알림 ─────────────────────────────────────────

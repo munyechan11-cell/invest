@@ -25,11 +25,12 @@ from app.intelligence import (
     compute_relative_strength, get_benchmark_symbol,
 )
 from app.trade_kis import auto_order, is_live as kis_is_live
-from app import telegram_alert, morning_brief
+from app import telegram_alert, morning_brief, dart_watcher
 from app.market_hours import market_status_for
 from app.backtest import backtest as run_backtest
 from app.scanner import get_top_picks
 from app.indices import fetch_indices
+from app.risk_analytics import analyze_portfolio_risk, grade_volatility
 from server import db, alerts as alerts_mod
 from server.sizing import shares_for, split_plan
 
@@ -83,12 +84,14 @@ async def lifespan(_app: FastAPI):
     await db.init()
     task1 = asyncio.create_task(alerts_mod.worker(broadcast))
     task2 = asyncio.create_task(morning_brief.daily_scheduler())
-    log.info("Toss server ready (alerts + morning brief 09:00 KST)")
+    task3 = asyncio.create_task(dart_watcher.worker(broadcast))
+    log.info("Toss server ready (alerts + morning brief + DART watcher)")
     try:
         yield
     finally:
         task1.cancel()
         task2.cancel()
+        task3.cancel()
 
 
 app = FastAPI(title="Toss — Quant Assistant", lifespan=lifespan)
@@ -255,6 +258,11 @@ def _attach_intelligence(ana: dict, snap: dict, news: list[dict], flow: dict) ->
         ana["patterns"] = detect_patterns(snap)
     except Exception as e:
         log.warning(f"patterns 실패: {e}")
+
+    try:
+        ana["volatility"] = grade_volatility(snap)
+    except Exception as e:
+        log.warning(f"volatility 실패: {e}")
 
     # flow에서 어닝/애널리스트를 ana로 끌어올림 (프론트가 한 곳에서 읽도록)
     if flow:
@@ -751,6 +759,81 @@ async def api_scan_today(market: str = "BOTH", limit: int = 5,
 async def api_indices(_: dict = Depends(get_current_user)):
     """KOSPI/KOSDAQ/S&P500/NASDAQ/Dow 실시간. 30초 캐시."""
     return {"indices": await fetch_indices()}
+
+
+# ─── 사용자 지정 가격 알림 ───────────────────────────────────────
+class PriceAlertIn(BaseModel):
+    symbol: str
+    target_price: float = Field(gt=0)
+    condition: str = ">="  # >= / <= / ==
+    note: str = ""
+
+
+@app.get("/api/price-alerts")
+async def api_list_price_alerts(user: dict = Depends(get_current_user)):
+    return await db.list_user_price_alerts(user["id"], only_active=False)
+
+
+@app.post("/api/price-alerts")
+async def api_add_price_alert(body: PriceAlertIn, user: dict = Depends(get_current_user)):
+    if body.condition not in (">=", "<=", "=="):
+        raise HTTPException(400, "condition은 >= / <= / ==")
+    aid = await db.add_price_alert(
+        user["id"], body.symbol.upper(), body.target_price,
+        body.condition, body.note
+    )
+    return {"ok": True, "id": aid}
+
+
+@app.delete("/api/price-alerts/{alert_id}")
+async def api_delete_price_alert(alert_id: int, user: dict = Depends(get_current_user)):
+    await db.delete_price_alert(alert_id, user["id"])
+    return {"ok": True}
+
+
+# ─── 포트폴리오 리스크 분석 ──────────────────────────────────────
+@app.get("/api/portfolio/risk")
+async def api_portfolio_risk(user: dict = Depends(get_current_user)):
+    """집중도 / 분산도 / 시장 비중 + 경고 자동 생성."""
+    holdings = await db.list_portfolio(user["id"])
+    if not holdings:
+        return {"ok": False, "msg": "보유 종목 없음"}
+
+    # 현재가 fetch (병렬, 캐시 활용)
+    ticks: dict[str, float] = {}
+    async def _t(sym):
+        try:
+            snap = await _cached_snapshot(sym)
+            ticks[sym] = float(snap.get("quote", {}).get("price") or 0)
+        except Exception:
+            ticks[sym] = 0
+    await asyncio.gather(*[_t(h["symbol"]) for h in holdings])
+
+    return analyze_portfolio_risk(holdings, ticks)
+
+
+# ─── DART 공시 최근 N일 조회 ─────────────────────────────────────
+@app.get("/api/dart/{symbol}")
+async def api_dart_filings(symbol: str, days: int = 7,
+                            _: dict = Depends(get_current_user)):
+    """KR 종목의 최근 공시 (DART OpenAPI)."""
+    sym = symbol.upper()
+    if not (sym.isdigit() and len(sym) == 6):
+        raise HTTPException(400, "한국 종목 코드 (6자리 숫자)만 지원")
+    filings = await dart_watcher._fetch_dart_filings(sym, days=days)
+    out = []
+    for f in filings:
+        icon, category = dart_watcher._classify_filing(f.get("report_nm", ""))
+        out.append({
+            "rcept_no": f.get("rcept_no"),
+            "rcept_dt": f.get("rcept_dt"),
+            "report_nm": f.get("report_nm"),
+            "submitter": f.get("flr_nm"),
+            "icon": icon,
+            "category": category,
+            "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={f.get('rcept_no', '')}",
+        })
+    return {"symbol": sym, "filings": out, "count": len(out)}
 
 
 # ─── 모닝 브리프 ─────────────────────────────────────────────────

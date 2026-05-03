@@ -136,6 +136,45 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
                 await _push_telegram(sym, "SELL", price, msg, plan)
 
 
+async def _check_price_alerts(symbol: str, price: float, broadcast):
+    """사용자 지정 가격 알림 체크 — 도달 시 1회 발송 후 비활성화."""
+    try:
+        alerts = await db.list_active_price_alerts()
+    except Exception:
+        return
+    for a in alerts:
+        if a["symbol"] != symbol:
+            continue
+        target = float(a["target_price"])
+        cond = a.get("condition", ">=")
+        hit = (cond == ">=" and price >= target) or \
+              (cond == "<=" and price <= target) or \
+              (cond == "==" and abs(price - target) / target < 0.001)
+        if not hit:
+            continue
+        # 발송 후 비활성화 (1회성)
+        await db.trigger_price_alert(a["id"])
+        pf = _fmt(symbol, price)
+        ft = _fmt(symbol, target)
+        note = a.get("note") or ""
+        msg = f"🔔 사용자 알림! {symbol} {pf} {cond} {ft}" + (f" — {note}" if note else "")
+        await db.add_alert(symbol, "CUSTOM", msg, price)
+        await broadcast({"type": "alert", "symbol": symbol, "kind": "CUSTOM",
+                         "message": msg, "price": price, "user_id": a["user_id"]})
+        # 텔레그램
+        chat_id = await db.get_telegram_chat_id(a["user_id"])
+        if chat_id and telegram_alert.is_configured():
+            tmsg = (
+                f"<b>🔔 가격 알림 도달</b>\n\n"
+                f"<b>{symbol}</b>\n"
+                f"현재가: <b>{pf}</b>\n"
+                f"설정가: <code>{cond} {ft}</code>\n"
+            )
+            if note:
+                tmsg += f"메모: <i>{note}</i>\n"
+            await telegram_alert.send(chat_id, tmsg)
+
+
 async def _check_mock_trades(symbol: str, price: float):
     """오픈된 모의 트레이드의 TP/SL 도달 자동 청산."""
     try:
@@ -188,6 +227,9 @@ async def worker(broadcast):
 
             # ── 오픈된 모의 트레이드 자동 청산 체크
             await _check_mock_trades(sym, q.price)
+
+            # ── 사용자 지정 가격 알림 체크
+            await _check_price_alerts(sym, q.price, broadcast)
 
             # ── 포트폴리오 보유종목별 평가손익 계산 + 송출
             for p in port_items:

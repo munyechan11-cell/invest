@@ -819,8 +819,15 @@
             </div>
           </div>
 
-          <!-- 시장 상태 + 섹터 상대강도 표시 -->
+          <!-- 시장 상태 + 섹터 상대강도 + 변동성 등급 -->
           <div class="flex items-center gap-3 mt-3 text-[11px] flex-wrap">
+            <template x-if="report.analysis.volatility">
+              <div class="flex items-center gap-1.5"
+                   :title="'BB 폭 ' + report.analysis.volatility.atr_pct + '% / 가격'">
+                <span class="text-amber-500" x-text="report.analysis.volatility.stars"></span>
+                <span class="text-ink-600 text-[10px]" x-text="'변동성 ' + report.analysis.volatility.label"></span>
+              </div>
+            </template>
             <template x-if="report.market_status">
               <div class="flex items-center gap-2">
                 <span class="w-1.5 h-1.5 rounded-full"
@@ -844,6 +851,7 @@
           <div class="flex gap-2 mt-5 flex-wrap">
             <button @click="runAnalyze()" class="btn btn-primary">재분석</button>
             <button @click="openPortfolioModal()" class="btn btn-accent">포트폴리오 담기</button>
+            <button @click="addPriceAlert(selected)" class="btn btn-ghost">🔔 가격 알림</button>
             <button @click="removeWatch()" class="btn btn-ghost">제거</button>
             <a :href="'https://www.tradingview.com/symbols/'+(isKR(selected)?'KRX-'+selected:selected)+'/'" target="_blank" class="btn btn-ghost ml-auto">TradingView ↗</a>
             <template x-if="isKR(selected)">
@@ -1433,6 +1441,63 @@
       </div>
     </div>
 
+    <!-- 📊 포트폴리오 리스크 분석 -->
+    <template x-if="portfolioRisk?.ok">
+      <div class="surface-elevated p-4 mb-4">
+        <div class="flex items-baseline justify-between mb-3">
+          <div class="serif text-base font-semibold">📊 리스크 분석</div>
+          <div class="text-[10px] px-2 py-0.5 rounded font-bold"
+               :class="portfolioRisk.diversification === '양호' ? 'bg-emerald-500/20 text-emerald-500' :
+                       portfolioRisk.diversification === '보통' ? 'bg-amber-500/20 text-amber-500' :
+                       'bg-rose-500/20 text-rose-500'"
+               x-text="'분산도: ' + portfolioRisk.diversification"></div>
+        </div>
+
+        <!-- 시장 비중 + 종목 수 -->
+        <div class="grid grid-cols-3 gap-2 text-xs mb-3">
+          <div class="surface p-2 text-center">
+            <div class="text-ink-500 mb-0.5">종목 수</div>
+            <div class="font-mono font-bold" x-text="portfolioRisk.position_count"></div>
+          </div>
+          <div class="surface p-2 text-center">
+            <div class="text-ink-500 mb-0.5">🇰🇷 비중</div>
+            <div class="font-mono font-bold text-blue-400" x-text="portfolioRisk.market_split.kr_pct + '%'"></div>
+          </div>
+          <div class="surface p-2 text-center">
+            <div class="text-ink-500 mb-0.5">🇺🇸 비중</div>
+            <div class="font-mono font-bold text-zinc-400" x-text="portfolioRisk.market_split.us_pct + '%'"></div>
+          </div>
+        </div>
+
+        <!-- TOP 3 비중 -->
+        <div class="space-y-1.5 mb-3" x-show="portfolioRisk.top_3?.length">
+          <div class="text-[10px] uppercase tracking-wider text-ink-500">집중도 TOP 3</div>
+          <template x-for="t in portfolioRisk.top_3">
+            <div class="flex items-center gap-2 text-xs">
+              <span class="font-mono font-bold w-16" x-text="t.symbol"></span>
+              <div class="flex-1 h-2 rounded-full overflow-hidden bg-[#1a1a1a]">
+                <div class="h-full"
+                     :class="t.weight_pct >= 50 ? 'bg-rose-500' : t.weight_pct >= 30 ? 'bg-amber-500' : 'bg-emerald-500'"
+                     :style="'width:' + t.weight_pct + '%'"></div>
+              </div>
+              <span class="font-mono w-12 text-right" x-text="t.weight_pct + '%'"></span>
+            </div>
+          </template>
+        </div>
+
+        <!-- 경고 -->
+        <div class="space-y-1.5" x-show="portfolioRisk.warnings?.length">
+          <template x-for="w in portfolioRisk.warnings">
+            <div class="text-xs leading-snug p-2 rounded"
+                 :class="w.level === 'danger' ? 'bg-rose-500/10 text-rose-400' :
+                         w.level === 'warn' ? 'bg-amber-500/10 text-amber-400' :
+                         'bg-blue-500/10 text-blue-400'"
+                 x-text="w.msg"></div>
+          </template>
+        </div>
+      </div>
+    </template>
+
     <template x-if="!holdings.length">
       <div class="surface p-8 text-center text-ink-500 text-sm">
         보유 종목이 없습니다.<br>
@@ -1721,6 +1786,14 @@ function app(){
     avgDownTarget: null,   // {id, symbol, shares, entry_price, current_price}
     avgDownForm: { price: 0, shares: 0 },
 
+    // 포트폴리오 리스크
+    portfolioRisk: null,
+
+    // 사용자 지정 가격 알림
+    showPriceAlertModal: false,
+    priceAlertForm: { target_price: 0, condition: '>=', note: '' },
+    myPriceAlerts: [],
+
     get avgDownPreview() {
       if (!this.avgDownTarget || !this.avgDownForm.price || !this.avgDownForm.shares) return null;
       const oldShares = parseFloat(this.avgDownTarget.shares) || 0;
@@ -1811,6 +1884,8 @@ function app(){
         this.loadMockStats();
         this.loadTopPicks();        // 스마트 스캐너 (백그라운드)
         this.loadIndices();         // 시장 지수 ticker
+        this.loadPortfolioRisk();   // 포트폴리오 리스크 분석
+        this.loadMyPriceAlerts();   // 사용자 지정 알림 목록
         this.openTelegramSetup().catch(()=>{}); this.showTelegramSetup = false;
 
         // 자동 갱신 — TOP 추천 5분 / 지수 30초
@@ -2160,6 +2235,44 @@ function app(){
         const r = await this.api('/api/mock-trades/stats');
         if (r.ok) this.mockStats = await r.json();
       } catch(e) {}
+    },
+
+    // ─── 포트폴리오 리스크 분석 ────────────────────────
+    async loadPortfolioRisk() {
+      try {
+        const r = await this.api('/api/portfolio/risk');
+        if (r.ok) this.portfolioRisk = await r.json();
+      } catch(e) {}
+    },
+
+    // ─── 사용자 지정 가격 알림 ─────────────────────────
+    async loadMyPriceAlerts() {
+      try {
+        const r = await this.api('/api/price-alerts');
+        if (r.ok) this.myPriceAlerts = await r.json();
+      } catch(e) {}
+    },
+    async addPriceAlert(symbol) {
+      const target = prompt(`${symbol} 가격 알림 — 목표 가격을 입력하세요`);
+      if (!target) return;
+      const tp = parseFloat(target);
+      if (isNaN(tp) || tp <= 0) { alert('잘못된 가격'); return; }
+      const cond = confirm(`${symbol} ${tp.toLocaleString()}\n\n[확인] = 이상 도달 시 알림\n[취소] = 이하 도달 시 알림`) ? '>=' : '<=';
+      try {
+        const r = await this.api('/api/price-alerts', {
+          method: 'POST', headers: {'content-type':'application/json'},
+          body: JSON.stringify({ symbol, target_price: tp, condition: cond, note: '' })
+        });
+        if (r.ok) {
+          alert(`✅ 알림 추가: ${symbol} ${cond} ${tp.toLocaleString()}`);
+          await this.loadMyPriceAlerts();
+        }
+      } catch(e) { alert('실패: ' + e.message); }
+    },
+    async removePriceAlert(id) {
+      if (!confirm('가격 알림을 삭제할까요?')) return;
+      await this.api('/api/price-alerts/' + id, { method: 'DELETE' });
+      await this.loadMyPriceAlerts();
     },
 
     async loadHoldings() {
