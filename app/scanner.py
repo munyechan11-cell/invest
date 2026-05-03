@@ -32,7 +32,7 @@ POPULAR_US = [
 ]
 
 
-async def scan_symbol(symbol: str, name: str) -> dict | None:
+async def scan_symbol(symbol: str, name: str, exchange: str = None) -> dict | None:
     """단일 종목 빠른 평가 — 룰 엔진 + TOSS Score만."""
     from .market import get_snapshot
     from .analyze_rules import analyze_rules
@@ -47,8 +47,10 @@ async def scan_symbol(symbol: str, name: str) -> dict | None:
             "symbol": symbol,
             "name": name,
             "market": "KR" if symbol.isdigit() else "US",
+            "exchange": exchange or ("KRX" if symbol.isdigit() else "NASDAQ/NYSE"),
             "price": q.get("price", 0),
             "change_pct": q.get("change_pct", 0),
+            "volume": q.get("today_volume", 0),
             "rv": q.get("relative_volume", 0),
             "rsi": ind.get("rsi14", 50),
             "position": ana.get("position", "관망"),
@@ -63,23 +65,45 @@ async def scan_symbol(symbol: str, name: str) -> dict | None:
 
 
 async def scan_universe(market: str = "BOTH", limit: int = 5,
-                        min_score: float = 55) -> list[dict]:
-    """전체 인기 종목 스캔 → TOSS Score 내림차순 TOP N."""
-    universe = []
+                        min_score: float = 55,
+                        kr_source: str = "volume") -> list[dict]:
+    """전체 인기 종목 스캔 → TOSS Score 내림차순 TOP N.
+
+    Args:
+        market: KR / US / BOTH
+        limit: 반환 개수
+        min_score: TOSS Score 임계 (미달 시에도 폴백으로 상위 N개)
+        kr_source: "volume" = 실시간 거래량 TOP20+20 (네이버) / "popular" = 정적 시총
+    """
+    universe: list[tuple[str, str, str]] = []  # (symbol, name, exchange)
+
     if market in ("KR", "BOTH"):
-        universe += POPULAR_KR
+        if kr_source == "volume":
+            try:
+                from .volume_rank import get_kr_universe
+                kr_uni = await get_kr_universe(per_market=20)
+                if kr_uni:
+                    universe += kr_uni
+                else:
+                    universe += [(s, n, "KOSPI") for s, n in POPULAR_KR]
+            except Exception as e:
+                log.warning(f"volume rank fail, fall back to POPULAR_KR: {e}")
+                universe += [(s, n, "KOSPI") for s, n in POPULAR_KR]
+        else:
+            universe += [(s, n, "KOSPI") for s, n in POPULAR_KR]
+
     if market in ("US", "BOTH"):
-        universe += POPULAR_US
+        universe += [(s, n, "NASDAQ/NYSE") for s, n in POPULAR_US]
 
     # 동시 실행 5개 — Rate limit 보호
     sem = asyncio.Semaphore(5)
 
-    async def _with_sem(s, n):
+    async def _with_sem(s, n, ex):
         async with sem:
-            return await scan_symbol(s, n)
+            return await scan_symbol(s, n, ex)
 
     results = await asyncio.gather(
-        *[_with_sem(s, n) for s, n in universe],
+        *[_with_sem(s, n, ex) for s, n, ex in universe],
         return_exceptions=False,
     )
     valid = [r for r in results if r]
@@ -89,16 +113,18 @@ async def scan_universe(market: str = "BOTH", limit: int = 5,
     return qualified or valid[:limit]  # 임계 미달이면 그래도 상위 N개
 
 
-# ── 스캔 결과 캐시 (5분) ─────────────────────────────────────
-_cache: dict = {"value": None, "ts": 0}
+# ── 스캔 결과 캐시 (시장별 5분) ─────────────────────────────
+_cache: dict[str, tuple[float, list]] = {}
 
 
 async def get_top_picks(force: bool = False, market: str = "BOTH",
                         limit: int = 5) -> list[dict]:
     import time as _t
-    if not force and _cache["value"] and _t.time() - _cache["ts"] < 300:
-        return _cache["value"]
+    key = f"{market}_{limit}"
+    if not force and key in _cache:
+        ts, val = _cache[key]
+        if _t.time() - ts < 300:
+            return val
     picks = await scan_universe(market=market, limit=limit)
-    _cache["value"] = picks
-    _cache["ts"] = _t.time()
+    _cache[key] = (_t.time(), picks)
     return picks

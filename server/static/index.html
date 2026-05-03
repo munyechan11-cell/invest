@@ -324,6 +324,27 @@
   </div>
 </header>
 
+<!-- 🇰🇷🇺🇸 시장 탭 — 워치리스트/TOP 후보 필터 -->
+<div class="max-w-[1400px] mx-auto px-4 md:px-8 pt-4 pb-2" x-show="user">
+  <div class="inline-flex gap-1 p-1 surface" style="border-radius:12px">
+    <button @click="setMarketTab('ALL')" class="px-4 py-1.5 rounded-lg text-sm font-semibold transition"
+            :class="marketTab==='ALL' ? 'bg-coral-500 text-black' : 'text-ink-600 hover:text-ink-800'">
+      전체
+    </button>
+    <button @click="setMarketTab('KR')" class="px-4 py-1.5 rounded-lg text-sm font-semibold transition flex items-center gap-1.5"
+            :class="marketTab==='KR' ? 'bg-coral-500 text-black' : 'text-ink-600 hover:text-ink-800'">
+      🇰🇷 국장
+      <span class="text-[10px] opacity-70" x-text="krWatchCount + '/' + krPicksCount"></span>
+    </button>
+    <button @click="setMarketTab('US')" class="px-4 py-1.5 rounded-lg text-sm font-semibold transition flex items-center gap-1.5"
+            :class="marketTab==='US' ? 'bg-coral-500 text-black' : 'text-ink-600 hover:text-ink-800'">
+      🇺🇸 미주
+      <span class="text-[10px] opacity-70" x-text="usWatchCount + '/' + usPicksCount"></span>
+    </button>
+  </div>
+  <span class="text-[10px] text-ink-500 ml-3" x-text="marketTab==='KR' ? '국장 종목·추천만 표시' : marketTab==='US' ? '미주 종목·추천만 표시' : '전체 시장 표시'"></span>
+</div>
+
 <main class="max-w-[1400px] mx-auto grid grid-cols-1 md:grid-cols-12 gap-4 md:gap-5 px-4 md:px-8 py-4 md:py-6">
 
   <!-- ── 워치리스트 ──────────────────────────────────── -->
@@ -377,7 +398,7 @@
       </form>
       <div class="divider my-4"></div>
       <ul class="space-y-1.5">
-        <template x-for="w in watch" :key="w.symbol">
+        <template x-for="w in filteredWatch" :key="w.symbol">
           <li @click="select(w.symbol)"
               class="group p-3 rounded-xl cursor-pointer transition hover:bg-cream-100"
               :class="selected===w.symbol && 'bg-coral-50 ring-1 ring-coral-500/30'">
@@ -387,7 +408,10 @@
                 <div>
                   <div class="flex items-center gap-2">
                     <div class="serif font-semibold text-lg leading-none" x-text="w.symbol"></div>
-                    <div class="text-[10px] font-bold px-1.5 py-0.5 rounded" 
+                    <span class="text-[9px] font-bold px-1 py-0.5 rounded font-mono"
+                          :class="isKR(w.symbol) ? 'bg-blue-500/20 text-blue-400' : 'bg-zinc-700/50 text-zinc-400'"
+                          x-text="isKR(w.symbol) ? 'KR' : 'US'"></span>
+                    <div class="text-[10px] font-bold px-1.5 py-0.5 rounded"
                          :class="w.last_position.includes('매수') ? 'bg-olive-500/20 text-olive-500' : (w.last_position.includes('매도') ? 'bg-rust-500/20 text-rust-500' : 'bg-zinc-800 text-zinc-500')"
                          x-text="w.last_position"></div>
                   </div>
@@ -480,7 +504,7 @@
       <div class="text-[10px] text-ink-500 mb-1">
         한+미 인기 40종목 자동 분석 · 5분 캐시 · TOSS Score 상위
       </div>
-      <template x-for="p in topPicks" :key="p.symbol">
+      <template x-for="p in filteredPicks" :key="p.symbol">
         <div @click="select(p.symbol)" class="surface-elevated p-2.5 cursor-pointer hover:border-coral-500/50 border border-transparent transition">
           <div class="flex items-center justify-between mb-1">
             <div class="flex items-center gap-1.5">
@@ -489,8 +513,9 @@
                     x-text="p.grade"></span>
               <span class="font-semibold text-sm" x-text="p.name"></span>
             </div>
-            <span class="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-ink-600 font-mono"
-                  x-text="p.market"></span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded font-mono"
+                  :class="p.exchange==='KOSPI' ? 'bg-blue-500/20 text-blue-400' : p.exchange==='KOSDAQ' ? 'bg-purple-500/20 text-purple-400' : 'bg-zinc-800 text-ink-600'"
+                  x-text="p.exchange || p.market"></span>
           </div>
           <div class="flex justify-between items-center text-[11px]">
             <span class="font-mono"
@@ -501,8 +526,9 @@
           </div>
         </div>
       </template>
-      <template x-if="!topPicks.length && !picksLoading">
-        <div class="text-xs text-ink-500 text-center py-2">자동 스캔 대기중…</div>
+      <template x-if="!filteredPicks.length && !picksLoading">
+        <div class="text-xs text-ink-500 text-center py-2"
+             x-text="marketTab==='KR' ? '국장 자동 스캔 대기중…' : marketTab==='US' ? '미주 자동 스캔 대기중…' : '자동 스캔 대기중…'"></div>
       </template>
     </div>
 
@@ -1331,6 +1357,32 @@ function app(){
     topPicks: [],
     picksLoading: false,
 
+    // 시장 탭 (전체/국장/미주)
+    marketTab: localStorage.getItem('marketTab') || 'KR',  // 기본 국장 (사용자 비중)
+
+    setMarketTab(tab) {
+      this.marketTab = tab;
+      localStorage.setItem('marketTab', tab);
+      this.loadTopPicks();  // 탭 바뀌면 즉시 재로드
+    },
+
+    get filteredWatch() {
+      if (this.marketTab === 'ALL') return this.watch;
+      if (this.marketTab === 'KR') return this.watch.filter(w => this.isKR(w.symbol));
+      return this.watch.filter(w => !this.isKR(w.symbol));
+    },
+
+    get filteredPicks() {
+      if (this.marketTab === 'ALL') return this.topPicks;
+      if (this.marketTab === 'KR') return this.topPicks.filter(p => p.market === 'KR');
+      return this.topPicks.filter(p => p.market === 'US');
+    },
+
+    get krWatchCount() { return this.watch.filter(w => this.isKR(w.symbol)).length; },
+    get usWatchCount() { return this.watch.filter(w => !this.isKR(w.symbol)).length; },
+    get krPicksCount() { return this.topPicks.filter(p => p.market === 'KR').length; },
+    get usPicksCount() { return this.topPicks.filter(p => p.market === 'US').length; },
+
     init(){
       if(this.user) {
         this.refresh();
@@ -1614,7 +1666,10 @@ function app(){
     async loadTopPicks(force = false) {
       this.picksLoading = true;
       try {
-        const r = await this.api(`/api/scan/today?market=BOTH&limit=8${force ? '&force=true' : ''}`);
+        // 시장 탭에 따라 더 많이 표시 (국장 비중 강화)
+        const market = this.marketTab === 'ALL' ? 'BOTH' : this.marketTab;
+        const limit = this.marketTab === 'KR' ? 12 : this.marketTab === 'US' ? 8 : 10;
+        const r = await this.api(`/api/scan/today?market=${market}&limit=${limit}${force ? '&force=true' : ''}`);
         if (r.ok) {
           const d = await r.json();
           this.topPicks = d.picks || [];
