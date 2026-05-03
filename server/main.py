@@ -768,31 +768,74 @@ async def api_portfolio(user: dict = Depends(get_current_user)):
 async def api_add_portfolio(data: dict, user: dict = Depends(get_current_user)):
     # data: symbol, entry_price, krw_invested, shares
     sym = data["symbol"].upper()
-    await db.add_to_portfolio(user["id"], sym, data["entry_price"], data["krw_invested"], data.get("shares", 0))
+    entry_price = float(data["entry_price"])
+    krw_invested = float(data["krw_invested"])
+    shares = float(data.get("shares", 0) or 0)
 
-    # 알림이 작동하려면 분석 plan이 DB에 있어야 함
-    # 포트폴리오 추가 시 plan 없으면 백그라운드로 분석 실행 (TP/SL 알림 활성화)
-    existing_plan = await db.get_plan(sym, max_age_sec=3600)
-    if not existing_plan:
-        asyncio.create_task(_background_analyze_for_alerts(sym, user["id"]))
+    await db.add_to_portfolio(user["id"], sym, entry_price, krw_invested, shares)
+
+    # 백그라운드: 분석 + 텔레그램 알림 (사용자 응답은 즉시)
+    asyncio.create_task(_post_portfolio_add(
+        sym, user["id"], entry_price, shares, krw_invested
+    ))
 
     return {"ok": True}
 
 
-async def _background_analyze_for_alerts(symbol: str, user_id: int):
-    """포트폴리오 추가 시 백그라운드 분석 → plan 생성 → 알림 활성화."""
+async def _post_portfolio_add(symbol: str, user_id: int,
+                              entry_price: float, shares: float, krw_invested: float):
+    """포트폴리오 추가 후처리 — 분석(plan 생성) + 텔레그램 즉시 알림 + 토스 정보."""
     try:
-        snap = await _cached_snapshot(symbol)
-        news = await fetch_news(symbol)
-        profile = await fetch_profile(symbol)
-        flow = await fetch_market_flow(symbol)
-        ana = await asyncio.to_thread(analyze, symbol, snap, news, flow, profile, 1.0)
-        ana = _ensure_flow_fields(ana, snap, symbol)
-        ana = _attach_intelligence(ana, snap, news, flow)
-        await db.save_plan(symbol, ana)
-        log.info(f"포트폴리오 추가 → 백그라운드 분석 완료: {symbol} (user {user_id})")
-    except Exception as e:
-        log.warning(f"포트폴리오 백그라운드 분석 실패 {symbol}: {e}")
+        # 1) 종목명 + 현재가 + (가능하면) 분석 plan
+        existing_plan = await db.get_plan(symbol, max_age_sec=3600)
+        ana = existing_plan
+        snap = None
+        profile = None
+
+        try:
+            # 시세는 항상 새로 (현재가 정확히)
+            snap = await _cached_snapshot(symbol)
+            profile_task = fetch_profile(symbol)
+            news_task = fetch_news(symbol) if not ana else asyncio.sleep(0)
+            flow_task = fetch_market_flow(symbol) if not ana else asyncio.sleep(0)
+            profile, news_or_none, flow_or_none = await asyncio.gather(
+                profile_task, news_task, flow_task, return_exceptions=True
+            )
+            if isinstance(profile, Exception):
+                profile = {"name": symbol}
+
+            # plan 없으면 분석 실행 → 알림 트리거 활성화
+            if not ana and not isinstance(news_or_none, Exception) and not isinstance(flow_or_none, Exception):
+                ana = await asyncio.to_thread(
+                    analyze, symbol, snap, news_or_none, flow_or_none, profile, 1.0
+                )
+                ana = _ensure_flow_fields(ana, snap, symbol)
+                ana = _attach_intelligence(ana, snap, news_or_none, flow_or_none)
+                await db.save_plan(symbol, ana)
+                log.info(f"포트폴리오 추가 → 백그라운드 분석 완료: {symbol}")
+        except Exception as e:
+            log.warning(f"포트폴리오 분석 실패 {symbol}: {e}")
+
+        # 2) 텔레그램 알림
+        chat_id = await db.get_telegram_chat_id(user_id)
+        if not chat_id or not telegram_alert.is_configured():
+            return
+
+        current_price = (snap or {}).get("quote", {}).get("price") if snap else None
+        name = (profile or {}).get("name") or symbol
+        text = telegram_alert.format_portfolio_added(
+            symbol=symbol,
+            name=name,
+            entry_price=entry_price,
+            shares=shares,
+            krw_invested=krw_invested,
+            current_price=current_price,
+            ana=ana,
+        )
+        await telegram_alert.send(chat_id, text)
+        log.info(f"포트폴리오 알림 발송: user {user_id} → {symbol}")
+    except Exception:
+        log.exception(f"_post_portfolio_add error {symbol}")
 
 @app.delete("/api/portfolio/{pid}")
 async def api_remove_portfolio(pid: int, user: dict = Depends(get_current_user)):

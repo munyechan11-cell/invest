@@ -87,6 +87,71 @@ async def discover_chat_ids() -> list[dict]:
     return list(seen.values())
 
 
+def format_portfolio_added(symbol: str, name: str, entry_price: float,
+                           shares: float, krw_invested: float,
+                           current_price: float | None = None,
+                           ana: dict | None = None,
+                           is_kr: bool | None = None) -> str:
+    """포트폴리오 담음 알림 — 매수 정보 + 현재 분석 결과 종합."""
+    if is_kr is None:
+        is_kr = symbol.isdigit() and len(symbol) == 6
+    cur = "₩" if is_kr else "$"
+
+    def p(v):
+        return f"{cur}{int(v):,}" if is_kr else f"{cur}{v:.2f}"
+
+    lines = [
+        "<b>📥 포트폴리오 담김</b>",
+        "",
+        f"<b>{name}</b> ({symbol})",
+        f"💰 매수가: <code>{p(entry_price)}</code>",
+        f"📊 수량: <b>{shares:g}주</b>" if shares else "📊 수량: (입력 안 함)",
+        f"💵 총 투입: <b>{p(krw_invested if not is_kr else krw_invested)}</b>",
+    ]
+
+    # 현재가 + 평가손익 (즉시)
+    if current_price and current_price > 0 and entry_price > 0 and shares > 0:
+        pnl = (current_price - entry_price) * shares
+        pnl_pct = (current_price / entry_price - 1) * 100
+        pnl_icon = "🟢" if pnl >= 0 else "🔴"
+        sign = "+" if pnl >= 0 else ""
+        lines.append(f"📈 현재가: <code>{p(current_price)}</code> {pnl_icon} {sign}{pnl_pct:.2f}%")
+
+    # AI 분석 결과 (이미 있다면)
+    if ana:
+        ts = ana.get("toss_score")
+        if ts:
+            lines.append(
+                f"🎯 TOSS Score: <b>{ts.get('score','?')}/100</b> "
+                f"({ts.get('grade','?')}) {ts.get('label','')}"
+            )
+        pos = ana.get("position")
+        if pos:
+            emo = ana.get("position_emoji", "")
+            lines.append(f"📌 추천 포지션: {emo} {pos}")
+        target = ana.get("target_price")
+        stop = ana.get("stop_price")
+        if target:
+            lines.append(f"🎯 목표가: <code>{p(float(target))}</code>")
+        if stop:
+            lines.append(f"🛑 손절가: <code>{p(float(stop))}</code>")
+        hp = ana.get("holding_period")
+        if hp:
+            lines.append(f"⏱ 권장 보유: {hp}")
+        ns = ana.get("news_summary")
+        if ns:
+            lines.append(f"\n💬 {ns[:200]}")
+
+    lines.append("")
+    lines.append("<i>이제 가격 변동 시 자동 알림 시작 (목표/손절 도달 시 즉시 푸시)</i>")
+    if is_kr:
+        lines.append(f"\n📱 <a href=\"https://tossinvest.com/stocks/A{symbol}\">토스에서 확인 →</a>")
+    else:
+        lines.append(f"\n📱 <a href=\"https://tossinvest.com/stocks/{symbol}.O\">토스 해외주식 →</a>")
+
+    return "\n".join(lines)
+
+
 def format_alert(symbol: str, kind: str, price: float, message: str,
                  toss_score: dict | None = None,
                  entry: float | None = None,
