@@ -324,6 +324,23 @@
   </div>
 </header>
 
+<!-- 📊 시장 지수 ticker bar (Bloomberg style) -->
+<div x-show="user && indices.length" class="border-b border-[#222] bg-[#0a0a0a]/80 backdrop-blur sticky z-10" style="top: var(--header-h, 0)">
+  <div class="max-w-[1400px] mx-auto px-4 md:px-8 py-2 flex items-center gap-4 overflow-x-auto scroll-soft text-xs">
+    <template x-for="idx in indices" :key="idx.symbol">
+      <div class="flex items-center gap-2 shrink-0">
+        <span class="text-ink-500 font-mono uppercase text-[10px]" x-text="idx.market"></span>
+        <span class="font-semibold text-ink-700" x-text="idx.name"></span>
+        <span class="font-mono font-bold" x-text="idx.price.toLocaleString()"></span>
+        <span class="font-mono"
+              :class="idx.change_pct >= 0 ? 'ticker-up' : 'ticker-down'"
+              x-text="(idx.change_pct >= 0 ? '▲' : '▼') + ' ' + Math.abs(idx.change_pct).toFixed(2) + '%'"></span>
+      </div>
+    </template>
+    <span class="text-[10px] text-ink-500 ml-auto shrink-0" x-text="'갱신 ' + indicesUpdatedAt"></span>
+  </div>
+</div>
+
 <!-- 🇰🇷🇺🇸 시장 탭 — 워치리스트/TOP 후보 필터 -->
 <div class="max-w-[1400px] mx-auto px-4 md:px-8 pt-4 pb-2" x-show="user">
   <div class="inline-flex gap-1 p-1 surface" style="border-radius:12px">
@@ -497,13 +514,26 @@
     <div class="surface p-4 space-y-2">
       <div class="flex items-baseline justify-between">
         <div class="serif text-sm font-semibold text-ink-800">🔥 오늘의 TOP 매수 후보</div>
-        <button @click="loadTopPicks(true)" :disabled="picksLoading"
-                class="text-[10px] text-coral-500 hover:underline"
-                x-text="picksLoading ? '분석중…' : '새로고침'"></button>
+        <div class="flex items-center gap-2">
+          <span class="text-[9px] text-ink-500" x-text="'5분마다 자동갱신 · ' + (picksUpdatedAt || '대기')"></span>
+          <button @click="loadTopPicks(true)" :disabled="picksLoading"
+                  class="text-[10px] text-coral-500 hover:underline"
+                  x-text="picksLoading ? '분석중…' : '새로고침'"></button>
+        </div>
       </div>
-      <div class="text-[10px] text-ink-500 mb-1">
-        한+미 인기 40종목 자동 분석 · 5분 캐시 · TOSS Score 상위
+
+      <!-- 국장 랭킹 선택 (KR/ALL 탭에서만) -->
+      <div x-show="marketTab !== 'US'" class="flex gap-1 flex-wrap">
+        <template x-for="r in [['volume','거래량'],['value','시총'],['rise','상승률'],['fall','하락률'],['foreign','외국인']]">
+          <button @click="setRanking(r[0])"
+                  class="text-[10px] px-2 py-1 rounded transition"
+                  :class="kRanking === r[0] ? 'bg-coral-500 text-black font-bold' : 'bg-[#222] text-ink-600 hover:bg-[#333]'"
+                  x-text="r[1]"></button>
+        </template>
       </div>
+
+      <div class="text-[10px] text-ink-500 mb-1"
+           x-text="marketTab === 'US' ? '미주 인기 20종목 자동 분석 · TOSS Score 상위' : (rankingLabel + ' · 일반 종목만 (ETF/인버스 제외) · 5분 캐시')"></div>
       <template x-for="p in filteredPicks" :key="p.symbol">
         <div @click="select(p.symbol)" class="surface-elevated p-2.5 cursor-pointer hover:border-coral-500/50 border border-transparent transition">
           <div class="flex items-center justify-between mb-1">
@@ -1356,6 +1386,23 @@ function app(){
     // TOP 매수 후보 (스마트 스캐너)
     topPicks: [],
     picksLoading: false,
+    picksUpdatedAt: '',
+    kRanking: localStorage.getItem('kRanking') || 'volume',  // 국장 랭킹 기준
+
+    // 시장 지수 (Bloomberg ticker)
+    indices: [],
+    indicesUpdatedAt: '',
+
+    get rankingLabel() {
+      return ({volume:'거래량 TOP', value:'시총 TOP', rise:'상승률 TOP',
+               fall:'하락률 TOP', foreign:'외국인 순매수 TOP'})[this.kRanking] || '거래량 TOP';
+    },
+
+    setRanking(r) {
+      this.kRanking = r;
+      localStorage.setItem('kRanking', r);
+      this.loadTopPicks(true);  // 즉시 재로드
+    },
 
     // 시장 탭 (전체/국장/미주)
     marketTab: localStorage.getItem('marketTab') || 'KR',  // 기본 국장 (사용자 비중)
@@ -1390,8 +1437,13 @@ function app(){
         this.loadRecommendations();
         this.loadHoldings();
         this.loadMockStats();
-        this.loadTopPicks();  // 스마트 스캐너 (백그라운드)
+        this.loadTopPicks();        // 스마트 스캐너 (백그라운드)
+        this.loadIndices();         // 시장 지수 ticker
         this.openTelegramSetup().catch(()=>{}); this.showTelegramSetup = false;
+
+        // 자동 갱신 — TOP 추천 5분 / 지수 30초
+        setInterval(() => this.loadTopPicks(true), 5 * 60 * 1000);
+        setInterval(() => this.loadIndices(), 30 * 1000);
         // 5초마다 포트폴리오 실시간 갱신
         setInterval(() => this.loadHoldings(), 5000);
       }
@@ -1666,16 +1718,29 @@ function app(){
     async loadTopPicks(force = false) {
       this.picksLoading = true;
       try {
-        // 시장 탭에 따라 더 많이 표시 (국장 비중 강화)
         const market = this.marketTab === 'ALL' ? 'BOTH' : this.marketTab;
         const limit = this.marketTab === 'KR' ? 12 : this.marketTab === 'US' ? 8 : 10;
-        const r = await this.api(`/api/scan/today?market=${market}&limit=${limit}${force ? '&force=true' : ''}`);
+        const url = `/api/scan/today?market=${market}&limit=${limit}&ranking=${this.kRanking}${force ? '&force=true' : ''}`;
+        const r = await this.api(url);
         if (r.ok) {
           const d = await r.json();
           this.topPicks = d.picks || [];
+          this.picksUpdatedAt = new Date().toLocaleTimeString('ko-KR', {hour12:false});
         }
       } catch(e) {}
       finally { this.picksLoading = false; }
+    },
+
+    // ─── 시장 지수 (KOSPI/KOSDAQ/S&P/NASDAQ) ──────────
+    async loadIndices() {
+      try {
+        const r = await this.api('/api/indices');
+        if (r.ok) {
+          const d = await r.json();
+          this.indices = d.indices || [];
+          this.indicesUpdatedAt = new Date().toLocaleTimeString('ko-KR', {hour12:false});
+        }
+      } catch(e) {}
     },
 
     // ─── 백테스트 ─────────────────────────────────────

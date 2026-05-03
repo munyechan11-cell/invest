@@ -1,6 +1,6 @@
 """FastAPI 진입점 — REST + WebSocket + 알림 워커."""
 from __future__ import annotations
-import sys, os, asyncio, json, logging
+import sys, os, asyncio, json, logging, time
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -29,6 +29,7 @@ from app import telegram_alert, morning_brief
 from app.market_hours import market_status_for
 from app.backtest import backtest as run_backtest
 from app.scanner import get_top_picks
+from app.indices import fetch_indices
 from server import db, alerts as alerts_mod
 from server.sizing import shares_for, split_plan
 
@@ -612,13 +613,34 @@ async def api_backtest(symbol: str, hold_days: int = 3,
 # ─── 스마트 스캐너 — 인기 40종목 자동 분석 → TOP 후보 ────────────
 @app.get("/api/scan/today")
 async def api_scan_today(market: str = "BOTH", limit: int = 5,
+                         ranking: str = "volume",
                          force: bool = False,
                          _: dict = Depends(get_current_user)):
-    """KR/US/BOTH 인기 종목 스캔 → TOSS Score 상위 N개. 5분 캐시."""
+    """KR/US/BOTH 인기 종목 스캔 → TOSS Score 상위 N개. 5분 캐시.
+
+    KR ranking 옵션:
+    - volume: 거래량 TOP (기본)
+    - value: 시총 TOP (대형주 중심)
+    - rise: 상승률 TOP (모멘텀)
+    - fall: 하락률 TOP (역발상)
+    - foreign: 외국인 순매수 TOP (스마트머니)
+    - popular: 정적 인기 종목
+    """
     if market not in ("KR", "US", "BOTH"):
         raise HTTPException(400, "market은 KR/US/BOTH")
-    picks = await get_top_picks(force=force, market=market, limit=limit)
-    return {"picks": picks, "count": len(picks)}
+    if ranking not in ("volume", "value", "rise", "fall", "foreign", "popular"):
+        raise HTTPException(400, "ranking은 volume/value/rise/fall/foreign/popular")
+    picks = await get_top_picks(force=force, market=market, limit=limit,
+                                kr_ranking=ranking)
+    return {"picks": picks, "count": len(picks), "ranking": ranking,
+            "updated_at": time.time()}
+
+
+# ─── 시장 지수 (Bloomberg-style ticker) ──────────────────────────
+@app.get("/api/indices")
+async def api_indices(_: dict = Depends(get_current_user)):
+    """KOSPI/KOSDAQ/S&P500/NASDAQ/Dow 실시간. 30초 캐시."""
+    return {"indices": await fetch_indices()}
 
 
 # ─── 모닝 브리프 ─────────────────────────────────────────────────

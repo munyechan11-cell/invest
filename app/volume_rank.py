@@ -165,3 +165,85 @@ async def get_kr_universe(per_market: int = 20) -> list[tuple[str, str, str]]:
     for r in data["kosdaq"]:
         universe.append((r["symbol"], r["name"], "KOSDAQ"))
     return universe
+
+
+# ─── 다중 랭킹 (거래량/거래대금/상승/하락/외국인) ──────────────────
+RANKING_URLS = {
+    "volume": "/sise/sise_quant.naver?sosok={sosok}",          # 거래량
+    "value":  "/sise/sise_market_sum.naver?sosok={sosok}",      # 시총 (거래대금 대용)
+    "rise":   "/sise/sise_rise.naver?sosok={sosok}",            # 상승률
+    "fall":   "/sise/sise_fall.naver?sosok={sosok}",            # 하락률
+    "foreign":"/sise/sise_deal_rank.naver?sosok={sosok}&investor_gubun=9000",  # 외국인
+}
+
+RANKING_LABELS = {
+    "volume":  "거래량 TOP",
+    "value":   "시총 TOP",
+    "rise":    "상승률 TOP",
+    "fall":    "하락률 TOP",
+    "foreign": "외국인 순매수 TOP",
+}
+
+
+async def fetch_kr_ranking(ranking: str, market: str = "KOSPI",
+                           limit: int = 20, exclude_etf: bool = True) -> list[dict]:
+    """KR 다중 랭킹 — 거래량/거래대금/상승/하락/외국인."""
+    if ranking not in RANKING_URLS:
+        return []
+    sosok = "0" if market == "KOSPI" else "1"
+    path = RANKING_URLS[ranking].format(sosok=sosok)
+    url = f"https://finance.naver.com{path}"
+    try:
+        async with httpx.AsyncClient(
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.naver.com/"},
+        ) as c:
+            r = await c.get(url)
+            if r.status_code != 200:
+                return []
+            try:
+                html = r.content.decode("euc-kr")
+            except UnicodeDecodeError:
+                html = r.text
+    except Exception as e:
+        log.warning(f"naver ranking {ranking} {market} fail: {e}")
+        return []
+
+    pattern = r'/item/main\.naver\?code=(\d{6})[^>]*>([^<]+?)</a>'
+    seen = set()
+    out = []
+    for code, name in re.findall(pattern, html):
+        if code in seen:
+            continue
+        seen.add(code)
+        nm = name.strip()
+        if exclude_etf and not _is_regular_stock(nm):
+            continue
+        out.append({"symbol": code, "name": nm, "exchange": market})
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def get_kr_universe_by_ranking(ranking: str = "volume",
+                                     per_market: int = 20) -> list[tuple[str, str, str]]:
+    """랭킹 기준으로 KR universe 동적 구성."""
+    cache_key = f"rank_{ranking}_{per_market}"
+    now = time.time()
+    if cache_key in _cache:
+        ts, data = _cache[cache_key]
+        if now - ts < _TTL:
+            return data
+
+    kospi, kosdaq = await asyncio.gather(
+        fetch_kr_ranking(ranking, "KOSPI", per_market),
+        fetch_kr_ranking(ranking, "KOSDAQ", per_market),
+    )
+    universe = []
+    for r in kospi:
+        universe.append((r["symbol"], r["name"], "KOSPI"))
+    for r in kosdaq:
+        universe.append((r["symbol"], r["name"], "KOSDAQ"))
+
+    _cache[cache_key] = (now, universe)
+    return universe

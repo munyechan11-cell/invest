@@ -78,19 +78,20 @@ async def scan_universe(market: str = "BOTH", limit: int = 5,
     universe: list[tuple[str, str, str]] = []  # (symbol, name, exchange)
 
     if market in ("KR", "BOTH"):
-        if kr_source == "volume":
+        if kr_source == "popular":
+            universe += [(s, n, "KOSPI") for s, n in POPULAR_KR]
+        else:
+            # 다중 랭킹 지원: volume / value / rise / fall / foreign
             try:
-                from .volume_rank import get_kr_universe
-                kr_uni = await get_kr_universe(per_market=20)
+                from .volume_rank import get_kr_universe_by_ranking
+                kr_uni = await get_kr_universe_by_ranking(kr_source, per_market=20)
                 if kr_uni:
                     universe += kr_uni
                 else:
                     universe += [(s, n, "KOSPI") for s, n in POPULAR_KR]
             except Exception as e:
-                log.warning(f"volume rank fail, fall back to POPULAR_KR: {e}")
+                log.warning(f"ranking {kr_source} fail, fall back: {e}")
                 universe += [(s, n, "KOSPI") for s, n in POPULAR_KR]
-        else:
-            universe += [(s, n, "KOSPI") for s, n in POPULAR_KR]
 
     if market in ("US", "BOTH"):
         universe += [(s, n, "NASDAQ/NYSE") for s, n in POPULAR_US]
@@ -118,13 +119,13 @@ _cache: dict[str, tuple[float, list]] = {}
 
 
 async def get_top_picks(force: bool = False, market: str = "BOTH",
-                        limit: int = 5) -> list[dict]:
+                        limit: int = 5, kr_ranking: str = "volume") -> list[dict]:
     import time as _t
-    key = f"{market}_{limit}"
+    key = f"{market}_{limit}_{kr_ranking}"
     if not force and key in _cache:
         ts, val = _cache[key]
         if _t.time() - ts < 300:
             return val
-    picks = await scan_universe(market=market, limit=limit)
+    picks = await scan_universe(market=market, limit=limit, kr_source=kr_ranking)
     _cache[key] = (_t.time(), picks)
     return picks
