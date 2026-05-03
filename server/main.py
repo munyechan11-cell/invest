@@ -26,8 +26,31 @@ from app.intelligence import (
 from app.trade_kis import auto_order, is_live as kis_is_live
 from app import telegram_alert
 from app.market_hours import market_status_for
+from app.backtest import backtest as run_backtest
 from server import db, alerts as alerts_mod
 from server.sizing import shares_for, split_plan
+
+# 스냅샷 인메모리 캐시 — AI 분석은 10분 캐시지만 시세는 더 자주 새로
+_snapshot_cache: dict[str, tuple[float, dict]] = {}
+_SNAPSHOT_TTL = 8  # 초
+
+
+async def _cached_snapshot(symbol: str) -> dict:
+    """스냅샷 인메모리 캐시 — 동시 요청 시 중복 호출 방지."""
+    import time as _t
+    now = _t.time()
+    if symbol in _snapshot_cache:
+        ts, data = _snapshot_cache[symbol]
+        if now - ts < _SNAPSHOT_TTL:
+            return data
+    snap = await asyncio.to_thread(get_snapshot, symbol)
+    _snapshot_cache[symbol] = (now, snap)
+    # 캐시 청소 (50개 초과 시 절반)
+    if len(_snapshot_cache) > 50:
+        oldest = sorted(_snapshot_cache.items(), key=lambda x: x[1][0])[:25]
+        for k, _ in oldest:
+            _snapshot_cache.pop(k, None)
+    return snap
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO,
@@ -397,7 +420,7 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
     cached = await db.get_plan(symbol, max_age_sec=600)
     if cached:
         log.info(f"Using cached analysis for {symbol}")
-        snap = await asyncio.to_thread(get_snapshot, symbol)
+        snap = await _cached_snapshot(symbol)
         # 캐시에도 시장수급/지능/증권사 보강 (캐시 시점엔 없었던 필드 보충)
         cached = _ensure_flow_fields(cached, snap, symbol)
         # 어닝·애널리스트는 캐시 path에 flow가 없으니 빈 dict로 호출 → 패턴/스코어만 보강
@@ -410,7 +433,7 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
 
     try:
         log.info(f"Fetching data in parallel for {symbol}")
-        snap_task = asyncio.to_thread(get_snapshot, symbol)
+        snap_task = _cached_snapshot(symbol)
         news_task = fetch_news(symbol)
         profile_task = fetch_profile(symbol)
         flow_task = fetch_market_flow(symbol)
@@ -559,6 +582,36 @@ async def api_mock_stats(user: dict = Depends(get_current_user)):
     return await db.mock_trade_stats(user["id"])
 
 
+# ─── 백테스트 (과거 데이터로 시그널 검증) ────────────────────────
+@app.get("/api/backtest/{symbol}")
+async def api_backtest(symbol: str, hold_days: int = 3,
+                       _: dict = Depends(get_current_user)):
+    if hold_days < 1 or hold_days > 30:
+        raise HTTPException(400, "hold_days는 1~30")
+    return await asyncio.to_thread(run_backtest, symbol.upper(), hold_days)
+
+
+# ─── 텔레그램 테스트 발송 (등록된 chat_id로 샘플 알림) ───────────
+@app.post("/api/telegram/test")
+async def api_telegram_test(user: dict = Depends(get_current_user)):
+    chat_id = await db.get_telegram_chat_id(user["id"])
+    if not chat_id:
+        raise HTTPException(400, "텔레그램 chat_id 미등록 — 먼저 /api/telegram/subscribe")
+    if not telegram_alert.is_configured():
+        raise HTTPException(400, "TELEGRAM_BOT_TOKEN 미설정")
+
+    sample = telegram_alert.format_alert(
+        symbol="005930", kind="BUY", price=72500,
+        message="✅ 봇 연결 테스트 — 실제 매매 신호 아님. 이렇게 알림이 도착합니다.",
+        toss_score={"score": 78.5, "grade": "A"},
+        entry=72500, target=75000, stop=71000, is_kr=True,
+    )
+    res = await telegram_alert.send(chat_id, sample)
+    if not res["ok"]:
+        raise HTTPException(400, f"발송 실패: {res['error']}")
+    return {"ok": True, "msg": "텔레그램에서 메시지 확인하세요"}
+
+
 @app.post("/api/trade/order")
 async def api_trade_order(body: OrderIn, user: dict = Depends(get_current_user)):
     """KIS API로 실제 주문 — 한+미 자동 분기.
@@ -605,7 +658,7 @@ async def api_portfolio(user: dict = Depends(get_current_user)):
         symbol = h["symbol"]
         try:
             # 실시간 시세와 캐시된 분석 결과 가져오기
-            snap = await asyncio.to_thread(get_snapshot, symbol)
+            snap = await _cached_snapshot(symbol)
             plan = await db.get_plan(symbol)
             
             cur_price = snap["quote"]["price"]

@@ -1,0 +1,38 @@
+{
+  "name": "Toss — Quant AI",
+  "short_name": "Toss",
+  "description": "월가 기관급 단기 트레이딩 AI 어시스턴트 (한국+미국)",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#10b981",
+  "background_color": "#000000",
+  "lang": "ko",
+  "icons": [
+    {
+      "src": "/static/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "워치리스트",
+      "short_name": "Watch",
+      "url": "/?tab=watchlist"
+    },
+    {
+      "name": "포트폴리오",
+      "short_name": "Port",
+      "url": "/?tab=portfolio"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#047857"/>
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" rx="42" fill="url(#bg)"/>
+  <path d="M48 60 L144 60 M96 60 L96 144" stroke="white" stroke-width="14" stroke-linecap="round"/>
+  <text x="96" y="180" font-family="Inter,system-ui,sans-serif" font-size="14" font-weight="700"
+        text-anchor="middle" fill="white" opacity="0.7">QUANT AI</text>
+</svg>

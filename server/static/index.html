@@ -2,8 +2,24 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Toss — Quant Assistant</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>Toss — Quant AI</title>
+
+<!-- PWA -->
+<link rel="manifest" href="/static/manifest.json">
+<meta name="theme-color" content="#10b981">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Toss">
+<link rel="apple-touch-icon" href="/static/icon-192.svg">
+<link rel="icon" type="image/svg+xml" href="/static/icon-192.svg">
+<script>
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/static/sw.js').catch(()=>{});
+    });
+  }
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -697,6 +713,104 @@
           </div>
         </template>
 
+        <!-- ⭐ 백테스트 — 과거 데이터로 시그널 검증 -->
+        <div class="surface-elevated p-5">
+          <div class="flex items-baseline justify-between mb-3">
+            <div>
+              <div class="serif text-lg font-semibold">백테스트 — 과거 시그널 실증</div>
+              <div class="text-[10px] text-ink-500 mt-0.5">최근 60~90일 종가 기준 / N일 보유 전략</div>
+            </div>
+            <div class="flex items-center gap-2">
+              <select x-model.number="backtestHoldDays" @change="runBacktest()" class="input text-xs py-1 px-2">
+                <option value="1">1일 보유</option>
+                <option value="3">3일 보유</option>
+                <option value="5">5일 보유</option>
+                <option value="10">10일 보유</option>
+              </select>
+              <button @click="runBacktest()" :disabled="backtestLoading"
+                      class="btn btn-primary text-xs"
+                      x-text="backtestLoading ? '실행중…' : '실행'"></button>
+            </div>
+          </div>
+
+          <template x-if="!backtest && !backtestLoading">
+            <div class="text-sm text-ink-500 text-center py-4">[실행] 클릭하여 과거 데이터 검증</div>
+          </template>
+
+          <template x-if="backtest && !backtest.ok">
+            <div class="text-sm text-amber-500" x-text="backtest.msg || '백테스트 실패'"></div>
+          </template>
+
+          <template x-if="backtest && backtest.ok && backtest.total_trades === 0">
+            <div class="text-sm text-ink-500" x-text="backtest.msg"></div>
+          </template>
+
+          <template x-if="backtest && backtest.ok && backtest.total_trades > 0">
+            <div class="space-y-3">
+              <div class="grid grid-cols-4 gap-2 text-xs">
+                <div class="surface p-2.5 text-center">
+                  <div class="text-ink-500 mb-0.5">승률</div>
+                  <div class="font-mono text-base font-bold"
+                       :class="backtest.win_rate >= 55 ? 'ticker-up' : backtest.win_rate >= 45 ? 'text-amber-500' : 'ticker-down'"
+                       x-text="backtest.win_rate + '%'"></div>
+                </div>
+                <div class="surface p-2.5 text-center">
+                  <div class="text-ink-500 mb-0.5">평균 수익</div>
+                  <div class="font-mono text-base font-bold"
+                       :class="backtest.avg_return_pct >= 0 ? 'ticker-up' : 'ticker-down'"
+                       x-text="(backtest.avg_return_pct >= 0 ? '+' : '') + backtest.avg_return_pct + '%'"></div>
+                </div>
+                <div class="surface p-2.5 text-center">
+                  <div class="text-ink-500 mb-0.5">누적 수익</div>
+                  <div class="font-mono text-base font-bold"
+                       :class="backtest.cumulative_pct >= 0 ? 'ticker-up' : 'ticker-down'"
+                       x-text="(backtest.cumulative_pct >= 0 ? '+' : '') + backtest.cumulative_pct + '%'"></div>
+                </div>
+                <div class="surface p-2.5 text-center">
+                  <div class="text-ink-500 mb-0.5">샤프(근사)</div>
+                  <div class="font-mono text-base font-bold"
+                       :class="backtest.sharpe_rough >= 1 ? 'ticker-up' : 'text-ink-700'"
+                       x-text="backtest.sharpe_rough"></div>
+                </div>
+              </div>
+
+              <!-- B&H 비교 -->
+              <div class="surface p-3 text-xs flex items-center justify-between">
+                <span class="text-ink-600">단순 보유 (B&H) 대비</span>
+                <span class="font-mono font-semibold"
+                      :class="(backtest.cumulative_pct - backtest.buy_and_hold_pct) >= 0 ? 'ticker-up' : 'ticker-down'">
+                  <span x-text="((backtest.cumulative_pct - backtest.buy_and_hold_pct) >= 0 ? '+' : '') + (backtest.cumulative_pct - backtest.buy_and_hold_pct).toFixed(2) + '%'"></span>
+                  <span class="text-ink-500 ml-1" x-text="'(B&H ' + (backtest.buy_and_hold_pct >= 0 ? '+' : '') + backtest.buy_and_hold_pct + '%)'"></span>
+                </span>
+              </div>
+
+              <!-- 거래 내역 -->
+              <div>
+                <div class="text-[10px] text-ink-500 uppercase tracking-wider mb-1.5">최근 거래</div>
+                <div class="space-y-1 max-h-40 overflow-y-auto scroll-soft">
+                  <template x-for="t in backtest.recent_trades" :key="t.date">
+                    <div class="flex items-center justify-between text-xs py-1 border-b border-[#1a1a1a]">
+                      <span class="font-mono text-ink-600" x-text="t.date"></span>
+                      <span class="font-mono">
+                        <span x-text="cur(selected) + t.entry"></span> →
+                        <span x-text="cur(selected) + t.exit"></span>
+                      </span>
+                      <span class="font-mono font-semibold"
+                            :class="t.win ? 'ticker-up' : 'ticker-down'"
+                            x-text="(t.ret_pct >= 0 ? '+' : '') + t.ret_pct + '%'"></span>
+                    </div>
+                  </template>
+                </div>
+              </div>
+
+              <div class="text-[10px] text-ink-500 leading-snug pt-1 border-t border-[#222]">
+                ⓘ 과거 성과 ≠ 미래 보장. <span x-text="backtest.total_trades"></span>회 신호 발생 / <span x-text="backtest.period_days"></span>일 분석.
+              </div>
+            </div>
+          </template>
+          </div>
+        </template>
+
         <!-- ⭐ Chart Patterns — 자동 인식된 차트 패턴 -->
         <template x-if="report.analysis.patterns?.length">
           <div class="surface-elevated p-5">
@@ -1159,6 +1273,11 @@ function app(){
     // 모의 시그널 트래커
     mockStats: null,
 
+    // 백테스트
+    backtest: null,
+    backtestLoading: false,
+    backtestHoldDays: 3,
+
     init(){
       if(this.user) {
         this.refresh();
@@ -1427,14 +1546,33 @@ function app(){
       await this.openTelegramSetup();
     },
     async testTelegram() {
-      const chatId = this.tgInfo?.my_chat_id;
-      if (!chatId) return;
-      const r = await this.api('/api/telegram/subscribe', {
-        method:'POST', headers:{'content-type':'application/json'},
-        body: JSON.stringify({ chat_id: chatId })
-      });
-      if (r.ok) alert('✅ 테스트 메시지 발송됨'); else alert('실패');
+      try {
+        const r = await this.api('/api/telegram/test', { method:'POST' });
+        const d = await r.json();
+        if (r.ok) alert('✅ 텔레그램에서 메시지 확인하세요!\n\n' + d.msg);
+        else alert('❌ 실패: ' + (d.detail || JSON.stringify(d)));
+      } catch(e) {
+        alert('❌ 오류: ' + e.message);
+      }
     },
+
+    // ─── 백테스트 ─────────────────────────────────────
+    async runBacktest() {
+      if (!this.selected) return;
+      this.backtestLoading = true;
+      this.backtest = null;
+      try {
+        const r = await this.api(`/api/backtest/${this.selected}?hold_days=${this.backtestHoldDays}`);
+        this.backtest = await r.json();
+      } catch(e) {
+        this.backtest = { ok: false, msg: '오류: ' + e.message };
+      } finally {
+        this.backtestLoading = false;
+      }
+    },
+
+    // 종목 변경 시 백테스트 초기화
+    onSymbolChange() { this.backtest = null; },
 
     // ─── 모의 시그널 트래커 ───────────────────────────
     async loadMockStats() {
