@@ -23,6 +23,7 @@ from app.search import search_symbols
 from app.intelligence import (
     compute_toss_score, explain_move, compute_multi_tf, detect_patterns,
 )
+from app.trade_kis import auto_order, is_live as kis_is_live
 from server import db, alerts as alerts_mod
 from server.sizing import shares_for, split_plan
 
@@ -459,6 +460,58 @@ async def api_add_trade(body: TradeIn, user: dict = Depends(get_current_user)):
     tid = await db.add_trade(user["id"], body.symbol, body.trade_type,
                              body.shares, body.price, body.note)
     return {"ok": True, "trade_id": tid}
+
+
+# ─── 자동 주문 (KIS Open API) ───────────────────────────────────
+class OrderIn(BaseModel):
+    symbol: str
+    side: str  # buy / sell
+    qty: int = Field(gt=0, le=10000)  # 1~10000주 제한
+    price: float = Field(default=0, ge=0)  # 0=시장가
+
+
+@app.get("/api/trade/mode")
+async def api_trade_mode(_: dict = Depends(get_current_user)):
+    """현재 자동주문 모드 확인 — 프론트가 라이브/페이퍼 표시용."""
+    live = kis_is_live()
+    return {
+        "mode": "LIVE" if live else "PAPER",
+        "warning": "⚠️ 실전 주문 모드 — 실제 자금이 사용됩니다" if live
+                  else "모의투자 모드 — 실제 돈 사용 안 함",
+        "max_krw": int(float(os.environ.get("MAX_ORDER_AMOUNT_KRW", "300000"))),
+        "max_usd": float(os.environ.get("MAX_ORDER_AMOUNT_USD", "200")),
+        "account_set": bool(os.environ.get("KIS_ACCOUNT_NO", "").strip()),
+    }
+
+
+@app.post("/api/trade/order")
+async def api_trade_order(body: OrderIn, user: dict = Depends(get_current_user)):
+    """KIS API로 실제 주문 — 한+미 자동 분기.
+
+    안전: 1회 주문 금액 한도 + LIVE 명시 옵트인 + 사용자 클릭 필수.
+    """
+    side = body.side.lower()
+    if side not in ("buy", "sell"):
+        raise HTTPException(400, "side는 buy 또는 sell")
+
+    res = await asyncio.to_thread(auto_order, body.symbol, side, body.qty, body.price)
+
+    if res.get("ok"):
+        # 매매 기록 자동 저장 (audit log)
+        try:
+            await db.add_trade(
+                user["id"], body.symbol,
+                "BUY" if side == "buy" else "SELL",
+                body.qty, body.price or 0,
+                f"자동주문 [{res.get('mode')}] 주문번호 {res.get('order_no')}"
+            )
+        except Exception as e:
+            log.warning(f"trade audit log 실패: {e}")
+        log.info(f"order ok: user={user['id']} {side} {body.symbol} x{body.qty} @ {body.price} [{res['mode']}]")
+    else:
+        log.warning(f"order fail: user={user['id']} {body.symbol} - {res.get('error')}")
+
+    return res
 
 
 @app.get("/api/trades")
