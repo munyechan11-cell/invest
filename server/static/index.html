@@ -138,6 +138,95 @@
 </div>
 
 <!-- 관리자 패널 모달 -->
+<!-- 📲 텔레그램 알림 셋업 모달 -->
+<div x-show="showTelegramSetup" class="overlay" @click.self="showTelegramSetup=false">
+  <div class="modal space-y-4" style="width:520px; max-width:95vw">
+    <div class="flex justify-between items-center">
+      <div class="serif text-xl font-semibold">📲 텔레그램 알림 설정</div>
+      <button @click="showTelegramSetup=false" class="text-ink-500 text-xl">✕</button>
+    </div>
+
+    <!-- 봇 토큰 미설정 -->
+    <template x-if="tgInfo && !tgInfo.configured">
+      <div class="surface p-4 border-l-4 border-rust-500">
+        <div class="font-semibold mb-2">⚠️ TELEGRAM_BOT_TOKEN 미설정</div>
+        <div class="text-sm text-ink-700 leading-relaxed space-y-2">
+          <p>관리자가 Render 환경변수에 봇 토큰을 입력해야 알림이 동작합니다.</p>
+          <ol class="list-decimal pl-5 space-y-1">
+            <li>휴대폰 텔레그램에서 <code>@BotFather</code> 검색 → 시작</li>
+            <li><code>/newbot</code> 입력 → 봇 이름·username 설정</li>
+            <li>받은 HTTP API 토큰을 Render 환경변수 <code>TELEGRAM_BOT_TOKEN</code>에 입력 → 자동 재배포</li>
+          </ol>
+        </div>
+      </div>
+    </template>
+
+    <!-- 봇 OK, 등록 단계 -->
+    <template x-if="tgInfo && tgInfo.configured">
+      <div class="space-y-3">
+        <!-- 이미 등록됨 -->
+        <template x-if="tgInfo.subscribed">
+          <div class="surface p-4 border-l-4 border-emerald-500">
+            <div class="font-semibold text-emerald-500 mb-1">✅ 알림 연결됨</div>
+            <div class="text-sm text-ink-700">chat_id: <code x-text="tgInfo.my_chat_id"></code></div>
+            <div class="text-xs text-ink-500 mt-1">매수/매도/익절/손절 시그널이 텔레그램으로 즉시 푸시됩니다.</div>
+            <div class="flex gap-2 mt-3">
+              <button @click="testTelegram()" class="btn btn-ghost text-xs">테스트 메시지 발송</button>
+              <button @click="unsubscribeTelegram()" class="btn btn-ghost text-xs text-red-400">알림 해지</button>
+            </div>
+          </div>
+        </template>
+
+        <!-- 미등록 — 자동 발견 + 수동 입력 -->
+        <template x-if="!tgInfo.subscribed">
+          <div class="space-y-3">
+            <div class="surface p-3 text-sm leading-relaxed">
+              <div class="font-semibold mb-2">🤖 봇과 대화 시작:</div>
+              <ol class="list-decimal pl-5 space-y-0.5 text-ink-700">
+                <li>휴대폰 텔레그램에서 봇 검색:
+                    <a class="text-coral-500 underline" x-show="tgInfo.bot_username"
+                       :href="'https://t.me/' + tgInfo.bot_username" target="_blank"
+                       x-text="'@' + tgInfo.bot_username"></a>
+                </li>
+                <li>봇과 대화 시작 → <code>/start</code> 또는 아무 메시지 보냄</li>
+                <li>아래 [내 chat_id 자동 찾기] 클릭</li>
+              </ol>
+            </div>
+
+            <button @click="discoverTelegram()" class="btn btn-primary w-full">내 chat_id 자동 찾기</button>
+
+            <template x-if="tgCandidates.length">
+              <div class="space-y-2">
+                <div class="text-xs text-ink-500">아래 후보 중 본인 클릭:</div>
+                <template x-for="c in tgCandidates">
+                  <button @click="subscribeTelegram(c.chat_id)"
+                          class="w-full surface p-3 hover:border-coral-500/50 transition text-left">
+                    <div class="flex items-center justify-between">
+                      <div>
+                        <div class="font-semibold text-sm" x-text="c.first_name || c.username || '(이름 없음)'"></div>
+                        <div class="text-[11px] text-ink-500" x-text="'@' + (c.username || 'no_username') + ' · chat_id ' + c.chat_id"></div>
+                      </div>
+                      <div class="text-coral-500">→ 등록</div>
+                    </div>
+                  </button>
+                </template>
+              </div>
+            </template>
+
+            <div class="border-t border-[#222] pt-3">
+              <div class="text-[11px] text-ink-500 mb-1">또는 chat_id 직접 입력:</div>
+              <div class="flex gap-2">
+                <input x-model="tgChatIdInput" placeholder="123456789" class="input flex-1 font-mono text-sm">
+                <button @click="subscribeTelegram(tgChatIdInput)" :disabled="!tgChatIdInput" class="btn btn-primary text-xs">등록</button>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </template>
+  </div>
+</div>
+
 <div x-show="showAdminPanel" class="overlay" @click.self="showAdminPanel=false">
   <div class="modal space-y-4" style="width:500px">
     <div class="flex justify-between items-center">
@@ -204,6 +293,13 @@
             <div class="text-sm font-semibold" x-text="user?.display_name"></div>
             <div class="text-xs text-ink-500" x-text="'@'+user?.username"></div>
           </div>
+          <button @click="openTelegramSetup(); showProfileMenu=false"
+                  class="w-full text-left px-4 py-2.5 text-sm hover:bg-[#222]"
+                  :class="tgInfo?.subscribed ? 'text-emerald-400' : 'text-ink-700'">
+            📲 텔레그램 알림
+            <span x-show="tgInfo?.subscribed" class="text-[10px] ml-1">(연결됨)</span>
+            <span x-show="!tgInfo?.subscribed" class="text-[10px] ml-1 text-ink-500">(연결 안 됨)</span>
+          </button>
           <button x-show="user?.is_admin" @click="openAdmin(); showProfileMenu=false" class="w-full text-left px-4 py-2.5 text-sm hover:bg-[#222] text-coral-400">회원 관리</button>
           <button @click="doLogout(); showProfileMenu=false" class="w-full text-left px-4 py-2.5 text-sm hover:bg-[#222] text-red-400">로그아웃</button>
         </div>
@@ -357,6 +453,45 @@
       <template x-if="trades.length===0"><div class="text-xs text-ink-500 text-center py-2">매매 기록이 없습니다</div></template>
     </div>
 
+    <!-- 모의 시그널 성과 (옵션 D — 만 19세 후 실전 검증용 트랙레코드) -->
+    <div class="surface p-4 space-y-2.5" x-show="mockStats">
+      <div class="flex items-baseline justify-between">
+        <div class="serif text-sm font-semibold text-ink-800">시그널 성과 트래커</div>
+        <button @click="loadMockStats()" class="text-[10px] text-coral-500 hover:underline">새로고침</button>
+      </div>
+      <div class="grid grid-cols-2 gap-2 text-[11px]">
+        <div class="surface-elevated p-2.5 text-center">
+          <div class="text-ink-500 mb-0.5">승률</div>
+          <div class="font-mono text-base font-bold"
+               :class="(mockStats?.win_rate ?? 0) >= 50 ? 'ticker-up' : 'text-ink-700'"
+               x-text="(mockStats?.win_rate ?? 0) + '%'"></div>
+        </div>
+        <div class="surface-elevated p-2.5 text-center">
+          <div class="text-ink-500 mb-0.5">평균 수익률</div>
+          <div class="font-mono text-base font-bold"
+               :class="(mockStats?.avg_return_pct ?? 0) >= 0 ? 'ticker-up' : 'ticker-down'"
+               x-text="((mockStats?.avg_return_pct ?? 0) >= 0 ? '+' : '') + (mockStats?.avg_return_pct ?? 0) + '%'"></div>
+        </div>
+        <div class="surface-elevated p-2.5 text-center">
+          <div class="text-ink-500 mb-0.5">누적 수익률</div>
+          <div class="font-mono text-base font-bold"
+               :class="(mockStats?.cumulative_pct ?? 0) >= 0 ? 'ticker-up' : 'ticker-down'"
+               x-text="((mockStats?.cumulative_pct ?? 0) >= 0 ? '+' : '') + (mockStats?.cumulative_pct ?? 0) + '%'"></div>
+        </div>
+        <div class="surface-elevated p-2.5 text-center">
+          <div class="text-ink-500 mb-0.5">시그널 / 진행중</div>
+          <div class="font-mono text-base font-bold text-ink-700">
+            <span x-text="mockStats?.total_signals ?? 0"></span>
+            <span class="text-[10px] text-ink-500" x-text="'/' + (mockStats?.open ?? 0)"></span>
+          </div>
+        </div>
+      </div>
+      <div class="text-[10px] text-ink-500 leading-snug pt-1 border-t border-[#222]">
+        ⓘ 매수 신호 시 자동으로 모의 진입 → 목표가/손절가 도달 시 자동 청산.
+        2~4주 데이터로 본인 시스템 신뢰도 검증 가능.
+      </div>
+    </div>
+
     <!-- 실시간 미주 추천 -->
     <div class="surface-elevated p-4">
       <div class="flex items-center justify-between mb-3">
@@ -448,11 +583,27 @@
             </div>
           </div>
 
-          <div class="flex gap-2 mt-5">
+          <!-- 시장 상태 표시 -->
+          <template x-if="report.market_status">
+            <div class="flex items-center gap-2 mt-3 text-[11px]">
+              <span class="w-1.5 h-1.5 rounded-full"
+                    :class="report.market_status.is_open ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-600'"></span>
+              <span :class="report.market_status.is_open ? 'text-emerald-500' : 'text-ink-500'"
+                    x-text="report.market_status.is_open ? '🟢 ' + report.market_status.label + ' (실시간)' : '⚫ ' + report.market_status.label + ' (시세 정지)'"></span>
+            </div>
+          </template>
+
+          <div class="flex gap-2 mt-5 flex-wrap">
             <button @click="runAnalyze()" class="btn btn-primary">재분석</button>
             <button @click="openPortfolioModal()" class="btn btn-accent">포트폴리오 담기</button>
             <button @click="removeWatch()" class="btn btn-ghost">제거</button>
             <a :href="'https://www.tradingview.com/symbols/'+(isKR(selected)?'KRX-'+selected:selected)+'/'" target="_blank" class="btn btn-ghost ml-auto">TradingView ↗</a>
+            <template x-if="isKR(selected)">
+              <a :href="'https://finance.naver.com/item/main.naver?code='+selected" target="_blank" class="btn btn-ghost">Naver 차트 ↗</a>
+            </template>
+            <template x-if="!isKR(selected)">
+              <a :href="'https://finance.yahoo.com/quote/'+selected" target="_blank" class="btn btn-ghost">Yahoo ↗</a>
+            </template>
           </div>
         </div>
 
@@ -999,12 +1150,23 @@ function app(){
     showPortModal: false,
     portForm: { symbol: '', krw_invested: 0, entry_price: 0, shares: 0 },
 
+    // 텔레그램 알림
+    showTelegramSetup: false,
+    tgInfo: null,
+    tgCandidates: [],
+    tgChatIdInput: '',
+
+    // 모의 시그널 트래커
+    mockStats: null,
+
     init(){
-      if(this.user) { 
-        this.refresh(); 
-        this.loadTrades(); 
-        this.loadRecommendations(); 
+      if(this.user) {
+        this.refresh();
+        this.loadTrades();
+        this.loadRecommendations();
         this.loadHoldings();
+        this.loadMockStats();
+        this.openTelegramSetup().catch(()=>{}); this.showTelegramSetup = false;
         // 5초마다 포트폴리오 실시간 갱신
         setInterval(() => this.loadHoldings(), 5000);
       }
@@ -1229,6 +1391,59 @@ function app(){
       this.portfolio.total_pnl = Math.round(current - invested);
       this.portfolio.total_pnl_pct = invested > 0 ? +((current/invested - 1) * 100).toFixed(2) : 0;
     },
+    // ─── 텔레그램 알림 ─────────────────────────────────
+    async openTelegramSetup() {
+      this.showTelegramSetup = true;
+      try {
+        const r = await this.api('/api/telegram/info');
+        this.tgInfo = await r.json();
+      } catch(e) { this.tgInfo = { configured: false }; }
+    },
+    async discoverTelegram() {
+      try {
+        const r = await this.api('/api/telegram/discover');
+        const d = await r.json();
+        this.tgCandidates = d.candidates || [];
+        if (this.tgCandidates.length === 0) {
+          alert('아직 봇과 대화한 사용자가 없습니다.\n\n1) 텔레그램에서 본인 봇 검색\n2) /start 또는 아무 메시지 보내기\n3) 다시 [자동 찾기] 클릭');
+        }
+      } catch(e) { alert('자동 찾기 실패: '+e.message); }
+    },
+    async subscribeTelegram(chatId) {
+      if (!chatId) return;
+      try {
+        const r = await this.api('/api/telegram/subscribe', {
+          method:'POST', headers:{'content-type':'application/json'},
+          body: JSON.stringify({ chat_id: String(chatId) })
+        });
+        if (!r.ok) { alert('등록 실패: ' + (await r.text())); return; }
+        alert('✅ 등록 완료! 텔레그램에서 테스트 메시지를 확인하세요.');
+        await this.openTelegramSetup();  // 재로드
+      } catch(e) { alert('등록 오류: '+e.message); }
+    },
+    async unsubscribeTelegram() {
+      if (!confirm('텔레그램 알림을 해지할까요?')) return;
+      await this.api('/api/telegram/subscribe', { method:'DELETE' });
+      await this.openTelegramSetup();
+    },
+    async testTelegram() {
+      const chatId = this.tgInfo?.my_chat_id;
+      if (!chatId) return;
+      const r = await this.api('/api/telegram/subscribe', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ chat_id: chatId })
+      });
+      if (r.ok) alert('✅ 테스트 메시지 발송됨'); else alert('실패');
+    },
+
+    // ─── 모의 시그널 트래커 ───────────────────────────
+    async loadMockStats() {
+      try {
+        const r = await this.api('/api/mock-trades/stats');
+        if (r.ok) this.mockStats = await r.json();
+      } catch(e) {}
+    },
+
     async loadHoldings() {
       try {
         const r = await this.api('/api/portfolio');

@@ -25,6 +25,7 @@ from app.intelligence import (
 )
 from app.trade_kis import auto_order, is_live as kis_is_live
 from app import telegram_alert
+from app.market_hours import market_status_for
 from server import db, alerts as alerts_mod
 from server.sizing import shares_for, split_plan
 
@@ -403,7 +404,9 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
         cached = _attach_intelligence(cached, snap, [], {})
         cached = _attach_brokers(cached, symbol)
         await broadcast({"type": "analysis", "symbol": symbol, "user_id": user["id"]})
-        return {"snapshot": snap, "analysis": cached, "cached": True}
+        return {"snapshot": snap, "analysis": cached,
+                "market_status": market_status_for(symbol),
+                "cached": True}
 
     try:
         log.info(f"Fetching data in parallel for {symbol}")
@@ -438,7 +441,9 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
 
         await broadcast({"type": "analysis", "symbol": symbol, "user_id": user["id"]})
         return {"snapshot": snap, "analysis": ana,
-                "profile": profile, "news": news[:5], "sizing": sizing, "cached": False}
+                "profile": profile, "news": news[:5], "sizing": sizing,
+                "market_status": market_status_for(symbol),
+                "cached": False}
 
     except Exception as e:
         log.error(f"Analyze error for {symbol}: {e}")

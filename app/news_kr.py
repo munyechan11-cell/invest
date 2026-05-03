@@ -52,9 +52,39 @@ async def fetch_dart_recent(symbol: str, days: int = 7) -> list[dict]:
             for x in (r.json().get("list") or [])]
 
 
+_kr_name_cache: dict[str, dict] = {}
+
+
 async def fetch_profile_kr(symbol: str) -> dict:
-    """간이 프로필 — KIS 종목 마스터 호출은 별도 인증 필요. 여기선 비워두고 모델이 뉴스에서 추론."""
-    return {"name": symbol, "country": "KR"}
+    """한국주식 프로필 — Naver 검색으로 실제 회사명·거래소 획득.
+
+    캐시: 회사명은 자주 바뀌지 않으므로 프로세스 메모리에 영구 캐시.
+    """
+    if symbol in _kr_name_cache:
+        return _kr_name_cache[symbol]
+
+    # Naver 자동완성으로 종목 코드 → 회사명
+    try:
+        from .search import _search_kr
+        results = await _search_kr(symbol)
+        for r in results:
+            if r.get("symbol") == symbol:
+                profile = {
+                    "name": r.get("name") or symbol,
+                    "country": "KR",
+                    "exchange": r.get("exchange", "KRX"),
+                    # AI 프롬프트가 finnhubIndustry/marketCap 키를 보므로 호환 매핑
+                    "finnhubIndustry": "한국 상장기업",
+                    "marketCapitalization": None,
+                }
+                _kr_name_cache[symbol] = profile
+                return profile
+    except Exception:
+        pass
+
+    # 폴백
+    return {"name": symbol, "country": "KR", "exchange": "KRX",
+            "finnhubIndustry": "한국 상장기업"}
 
 
 def _strip(s: str) -> str:
