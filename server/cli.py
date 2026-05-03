@@ -6,8 +6,8 @@
     python -m server.cli list-users
     python -m server.cli delete-user <username>
 
-⚠️ 보안:
-    - 비밀번호는 채팅·이슈·코드에 절대 평문으로 남기지 말 것.
+주의:
+    - 비밀번호는 채팅/이슈/코드에 절대 평문으로 남기지 말 것.
     - 가능하면 환경변수 ADMIN_USERNAME / ADMIN_PASSWORD 로 운영.
     - CLI는 로컬 1회성 부트스트랩 용도.
 """
@@ -15,6 +15,13 @@ from __future__ import annotations
 import sys
 import asyncio
 import time
+
+# Windows cp949 콘솔에서 한글/이모지 출력 안전화
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 from server import db
 
@@ -73,7 +80,7 @@ async def list_users():
     users = await db.list_users()
     print(f"=== 등록 사용자 {len(users)}명 ===")
     for u in users:
-        admin = " 👑" if u.get("is_admin") else ""
+        admin = " [ADMIN]" if u.get("is_admin") else ""
         print(f"  #{u['id']:3} {u['username']:20} {u['display_name'] or '-':15}{admin}")
 
 
