@@ -48,47 +48,53 @@ async def _fetch_dart_filings(symbol: str, days: int = 1) -> list[dict]:
 
 
 def _classify_filing(report_name: str) -> tuple[str, str]:
-    """공시명 → (중요도 이모지, 카테고리)."""
-    name = report_name or ""
-    # 호재성
-    if any(k in name for k in ("실적", "영업", "이익", "수주", "계약")):
-        return "🟢", "실적/수주"
-    if any(k in name for k in ("자기주식취득", "취득결정", "투자")):
-        return "🟢", "자사주/투자"
-    if any(k in name for k in ("배당", "주주환원")):
-        return "🟢", "배당/주주환원"
-    # 악재성
-    if any(k in name for k in ("매도", "처분", "감자", "자본감소")):
-        return "🔴", "매도/감자"
-    if any(k in name for k in ("소송", "제재", "벌금")):
-        return "🔴", "법률리스크"
-    if any(k in name for k in ("정정", "철회")):
-        return "⚠️", "정정공시"
-    # 중립
-    if any(k in name for k in ("증자", "전환사채", "신주인수권")):
-        return "🟡", "증자/CB"
-    if "지분" in name or "변동" in name:
-        return "🟡", "지분변동"
-    return "📄", "기타"
+    """레거시 호환 함수 — 신규 코드는 dart.classify_filing() 직접 사용."""
+    from .dart import classify_filing
+    info = classify_filing(report_name)
+    return info["icon"], info["category"]
 
 
 async def _alert_filing(symbol: str, name: str, filing: dict, broadcast):
     from app import telegram_alert
+    from app.dart import classify_filing
     from server import db
 
-    icon, category = _classify_filing(filing.get("report_nm", ""))
+    info = classify_filing(filing.get("report_nm", ""))
+    icon = info["icon"]
+    category = info["category"]
+    impact = info["impact"]
+    interpretation = info["interpretation"]
+
     rcept_no = filing.get("rcept_no", "")
     rcept_dt = filing.get("rcept_dt", "")
     submitter = filing.get("flr_nm", "")
     url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}"
 
+    # 임팩트 시각화
+    if impact >= 6:
+        impact_label = f"💚💚 강한 호재 (+{impact})"
+    elif impact >= 3:
+        impact_label = f"💚 호재 (+{impact})"
+    elif impact <= -6:
+        impact_label = f"❤️❤️ 강한 악재 ({impact})"
+    elif impact <= -3:
+        impact_label = f"❤️ 악재 ({impact})"
+    elif impact != 0:
+        impact_label = f"⚪ 중립 ({impact:+})"
+    else:
+        impact_label = "⚪ 중립"
+
     msg = (
         f"<b>{icon} 신규 공시 — {name} ({symbol})</b>\n"
         f"\n"
         f"📋 <b>{filing.get('report_nm', '제목 없음')}</b>\n"
-        f"🏷 카테고리: {category}\n"
-        f"📅 접수: {rcept_dt}\n"
-        f"🏢 제출: {submitter}\n"
+        f"\n"
+        f"🏷 분류: {category}\n"
+        f"📊 임팩트: {impact_label}\n"
+        f"\n"
+        f"💡 <b>AI 해석:</b>\n<i>{interpretation}</i>\n"
+        f"\n"
+        f"📅 접수: {rcept_dt}  |  🏢 {submitter}\n"
         f"\n"
         f"🔗 <a href=\"{url}\">DART에서 원본 보기</a>"
     )
@@ -96,7 +102,8 @@ async def _alert_filing(symbol: str, name: str, filing: dict, broadcast):
     # WebSocket 알림 (브라우저)
     await broadcast({
         "type": "alert", "symbol": symbol, "kind": "DART",
-        "message": f"{icon} 공시: {filing.get('report_nm', '')[:50]} · {category}",
+        "message": f"{icon} {category}: {filing.get('report_nm', '')[:40]} ({impact:+})",
+        "impact": impact, "interpretation": interpretation,
     })
 
     # 텔레그램: 워치/포트폴리오에 이 종목 가진 모든 사용자

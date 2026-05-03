@@ -1189,6 +1189,99 @@
           </div>
         </template>
 
+        <!-- 📊 DART 재무 펀더멘털 (KR 종목만) -->
+        <template x-if="report.analysis.dart_financials">
+          <div class="surface-elevated p-5">
+            <div class="flex items-baseline justify-between mb-3">
+              <div class="serif text-lg font-semibold">📊 DART 재무 (펀더멘털)</div>
+              <div class="text-[10px] text-ink-500" x-text="report.analysis.dart_financials.report_period + ' · 공식 공시'"></div>
+            </div>
+
+            <!-- 매출/영업이익/순이익 + YoY -->
+            <div class="grid grid-cols-3 gap-3 mb-3">
+              <div class="surface p-3">
+                <div class="text-[10px] text-ink-500 uppercase tracking-wider">매출</div>
+                <div class="font-mono text-sm mt-1" x-text="'₩' + (Math.round((report.analysis.dart_financials.revenue||0) / 100000000)).toLocaleString() + '억'"></div>
+                <div class="text-[10px] mt-0.5"
+                     :class="(report.analysis.dart_financials.revenue_growth_pct ?? 0) >= 0 ? 'ticker-up' : 'ticker-down'"
+                     x-show="report.analysis.dart_financials.revenue_growth_pct !== null">
+                  <span x-text="((report.analysis.dart_financials.revenue_growth_pct ?? 0) >= 0 ? '+' : '') + report.analysis.dart_financials.revenue_growth_pct + '% YoY'"></span>
+                </div>
+              </div>
+              <div class="surface p-3">
+                <div class="text-[10px] text-ink-500 uppercase tracking-wider">영업이익</div>
+                <div class="font-mono text-sm mt-1"
+                     :class="(report.analysis.dart_financials.operating_income||0) < 0 ? 'ticker-down' : ''"
+                     x-text="'₩' + (Math.round((report.analysis.dart_financials.operating_income||0) / 100000000)).toLocaleString() + '억'"></div>
+                <div class="text-[10px] mt-0.5"
+                     :class="(report.analysis.dart_financials.op_growth_pct ?? 0) >= 0 ? 'ticker-up' : 'ticker-down'"
+                     x-show="report.analysis.dart_financials.op_growth_pct !== null">
+                  <span x-text="((report.analysis.dart_financials.op_growth_pct ?? 0) >= 0 ? '+' : '') + report.analysis.dart_financials.op_growth_pct + '% YoY'"></span>
+                </div>
+              </div>
+              <div class="surface p-3">
+                <div class="text-[10px] text-ink-500 uppercase tracking-wider">순이익</div>
+                <div class="font-mono text-sm mt-1"
+                     :class="(report.analysis.dart_financials.net_income||0) < 0 ? 'ticker-down' : ''"
+                     x-text="'₩' + (Math.round((report.analysis.dart_financials.net_income||0) / 100000000)).toLocaleString() + '억'"></div>
+                <div class="text-[10px] mt-0.5"
+                     :class="(report.analysis.dart_financials.ni_growth_pct ?? 0) >= 0 ? 'ticker-up' : 'ticker-down'"
+                     x-show="report.analysis.dart_financials.ni_growth_pct !== null">
+                  <span x-text="((report.analysis.dart_financials.ni_growth_pct ?? 0) >= 0 ? '+' : '') + report.analysis.dart_financials.ni_growth_pct + '% YoY'"></span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 재무비율 (영업이익률, ROE, 부채비율) -->
+            <div class="grid grid-cols-3 gap-3">
+              <div class="text-center">
+                <div class="text-[10px] text-ink-500 uppercase">영업이익률</div>
+                <div class="font-mono text-base font-bold mt-0.5"
+                     :class="(report.analysis.dart_financials.operating_margin_pct ?? 0) >= 10 ? 'ticker-up' : (report.analysis.dart_financials.operating_margin_pct ?? 0) >= 5 ? 'text-amber-500' : 'text-ink-700'"
+                     x-text="(report.analysis.dart_financials.operating_margin_pct ?? '-') + '%'"></div>
+              </div>
+              <div class="text-center">
+                <div class="text-[10px] text-ink-500 uppercase">ROE (분기)</div>
+                <div class="font-mono text-base font-bold mt-0.5"
+                     :class="(report.analysis.dart_financials.roe_pct ?? 0) >= 5 ? 'ticker-up' : 'text-ink-700'"
+                     x-text="(report.analysis.dart_financials.roe_pct ?? '-') + '%'"></div>
+              </div>
+              <div class="text-center">
+                <div class="text-[10px] text-ink-500 uppercase">부채비율</div>
+                <div class="font-mono text-base font-bold mt-0.5"
+                     :class="(report.analysis.dart_financials.debt_ratio_pct ?? 0) <= 100 ? 'ticker-up' : (report.analysis.dart_financials.debt_ratio_pct ?? 0) <= 200 ? 'text-amber-500' : 'ticker-down'"
+                     x-text="(report.analysis.dart_financials.debt_ratio_pct ?? '-') + '%'"></div>
+              </div>
+            </div>
+            <div class="text-[10px] text-ink-500 mt-3 pt-2 border-t border-[#222]">
+              ⓘ DART 전자공시 공식 데이터 · 24시간 캐시
+            </div>
+          </div>
+        </template>
+
+        <!-- 🏛 임원·주요주주 매매 동향 (KR 종목만, DART) -->
+        <template x-if="report.analysis.dart_insider?.length">
+          <div class="surface-elevated p-5">
+            <div class="serif text-lg font-semibold mb-3">🏛 임원·주요주주 매매</div>
+            <div class="space-y-2 max-h-48 overflow-y-auto scroll-soft">
+              <template x-for="ins in report.analysis.dart_insider">
+                <div class="surface p-3 flex items-center justify-between">
+                  <div class="flex-1">
+                    <div class="font-semibold text-sm" x-text="ins.name || '-'"></div>
+                    <div class="text-[11px] text-ink-500" x-text="ins.reason || ins.rel || ''"></div>
+                  </div>
+                  <div class="text-right">
+                    <div class="font-mono font-bold text-sm"
+                         :class="(ins.change_qty ?? 0) >= 0 ? 'ticker-up' : 'ticker-down'"
+                         x-text="((ins.change_qty ?? 0) >= 0 ? '+' : '') + (ins.change_qty ?? 0).toLocaleString() + '주'"></div>
+                    <div class="text-[10px] text-ink-500 font-mono" x-text="ins.report_date"></div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+
         <!-- 보유기간 / 매크로 -->
         <div class="grid grid-cols-2 gap-3">
           <div class="surface-elevated p-4">

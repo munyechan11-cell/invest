@@ -447,16 +447,24 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
     try:
         log.info(f"Fetching data in parallel for {symbol}")
         bench_sym, bench_name = get_benchmark_symbol(symbol)
+        is_kr = symbol.isdigit() and len(symbol) == 6
+
         snap_task = _cached_snapshot(symbol)
         news_task = fetch_news(symbol)
         profile_task = fetch_profile(symbol)
         flow_task = fetch_market_flow(symbol)
         bench_task = _cached_snapshot(bench_sym)  # 섹터 RS 비교용 벤치마크
 
-        snap, news, profile, flow, bench_snap = await asyncio.gather(
-            snap_task, news_task, profile_task, flow_task, bench_task,
-            return_exceptions=True,
-        )
+        # KR 종목이면 DART 재무 + 인사이더도 병렬 fetch
+        tasks = [snap_task, news_task, profile_task, flow_task, bench_task]
+        if is_kr:
+            from app.dart import get_financials, get_insider_trades
+            tasks.extend([get_financials(symbol), get_insider_trades(symbol)])
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        snap, news, profile, flow, bench_snap = results[:5]
+        dart_financials = results[5] if is_kr and len(results) > 5 and not isinstance(results[5], Exception) else None
+        dart_insider = results[6] if is_kr and len(results) > 6 and not isinstance(results[6], Exception) else None
         # 벤치마크는 실패해도 분석은 진행
         if isinstance(bench_snap, Exception):
             bench_snap = None
@@ -464,11 +472,24 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
         watch = next((w for w in await db.list_watch(user["id"]) if w["symbol"] == symbol), None)
         risk_val = watch["risk_pct"] if watch else 1.0
 
+        # KR 종목: DART 재무를 분석에 컨텍스트로 추가
+        if is_kr and dart_financials and isinstance(dart_financials, dict) and dart_financials:
+            # flow에 dart_financials를 합쳐서 AI 프롬프트에도 들어가도록
+            if isinstance(flow, dict):
+                flow["dart_financials"] = dart_financials
+
         ana = await asyncio.to_thread(analyze, symbol, snap, news, flow, profile, risk_val)
         # AI 응답에 시장수급/증권사/지능 필드가 빠져있으면 deterministic 계산해서 주입
         ana = _ensure_flow_fields(ana, snap, symbol)
         ana = _attach_intelligence(ana, snap, news, flow)
         ana = _attach_brokers(ana, symbol)
+
+        # DART 데이터를 ana에 직접 주입 (프론트가 한 곳에서 읽도록)
+        if is_kr:
+            if dart_financials and isinstance(dart_financials, dict) and dart_financials:
+                ana["dart_financials"] = dart_financials
+            if dart_insider and isinstance(dart_insider, list) and dart_insider:
+                ana["dart_insider"] = dart_insider
 
         # 섹터 상대강도 — 벤치마크 받은 경우만
         if bench_snap and isinstance(bench_snap, dict):
