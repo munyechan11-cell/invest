@@ -2254,6 +2254,27 @@ function app(){
       this.form.symbol = res.symbol;
       this.showDropdown = false;
     },
+    // 입력 → 정식 티커 해석. 깨끗한 티커면 그대로, 아니면 검색 첫 결과.
+    async _resolveSymbol(query) {
+      const raw = (query || '').trim();
+      if (!raw) return null;
+      const upper = raw.toUpperCase();
+      // 6자리 숫자(KR) 또는 1~8자 영숫자.- (US/ETF)면 그대로
+      if (/^[A-Z0-9.\-]{1,8}$/.test(upper)) return upper;
+      // 이미 드롭다운에 결과 있으면 첫번째
+      if (this.searchResults && this.searchResults.length > 0) {
+        return this.searchResults[0].symbol;
+      }
+      // 즉시 검색
+      try {
+        const r = await this.api(`/api/search?q=${encodeURIComponent(raw)}&limit=1`);
+        if (r.ok) {
+          const arr = await r.json();
+          if (arr.length > 0) return arr[0].symbol;
+        }
+      } catch (e) { console.error('자동 매칭 실패', e); }
+      return null;
+    },
     formatCapital() {
       let val = this.form.capital_str.replace(/[^\d]/g, '');
       if(val) {
@@ -2559,7 +2580,14 @@ function app(){
     select(sym){ this.selected = sym; this.report = null; this.mobileTab = 'report'; this.runAnalyze(); },
     async addWatch(){
       if(!this.form.symbol) return;
-      const sym = this.form.symbol.toUpperCase().trim();
+      // 한글/기업명도 입력 가능 — 자동으로 가장 비슷한 티커 매칭
+      const sym = await this._resolveSymbol(this.form.symbol);
+      if (!sym) {
+        alert(`"${this.form.symbol}"와 일치하는 종목을 찾을 수 없습니다.`);
+        return;
+      }
+      this.form.symbol = sym;
+      this.showDropdown = false;
 
       // 투자금: 빈칸이면 0 → 백엔드가 사이징 계산 생략
       let finalCapital = parseFloat(this.form.capital_str) || parseFloat(this.form.capital) || 0;
