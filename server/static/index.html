@@ -724,6 +724,97 @@
   </div>
 </div>
 
+<!-- 💎 구독·가격표·쿠폰 모달 -->
+<div x-show="showPricing" class="overlay" @click.self="showPricing=false" style="display:none">
+  <div class="modal space-y-5" style="width:560px; max-width:95vw">
+    <div class="flex justify-between items-center">
+      <div>
+        <div class="serif text-2xl font-semibold">Sift Pro</div>
+        <div class="text-xs text-ink-500 mt-1">노이즈를 거르고 신호만 — 구독으로 풀 기능 해제</div>
+      </div>
+      <button @click="showPricing=false" class="text-ink-500 text-xl hover:text-ink-300">✕</button>
+    </div>
+
+    <!-- 현재 플랜 표시 -->
+    <div x-show="subscription" class="rounded-lg p-3 border"
+         :class="subscription?.plan === 'pro' ? 'border-amber-500/50 bg-amber-500/5' : 'border-[#222] bg-[#0a0a0a]'">
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="text-xs text-ink-500 uppercase tracking-wider">현재 플랜</div>
+          <div class="text-lg font-bold mt-0.5"
+               :class="subscription?.plan === 'pro' ? 'text-amber-400' : 'text-ink-300'"
+               x-text="subscription?.plan === 'pro' ? (subscription?.in_trial ? 'Pro · 무료 체험 중' : 'Pro') : 'Free'"></div>
+        </div>
+        <div x-show="subscription?.expires_at" class="text-right text-xs">
+          <div class="text-ink-500" x-text="subscription?.in_trial ? '체험 종료' : '다음 갱신'"></div>
+          <div class="font-mono text-ink-300" x-text="fmtDate(subscription?.expires_at)"></div>
+        </div>
+      </div>
+      <div x-show="subscription?.discount_percent > 0" class="text-xs text-amber-400 mt-2">
+        🎟️ <span x-text="subscription?.applied_coupon_code"></span> 쿠폰 적용 중 ·
+        <span x-text="subscription?.discount_percent"></span>% 할인
+        <span x-show="subscription?.discount_until"> · <span x-text="fmtDate(subscription?.discount_until)"></span> 까지</span>
+      </div>
+    </div>
+
+    <!-- Free vs Pro 비교 -->
+    <div class="grid grid-cols-2 gap-3" x-show="pricing">
+      <div class="rounded-lg p-4 border border-[#222] bg-[#0a0a0a]">
+        <div class="text-xs uppercase tracking-wider text-ink-500">Free</div>
+        <div class="serif text-2xl font-semibold mt-1">₩0</div>
+        <div class="text-[11px] text-ink-500 mb-3">평생 무료</div>
+        <ul class="text-xs space-y-1.5 text-ink-600">
+          <li>· 워치리스트 <span x-text="pricing?.free_limits?.watchlist"></span>종목</li>
+          <li>· 분석 일 <span x-text="pricing?.free_limits?.analysis_per_day"></span>회</li>
+          <li>· 수동 포트폴리오 입력</li>
+          <li class="text-ink-700">· 텔레그램 알림 ❌</li>
+          <li class="text-ink-700">· 자동 손절매 ❌</li>
+        </ul>
+      </div>
+      <div class="rounded-lg p-4 border border-amber-500/40 bg-gradient-to-br from-amber-500/5 to-transparent relative">
+        <div class="absolute -top-2 right-3 text-[9px] uppercase tracking-wider bg-amber-500 text-black font-bold px-2 py-0.5 rounded">추천</div>
+        <div class="text-xs uppercase tracking-wider text-amber-400">Pro</div>
+        <div class="serif text-2xl font-semibold mt-1" x-text="fmtKRW(pricing?.monthly_krw)"></div>
+        <div class="text-[11px] text-ink-500 mb-3">
+          월 ·
+          <span x-show="pricing?.yearly_krw">연 <span x-text="fmtKRW(pricing?.yearly_krw)"></span> (<span x-text="pricing?.yearly_discount_pct"></span>%↓)</span>
+        </div>
+        <ul class="text-xs space-y-1.5 text-ink-300">
+          <template x-for="f in (pricing?.pro_features || [])" :key="f">
+            <li class="text-amber-100/90">✓ <span x-text="f"></span></li>
+          </template>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 쿠폰 입력 -->
+    <div class="rounded-lg p-4 border border-[#222]">
+      <div class="text-xs uppercase tracking-wider text-ink-500 mb-2">🎟️ 프로모션 코드</div>
+      <div class="flex gap-2">
+        <input x-model="couponInput" @keydown.enter="redeemCoupon()"
+               placeholder="예: FREE100, FIRST30, SPECIAL20"
+               class="input flex-1 uppercase tracking-wider"
+               style="text-transform: uppercase">
+        <button @click="redeemCoupon()" :disabled="couponLoading || !couponInput"
+                class="btn btn-primary"
+                :class="(couponLoading || !couponInput) && 'opacity-50 cursor-not-allowed'">
+          <span x-show="!couponLoading">적용</span>
+          <span x-show="couponLoading">...</span>
+        </button>
+      </div>
+      <div x-show="couponMsg" class="text-xs mt-2"
+           :class="couponMsg.startsWith('✅') ? 'text-emerald-400' : 'text-rose-400'"
+           x-text="couponMsg"></div>
+    </div>
+
+    <!-- 결제 안내 (Phase 2 전까지 placeholder) -->
+    <div class="rounded-lg p-3 border border-[#222] bg-[#0a0a0a] text-center">
+      <div class="text-xs text-ink-500">💳 카드 결제는 곧 오픈됩니다 (Toss Payments)</div>
+      <div class="text-[10px] text-ink-700 mt-1">현재는 프로모션 코드로만 Pro 활성화 가능</div>
+    </div>
+  </div>
+</div>
+
 <div x-show="showAdminPanel" class="overlay" @click.self="showAdminPanel=false">
   <div class="modal space-y-4" style="width:500px">
     <div class="flex justify-between items-center">
@@ -797,6 +888,13 @@
         <span x-text="wsConnected ? '실시간 연결' : '재연결 중'"></span>
       </div>
       <div class="hidden lg:block text-sm text-ink-600 font-mono" x-text="now"></div>
+      <button x-show="user" @click="openPricing()"
+              class="text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider transition"
+              :class="subscription?.plan === 'pro'
+                ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-black hover:opacity-90'
+                : 'bg-[#222] text-ink-500 hover:bg-[#2a2a2a] hover:text-amber-400'"
+              x-text="subscription?.plan === 'pro' ? (subscription?.in_trial ? 'TRIAL' : 'PRO') : 'FREE'">
+      </button>
       <div x-show="user" class="relative" @click.outside="showProfileMenu=false">
         <button @click="showProfileMenu=!showProfileMenu" class="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-[#222] transition">
           <div class="w-7 h-7 rounded-full bg-coral-500 flex items-center justify-center text-xs font-bold text-black" x-text="(user?.display_name||user?.username||'?')[0]"></div>
@@ -807,6 +905,12 @@
             <div class="text-sm font-semibold" x-text="user?.display_name"></div>
             <div class="text-xs text-ink-500" x-text="'@'+user?.username"></div>
           </div>
+          <button @click="openPricing(); showProfileMenu=false"
+                  class="w-full text-left px-4 py-2.5 text-sm hover:bg-[#222]"
+                  :class="subscription?.plan === 'pro' ? 'text-amber-400' : 'text-ink-700'">
+            <span x-show="subscription?.plan === 'pro'">⭐ Pro 구독 관리</span>
+            <span x-show="subscription?.plan !== 'pro'">💎 Pro 업그레이드</span>
+          </button>
           <button @click="openTelegramSetup(); showProfileMenu=false"
                   class="w-full text-left px-4 py-2.5 text-sm hover:bg-[#222]"
                   :class="tgInfo?.subscribed ? 'text-emerald-400' : 'text-ink-700'">
@@ -2479,6 +2583,14 @@ function app(){
     tgDiag: null,
     diagLoading: false,
 
+    // 구독·쿠폰
+    showPricing: false,
+    subscription: null,
+    pricing: null,
+    couponInput: '',
+    couponMsg: '',
+    couponLoading: false,
+
     // 모의 시그널 트래커
     mockStats: null,
 
@@ -2545,6 +2657,7 @@ function app(){
         this.loadIndices();         // 시장 지수 ticker
         this.loadPortfolioRisk();   // 포트폴리오 리스크 분석
         this.loadMyPriceAlerts();   // 사용자 지정 알림 목록
+        this.loadSubscription();    // 현재 구독 상태 (헤더 배지)
         this.openTelegramSetup().catch(()=>{}); this.showTelegramSetup = false;
 
         // 자동 갱신 — TOP 추천 5분 / 지수 30초
@@ -2827,6 +2940,58 @@ function app(){
       this.portfolio.total_pnl = Math.round(current - invested);
       this.portfolio.total_pnl_pct = invested > 0 ? +((current/invested - 1) * 100).toFixed(2) : 0;
     },
+    // ─── 구독·쿠폰 ─────────────────────────────────────
+    async loadSubscription() {
+      try {
+        const r = await this.api('/api/subscription');
+        if (r.ok) this.subscription = await r.json();
+      } catch(e) {}
+    },
+    async loadPricing() {
+      try {
+        const r = await fetch('/api/pricing');
+        if (r.ok) this.pricing = await r.json();
+      } catch(e) {}
+    },
+    async openPricing() {
+      this.showPricing = true;
+      this.couponMsg = '';
+      this.couponInput = '';
+      await Promise.all([this.loadSubscription(), this.loadPricing()]);
+    },
+    async redeemCoupon() {
+      const code = (this.couponInput || '').trim().toUpperCase();
+      if (!code) return;
+      this.couponLoading = true;
+      this.couponMsg = '';
+      try {
+        const r = await this.api('/api/coupon/redeem', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code }),
+        });
+        const data = await r.json();
+        if (!r.ok) {
+          this.couponMsg = '❌ ' + (data?.detail?.message || data?.detail || '코드 적용 실패');
+        } else {
+          this.couponMsg = '✅ ' + (data.description || '코드 적용 완료') + ' — Pro 활성화됨';
+          this.couponInput = '';
+          this.subscription = data.status;
+          new Notification('Sift', { body: 'Pro 플랜 활성화 완료!' }).onclick = () => {};
+        }
+      } catch(e) {
+        this.couponMsg = '❌ 네트워크 오류';
+      } finally {
+        this.couponLoading = false;
+      }
+    },
+    fmtKRW(v) { return '₩' + (v || 0).toLocaleString('ko-KR'); },
+    fmtDate(ts) {
+      if (!ts) return '-';
+      const d = new Date(ts * 1000);
+      return d.toLocaleDateString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit' });
+    },
+
     // ─── 텔레그램 알림 ─────────────────────────────────
     async openTelegramSetup() {
       this.showTelegramSetup = true;

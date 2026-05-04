@@ -202,6 +202,51 @@ CREATE TABLE IF NOT EXISTS mock_trades (
   opened_at REAL NOT NULL,
   closed_at REAL
 );
+CREATE TABLE IF NOT EXISTS subscriptions (
+  user_id INTEGER PRIMARY KEY,
+  plan TEXT NOT NULL DEFAULT 'free',
+  status TEXT NOT NULL DEFAULT 'active',
+  trial_ends_at REAL,
+  expires_at REAL,
+  discount_percent INTEGER NOT NULL DEFAULT 0,
+  discount_until REAL,
+  billing_key TEXT,
+  applied_coupon_code TEXT,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS coupons (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT UNIQUE NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  discount_percent INTEGER NOT NULL DEFAULT 0,
+  trial_days INTEGER NOT NULL DEFAULT 0,
+  duration_months INTEGER,
+  max_uses INTEGER,
+  used_count INTEGER NOT NULL DEFAULT 0,
+  expires_at REAL,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS coupon_redemptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  coupon_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  redeemed_at REAL NOT NULL,
+  UNIQUE(coupon_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS payment_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  amount INTEGER NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'KRW',
+  method TEXT,
+  status TEXT NOT NULL,
+  toss_payment_key TEXT,
+  toss_order_id TEXT,
+  description TEXT,
+  paid_at REAL NOT NULL
+);
 """
 
 
@@ -672,7 +717,28 @@ async def init():
         CREATE INDEX IF NOT EXISTS idx_mock_open ON mock_trades(status, symbol);
         CREATE INDEX IF NOT EXISTS idx_pricealerts_active ON price_alerts(active, symbol);
         CREATE INDEX IF NOT EXISTS idx_trades_user ON trades(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_payment_user ON payment_history(user_id, paid_at DESC);
     """)
+    await c.commit()
+
+    # 시드 쿠폰 — 최초 1회만 생성, 이미 있으면 스킵 (운영 중 코드 수정해도 덮어쓰지 않음)
+    seed_coupons = [
+        # (code, description, discount_percent, trial_days, duration_months, max_uses)
+        ("FREE100",   "1개월 100% 무료 (지인·교수님)",     100,  0,  1,    None),
+        ("FIRST30",   "첫 달 30% 할인 (가입 환영)",         30,  0,  1,    None),
+        ("SPECIAL20", "7일 무료 + 12개월 20% 할인 (특가)",  20,  7,  12,   None),
+    ]
+    for code, desc, pct, trial, months, maxu in seed_coupons:
+        existing = await (await c.execute(
+            "SELECT id FROM coupons WHERE code=?", (code,)
+        )).fetchone()
+        if not existing:
+            await c.execute(
+                "INSERT INTO coupons(code, description, discount_percent, trial_days, "
+                "duration_months, max_uses, created_at) VALUES(?,?,?,?,?,?,?)",
+                (code, desc, pct, trial, months, maxu, time.time())
+            )
+            logging.info(f"Seed coupon created: {code}")
     await c.commit()
     
     # 관리자 계정 자동 생성 및 동기화 (보안: 디폴트 비번 절대 금지)
@@ -951,3 +1017,110 @@ async def portfolio_summary(user_id: int) -> dict:
         "total_pnl_pct": round(pnl_pct, 2),
         "trades_count": len(trades),
     }
+
+
+# ── 구독 (subscriptions) ────────────────────────────────────
+async def get_subscription(user_id: int) -> dict:
+    """사용자 구독 row 반환. 없으면 free 기본값 dict."""
+    c = await get_db()
+    row = await (await c.execute(
+        "SELECT * FROM subscriptions WHERE user_id=?", (user_id,)
+    )).fetchone()
+    if row:
+        return dict(row)
+    return {
+        "user_id": user_id, "plan": "free", "status": "active",
+        "trial_ends_at": None, "expires_at": None,
+        "discount_percent": 0, "discount_until": None,
+        "billing_key": None, "applied_coupon_code": None,
+        "created_at": 0, "updated_at": 0,
+    }
+
+
+async def upsert_subscription(user_id: int, **fields):
+    """구독 row 생성/갱신 (지정한 필드만 업데이트)."""
+    cur = await get_subscription(user_id)
+    cur.update(fields)
+    cur["updated_at"] = time.time()
+    if not cur.get("created_at"):
+        cur["created_at"] = time.time()
+    c = await get_db()
+    await c.execute(
+        "INSERT OR REPLACE INTO subscriptions("
+        "user_id, plan, status, trial_ends_at, expires_at, discount_percent, "
+        "discount_until, billing_key, applied_coupon_code, created_at, updated_at"
+        ") VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (user_id, cur["plan"], cur["status"], cur["trial_ends_at"], cur["expires_at"],
+         cur["discount_percent"], cur["discount_until"], cur["billing_key"],
+         cur["applied_coupon_code"], cur["created_at"], cur["updated_at"])
+    )
+    await c.commit()
+    return cur
+
+
+# ── 쿠폰 ────────────────────────────────────────────────────
+async def get_coupon_by_code(code: str) -> dict | None:
+    c = await get_db()
+    row = await (await c.execute(
+        "SELECT * FROM coupons WHERE code=?", (code.strip().upper(),)
+    )).fetchone()
+    return dict(row) if row else None
+
+
+async def has_redeemed(coupon_id: int, user_id: int) -> bool:
+    c = await get_db()
+    row = await (await c.execute(
+        "SELECT 1 FROM coupon_redemptions WHERE coupon_id=? AND user_id=?",
+        (coupon_id, user_id)
+    )).fetchone()
+    return row is not None
+
+
+async def redeem_coupon(coupon_id: int, user_id: int):
+    """쿠폰 사용 기록 + used_count 증가 (트랜잭션)."""
+    c = await get_db()
+    await c.execute(
+        "INSERT INTO coupon_redemptions(coupon_id, user_id, redeemed_at) VALUES(?,?,?)",
+        (coupon_id, user_id, time.time())
+    )
+    await c.execute(
+        "UPDATE coupons SET used_count = used_count + 1 WHERE id=?",
+        (coupon_id,)
+    )
+    await c.commit()
+
+
+async def list_coupons(active_only: bool = True) -> list[dict]:
+    c = await get_db()
+    q = "SELECT * FROM coupons"
+    if active_only:
+        q += " WHERE active=1"
+    q += " ORDER BY created_at DESC"
+    rows = await (await c.execute(q)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── 결제 내역 (Phase 2 본격 사용) ───────────────────────────
+async def add_payment(user_id: int, amount: int, status: str,
+                      method: str | None = None, currency: str = "KRW",
+                      toss_payment_key: str | None = None,
+                      toss_order_id: str | None = None,
+                      description: str | None = None) -> int:
+    c = await get_db()
+    cur = await c.execute(
+        "INSERT INTO payment_history(user_id,amount,currency,method,status,"
+        "toss_payment_key,toss_order_id,description,paid_at) VALUES(?,?,?,?,?,?,?,?,?)",
+        (user_id, amount, currency, method, status,
+         toss_payment_key, toss_order_id, description, time.time())
+    )
+    await c.commit()
+    return cur.lastrowid
+
+
+async def list_user_payments(user_id: int, limit: int = 50) -> list[dict]:
+    c = await get_db()
+    rows = await (await c.execute(
+        "SELECT * FROM payment_history WHERE user_id=? ORDER BY paid_at DESC LIMIT ?",
+        (user_id, limit)
+    )).fetchall()
+    return [dict(r) for r in rows]

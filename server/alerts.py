@@ -5,6 +5,7 @@ from app.market import fetch_realtime_quote, market_of
 from app import telegram_alert
 from app.symbol_names import get_name as _symbol_name
 from server import db
+from server import subscription as _sub
 from server.sizing import shares_for, split_plan
 
 log = logging.getLogger("alerts")
@@ -56,6 +57,9 @@ async def _push_telegram(symbol: str, kind: str, price: float, message: str,
     score_val = (sift_score or {}).get("score", 0) if isinstance(sift_score, dict) else 0
     for user_id, chat_id in subs:
         try:
+            # Pro 가 아니면 텔레그램 알림 차단 (Free 사용자가 chat_id 등록만 남아있는 경우 대비)
+            if not await _sub.is_pro(user_id):
+                continue
             settings = await db.get_user_settings(user_id)
             # 사용자 min_score 미달 → 알림 스킵
             if settings.get("telegram_min_score", 0) > score_val:
@@ -153,10 +157,11 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
                              "message": msg, "price": price, "user_id": user_id})
             await _push_telegram(sym, "SL", price, msg, plan, name=name)
 
-            # 자동 손절매: settings.auto_stoploss=1이면 보유 전량 매도
+            # 자동 손절매: settings.auto_stoploss=1 + Pro 활성 시에만 발동
             try:
+                is_pro_user = await _sub.is_pro(user_id)
                 settings = await db.get_user_settings(user_id)
-                if settings.get("auto_stoploss") == 1:
+                if is_pro_user and settings.get("auto_stoploss") == 1:
                     port_items = [p for p in await db.list_portfolio(user_id) if p["symbol"] == sym]
                     held = sum(float(p.get("shares") or 0) for p in port_items)
                     if held >= 1:

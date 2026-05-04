@@ -34,6 +34,7 @@ from app.scanner import get_top_picks
 from app.indices import fetch_indices
 from app.risk_analytics import analyze_portfolio_risk, grade_volatility
 from server import db, alerts as alerts_mod
+from server import subscription as sub_mod
 from server.sizing import shares_for, split_plan
 
 # ─── Sentry (선택) ────────────────────────────────────────────────
@@ -244,8 +245,65 @@ async def api_list(user: dict = Depends(get_current_user)):
 
 @app.post("/api/watchlist")
 async def api_add(item: WatchIn, user: dict = Depends(get_current_user)):
+    # Free 한도: 5종목. 이미 등록된 동일 심볼은 upsert 라 카운트되지 않음.
+    existing = {w["symbol"] for w in await db.list_watch(user["id"])}
+    if item.symbol.upper() not in existing:
+        allowed, current, limit = await sub_mod.check_watchlist_quota(user["id"])
+        if not allowed:
+            raise HTTPException(
+                402,
+                detail={
+                    "error": "watchlist_quota_exceeded",
+                    "message": f"Free 플랜은 워치리스트 {limit}종목까지. Pro 업그레이드 시 무제한.",
+                    "current": current, "limit": limit,
+                },
+            )
     await db.upsert_watch(item.symbol, item.capital, item.risk_pct, user["id"])
     return {"ok": True}
+
+
+# ─── 구독·쿠폰·결제 ──────────────────────────────────────────
+class CouponIn(BaseModel):
+    code: str = Field(..., min_length=1, max_length=64)
+
+
+@app.get("/api/pricing")
+async def api_pricing():
+    """공개 가격표 — 비로그인도 조회 가능."""
+    return {
+        "monthly_krw": sub_mod.PRICE_MONTHLY_KRW,
+        "yearly_krw": sub_mod.PRICE_YEARLY_KRW,
+        "yearly_discount_pct": round(
+            (1 - sub_mod.PRICE_YEARLY_KRW / (sub_mod.PRICE_MONTHLY_KRW * 12)) * 100
+        ),
+        "free_limits": {
+            "watchlist": sub_mod.FREE_WATCHLIST_MAX,
+            "analysis_per_day": sub_mod.FREE_ANALYSIS_PER_DAY,
+            "ocr_per_month": sub_mod.FREE_OCR_PER_MONTH,
+        },
+        "pro_features": [
+            "워치리스트 무제한",
+            "분석 횟수 무제한",
+            "OCR 포트폴리오 무제한",
+            "텔레그램 실시간 알림",
+            "자동 손절매 (KIS API)",
+        ],
+    }
+
+
+@app.get("/api/subscription")
+async def api_get_subscription(user: dict = Depends(get_current_user)):
+    """현재 사용자의 구독 상태."""
+    return await sub_mod.get_status(user["id"])
+
+
+@app.post("/api/coupon/redeem")
+async def api_redeem_coupon(body: CouponIn, user: dict = Depends(get_current_user)):
+    """쿠폰 코드 적용. FREE100 = 1개월 무료 / FIRST30 = 첫달 30% / SPECIAL20 = 7일 무료 + 12개월 20%."""
+    try:
+        return await sub_mod.apply_coupon(user["id"], body.code)
+    except ValueError as e:
+        raise HTTPException(400, detail={"error": "coupon_invalid", "message": str(e)})
 
 
 @app.delete("/api/watchlist/{symbol}")
@@ -811,7 +869,12 @@ async def api_telegram_discover(_: dict = Depends(get_current_user)):
 
 @app.post("/api/telegram/subscribe")
 async def api_telegram_subscribe(body: TelegramChatIn, user: dict = Depends(get_current_user)):
-    """본인 chat_id 등록 + 테스트 메시지 즉시 발송."""
+    """본인 chat_id 등록 + 테스트 메시지 즉시 발송 — Pro 전용."""
+    if not await sub_mod.is_pro(user["id"]):
+        raise HTTPException(402, detail={
+            "error": "pro_required",
+            "message": "텔레그램 실시간 알림은 Pro 전용 기능입니다.",
+        })
     if not telegram_alert.is_configured():
         raise HTTPException(400, "TELEGRAM_BOT_TOKEN 미설정 — 관리자 설정 필요")
     chat_id = body.chat_id.strip()
@@ -1231,10 +1294,15 @@ async def api_telegram_test(user: dict = Depends(get_current_user)):
 
 @app.post("/api/trade/order")
 async def api_trade_order(body: OrderIn, user: dict = Depends(get_current_user)):
-    """KIS API로 실제 주문 — 한+미 자동 분기.
+    """KIS API로 실제 주문 — 한+미 자동 분기. Pro 전용.
 
     안전: 1회 주문 금액 한도 + LIVE 명시 옵트인 + 사용자 클릭 필수.
     """
+    if not await sub_mod.is_pro(user["id"]):
+        raise HTTPException(402, detail={
+            "error": "pro_required",
+            "message": "실주문 / 자동매매는 Pro 전용 기능입니다.",
+        })
     side = body.side.lower()
     if side not in ("buy", "sell"):
         raise HTTPException(400, "side는 buy 또는 sell")
@@ -1474,12 +1542,17 @@ async def api_upload_portfolio(
     replace: bool = Form(False),
     user: dict = Depends(get_current_user),
 ):
-    """포트폴리오 스크린샷을 분석하여 일괄 등록.
+    """포트폴리오 스크린샷을 분석하여 일괄 등록 — Pro 전용.
 
     krw_rate: 프론트엔드가 들고 있는 현재 USD→KRW 환율. 토스가 미국주식을
               원화로 표시하기 때문에 USD entry_price 환산에 필요.
     replace: True면 기존 보유 종목 모두 삭제 후 새로 등록 (중복 방지).
     """
+    if not await sub_mod.is_pro(user["id"]):
+        raise HTTPException(402, detail={
+            "error": "pro_required",
+            "message": "사진 자동 입력은 Pro 전용 기능입니다. 수동 입력은 무료로 가능해요.",
+        })
     # 8MB 초과 입력 거부 (메모리 폭발 방지)
     content = await file.read()
     if len(content) > 8_000_000:
