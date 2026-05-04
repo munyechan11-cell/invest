@@ -7,7 +7,7 @@
 
 <!-- PWA -->
 <link rel="manifest" href="/static/manifest.json">
-<meta name="theme-color" content="#10b981">
+<meta name="theme-color" content="#0b0d10">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Toss">
@@ -29,58 +29,170 @@
     theme: {
       extend: {
         colors: {
-          cream: { 50:'#000000', 100:'#0a0a0a', 200:'#171717', 300:'#262626', 400:'#404040' },
-          ink:   { 900:'#ffffff', 800:'#f3f4f6', 700:'#d1d5db', 600:'#9ca3af', 500:'#6b7280' },
-          coral: { 50:'#022c22', 100:'#064e3b', 400:'#34d399', 500:'#10b981', 600:'#059669', 700:'#047857' },
-          olive: { 500:'#10b981', 600:'#059669' },
-          rust:  { 500:'#ef4444', 600:'#dc2626' },
+          // 다크 베이스 — 약간 따뜻한 차콜 (순흑 #000은 너무 거칢)
+          cream: { 50:'#0b0d10', 100:'#14171c', 200:'#1a1f26', 300:'#232830', 400:'#2d343d' },
+          // 잉크 — 화이트 계열 단계
+          ink:   { 900:'#ffffff', 800:'#ecedef', 700:'#c5c8cd', 600:'#a8acb3', 500:'#6f747c', 400:'#4a4f58', 300:'#363b43' },
+          // 코랄 = 따뜻한 앰버 (액션 액센트, 다크 위에서 자연스럽게 빛남)
+          coral: { 50:'#3a2417', 100:'#4d2f1d', 300:'#d99659', 400:'#e9a872', 500:'#eda878', 600:'#d99659', 700:'#b67940' },
+          // 올리브 = 에메랄드 (상승/긍정)
+          olive: { 100:'#0d2e23', 400:'#34d399', 500:'#10b981', 600:'#059669' },
+          // 러스트 = 로즈 (하락/부정)
+          rust:  { 100:'#3a1414', 400:'#f87171', 500:'#ef4444', 600:'#dc2626' },
+          // 골드 = 경고
+          gold:  { 100:'#3a2a0d', 500:'#fbbf24' },
         },
         fontFamily: {
-          serif: ['Inter','ui-sans-serif','system-ui','sans-serif'],
+          serif: ['Fraunces','ui-serif','Georgia','serif'],
           sans: ['Inter','ui-sans-serif','system-ui','sans-serif'],
           mono: ['"JetBrains Mono"','ui-monospace','monospace'],
         },
         boxShadow: {
-          soft: '0 1px 2px rgba(0,0,0,0.5)',
-          glow: '0 0 0 1px rgba(16,185,129,0.25), 0 8px 24px rgba(16,185,129,0.18)',
+          soft: '0 1px 2px rgba(0,0,0,0.4)',
+          card: 'inset 0 1px 0 rgba(255,255,255,0.04), 0 1px 2px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.35)',
+          glow: '0 0 0 1px rgba(233,168,114,0.35), 0 8px 28px rgba(233,168,114,0.18)',
+          glowGreen: '0 0 0 1px rgba(52,211,153,0.3), 0 6px 18px rgba(52,211,153,0.12)',
         },
       }
     }
   }
 </script>
 <style>
-  html, body { background: #000000; color: #ffffff; font-family: Inter, system-ui, sans-serif; }
-  body { background-image: none; }
-  .serif { font-family: Inter, sans-serif; font-weight: 600; letter-spacing: -0.02em; }
-  .surface { background: #0a0a0a; border: 1px solid #222222; border-radius: 12px; }
-  .surface-elevated { background: #0a0a0a; border: 1px solid #222222; border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.8); }
-  .pill { display: inline-flex; align-items:center; gap:6px; padding: 4px 10px; border-radius: 4px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.01em; }
-  .pill-coral { background:#064e3b; color:#34d399; }
-  .pill-olive { background:#064e3b; color:#34d399; }
-  .pill-rust  { background:#450a0a; color:#f87171; }
-  .pill-stone { background:#222222; color:#d1d5db; }
-  .input { background:#000000; border:1px solid #333333; color:#ffffff; border-radius:8px; padding:10px 12px; font-size:14px; outline:none; transition:.15s; }
-  .input:focus { border-color:#10b981; box-shadow: 0 0 0 1px #10b981; }
-  .btn { font-weight:600; padding:10px 14px; border-radius:8px; transition:.15s; font-size:14px; }
-  .btn-primary { background:#ffffff; color:#000000; }
-  .btn-primary:hover { background:#d1d5db; }
-  .btn-primary:disabled { opacity:.5; }
-  .btn-ghost { background:transparent; color:#d1d5db; border:1px solid #333333; }
-  .btn-ghost:hover { background:#222222; }
-  .divider { height:1px; background: #222222; }
+  /* ────────── Dark Design — 차콜 베이스 + 앰버 액센트 ────────── */
+  html, body {
+    background: #0b0d10;
+    color: #ecedef;
+    font-family: Inter, system-ui, sans-serif;
+    font-feature-settings: "ss01", "cv11";  /* Inter 미세 조정 */
+  }
+  body {
+    background-image:
+      radial-gradient(900px 600px at 0% -10%, rgba(233,168,114,0.05), transparent 60%),
+      radial-gradient(700px 500px at 100% 110%, rgba(52,211,153,0.04), transparent 60%);
+    background-attachment: fixed;
+  }
+  .serif { font-family: Fraunces, ui-serif, Georgia, serif; font-weight: 500; letter-spacing: -0.018em; }
+  .surface {
+    background: #14171c;
+    border: 1px solid #232830;
+    border-radius: 12px;
+  }
+  .surface-elevated {
+    background: linear-gradient(180deg, #181c22 0%, #14171c 100%);
+    border: 1px solid #232830;
+    border-radius: 14px;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.03),
+      0 1px 2px rgba(0,0,0,0.4),
+      0 8px 24px rgba(0,0,0,0.25);
+  }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 999px;
+    font-size: 11.5px; font-weight: 500; letter-spacing: 0.01em;
+  }
+  .pill-coral { background: rgba(233,168,114,0.12); color: #eda878; border: 1px solid rgba(233,168,114,0.18); }
+  .pill-olive { background: rgba(52,211,153,0.10); color: #34d399; border: 1px solid rgba(52,211,153,0.18); }
+  .pill-rust  { background: rgba(248,113,113,0.10); color: #f87171; border: 1px solid rgba(248,113,113,0.18); }
+  .pill-stone { background: rgba(255,255,255,0.04); color: #c5c8cd; border: 1px solid #232830; }
+  .pill-gold  { background: rgba(251,191,36,0.10); color: #fbbf24; border: 1px solid rgba(251,191,36,0.18); }
+  .input {
+    background: #0f1216;
+    border: 1px solid #232830;
+    color: #ecedef;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 14px;
+    outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .input:focus {
+    border-color: #d99659;
+    box-shadow: 0 0 0 3px rgba(217,150,89,0.18);
+  }
+  .input::placeholder { color: #6f747c; }
+  .btn {
+    font-weight: 500;
+    padding: 10px 16px;
+    border-radius: 8px;
+    transition: background-color .15s, transform .05s, box-shadow .15s;
+    font-size: 14px;
+  }
+  .btn-primary {
+    background: #d99659;
+    color: #1a1206;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.18), 0 1px 2px rgba(0,0,0,0.5);
+  }
+  .btn-primary:hover { background: #e9a872; }
+  .btn-primary:active { transform: translateY(1px); }
+  .btn-primary:disabled { opacity: .4; cursor: not-allowed; }
+  .btn-ghost {
+    background: transparent;
+    color: #c5c8cd;
+    border: 1px solid #2d343d;
+  }
+  .btn-ghost:hover { background: rgba(255,255,255,0.04); border-color: #4a4f58; color: #ecedef; }
+  .divider { height: 1px; background: #232830; }
   .flash-in { animation: flashIn .9s ease; }
-  @keyframes flashIn { 0%{ background:#1f2937; transform: translateY(-3px) } 100%{ background:transparent; transform:none } }
-  .pulse-dot { width:7px; height:7px; border-radius:50%; background:#10b981; box-shadow:0 0 0 0 rgba(16,185,129,.6); animation: pulseDot 1.6s infinite; }
-  .pulse-dot.off { background:#ef4444; animation:none; box-shadow:none; }
-  @keyframes pulseDot { 0%{ box-shadow:0 0 0 0 rgba(16,185,129,.5)} 70%{ box-shadow:0 0 0 8px rgba(16,185,129,0)} 100%{ box-shadow:0 0 0 0 rgba(16,185,129,0)} }
-  .ticker-up   { color:#10b981; }
-  .ticker-down { color:#ef4444; }
-  .frame-chip { background: #111111; border:1px solid #333333; padding:4px 10px; border-radius:4px; font-size:11.5px; color:#9ca3af; }
-  ::selection { background:#10b981; color:#000000; }
-  .scroll-soft::-webkit-scrollbar { width:8px; }
-  .scroll-soft::-webkit-scrollbar-thumb { background:#333333; border-radius:8px; }
-  .overlay { position:fixed; inset:0; z-index:50; background:rgba(0,0,0,0.85); display:flex; align-items:center; justify-content:center; padding:16px; }
-  .modal { background:#0a0a0a; border:1px solid #333; border-radius:16px; padding:32px; width:360px; max-width:100%; max-height:90vh; overflow-y:auto; }
+  @keyframes flashIn {
+    0%   { background: rgba(233,168,114,0.16); transform: translateY(-3px); }
+    100% { background: transparent; transform: none; }
+  }
+  .pulse-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #34d399;
+    box-shadow: 0 0 0 0 rgba(52,211,153,.6);
+    animation: pulseDot 1.6s infinite;
+  }
+  .pulse-dot.off { background: #f87171; animation: none; box-shadow: none; }
+  @keyframes pulseDot {
+    0%   { box-shadow: 0 0 0 0 rgba(52,211,153,.5); }
+    70%  { box-shadow: 0 0 0 8px rgba(52,211,153,0); }
+    100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
+  }
+  .ticker-up   { color: #34d399; }
+  .ticker-down { color: #f87171; }
+  .frame-chip {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid #232830;
+    padding: 4px 10px; border-radius: 6px;
+    font-size: 11.5px; color: #a8acb3;
+  }
+  ::selection { background: rgba(233,168,114,0.32); color: #ffffff; }
+  .scroll-soft::-webkit-scrollbar { width: 8px; height: 8px; }
+  .scroll-soft::-webkit-scrollbar-track { background: transparent; }
+  .scroll-soft::-webkit-scrollbar-thumb { background: #2d343d; border-radius: 8px; }
+  .scroll-soft::-webkit-scrollbar-thumb:hover { background: #4a4f58; }
+  .overlay {
+    position: fixed; inset: 0; z-index: 50;
+    background: rgba(7,9,12,0.72);
+    backdrop-filter: blur(8px);
+    display: flex; align-items: center; justify-content: center; padding: 16px;
+  }
+  .modal {
+    background: linear-gradient(180deg, #181c22 0%, #14171c 100%);
+    border: 1px solid #2d343d;
+    border-radius: 16px;
+    padding: 28px;
+    width: 360px; max-width: 100%; max-height: 90vh;
+    overflow-y: auto;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.05),
+      0 24px 60px rgba(0,0,0,0.55),
+      0 4px 16px rgba(0,0,0,0.35);
+  }
+  /* 헤더 안경 효과 — 약간의 글래스 모피즘 */
+  .glass-top {
+    background: rgba(11,13,16,0.72);
+    backdrop-filter: blur(12px) saturate(140%);
+    border-bottom: 1px solid #232830;
+  }
+  /* 링크 액센트 */
+  a { color: #eda878; }
+  a:hover { color: #f5b88c; }
+  /* 카드 hover 살짝 떠오름 */
+  .card-hover { transition: transform .15s, border-color .15s; }
+  .card-hover:hover { transform: translateY(-1px); border-color: #2d343d; }
   /* ────────── 모바일 UX 강화 ────────── */
   .mobile-tabs { display:none; }
   @media (max-width: 768px) {
@@ -125,19 +237,23 @@
     /* 차트 iframe 모바일 높이 축소 */
     iframe { height: 280px !important; }
 
-    /* 하단 탭바 */
+    /* 하단 탭바 — 글래스 + 액센트 */
     .mobile-tabs {
       display:flex; position:fixed; bottom:0; left:0; right:0; z-index:30;
-      background:#0a0a0a; border-top:1px solid #222;
+      background: rgba(11,13,16,0.85);
+      backdrop-filter: blur(14px) saturate(140%);
+      border-top: 1px solid #232830;
       padding:6px 0;
       padding-bottom: max(env(safe-area-inset-bottom, 6px), 6px);
     }
     .mobile-tabs button {
-      flex:1; display:flex; flex-direction:column; align-items:center; gap:2px;
-      font-size:10px; color:#6b7280; padding:8px 0; min-height: 56px;
+      flex:1; display:flex; flex-direction:column; align-items:center; gap:3px;
+      font-size:10px; color:#6f747c; padding:8px 0; min-height: 56px;
+      transition: color .15s;
     }
-    .mobile-tabs button.active { color:#10b981; }
-    .mobile-tabs button .tab-icon { font-size: 22px; line-height: 1; }
+    .mobile-tabs button.active { color:#eda878; }
+    .mobile-tabs button.active .tab-icon { transform: scale(1.05); }
+    .mobile-tabs button .tab-icon { font-size: 22px; line-height: 1; transition: transform .15s; }
 
     /* 헤더 슬림 */
     header { padding: 8px 0 !important; }
@@ -384,7 +500,7 @@
   </div>
 </div>
 
-<header class="px-4 md:px-8 py-3 md:py-5 border-b border-cream-200 bg-cream-50/70 backdrop-blur sticky top-0 z-20">
+<header class="glass-top px-4 md:px-8 py-3 md:py-5 sticky top-0 z-20">
   <div class="max-w-[1400px] mx-auto flex items-center justify-between">
     <div class="flex items-center gap-3">
       <div class="w-9 h-9 rounded-lg bg-coral-500 flex items-center justify-center text-cream-50 serif text-xl font-semibold">T</div>
