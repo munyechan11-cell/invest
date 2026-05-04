@@ -30,7 +30,7 @@ def _gc_cool():
 
 async def _push_telegram(symbol: str, kind: str, price: float, message: str,
                          plan: dict | None = None):
-    """알림을 Telegram으로 푸시 — 등록된 모든 사용자에게 발송."""
+    """알림을 Telegram으로 푸시 — 등록된 사용자별 설정 적용 (min_score, snooze, inline 버튼)."""
     if not telegram_alert.is_configured():
         return
     try:
@@ -41,16 +41,32 @@ async def _push_telegram(symbol: str, kind: str, price: float, message: str,
         return
 
     is_kr = symbol.isdigit() and len(symbol) == 6
+    toss_score = (plan or {}).get("toss_score") if plan else None
     text = telegram_alert.format_alert(
         symbol, kind, price, message,
-        toss_score=(plan or {}).get("toss_score") if plan else None,
+        toss_score=toss_score,
         entry=(plan or {}).get("entry_price"),
         target=(plan or {}).get("target_price"),
         stop=(plan or {}).get("stop_price"),
         is_kr=is_kr,
     )
-    for _user_id, chat_id in subs:
-        await telegram_alert.send(chat_id, text)
+
+    score_val = (toss_score or {}).get("score", 0) if isinstance(toss_score, dict) else 0
+    for user_id, chat_id in subs:
+        try:
+            settings = await db.get_user_settings(user_id)
+            # 사용자 min_score 미달 → 알림 스킵
+            if settings.get("telegram_min_score", 0) > score_val:
+                continue
+            # 스누즈 중이면 스킵
+            if await db.is_snoozed(user_id, symbol):
+                continue
+            # 인라인 버튼 옵션
+            buttons = (telegram_alert.build_alert_buttons(symbol, kind)
+                       if settings.get("enable_inline_actions", 1) else None)
+            await telegram_alert.send(chat_id, text, reply_markup=buttons)
+        except Exception as e:
+            log.warning(f"telegram push uid={user_id}: {e}")
 
 
 def _fmt(symbol: str, price: float) -> str:

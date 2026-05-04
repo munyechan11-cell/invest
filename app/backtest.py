@@ -71,8 +71,17 @@ def _yahoo_history(symbol: str, suffixes: tuple, days: int) -> list[dict]:
     return []
 
 
-def backtest(symbol: str, hold_days: int = 3) -> dict:
-    """N일 보유 전략 백테스트."""
+def backtest(symbol: str, hold_days: int = 3, slippage_pct: float = 0.1,
+             fee_rate: float = 0.0015, walk_forward: bool = False) -> dict:
+    """N일 보유 전략 백테스트.
+
+    Args:
+        symbol: 종목코드
+        hold_days: 보유 기간 (1~30일)
+        slippage_pct: 슬리피지 % (기본 0.1% = 매수가 0.1% 비싸게, 매도가 0.1% 싸게)
+        fee_rate: 수수료율 (기본 0.15% — 매수+매도 합계 환산)
+        walk_forward: True면 train/test 분할 평가 (앞 60% 학습, 뒤 40% 검증)
+    """
     import pandas as pd
     import numpy as np
 
@@ -98,8 +107,22 @@ def backtest(symbol: str, hold_days: int = 3) -> dict:
 
     ma20 = close.rolling(20).mean()
 
+    # walk-forward: train 구간(앞 60%)에서 시그널 통계만, test 구간(뒤 40%)에서 실거래 시뮬
+    n = len(close)
+    test_start = int(n * 0.6) if walk_forward else 30
+    train_trades = 0  # walk_forward=True일 때 train 시그널 카운트만 통계
+    if walk_forward:
+        for i in range(30, test_start - hold_days - 1):
+            r = float(rsi.iloc[i]) if not pd.isna(rsi.iloc[i]) else 50
+            h = float(macd_hist.iloc[i]) if not pd.isna(macd_hist.iloc[i]) else 0
+            c = float(close.iloc[i])
+            m = float(ma20.iloc[i]) if not pd.isna(ma20.iloc[i]) else c
+            if (30 <= r <= 55) and h > 0 and c > m:
+                train_trades += 1
+
     trades = []
-    for i in range(30, len(close) - hold_days - 1):
+    slip = slippage_pct / 100.0    # 0.1% → 0.001
+    for i in range(test_start, n - hold_days - 1):
         r = float(rsi.iloc[i]) if not pd.isna(rsi.iloc[i]) else 50
         h = float(macd_hist.iloc[i]) if not pd.isna(macd_hist.iloc[i]) else 0
         c = float(close.iloc[i])
@@ -109,15 +132,21 @@ def backtest(symbol: str, hold_days: int = 3) -> dict:
         if not is_buy:
             continue
 
-        entry = float(close.iloc[i + 1])
-        exit_ = float(close.iloc[i + 1 + hold_days])
-        ret_pct = (exit_ / entry - 1) * 100
+        # 슬리피지: 매수는 더 비싸게, 매도는 더 싸게
+        raw_entry = float(close.iloc[i + 1])
+        raw_exit = float(close.iloc[i + 1 + hold_days])
+        entry = raw_entry * (1 + slip)
+        exit_ = raw_exit * (1 - slip)
+        # 수수료 (매수+매도 합계, 평균 단가 기준 비율로 차감)
+        gross_pct = (exit_ / entry - 1) * 100
+        net_pct = gross_pct - fee_rate * 100  # fee_rate 0.0015 = 0.15%
         trades.append({
             "date": candles[i + 1]["date"],
             "entry": round(entry, 2),
             "exit": round(exit_, 2),
-            "ret_pct": round(ret_pct, 2),
-            "win": ret_pct > 0,
+            "ret_pct": round(net_pct, 2),
+            "gross_pct": round(gross_pct, 2),
+            "win": net_pct > 0,
         })
 
     if not trades:
@@ -141,6 +170,11 @@ def backtest(symbol: str, hold_days: int = 3) -> dict:
         "symbol": symbol,
         "period_days": len(close),
         "hold_days": hold_days,
+        "walk_forward": walk_forward,
+        "train_signals": train_trades if walk_forward else None,
+        "test_start_idx": test_start,
+        "slippage_pct": slippage_pct,
+        "fee_rate_pct": round(fee_rate * 100, 3),
         "total_trades": len(trades),
         "wins": wins,
         "losses": len(trades) - wins,
@@ -151,5 +185,6 @@ def backtest(symbol: str, hold_days: int = 3) -> dict:
         "cumulative_pct": round(sum(rets), 2),
         "sharpe_rough": round(avg_ret / std_ret, 2),
         "buy_and_hold_pct": round(bh_pct, 2),
+        "alpha_vs_bh_pct": round(sum(rets) - bh_pct, 2),
         "recent_trades": trades[-10:],
     }

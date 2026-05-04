@@ -80,9 +80,17 @@ def _hashkey(body: dict) -> str:
     return r.json()["HASH"]
 
 
+def calc_fee(market: str, amount: float, fee_rate: float | None = None) -> float:
+    """KR 0.015% / US 0.07% 기본. 사용자 설정 우선."""
+    if fee_rate is not None and fee_rate >= 0:
+        return amount * fee_rate
+    rate = 0.00015 if market == "KR" else 0.0007
+    return amount * rate
+
+
 # ─── 안전장치 ──────────────────────────────────────────────────────
 def check_safety(market: str, qty: int, price: float) -> str | None:
-    """주문 전 검증. None=통과, 문자열=거부 사유."""
+    """주문 전 검증 (1회 한도). None=통과, 문자열=거부 사유."""
     if qty <= 0:
         return "주문 수량은 1주 이상이어야 합니다."
     if price < 0:
@@ -96,6 +104,22 @@ def check_safety(market: str, qty: int, price: float) -> str | None:
         cap = float(os.environ.get("MAX_ORDER_AMOUNT_USD", "200"))
         if amount > cap:
             return f"주문 금액 ${amount:,.2f}이 1회 한도 ${cap:,.2f}을 초과합니다."
+    return None
+
+
+async def check_daily_limit(user_id: int, market: str, amount: float) -> str | None:
+    """일일 누적 한도 검증. None=통과, str=거부 사유."""
+    from server import db
+    settings = await db.get_user_settings(user_id)
+    daily_cap = settings.get(
+        "daily_max_order_krw" if market == "KR" else "daily_max_order_usd",
+        300000 if market == "KR" else 200
+    )
+    used = await db.daily_used(user_id, market)
+    if used + amount > daily_cap:
+        cur = "₩" if market == "KR" else "$"
+        return (f"일일 한도 초과: 오늘 {cur}{used:,.0f} 사용 + 이번 {cur}{amount:,.0f} → "
+                f"{cur}{used + amount:,.0f} > 한도 {cur}{daily_cap:,.0f}")
     return None
 
 

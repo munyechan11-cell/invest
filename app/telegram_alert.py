@@ -20,7 +20,26 @@ def is_configured() -> bool:
     return bool(os.environ.get("TELEGRAM_BOT_TOKEN"))
 
 
-async def send(chat_id: str | int, text: str, parse_mode: str = "HTML") -> dict:
+def build_alert_buttons(symbol: str, kind: str = "BUY") -> dict:
+    """알림용 인라인 버튼: 매수/매도/스누즈."""
+    buttons = []
+    if kind in ("BUY", "TP", "DART", "SCREENER"):
+        buttons.append([
+            {"text": "💚 매수 (페이퍼)", "callback_data": f"buy:{symbol}"},
+            {"text": "💤 1시간 스누즈", "callback_data": f"snooze:{symbol}:60"},
+        ])
+    if kind in ("SL", "SELL"):
+        buttons.append([
+            {"text": "🔴 매도 (페이퍼)", "callback_data": f"sell:{symbol}"},
+            {"text": "💤 1시간 스누즈", "callback_data": f"snooze:{symbol}:60"},
+        ])
+    if not buttons:
+        buttons.append([{"text": "💤 1시간 스누즈", "callback_data": f"snooze:{symbol}:60"}])
+    return {"inline_keyboard": buttons}
+
+
+async def send(chat_id: str | int, text: str, parse_mode: str = "HTML",
+               reply_markup: dict | None = None) -> dict:
     """텔레그램 메시지 발송. {"ok": bool, "error": str|None} 반환."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -28,12 +47,16 @@ async def send(chat_id: str | int, text: str, parse_mode: str = "HTML") -> dict:
     if not chat_id:
         return {"ok": False, "error": "chat_id 비어있음"}
 
+    payload = {
+        "chat_id": str(chat_id), "text": text,
+        "parse_mode": parse_mode, "disable_web_page_preview": True,
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+
     try:
         async with httpx.AsyncClient(timeout=8) as c:
-            r = await c.post(f"{API_BASE}/bot{token}/sendMessage", json={
-                "chat_id": str(chat_id), "text": text,
-                "parse_mode": parse_mode, "disable_web_page_preview": True,
-            })
+            r = await c.post(f"{API_BASE}/bot{token}/sendMessage", json=payload)
         if r.status_code != 200:
             err = r.json().get("description", r.text[:120]) if r.headers.get("content-type", "").startswith("application/json") else r.text[:120]
             log.warning(f"telegram send fail [{r.status_code}]: {err}")
@@ -54,6 +77,23 @@ async def get_me() -> dict:
             return r.json().get("result", {}) if r.status_code == 200 else {}
     except Exception:
         return {}
+
+
+async def answer_callback(callback_query_id: str, text: str = "처리됨") -> bool:
+    """인라인 버튼 클릭 응답 (토스트 표시)."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.post(f"{API_BASE}/bot{token}/answerCallbackQuery", json={
+                "callback_query_id": callback_query_id,
+                "text": text[:200],
+                "show_alert": False,
+            })
+            return r.status_code == 200
+    except Exception:
+        return False
 
 
 async def discover_chat_ids() -> list[dict]:

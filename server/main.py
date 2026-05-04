@@ -27,7 +27,7 @@ from app.intelligence import (
     compute_relative_strength, get_benchmark_symbol,
 )
 from app.trade_kis import auto_order, is_live as kis_is_live
-from app import telegram_alert, morning_brief, dart_watcher
+from app import telegram_alert, morning_brief, dart_watcher, screener_alerts, reports
 from app.market_hours import market_status_for
 from app.backtest import backtest as run_backtest
 from app.scanner import get_top_picks
@@ -35,6 +35,39 @@ from app.indices import fetch_indices
 from app.risk_analytics import analyze_portfolio_risk, grade_volatility
 from server import db, alerts as alerts_mod
 from server.sizing import shares_for, split_plan
+
+# ─── Sentry (선택) ────────────────────────────────────────────────
+_sentry_dsn = os.environ.get("SENTRY_DSN", "").strip()
+if _sentry_dsn:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(
+            dsn=_sentry_dsn,
+            traces_sample_rate=0.1,
+            send_default_pii=False,
+            environment=os.environ.get("ENV", "production"),
+        )
+        logging.getLogger("server").info("Sentry initialized")
+    except ImportError:
+        logging.getLogger("server").warning("sentry_sdk 미설치 — pip install sentry-sdk")
+
+# ─── Structured logging ──────────────────────────────────────────
+class _JsonFormatter(logging.Formatter):
+    def format(self, record):
+        import json as _j
+        d = {
+            "ts": self.formatTime(record),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            d["exc"] = self.formatException(record.exc_info)
+        return _j.dumps(d, ensure_ascii=False)
+
+if os.environ.get("LOG_FORMAT", "").lower() == "json":
+    for h in logging.root.handlers:
+        h.setFormatter(_JsonFormatter())
 
 # 스냅샷 인메모리 캐시 — AI 분석은 10분 캐시지만 시세는 더 자주 새로
 _snapshot_cache: dict[str, tuple[float, dict]] = {}
@@ -84,16 +117,19 @@ async def broadcast(payload: dict):
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await db.init()
-    task1 = asyncio.create_task(alerts_mod.worker(broadcast))
-    task2 = asyncio.create_task(morning_brief.daily_scheduler())
-    task3 = asyncio.create_task(dart_watcher.worker(broadcast))
-    log.info("Toss server ready (alerts + morning brief + DART watcher)")
+    tasks = [
+        asyncio.create_task(alerts_mod.worker(broadcast)),
+        asyncio.create_task(morning_brief.daily_scheduler()),
+        asyncio.create_task(dart_watcher.worker(broadcast)),
+        asyncio.create_task(screener_alerts.worker(broadcast)),
+        asyncio.create_task(reports.daily_scheduler()),
+    ]
+    log.info(f"Toss server ready ({len(tasks)} workers: alerts/brief/DART/screener/reports)")
     try:
         yield
     finally:
-        task1.cancel()
-        task2.cancel()
-        task3.cancel()
+        for t in tasks:
+            t.cancel()
 
 
 app = FastAPI(title="Toss — Quant Assistant", lifespan=lifespan)
@@ -911,6 +947,172 @@ async def api_health(_: dict = Depends(get_current_user)):
 async def api_ping():
     """공개 헬스체크 — 배포 모니터링용 (정보 노출 없음)."""
     return {"ok": True, "ts": time.time()}
+
+
+# ─── 사용자 설정 ──────────────────────────────────────────────────
+class SettingsIn(BaseModel):
+    alert_cooldown_sec: int | None = None
+    telegram_min_score: float | None = None
+    daily_max_order_krw: float | None = None
+    daily_max_order_usd: float | None = None
+    fee_rate_kr: float | None = None
+    fee_rate_us: float | None = None
+    enable_inline_actions: int | None = None
+
+
+@app.get("/api/settings")
+async def api_get_settings(user: dict = Depends(get_current_user)):
+    return await db.get_user_settings(user["id"])
+
+
+@app.post("/api/settings")
+async def api_update_settings(body: SettingsIn, user: dict = Depends(get_current_user)):
+    payload = {k: v for k, v in body.dict().items() if v is not None}
+    return await db.update_user_settings(user["id"], payload)
+
+
+# ─── 실현 손익 + 청산 ────────────────────────────────────────────
+class CloseIn(BaseModel):
+    portfolio_id: int
+    qty: float = Field(gt=0)
+    exit_price: float = Field(gt=0)
+    reason: str = "manual"   # TP / SL / manual
+
+
+@app.post("/api/portfolio/close")
+async def api_close_position(body: CloseIn, user: dict = Depends(get_current_user)):
+    """포지션 일부 또는 전체 청산 → 실현 손익 기록."""
+    item = await db.get_portfolio_item(body.portfolio_id, user["id"])
+    if not item:
+        raise HTTPException(404, "포지션 없음")
+    sym = item["symbol"]
+    entry = float(item["entry_price"])
+    cur_shares = float(item["shares"])
+    if body.qty > cur_shares:
+        raise HTTPException(400, f"청산 수량({body.qty}) > 보유({cur_shares})")
+
+    settings = await db.get_user_settings(user["id"])
+    is_kr = sym.isdigit() and len(sym) == 6
+    fee_rate = settings.get("fee_rate_kr" if is_kr else "fee_rate_us", 0.00015)
+    amount = body.qty * body.exit_price
+    fee = amount * fee_rate
+
+    res = await db.record_realized_pnl(
+        user["id"], sym, body.qty, entry, body.exit_price, fee, body.reason
+    )
+    # 포트폴리오에서 차감
+    new_shares = cur_shares - body.qty
+    c = await db.get_db()
+    if new_shares <= 0.001:
+        await c.execute("DELETE FROM portfolio WHERE id=?", (body.portfolio_id,))
+    else:
+        new_invested = entry * new_shares
+        await c.execute(
+            "UPDATE portfolio SET shares=?, krw_invested=? WHERE id=?",
+            (new_shares, new_invested, body.portfolio_id)
+        )
+    await c.commit()
+    return {"ok": True, **res, "remaining_shares": max(0, new_shares)}
+
+
+@app.get("/api/realized-pnl")
+async def api_realized_pnl(days: int = 30, user: dict = Depends(get_current_user)):
+    return {
+        "trades": await db.list_realized_pnl(user["id"], days),
+        "summary": await db.realized_pnl_summary(user["id"]),
+    }
+
+
+# ─── 텔레그램 웹훅 (인라인 버튼 처리) ───────────────────────────
+@app.post("/api/telegram/webhook")
+async def api_telegram_webhook(payload: dict):
+    """텔레그램이 인라인 버튼 클릭 시 호출.
+
+    BotFather 또는 setWebhook API로 다음 URL 등록:
+      https://본인사이트.onrender.com/api/telegram/webhook
+    """
+    cb = payload.get("callback_query")
+    if not cb:
+        return {"ok": True}
+
+    cb_id = cb.get("id", "")
+    data = cb.get("data", "")
+    chat = (cb.get("message") or {}).get("chat") or {}
+    chat_id = chat.get("id")
+
+    # chat_id → user_id 매핑
+    c = await db.get_db()
+    row = await (await c.execute(
+        "SELECT id FROM users WHERE telegram_chat_id=?", (str(chat_id),)
+    )).fetchone()
+    if not row:
+        await telegram_alert.answer_callback(cb_id, "사이트에서 텔레그램 등록이 필요합니다")
+        return {"ok": True}
+    user_id = dict(row)["id"]
+
+    # action:symbol[:param]
+    parts = data.split(":")
+    action = parts[0] if parts else ""
+    sym = parts[1] if len(parts) > 1 else ""
+
+    if action == "buy":
+        from app.trade_kis import auto_order, check_daily_limit, calc_fee
+        # 안전: 수량 1주 페이퍼 매수 (사용자 한 번 더 확인용)
+        snap = await _cached_snapshot(sym)
+        price = float(snap.get("quote", {}).get("price") or 0)
+        market = "KR" if sym.isdigit() and len(sym) == 6 else "US"
+        amount = price
+        err = await check_daily_limit(user_id, market, amount)
+        if err:
+            await telegram_alert.answer_callback(cb_id, err)
+            return {"ok": True}
+        res = await asyncio.to_thread(auto_order, sym, "buy", 1, price)
+        if res.get("ok"):
+            settings = await db.get_user_settings(user_id)
+            fee = calc_fee(market, amount, settings.get(
+                "fee_rate_kr" if market == "KR" else "fee_rate_us"))
+            await db.record_order(user_id, sym, "buy", 1, price, market, fee)
+            await telegram_alert.answer_callback(cb_id, f"✅ 1주 매수 [{res.get('mode')}]")
+        else:
+            await telegram_alert.answer_callback(cb_id, f"❌ {res.get('error', '실패')}")
+
+    elif action == "sell":
+        from app.trade_kis import auto_order
+        snap = await _cached_snapshot(sym)
+        price = float(snap.get("quote", {}).get("price") or 0)
+        res = await asyncio.to_thread(auto_order, sym, "sell", 1, price)
+        if res.get("ok"):
+            await telegram_alert.answer_callback(cb_id, f"✅ 1주 매도 [{res.get('mode')}]")
+        else:
+            await telegram_alert.answer_callback(cb_id, f"❌ {res.get('error', '실패')}")
+
+    elif action == "snooze":
+        minutes = int(parts[2]) if len(parts) > 2 else 60
+        await db.add_snooze(user_id, sym, minutes)
+        await telegram_alert.answer_callback(cb_id, f"💤 {sym} {minutes}분 스누즈")
+
+    return {"ok": True}
+
+
+# ─── 리포트 수동 트리거 (테스트용) ──────────────────────────────
+@app.post("/api/reports/daily")
+async def api_daily_report_now(user: dict = Depends(get_current_user)):
+    chat_id = await db.get_telegram_chat_id(user["id"])
+    if not chat_id:
+        raise HTTPException(400, "텔레그램 미등록")
+    text = await reports.generate_daily_report(user["id"])
+    res = await telegram_alert.send(chat_id, text)
+    return res
+
+
+@app.post("/api/reports/weekly")
+async def api_weekly_report_now(user: dict = Depends(get_current_user)):
+    chat_id = await db.get_telegram_chat_id(user["id"])
+    if not chat_id:
+        raise HTTPException(400, "텔레그램 미등록")
+    text = await reports.generate_weekly_report(user["id"])
+    res = await telegram_alert.send(chat_id, text)
+    return res
 
 
 # ─── 텔레그램 테스트 발송 (등록된 chat_id로 샘플 알림) ───────────

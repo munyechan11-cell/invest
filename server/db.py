@@ -126,6 +126,50 @@ CREATE TABLE IF NOT EXISTS portfolio (
   krw_invested REAL NOT NULL DEFAULT 0,
   created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS user_settings (
+  user_id INTEGER PRIMARY KEY,
+  alert_cooldown_sec INTEGER NOT NULL DEFAULT 300,
+  telegram_min_score REAL NOT NULL DEFAULT 0,
+  daily_max_order_krw REAL NOT NULL DEFAULT 300000,
+  daily_max_order_usd REAL NOT NULL DEFAULT 200,
+  fee_rate_kr REAL NOT NULL DEFAULT 0.00015,
+  fee_rate_us REAL NOT NULL DEFAULT 0.0007,
+  enable_inline_actions INTEGER NOT NULL DEFAULT 1,
+  updated_at REAL NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS daily_orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  trade_date TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  side TEXT NOT NULL,
+  qty REAL NOT NULL,
+  price REAL NOT NULL,
+  amount REAL NOT NULL,
+  fee REAL NOT NULL DEFAULT 0,
+  market TEXT NOT NULL DEFAULT 'KR',
+  created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS realized_pnl (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  qty REAL NOT NULL,
+  entry_price REAL NOT NULL,
+  exit_price REAL NOT NULL,
+  fee REAL NOT NULL DEFAULT 0,
+  pnl REAL NOT NULL,
+  pnl_pct REAL NOT NULL,
+  reason TEXT,
+  closed_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS snoozes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  until_ts REAL NOT NULL,
+  created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS price_alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
@@ -247,6 +291,143 @@ async def list_all_portfolio() -> list[dict]:
     c = await get_db()
     rows = await (await c.execute("SELECT * FROM portfolio")).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── 사용자 설정 ────────────────────────────────────────────
+DEFAULT_SETTINGS = {
+    "alert_cooldown_sec": 300,
+    "telegram_min_score": 0,
+    "daily_max_order_krw": 300000,
+    "daily_max_order_usd": 200,
+    "fee_rate_kr": 0.00015,
+    "fee_rate_us": 0.0007,
+    "enable_inline_actions": 1,
+}
+
+
+async def get_user_settings(user_id: int) -> dict:
+    c = await get_db()
+    row = await (await c.execute(
+        "SELECT * FROM user_settings WHERE user_id=?", (user_id,)
+    )).fetchone()
+    if not row:
+        return dict(DEFAULT_SETTINGS)
+    d = dict(row)
+    d.pop("user_id", None)
+    d.pop("updated_at", None)
+    return d
+
+
+async def update_user_settings(user_id: int, settings: dict):
+    allowed = set(DEFAULT_SETTINGS.keys())
+    cur = await get_user_settings(user_id)
+    cur.update({k: v for k, v in settings.items() if k in allowed})
+    c = await get_db()
+    cols = list(DEFAULT_SETTINGS.keys())
+    placeholders = ",".join(["?"] * (len(cols) + 2))  # +user_id +updated_at
+    fields = "user_id," + ",".join(cols) + ",updated_at"
+    values = [user_id] + [cur[k] for k in cols] + [time.time()]
+    await c.execute(
+        f"INSERT OR REPLACE INTO user_settings({fields}) VALUES({placeholders})",
+        values
+    )
+    await c.commit()
+    return cur
+
+
+# ── 일일 주문 한도 추적 ────────────────────────────────────
+async def record_order(user_id: int, symbol: str, side: str,
+                       qty: float, price: float, market: str = "KR",
+                       fee: float = 0) -> int:
+    from datetime import datetime
+    c = await get_db()
+    today = datetime.now().strftime("%Y-%m-%d")
+    amount = qty * price
+    cur = await c.execute(
+        "INSERT INTO daily_orders(user_id,trade_date,symbol,side,qty,price,amount,fee,market,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (user_id, today, symbol, side, qty, price, amount, fee, market, time.time())
+    )
+    await c.commit()
+    return cur.lastrowid
+
+
+async def daily_used(user_id: int, market: str = "KR") -> float:
+    """오늘 사용된 주문 누적 금액."""
+    from datetime import datetime
+    c = await get_db()
+    today = datetime.now().strftime("%Y-%m-%d")
+    row = await (await c.execute(
+        "SELECT COALESCE(SUM(amount),0) AS s FROM daily_orders "
+        "WHERE user_id=? AND trade_date=? AND market=?",
+        (user_id, today, market)
+    )).fetchone()
+    return float(row[0]) if row else 0.0
+
+
+# ── 실현 손익 ─────────────────────────────────────────────
+async def record_realized_pnl(user_id: int, symbol: str, qty: float,
+                              entry_price: float, exit_price: float,
+                              fee: float = 0, reason: str = "") -> dict:
+    pnl_gross = (exit_price - entry_price) * qty
+    pnl = pnl_gross - fee
+    pnl_pct = ((exit_price / entry_price - 1) * 100) if entry_price > 0 else 0
+    c = await get_db()
+    await c.execute(
+        "INSERT INTO realized_pnl(user_id,symbol,qty,entry_price,exit_price,fee,pnl,pnl_pct,reason,closed_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (user_id, symbol.upper(), qty, entry_price, exit_price, fee,
+         pnl, pnl_pct, reason, time.time())
+    )
+    await c.commit()
+    return {"pnl": round(pnl, 2), "pnl_pct": round(pnl_pct, 2), "fee": round(fee, 2)}
+
+
+async def list_realized_pnl(user_id: int, days: int = 30) -> list[dict]:
+    c = await get_db()
+    cutoff = time.time() - days * 86400
+    rows = await (await c.execute(
+        "SELECT * FROM realized_pnl WHERE user_id=? AND closed_at>=? ORDER BY closed_at DESC",
+        (user_id, cutoff)
+    )).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def realized_pnl_summary(user_id: int) -> dict:
+    rows = await list_realized_pnl(user_id, days=365)
+    if not rows:
+        return {"trades": 0, "wins": 0, "losses": 0, "win_rate": 0,
+                "total_pnl": 0, "avg_pnl_pct": 0, "best_pct": 0, "worst_pct": 0}
+    pnls = [r["pnl_pct"] for r in rows]
+    wins = sum(1 for p in pnls if p > 0)
+    return {
+        "trades": len(rows), "wins": wins, "losses": len(rows) - wins,
+        "win_rate": round(wins / len(rows) * 100, 1),
+        "total_pnl": round(sum(r["pnl"] for r in rows), 2),
+        "avg_pnl_pct": round(sum(pnls) / len(pnls), 2),
+        "best_pct": round(max(pnls), 2),
+        "worst_pct": round(min(pnls), 2),
+    }
+
+
+# ── 스누즈 (인라인 버튼) ──────────────────────────────────
+async def add_snooze(user_id: int, symbol: str, minutes: int):
+    c = await get_db()
+    until = time.time() + minutes * 60
+    await c.execute(
+        "INSERT INTO snoozes(user_id,symbol,until_ts,created_at) VALUES(?,?,?,?)",
+        (user_id, symbol.upper(), until, time.time())
+    )
+    await c.commit()
+
+
+async def is_snoozed(user_id: int, symbol: str) -> bool:
+    c = await get_db()
+    row = await (await c.execute(
+        "SELECT 1 FROM snoozes WHERE user_id=? AND symbol=? AND until_ts>?",
+        (user_id, symbol.upper(), time.time())
+    )).fetchone()
+    return row is not None
 
 
 # ── 사용자 지정 가격 알림 ──────────────────────────────────
