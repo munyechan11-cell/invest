@@ -1383,6 +1383,30 @@ async def api_clear_portfolio(user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+class PortfolioEditIn(BaseModel):
+    shares: float = Field(gt=0)
+    entry_price: float = Field(gt=0)
+
+
+@app.patch("/api/portfolio/{pid}")
+async def api_edit_portfolio(pid: int, body: PortfolioEditIn,
+                              user: dict = Depends(get_current_user)):
+    """수량/평단가 직접 편집 — OCR이 잘못 읽었을 때 사용자가 수정."""
+    c = await db.get_db()
+    row = await (await c.execute(
+        "SELECT id FROM portfolio WHERE id=? AND user_id=?", (pid, user["id"])
+    )).fetchone()
+    if not row:
+        raise HTTPException(404, "포지션을 찾을 수 없거나 권한 없음")
+    new_invested = body.shares * body.entry_price
+    await c.execute(
+        "UPDATE portfolio SET shares=?, entry_price=?, krw_invested=? WHERE id=?",
+        (body.shares, body.entry_price, new_invested, pid)
+    )
+    await c.commit()
+    return {"ok": True}
+
+
 @app.post("/api/portfolio/{pid}/add")
 async def api_average_down(pid: int, data: dict, user: dict = Depends(get_current_user)):
     """추매 — 평단가 자동 재계산 (가중 평균)."""
