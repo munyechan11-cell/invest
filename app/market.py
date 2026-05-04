@@ -1,6 +1,7 @@
-"""시세/지표 - 실시간 가격은 Finnhub, 캔들/지표는 Alpaca."""
+"""시세/지표 - 실시간 가격은 Finnhub, 캔들/지표는 Alpaca. 폴백: Yahoo Finance."""
 from __future__ import annotations
 import os
+import logging
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 
@@ -11,6 +12,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+log = logging.getLogger("market")
 FINNHUB = "https://finnhub.io/api/v1"
 _alpaca: StockHistoricalDataClient | None = None
 
@@ -24,12 +26,14 @@ def market_of(symbol: str) -> str:
 
 
 def _alpaca_get() -> StockHistoricalDataClient:
+    """Alpaca 클라이언트. 키 없으면 RuntimeError → 호출자가 Yahoo로 폴백."""
     global _alpaca
     if _alpaca is None:
-        _alpaca = StockHistoricalDataClient(
-            api_key=os.environ["ALPACA_API_KEY"],
-            secret_key=os.environ["ALPACA_SECRET_KEY"],
-        )
+        ak = os.environ.get("ALPACA_API_KEY", "").strip()
+        sk = os.environ.get("ALPACA_SECRET_KEY", "").strip()
+        if not ak or not sk:
+            raise RuntimeError("ALPACA_API_KEY/ALPACA_SECRET_KEY 미설정")
+        _alpaca = StockHistoricalDataClient(api_key=ak, secret_key=sk)
     return _alpaca
 
 
@@ -74,7 +78,11 @@ def _bbands(close: pd.Series, period: int = 20, k: float = 2.0):
 
 
 def fetch_realtime_quote(symbol: str) -> Quote:
-    """미국주식 실시간 — KR 티커는 KIS 시도 후 실패 시 Yahoo로 폴백."""
+    """실시간 시세 — 시장별 다중 소스 폴백.
+
+    KR: KIS → Yahoo (.KS/.KQ)
+    US: Finnhub → Yahoo
+    """
     if market_of(symbol) == "KR":
         try:
             from .market_kr import fetch_realtime_quote as _kr
@@ -85,12 +93,26 @@ def fetch_realtime_quote(symbol: str) -> Quote:
         return Quote(symbol=k.symbol, price=k.price, day_high=k.day_high,
                      day_low=k.day_low, day_open=k.day_open,
                      prev_close=k.prev_close, change_pct=k.change_pct, ts=k.ts)
-    return _fetch_us_quote(symbol)
+    # US: Finnhub 시도 → 실패 시 Yahoo로 폴백
+    try:
+        return _fetch_us_quote(symbol)
+    except Exception as e:
+        log.warning(f"Finnhub 실패 ({symbol}): {e} → Yahoo Finance로 폴백")
+        from .market_us_yahoo import fetch_realtime_quote as _yh
+        u = _yh(symbol)
+        return Quote(symbol=u.symbol, price=u.price, day_high=u.day_high,
+                     day_low=u.day_low, day_open=u.day_open,
+                     prev_close=u.prev_close, change_pct=u.change_pct, ts=u.ts)
 
 
 def _fetch_us_quote(symbol: str) -> Quote:
-    """Finnhub 실시간 quote (c=current, h=high, l=low, o=open, pc=prev close, t=ts)."""
-    key = os.environ["FINNHUB_API_KEY"]
+    """Finnhub 실시간 quote (c=current, h=high, l=low, o=open, pc=prev close, t=ts).
+
+    FINNHUB_API_KEY 미설정 시 RuntimeError → 호출자가 Yahoo로 폴백.
+    """
+    key = os.environ.get("FINNHUB_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("FINNHUB_API_KEY 미설정")
     with httpx.Client(timeout=10) as c:
         r = c.get(f"{FINNHUB}/quote",
                   params={"symbol": symbol.upper(), "token": key})
@@ -121,11 +143,25 @@ def _fetch_us_quote(symbol: str) -> Quote:
 
 
 def get_snapshot(symbol: str) -> dict:
-    """실시간 시세 + 지표 + 거래량 분석. 한국/미국 자동 분기."""
+    """실시간 시세 + 지표 + 거래량 분석. 한국/미국 자동 분기.
+
+    US: Finnhub+Alpaca 시도 → 키 없거나 실패 시 Yahoo Finance로 폴백.
+    KR: market_kr_yahoo 폴백 내장.
+    """
     if market_of(symbol) == "KR":
         from .market_kr import get_snapshot_kr
         return get_snapshot_kr(symbol)
     symbol = symbol.upper()
+    try:
+        return _get_snapshot_us_finnhub_alpaca(symbol)
+    except Exception as e:
+        log.warning(f"Finnhub/Alpaca 실패 ({symbol}): {e} → Yahoo Finance로 폴백")
+        from .market_us_yahoo import get_snapshot_us_yahoo
+        return get_snapshot_us_yahoo(symbol)
+
+
+def _get_snapshot_us_finnhub_alpaca(symbol: str) -> dict:
+    """Finnhub(시세) + Alpaca(캔들) 기반 풀 스냅샷. 둘 다 키 필요."""
     quote = fetch_realtime_quote(symbol)
 
     cli = _alpaca_get()

@@ -564,6 +564,10 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
             sizing = {**s, "splits": split_plan(s["shares"])}
 
         await broadcast({"type": "analysis", "symbol": symbol, "user_id": user["id"]})
+
+        # 사용자에게 분석 요약 텔레그램 전송 (실패해도 분석은 성공)
+        asyncio.create_task(_send_analysis_to_telegram(user["id"], symbol, snap, ana, sizing))
+
         return {"snapshot": snap, "analysis": ana,
                 "profile": profile, "news": news[:5], "sizing": sizing,
                 "market_status": market_status_for(symbol),
@@ -574,6 +578,60 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
         # 데이터 수집 실패는 진짜 에러이므로 그대로 던짐.
         # AI 실패는 analyze() 내부에서 룰 기반으로 자동 폴백되므로 여기까진 안 옴.
         raise HTTPException(500, f"데이터 수집 실패: {str(e)}")
+
+
+async def _send_analysis_to_telegram(user_id: int, symbol: str, snap: dict,
+                                       ana: dict, sizing: dict | None):
+    """분석 결과 요약을 텔레그램으로 전송. 실패는 조용히 무시."""
+    try:
+        chat_id = await db.get_telegram_chat_id(user_id)
+        if not chat_id or not telegram_alert.is_configured():
+            return
+        q = snap.get("quote") or {}
+        ind = snap.get("indicators") or {}
+        is_kr = symbol.isdigit() and len(symbol) == 6
+        cur = "₩" if is_kr else "$"
+        fmt = lambda v: f"{cur}{v:,.0f}" if is_kr else f"{cur}{v:,.2f}"
+        price = float(q.get("price") or 0)
+        chg = float(q.get("change_pct") or 0)
+        position = ana.get("position") or "—"
+        emoji = ana.get("position_emoji") or ""
+        ts = ana.get("toss_score") or {}
+        score_num = ts.get("score") if isinstance(ts, dict) else None
+        grade = ts.get("grade") if isinstance(ts, dict) else ""
+        entry = float(ana.get("entry_price") or price)
+        target = float(ana.get("target_price") or 0)
+        stop = float(ana.get("stop_price") or 0)
+        rsi = ind.get("rsi14")
+        summary = ana.get("summary") or ana.get("rationale") or ""
+
+        lines = [
+            f"📊 <b>{symbol} 분석</b>",
+            f"현재가: <b>{fmt(price)}</b> ({chg:+.2f}%)",
+            f"포지션: {emoji} <b>{position}</b>",
+        ]
+        if score_num is not None:
+            lines.append(f"TOSS Score: <b>{score_num:.0f}/100</b> {grade}")
+        if rsi is not None:
+            lines.append(f"RSI: {rsi:.1f}")
+        lines.append("")
+        if entry > 0:
+            lines.append(f"진입가: {fmt(entry)}")
+        if target > 0:
+            lines.append(f"목표가: {fmt(target)}")
+        if stop > 0:
+            lines.append(f"손절가: {fmt(stop)}")
+        if sizing and sizing.get("shares"):
+            lines.append(f"권장 수량: <b>{sizing['shares']:g}주</b>")
+        if summary:
+            lines.append("")
+            # 너무 길면 자름
+            short = summary[:300] + ("…" if len(summary) > 300 else "")
+            lines.append(short)
+
+        await telegram_alert.send(chat_id, "\n".join(lines))
+    except Exception as e:
+        log.warning(f"분석 결과 텔레그램 전송 실패 ({symbol}): {e}")
 
 
 # ─── Trades ────────────────────────────────────────────────────────
