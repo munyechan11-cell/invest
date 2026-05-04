@@ -276,6 +276,62 @@ def _detect_mime(b: bytes) -> str:
     return "image/jpeg"
 
 
+# 메모리 절약 — Render 512MB Starter에서 큰 모바일 스크린샷이
+# OOM 일으킴. Gemini도 1024px 정도면 OCR 정확도 충분 (그 이상은 손해).
+MAX_IMAGE_DIM = 1280   # 긴 변 기준
+MAX_IMAGE_BYTES = 2_000_000  # 리사이즈 후 2MB 이하 보장
+MAX_INPUT_BYTES = 8_000_000  # 입력 파일 8MB 초과 거부
+
+
+def _shrink_image(b: bytes) -> tuple[bytes, str]:
+    """이미지를 OCR 적정 크기로 축소 + JPEG로 통일. (bytes, mime) 반환.
+
+    Pillow 미설치 또는 처리 실패 시 원본 그대로 반환 (best-effort).
+    """
+    try:
+        from PIL import Image
+        import io as _io
+    except ImportError:
+        log.warning("Pillow 미설치 — 이미지 리사이즈 스킵")
+        return b, _detect_mime(b)
+
+    try:
+        img = Image.open(_io.BytesIO(b))
+        # HEIC/EXIF 회전 보정
+        try:
+            from PIL import ImageOps
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass
+        # RGB로 변환 (RGBA/팔레트 → JPEG 호환)
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        # 비율 유지하며 긴 변을 MAX_IMAGE_DIM 이하로
+        w, h = img.size
+        max_side = max(w, h)
+        if max_side > MAX_IMAGE_DIM:
+            scale = MAX_IMAGE_DIM / max_side
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        # JPEG 압축 — 품질 단계적 조정으로 MAX_IMAGE_BYTES 이하 보장
+        for quality in (85, 75, 65, 55):
+            buf = _io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            data = buf.getvalue()
+            if len(data) <= MAX_IMAGE_BYTES:
+                log.info(f"이미지 축소: {len(b)//1024}KB → {len(data)//1024}KB "
+                         f"(q={quality}, {img.size[0]}x{img.size[1]})")
+                # 명시적 GC
+                img.close()
+                del buf
+                return data, "image/jpeg"
+        # 다 시도해도 못 줄이면 마지막 결과 반환 (그래도 원본보단 작음)
+        img.close()
+        return data, "image/jpeg"
+    except Exception as e:
+        log.warning(f"이미지 리사이즈 실패: {e} → 원본 사용")
+        return b, _detect_mime(b)
+
+
 def _clean_number(s) -> float:
     """문자열에서 첫 번째 숫자(부호+소수점)만 추출.
 
@@ -462,10 +518,14 @@ def extract_portfolio_from_image(image_bytes: bytes, krw_rate: float = 1380.0) -
         return []
     if not image_bytes:
         return []
+    if len(image_bytes) > MAX_INPUT_BYTES:
+        log.warning(f"OCR 입력 거부: {len(image_bytes)//1024}KB > {MAX_INPUT_BYTES//1024}KB 한도")
+        return []
     if krw_rate <= 0:
         krw_rate = 1380.0  # 합리적 디폴트
 
-    mime = _detect_mime(image_bytes)
+    # 메모리 절약 — 큰 모바일 스크린샷을 OCR 적정 크기로 축소 (Render 512MB OOM 방지)
+    image_bytes, mime = _shrink_image(image_bytes)
     log.info(f"OCR start: {len(image_bytes)} bytes, mime={mime}, model={MODEL}, krw_rate={krw_rate}")
 
     # 1차 호출
@@ -569,4 +629,8 @@ def extract_portfolio_from_image(image_bytes: bytes, krw_rate: float = 1380.0) -
         })
 
     log.info(f"OCR 완료: {len(out)}개 — {[h['symbol'] for h in out]}")
+    # 메모리 즉시 해제 (큰 base64 + 응답 dict들)
+    del image_bytes, items
+    import gc
+    gc.collect()
     return out

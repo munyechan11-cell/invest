@@ -1462,15 +1462,28 @@ from fastapi import UploadFile, File, Form
 async def api_upload_portfolio(
     file: UploadFile = File(...),
     krw_rate: float = Form(1380.0),
+    replace: bool = Form(False),
     user: dict = Depends(get_current_user),
 ):
     """포트폴리오 스크린샷을 분석하여 일괄 등록.
 
     krw_rate: 프론트엔드가 들고 있는 현재 USD→KRW 환율. 토스가 미국주식을
               원화로 표시하기 때문에 USD entry_price 환산에 필요.
+    replace: True면 기존 보유 종목 모두 삭제 후 새로 등록 (중복 방지).
     """
+    # 8MB 초과 입력 거부 (메모리 폭발 방지)
     content = await file.read()
+    if len(content) > 8_000_000:
+        return {"ok": False, "msg": f"이미지가 너무 큽니다 ({len(content)//1024}KB). 8MB 이하로 업로드해주세요."}
+
     holdings = await asyncio.to_thread(extract_portfolio_from_image, content, krw_rate)
+    del content  # base64 직전까지 들고 있던 raw 바이트 즉시 해제
+
+    # replace 모드: 기존 데이터 비우고 새로 (사진 다시 올릴 때 중복 6개 같은 거 방지)
+    if replace and holdings:
+        c = await db.get_db()
+        await c.execute("DELETE FROM portfolio WHERE user_id=?", (user["id"],))
+        await c.commit()
     
     if not holdings:
         return {"ok": False, "msg": "이미지에서 종목 정보를 추출하지 못했습니다."}

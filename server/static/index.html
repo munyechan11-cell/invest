@@ -2372,11 +2372,29 @@ function app(){
       const file = e.target.files[0];
       if(!file) return;
 
+      // 사진 업로드 시 기존 종목 있으면 교체할지 묻기 (중복 누적 방지)
+      let replace = false;
+      if (this.holdings.length > 0) {
+        replace = confirm(
+          `현재 보유 종목이 ${this.holdings.length}개 있습니다.\n\n` +
+          `[확인] 기존 종목 모두 지우고 사진 결과로 교체\n` +
+          `[취소] 기존 종목 유지하고 사진 결과 추가`
+        );
+      }
+
+      // 파일 크기 사전 체크
+      if (file.size > 8_000_000) {
+        alert(`이미지가 너무 큽니다 (${Math.round(file.size/1024)}KB).\n8MB 이하로 압축해서 다시 올려주세요.`);
+        e.target.value = '';
+        return;
+      }
+
       this.loading = true;
       try {
         const formData = new FormData();
         formData.append('file', file);
         formData.append('krw_rate', String(this.krwRate || 1380));
+        formData.append('replace', String(replace));
 
         const r = await this.api('/api/portfolio/upload', { method:'POST', body: formData });
         const d = await r.json();
