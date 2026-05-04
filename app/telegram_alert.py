@@ -21,16 +21,31 @@ def is_configured() -> bool:
 
 
 def build_alert_buttons(symbol: str, kind: str = "BUY") -> dict:
-    """알림용 인라인 버튼: 매수/매도/스누즈."""
+    """알림용 인라인 버튼.
+
+    매수: 1주/5주/10주 + 스누즈
+    매도: 25%/50%/100% (보유 비율) + 스누즈
+    """
     buttons = []
     if kind in ("BUY", "TP", "DART", "SCREENER"):
+        # 매수 수량 선택
         buttons.append([
-            {"text": "💚 매수 (페이퍼)", "callback_data": f"buy:{symbol}"},
+            {"text": "💚 1주", "callback_data": f"buy:{symbol}:1"},
+            {"text": "💚 5주", "callback_data": f"buy:{symbol}:5"},
+            {"text": "💚 10주", "callback_data": f"buy:{symbol}:10"},
+        ])
+        buttons.append([
             {"text": "💤 1시간 스누즈", "callback_data": f"snooze:{symbol}:60"},
+            {"text": "🔕 6시간 스누즈", "callback_data": f"snooze:{symbol}:360"},
         ])
     if kind in ("SL", "SELL"):
+        # 매도는 보유 비율
         buttons.append([
-            {"text": "🔴 매도 (페이퍼)", "callback_data": f"sell:{symbol}"},
+            {"text": "🔴 25%", "callback_data": f"sellpct:{symbol}:25"},
+            {"text": "🔴 50%", "callback_data": f"sellpct:{symbol}:50"},
+            {"text": "🔴 전량", "callback_data": f"sellpct:{symbol}:100"},
+        ])
+        buttons.append([
             {"text": "💤 1시간 스누즈", "callback_data": f"snooze:{symbol}:60"},
         ])
     if not buttons:

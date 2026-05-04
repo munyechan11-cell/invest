@@ -1057,34 +1057,56 @@ async def api_telegram_webhook(payload: dict):
 
     if action == "buy":
         from app.trade_kis import auto_order, check_daily_limit, calc_fee
-        # 안전: 수량 1주 페이퍼 매수 (사용자 한 번 더 확인용)
+        qty = int(parts[2]) if len(parts) > 2 else 1
+        if qty < 1 or qty > 100:
+            await telegram_alert.answer_callback(cb_id, "수량 1~100 허용")
+            return {"ok": True}
         snap = await _cached_snapshot(sym)
         price = float(snap.get("quote", {}).get("price") or 0)
         market = "KR" if sym.isdigit() and len(sym) == 6 else "US"
-        amount = price
+        amount = price * qty
         err = await check_daily_limit(user_id, market, amount)
         if err:
-            await telegram_alert.answer_callback(cb_id, err)
+            await telegram_alert.answer_callback(cb_id, err[:200])
             return {"ok": True}
-        res = await asyncio.to_thread(auto_order, sym, "buy", 1, price)
+        res = await asyncio.to_thread(auto_order, sym, "buy", qty, price)
         if res.get("ok"):
             settings = await db.get_user_settings(user_id)
             fee = calc_fee(market, amount, settings.get(
                 "fee_rate_kr" if market == "KR" else "fee_rate_us"))
-            await db.record_order(user_id, sym, "buy", 1, price, market, fee)
-            await telegram_alert.answer_callback(cb_id, f"✅ 1주 매수 [{res.get('mode')}]")
+            await db.record_order(user_id, sym, "buy", qty, price, market, fee)
+            await telegram_alert.answer_callback(cb_id, f"✅ {qty}주 매수 [{res.get('mode')}]")
         else:
-            await telegram_alert.answer_callback(cb_id, f"❌ {res.get('error', '실패')}")
+            await telegram_alert.answer_callback(cb_id, f"❌ {res.get('error', '실패')[:150]}")
 
-    elif action == "sell":
+    elif action == "sellpct":
+        # 보유 비율 매도 (포트폴리오에서 자동 수량 계산)
         from app.trade_kis import auto_order
+        pct = int(parts[2]) if len(parts) > 2 else 100
+        port_items = [p for p in await db.list_portfolio(user_id) if p["symbol"] == sym]
+        if not port_items:
+            await telegram_alert.answer_callback(cb_id, f"{sym} 보유 없음")
+            return {"ok": True}
+        held = sum(float(p.get("shares") or 0) for p in port_items)
+        sell_qty = max(1, int(held * pct / 100))
         snap = await _cached_snapshot(sym)
         price = float(snap.get("quote", {}).get("price") or 0)
-        res = await asyncio.to_thread(auto_order, sym, "sell", 1, price)
+        res = await asyncio.to_thread(auto_order, sym, "sell", sell_qty, price)
         if res.get("ok"):
-            await telegram_alert.answer_callback(cb_id, f"✅ 1주 매도 [{res.get('mode')}]")
+            await telegram_alert.answer_callback(
+                cb_id, f"✅ {sell_qty}주({pct}%) 매도 [{res.get('mode')}]"
+            )
+            # 실현 손익 자동 기록 (첫 항목 기준)
+            try:
+                p0 = port_items[0]
+                await db.record_realized_pnl(
+                    user_id, sym, sell_qty, float(p0["entry_price"]), price,
+                    fee=0, reason="manual_sell_button"
+                )
+            except Exception:
+                pass
         else:
-            await telegram_alert.answer_callback(cb_id, f"❌ {res.get('error', '실패')}")
+            await telegram_alert.answer_callback(cb_id, f"❌ {res.get('error', '실패')[:150]}")
 
     elif action == "snooze":
         minutes = int(parts[2]) if len(parts) > 2 else 60
@@ -1359,8 +1381,16 @@ async def api_upload_portfolio(file: UploadFile = File(...), user: dict = Depend
 
 
 @app.get("/api/alerts")
-async def api_alerts(_: dict = Depends(get_current_user)):
-    return await db.recent_alerts()
+async def api_alerts(symbol: str = "", kind: str = "", days: int = 7,
+                     q: str = "", limit: int = 100,
+                     _: dict = Depends(get_current_user)):
+    """알림 검색·필터.
+
+    Query: symbol=TSLA&kind=BUY&days=30&q=호재
+    """
+    if symbol or kind or q or days != 7 or limit != 100:
+        return await db.search_alerts(symbol, kind, days, q, limit)
+    return await db.recent_alerts(limit)
 
 
 @app.get("/api/recommendations")

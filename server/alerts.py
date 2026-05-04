@@ -147,6 +147,38 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
                              "message": msg, "price": price, "user_id": user_id})
             await _push_telegram(sym, "SL", price, msg, plan)
 
+            # 자동 손절매: settings.auto_stoploss=1이면 보유 전량 매도
+            try:
+                settings = await db.get_user_settings(user_id)
+                if settings.get("auto_stoploss") == 1:
+                    port_items = [p for p in await db.list_portfolio(user_id) if p["symbol"] == sym]
+                    held = sum(float(p.get("shares") or 0) for p in port_items)
+                    if held >= 1:
+                        from app.trade_kis import auto_order
+                        sell_qty = int(held)
+                        result = await asyncio.to_thread(auto_order, sym, "sell", sell_qty, price)
+                        log.info(f"AUTO_SL user={user_id} {sym} qty={sell_qty} → {result.get('ok')}")
+                        if result.get("ok") and port_items:
+                            try:
+                                await db.record_realized_pnl(
+                                    user_id, sym, sell_qty,
+                                    float(port_items[0]["entry_price"]), price,
+                                    fee=0, reason="auto_stoploss"
+                                )
+                            except Exception:
+                                pass
+                            # 텔레그램 추가 알림
+                            chat = await db.get_telegram_chat_id(user_id)
+                            if chat and telegram_alert.is_configured():
+                                await telegram_alert.send(
+                                    chat,
+                                    f"🤖 <b>자동 손절 실행</b>\n\n"
+                                    f"{sym} {sell_qty}주 매도 @ {pf}\n"
+                                    f"모드: <b>{result.get('mode', 'PAPER')}</b>"
+                                )
+            except Exception as e:
+                log.warning(f"auto_stoploss fail {sym}: {e}")
+
     # 매도 익절: 매도 포지션에서 목표가(하락) 이하로 도달
     if is_sell and target and price <= float(target):
         if not _cool(sym, f"TP_{user_id}"):
@@ -315,6 +347,16 @@ async def worker(broadcast):
             loop_count += 1
             if loop_count % 60 == 0:
                 _gc_cool()
+
+            # 한국·미국 둘 다 휴장이면 1분만 쉬고 가벼운 폴링
+            from app.market_hours import kr_market_status, us_market_status
+            kr_open = kr_market_status().get("is_open")
+            us_open = us_market_status().get("is_open")
+            if not kr_open and not us_open:
+                # 둘 다 닫혀있으면 60초마다만 폴링 (5초 → 60초)
+                if loop_count % 12 != 0:
+                    await asyncio.sleep(POLL_SEC)
+                    continue
 
             watch = await db.list_all_watch()
             port = await db.list_all_portfolio()

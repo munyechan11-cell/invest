@@ -10,10 +10,13 @@ def is_weekend_kst() -> bool:
 
 
 def kr_market_status() -> dict:
-    """한국 장 (09:00~15:30 KST)."""
+    """한국 장 (09:00~15:30 KST). 공휴일 자동 체크."""
+    from .holidays import is_kr_holiday
     now = datetime.now(KST)
     if is_weekend_kst():
         return {"is_open": False, "label": "주말 휴장", "next_open": _next_kr_open(now)}
+    if is_kr_holiday(now.date()):
+        return {"is_open": False, "label": "공휴일 휴장", "next_open": _next_kr_open(now)}
     h, m = now.hour, now.minute
     minutes = h * 60 + m
     OPEN = 9 * 60          # 09:00
@@ -28,12 +31,14 @@ def kr_market_status() -> dict:
 
 
 def us_market_status() -> dict:
-    """미국 장 (09:30~16:00 ET = KR 23:30~06:00 보통). 단순 추정."""
-    # 미국 동부시간 (서머타임 무시 — 단순화)
+    """미국 장 (09:30~16:00 ET = KR 23:30~06:00 보통). 공휴일 자동 체크."""
+    from .holidays import is_us_holiday
     now_kst = datetime.now(KST)
     et = now_kst - timedelta(hours=14)  # 대략 ET (실제 13~14시간 차)
     if et.weekday() >= 5:
         return {"is_open": False, "label": "주말 휴장"}
+    if is_us_holiday(et.date()):
+        return {"is_open": False, "label": "미국 공휴일"}
     h, m = et.hour, et.minute
     minutes = h * 60 + m
     OPEN = 9 * 60 + 30

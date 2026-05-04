@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS user_settings (
   fee_rate_kr REAL NOT NULL DEFAULT 0.00015,
   fee_rate_us REAL NOT NULL DEFAULT 0.0007,
   enable_inline_actions INTEGER NOT NULL DEFAULT 1,
+  auto_stoploss INTEGER NOT NULL DEFAULT 0,
   updated_at REAL NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS daily_orders (
@@ -302,6 +303,7 @@ DEFAULT_SETTINGS = {
     "fee_rate_kr": 0.00015,
     "fee_rate_us": 0.0007,
     "enable_inline_actions": 1,
+    "auto_stoploss": 0,    # 1=손절가 도달 시 자동 매도
 }
 
 
@@ -647,6 +649,15 @@ async def init():
             await c.execute(f"SELECT {col} FROM watchlist LIMIT 1")
         except Exception:
             await c.execute(f"ALTER TABLE watchlist ADD COLUMN {col} {default}")
+
+    # user_settings 신규 컬럼 마이그레이션
+    try:
+        await c.execute("SELECT auto_stoploss FROM user_settings LIMIT 1")
+    except Exception:
+        try:
+            await c.execute("ALTER TABLE user_settings ADD COLUMN auto_stoploss INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
     
     # 인덱스 추가 — 폴링 워커의 풀스캔 방지
     await c.executescript("""
@@ -844,6 +855,39 @@ async def add_alert(symbol: str, kind: str, message: str, price: float | None):
         (symbol.upper(), kind, message, price, time.time()),
     )
     await c.commit()
+
+
+async def search_alerts(symbol: str = "", kind: str = "",
+                        days: int = 7, q: str = "",
+                        limit: int = 100) -> list[dict]:
+    """알림 audit log 검색.
+
+    symbol: 종목코드 부분 일치 (대소문자 무관)
+    kind: BUY/SELL/TP/SL/CUSTOM/DART/SCREENER 정확 일치
+    days: 최근 N일 (기본 7일)
+    q: 메시지 본문 부분 일치 (LIKE %q%)
+    """
+    cutoff = time.time() - days * 86400
+    where = ["created_at >= ?"]
+    args: list = [cutoff]
+
+    if symbol:
+        where.append("UPPER(symbol) LIKE ?")
+        args.append(f"%{symbol.upper()}%")
+    if kind:
+        where.append("kind = ?")
+        args.append(kind.upper())
+    if q:
+        where.append("message LIKE ?")
+        args.append(f"%{q}%")
+
+    sql = (f"SELECT * FROM alerts WHERE {' AND '.join(where)} "
+           f"ORDER BY id DESC LIMIT ?")
+    args.append(min(limit, 500))
+
+    c = await get_db()
+    rows = await (await c.execute(sql, args)).fetchall()
+    return [dict(r) for r in rows]
 
 
 async def recent_alerts(limit: int = 50) -> list[dict]:
