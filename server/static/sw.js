@@ -1,6 +1,6 @@
 // Sift Quant AI — Service Worker (PWA install + 오프라인 페이지 캐시)
-const CACHE = 'sift-v1';
-const ASSETS = ['/', '/static/manifest.json', '/static/icon-192.svg', '/static/icon-512.svg'];
+const CACHE = 'sift-v2';
+const ASSETS = ['/', '/static/manifest.json', '/static/icon-192.svg', '/static/icon-512.svg', '/static/icon-maskable.svg'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS).catch(()=>{})));
