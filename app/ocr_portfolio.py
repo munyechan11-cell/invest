@@ -624,6 +624,25 @@ def extract_portfolio_from_image(image_bytes: bytes, krw_rate: float = 1380.0) -
         # Yahoo 무료 API로 현재가 fetch (native 단위: KR=원, US=달러)
         current_price_native = _fetch_current_price(sym)
 
+        # 🔑 NEW: 시세로 currency cross-validate
+        # Gemini 가 미국주식 토스 화면을 USD 로 잘못 라벨링하는 케이스 방어.
+        # 30만원 ÷ 시세($1006) = 298주 같은 비현실적 결과 차단.
+        if current_price_native > 0 and not is_kr_stock and raw_current_value > 0:
+            shares_if_usd = raw_current_value / current_price_native
+            shares_if_krw = (raw_current_value / krw_rate) / current_price_native
+            if currency == "USD" and shares_if_usd > 100 and 0.0001 < shares_if_krw < 100:
+                log.warning(
+                    f"{sym}: currency=USD 추정 shares={shares_if_usd:.1f} 비현실적 "
+                    f"(KRW 추정 {shares_if_krw:.4f}) → KRW 로 보정 (토스 화면 가정)"
+                )
+                currency = "KRW"
+        elif current_price_native <= 0 and currency == "USD" and not is_kr_stock and raw_current_value > 10_000:
+            # 시세 fetch 실패 + USD 라벨 + 1만 초과 → 한국 사용자 대부분 KRW 오인식
+            log.warning(
+                f"{sym}: 시세 fetch 실패, currency=USD value={raw_current_value:.0f} → KRW 가정"
+            )
+            currency = "KRW"
+
         # current_value를 native 단위로 변환
         if currency == "KRW" and not is_kr_stock:
             current_value_native = raw_current_value / krw_rate

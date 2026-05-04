@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio, time, logging
 from app.market import fetch_realtime_quote, market_of
 from app import telegram_alert
+from app.symbol_names import get_name as _symbol_name
 from server import db
 from server.sizing import shares_for, split_plan
 
@@ -29,7 +30,7 @@ def _gc_cool():
 
 
 async def _push_telegram(symbol: str, kind: str, price: float, message: str,
-                         plan: dict | None = None):
+                         plan: dict | None = None, name: str | None = None):
     """알림을 Telegram으로 푸시 — 등록된 사용자별 설정 적용 (min_score, snooze, inline 버튼)."""
     if not telegram_alert.is_configured():
         return
@@ -49,6 +50,7 @@ async def _push_telegram(symbol: str, kind: str, price: float, message: str,
         target=(plan or {}).get("target_price"),
         stop=(plan or {}).get("stop_price"),
         is_kr=is_kr,
+        name=name,
     )
 
     score_val = (sift_score or {}).get("score", 0) if isinstance(sift_score, dict) else 0
@@ -101,6 +103,10 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
     fmt_tp = _fmt(sym, float(target)) if target else ""
     fmt_entry = _fmt(sym, float(entry_price)) if entry_price else ""
 
+    # 종목명 — 매핑 사전(즉시) → Yahoo 캐시(첫 호출 1회 fetch). 없으면 빈 문자열.
+    name = _symbol_name(sym)
+    sym_label = f"{name} ({sym})" if name and name.upper() != sym.upper() else sym
+
     is_buy = pos in ("분할 매수", "적극 매수")
     is_sell = pos in ("분할 매도", "적극 매도")
 
@@ -112,15 +118,15 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
                 size = shares_for(capital, risk_pct, price, stop_for_size) if capital > 0 else {"shares": 0, "notional": 0, "max_loss": 0}
                 splits = split_plan(size["shares"]) if capital > 0 else []
                 if capital > 0:
-                    msg = (f"💚 지금 {pos}! {pf} (진입가 {fmt_entry} 도달) — "
+                    msg = (f"💚 {sym_label} · 지금 {pos}! {pf} (진입가 {fmt_entry} 도달) — "
                            f"권장 {size['shares']}주 (분할: {splits}), "
                            f"투입 {_fmt(sym, size['notional'])}, 최대손실 {_fmt(sym, size['max_loss'])}")
                 else:
-                    msg = f"💚 지금 {pos}! {pf} (진입가 {fmt_entry} 도달) — 토스증권에서 매수 진행"
+                    msg = f"💚 {sym_label} · 지금 {pos}! {pf} (진입가 {fmt_entry} 도달) — 토스증권에서 매수 진행"
                 await db.add_alert(sym, "BUY", msg, price)
-                await broadcast({"type": "alert", "symbol": sym, "kind": "BUY",
+                await broadcast({"type": "alert", "symbol": sym, "name": name, "kind": "BUY",
                                  "message": msg, "price": price, "user_id": user_id})
-                await _push_telegram(sym, "BUY", price, msg, plan)
+                await _push_telegram(sym, "BUY", price, msg, plan, name=name)
                 # 모의 트레이드 자동 시작 — 추후 TP/SL 도달 시 자동 청산
                 try:
                     await db.open_mock_trade_for_all(sym, "buy", price,
@@ -132,20 +138,20 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
     # 익절(매수): 목표가 ≥ 도달
     if is_buy and target and price >= float(target):
         if not _cool(sym, f"TP_{user_id}"):
-            msg = f"🎯 목표가 도달! {pf} ≥ {fmt_tp} — 매도/익절 권장"
+            msg = f"🎯 {sym_label} · 목표가 도달! {pf} ≥ {fmt_tp} — 매도/익절 권장"
             await db.add_alert(sym, "TP", msg, price)
-            await broadcast({"type": "alert", "symbol": sym, "kind": "TP",
+            await broadcast({"type": "alert", "symbol": sym, "name": name, "kind": "TP",
                              "message": msg, "price": price, "user_id": user_id})
-            await _push_telegram(sym, "TP", price, msg, plan)
+            await _push_telegram(sym, "TP", price, msg, plan, name=name)
 
     # 손절(매수): 손절가 ≤ 이탈
     if is_buy and stop_price and price <= float(stop_price):
         if not _cool(sym, f"SL_{user_id}"):
-            msg = f"🛑 손절선 이탈! {pf} ≤ {fmt_stop} — 즉시 매도"
+            msg = f"🛑 {sym_label} · 손절선 이탈! {pf} ≤ {fmt_stop} — 즉시 매도"
             await db.add_alert(sym, "SL", msg, price)
-            await broadcast({"type": "alert", "symbol": sym, "kind": "SL",
+            await broadcast({"type": "alert", "symbol": sym, "name": name, "kind": "SL",
                              "message": msg, "price": price, "user_id": user_id})
-            await _push_telegram(sym, "SL", price, msg, plan)
+            await _push_telegram(sym, "SL", price, msg, plan, name=name)
 
             # 자동 손절매: settings.auto_stoploss=1이면 보유 전량 매도
             try:
@@ -182,21 +188,21 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
     # 매도 익절: 매도 포지션에서 목표가(하락) 이하로 도달
     if is_sell and target and price <= float(target):
         if not _cool(sym, f"TP_{user_id}"):
-            msg = f"🎯 매도 목표가 도달! {pf} ≤ {fmt_tp} — 환매/청산 권장"
+            msg = f"🎯 {sym_label} · 매도 목표가 도달! {pf} ≤ {fmt_tp} — 환매/청산 권장"
             await db.add_alert(sym, "TP", msg, price)
-            await broadcast({"type": "alert", "symbol": sym, "kind": "TP",
+            await broadcast({"type": "alert", "symbol": sym, "name": name, "kind": "TP",
                              "message": msg, "price": price, "user_id": user_id})
-            await _push_telegram(sym, "TP", price, msg, plan)
+            await _push_telegram(sym, "TP", price, msg, plan, name=name)
 
     # 매도 신호: 매도 포지션에서 진입가 부근 도달
     if is_sell and entry_price:
         if abs(price - float(entry_price)) / float(entry_price) <= 0.003:
             if not _cool(sym, f"SELL_{user_id}"):
-                msg = f"🔴 매도 진입가 도달! {pf} — {pos}"
+                msg = f"🔴 {sym_label} · 매도 진입가 도달! {pf} — {pos}"
                 await db.add_alert(sym, "SELL", msg, price)
-                await broadcast({"type": "alert", "symbol": sym, "kind": "SELL",
+                await broadcast({"type": "alert", "symbol": sym, "name": name, "kind": "SELL",
                                  "message": msg, "price": price, "user_id": user_id})
-                await _push_telegram(sym, "SELL", price, msg, plan)
+                await _push_telegram(sym, "SELL", price, msg, plan, name=name)
 
 
 async def _check_price_alerts(symbol: str, price: float, broadcast):
@@ -220,16 +226,18 @@ async def _check_price_alerts(symbol: str, price: float, broadcast):
         pf = _fmt(symbol, price)
         ft = _fmt(symbol, target)
         note = a.get("note") or ""
-        msg = f"🔔 사용자 알림! {symbol} {pf} {cond} {ft}" + (f" — {note}" if note else "")
+        name = _symbol_name(symbol)
+        sym_label = f"{name} ({symbol})" if name and name.upper() != symbol.upper() else symbol
+        msg = f"🔔 사용자 알림! {sym_label} {pf} {cond} {ft}" + (f" — {note}" if note else "")
         await db.add_alert(symbol, "CUSTOM", msg, price)
-        await broadcast({"type": "alert", "symbol": symbol, "kind": "CUSTOM",
+        await broadcast({"type": "alert", "symbol": symbol, "name": name, "kind": "CUSTOM",
                          "message": msg, "price": price, "user_id": a["user_id"]})
         # 텔레그램
         chat_id = await db.get_telegram_chat_id(a["user_id"])
         if chat_id and telegram_alert.is_configured():
             tmsg = (
                 f"<b>🔔 가격 알림 도달</b>\n\n"
-                f"<b>{symbol}</b>\n"
+                f"<b>{sym_label}</b>\n"
                 f"현재가: <b>{pf}</b>\n"
                 f"설정가: <code>{cond} {ft}</code>\n"
             )

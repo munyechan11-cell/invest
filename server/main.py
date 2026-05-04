@@ -1221,6 +1221,7 @@ async def api_telegram_test(user: dict = Depends(get_current_user)):
         message="✅ 봇 연결 테스트 — 실제 매매 신호 아님. 이렇게 알림이 도착합니다.",
         sift_score={"score": 78.5, "grade": "A"},
         entry=72500, target=75000, stop=71000, is_kr=True,
+        name="삼성전자",
     )
     res = await telegram_alert.send(chat_id, sample)
     if not res["ok"]:

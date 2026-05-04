@@ -212,8 +212,12 @@ def format_alert(symbol: str, kind: str, price: float, message: str,
                  entry: float | None = None,
                  target: float | None = None,
                  stop: float | None = None,
-                 is_kr: bool | None = None) -> str:
-    """알림 메시지 포맷 (HTML). 토스 앱 deeplink 포함."""
+                 is_kr: bool | None = None,
+                 name: str | None = None) -> str:
+    """알림 메시지 포맷 (HTML). 토스 앱 deeplink 포함.
+
+    name: 종목 한글/영문명. 있으면 헤더에 '종목명 (티커)' 형식으로 표기.
+    """
     if is_kr is None:
         is_kr = symbol.isdigit() and len(symbol) == 6
     cur = "₩" if is_kr else "$"
@@ -224,9 +228,14 @@ def format_alert(symbol: str, kind: str, price: float, message: str,
     icons = {"BUY": "💚 매수 신호", "TP": "🎯 익절 도달",
              "SL": "🛑 손절 이탈", "SELL": "🔴 매도 신호"}
     title = icons.get(kind, kind)
+    sym_label = (
+        f"{name} ({symbol})"
+        if name and name.strip() and name.strip().upper() != symbol.upper()
+        else symbol
+    )
 
     lines = [
-        f"<b>{title}</b> · <b>{symbol}</b>",
+        f"<b>{title}</b> · <b>{sym_label}</b>",
         "",
         f"💰 현재가 <b>{fmt_p(price)}</b>",
     ]
