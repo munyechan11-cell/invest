@@ -887,6 +887,18 @@ async def api_portfolio_risk(user: dict = Depends(get_current_user)):
 
 
 # ─── DART 공시 최근 N일 조회 ─────────────────────────────────────
+# ─── 종목 비교 (2~5종목 동시 분석) ───────────────────────────────
+class CompareIn(BaseModel):
+    symbols: list[str] = Field(min_length=2, max_length=5)
+
+
+@app.post("/api/compare")
+async def api_compare(body: CompareIn, _: dict = Depends(get_current_user)):
+    """2~5종목 동시 분석 + 카테고리별 승자."""
+    from app.compare import compare_symbols
+    return await compare_symbols(body.symbols)
+
+
 @app.get("/api/dart/{symbol}")
 async def api_dart_filings(symbol: str, days: int = 7,
                             _: dict = Depends(get_current_user)):

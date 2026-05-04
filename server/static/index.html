@@ -456,6 +456,104 @@
     </button>
   </div>
   <span class="text-[10px] text-ink-500 ml-3" x-text="marketTab==='KR' ? '국장 종목·추천만 표시' : marketTab==='US' ? '미주 종목·추천만 표시' : '전체 시장 표시'"></span>
+  <button @click="openCompareModal()" class="ml-auto text-[11px] px-3 py-1 rounded-lg bg-coral-500/15 hover:bg-coral-500/25 text-coral-500 transition">
+    ⚖️ 종목 비교
+  </button>
+</div>
+
+<!-- ⚖️ 종목 비교 모달 -->
+<div x-show="showCompareModal" class="overlay" @click.self="showCompareModal=false" x-cloak>
+  <div class="modal space-y-4" style="max-width:760px; width:95vw">
+    <div class="flex justify-between items-center">
+      <div>
+        <div class="serif text-xl font-bold">⚖️ 종목 비교 분석</div>
+        <div class="text-xs text-ink-500">2~5개 종목을 동시에 분석</div>
+      </div>
+      <button @click="showCompareModal=false" class="text-ink-500 text-xl">✕</button>
+    </div>
+
+    <div class="space-y-2">
+      <template x-for="(_, i) in Array(5)" :key="i">
+        <input :value="compareSymbols[i] || ''"
+               @input="compareSymbols[i] = $event.target.value.toUpperCase()"
+               :placeholder="i < 2 ? '필수: 종목코드 (예: TSLA, 005930)' : '선택'"
+               class="input w-full uppercase text-sm font-mono">
+      </template>
+    </div>
+    <button @click="runCompare()" :disabled="compareLoading"
+            class="btn btn-primary w-full"
+            x-text="compareLoading ? '분석중…' : '비교 시작'"></button>
+
+    <!-- 결과 -->
+    <template x-if="compareResult?.ok">
+      <div class="space-y-3">
+        <div class="surface p-3 text-sm font-bold text-emerald-500" x-html="compareResult.recommendation"></div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead class="text-[10px] uppercase text-ink-500 border-b border-[#222]">
+              <tr>
+                <th class="text-left py-2">종목</th>
+                <th class="text-right">TOSS</th>
+                <th class="text-right">변동</th>
+                <th class="text-right">RSI</th>
+                <th class="text-right">RV</th>
+                <th class="text-right">변동성</th>
+                <th class="text-left">포지션</th>
+              </tr>
+            </thead>
+            <tbody class="font-mono">
+              <template x-for="r in compareResult.results" :key="r.symbol">
+                <tr class="border-b border-[#1a1a1a] hover:bg-[#111]">
+                  <td class="py-2 font-bold cursor-pointer hover:text-coral-500" @click="select(r.symbol); showCompareModal=false">
+                    <span x-text="r.symbol"></span>
+                    <span class="text-[9px] ml-1 text-ink-500" x-text="r.market"></span>
+                  </td>
+                  <td class="text-right font-bold"
+                      :class="r.toss_score >= 60 ? 'ticker-up' : r.toss_score >= 45 ? 'text-amber-500' : 'ticker-down'"
+                      x-text="r.toss_score?.toFixed(0) + ' ' + r.grade"></td>
+                  <td class="text-right" :class="r.change_pct >= 0 ? 'ticker-up' : 'ticker-down'"
+                      x-text="(r.change_pct >= 0 ? '+' : '') + r.change_pct?.toFixed(2) + '%'"></td>
+                  <td class="text-right" x-text="r.rsi?.toFixed(0)"></td>
+                  <td class="text-right" x-text="r.rv?.toFixed(2) + 'x'"></td>
+                  <td class="text-right text-amber-500" x-text="r.volatility_stars"></td>
+                  <td class="text-left text-xs" x-text="r.position_emoji + ' ' + r.position"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 카테고리별 승자 -->
+        <div class="grid grid-cols-2 gap-2 text-xs">
+          <div class="surface p-2.5">
+            <div class="text-[10px] text-ink-500">🥇 종합 점수 1위</div>
+            <div class="font-mono font-bold mt-0.5 text-emerald-500" x-text="compareResult.winners?.best_score"></div>
+          </div>
+          <div class="surface p-2.5">
+            <div class="text-[10px] text-ink-500">📈 일일 상승률 1위</div>
+            <div class="font-mono font-bold mt-0.5" x-text="compareResult.winners?.best_change"></div>
+          </div>
+          <div class="surface p-2.5">
+            <div class="text-[10px] text-ink-500">⚡ 거래량 폭발 1위</div>
+            <div class="font-mono font-bold mt-0.5" x-text="compareResult.winners?.best_rv"></div>
+          </div>
+          <div class="surface p-2.5">
+            <div class="text-[10px] text-ink-500">🛡 가장 안정 (저변동성)</div>
+            <div class="font-mono font-bold mt-0.5" x-text="compareResult.winners?.most_stable"></div>
+          </div>
+          <div class="surface p-2.5 col-span-2">
+            <div class="text-[10px] text-ink-500">💎 가장 매수 자리 (RSI ↓)</div>
+            <div class="font-mono font-bold mt-0.5 text-coral-500" x-text="compareResult.winners?.most_oversold"></div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <template x-if="compareResult && !compareResult.ok">
+      <div class="text-sm text-rose-400" x-text="compareResult.msg"></div>
+    </template>
+  </div>
 </div>
 
 <main class="max-w-[1400px] mx-auto grid grid-cols-1 md:grid-cols-12 gap-4 md:gap-5 px-4 md:px-8 py-4 md:py-6">
@@ -1887,6 +1985,12 @@ function app(){
     priceAlertForm: { target_price: 0, condition: '>=', note: '' },
     myPriceAlerts: [],
 
+    // 종목 비교
+    showCompareModal: false,
+    compareSymbols: ['', '', '', '', ''],
+    compareResult: null,
+    compareLoading: false,
+
     get avgDownPreview() {
       if (!this.avgDownTarget || !this.avgDownForm.price || !this.avgDownForm.shares) return null;
       const oldShares = parseFloat(this.avgDownTarget.shares) || 0;
@@ -2328,6 +2432,31 @@ function app(){
         const r = await this.api('/api/mock-trades/stats');
         if (r.ok) this.mockStats = await r.json();
       } catch(e) {}
+    },
+
+    // ─── 종목 비교 ────────────────────────────────────
+    openCompareModal() {
+      // 워치리스트 상위 3개로 자동 채우기 (편의)
+      this.compareResult = null;
+      const top = this.watch.slice(0, 3).map(w => w.symbol);
+      while (top.length < 5) top.push('');
+      this.compareSymbols = top;
+      this.showCompareModal = true;
+    },
+    async runCompare() {
+      const syms = this.compareSymbols.map(s => s.trim().toUpperCase()).filter(s => s);
+      if (syms.length < 2) { alert('최소 2종목 입력'); return; }
+      if (syms.length > 5) { alert('최대 5종목'); return; }
+      this.compareLoading = true;
+      try {
+        const r = await this.api('/api/compare', {
+          method:'POST', headers:{'content-type':'application/json'},
+          body: JSON.stringify({ symbols: syms })
+        });
+        this.compareResult = await r.json();
+      } catch(e) {
+        this.compareResult = { ok: false, msg: '오류: ' + e.message };
+      } finally { this.compareLoading = false; }
     },
 
     // ─── 포트폴리오 리스크 분석 ────────────────────────
