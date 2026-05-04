@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-<title>Toss — Quant AI</title>
+<title>Sift — Quant AI</title>
 
 <!-- PWA -->
 <link rel="manifest" href="/static/manifest.json">
 <meta name="theme-color" content="#0E1014">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Toss">
+<meta name="apple-mobile-web-app-title" content="Sift">
 <link rel="apple-touch-icon" href="/static/icon-192.svg">
 <link rel="icon" type="image/svg+xml" href="/static/icon-192.svg">
 <script>
@@ -128,7 +128,7 @@
 </script>
 <style>
   /* ═══════════════════════════════════════════════════════════
-     Toss Design System — Dark + Gold Accent
+     Sift Design System — Dark + Gold Accent
      ═══════════════════════════════════════════════════════════ */
 
   /* ---------- BASE ---------- */
@@ -339,7 +339,7 @@
     scroll-snap-align: start;
   }
 
-  /* ---------- DIMENSION BARS (TOSS Score) ---------- */
+  /* ---------- DIMENSION BARS (SIFT Score) ---------- */
   .dim-bar-track {
     height: 6px; border-radius: 999px;
     background: #23272F; overflow: hidden;
@@ -420,7 +420,7 @@
     .serif.text-3xl { font-size: 1.75rem !important; }
     .serif.text-4xl { font-size: 2rem !important; }
     .text-4xl { font-size: 2rem !important; }
-    .toss-circle { width: 96px !important; height: 96px !important; }
+    .sift-circle { width: 96px !important; height: 96px !important; }
     iframe { height: 280px !important; }
 
     /* 하단 탭바 */
@@ -495,8 +495,8 @@
     .serif.text-4xl { font-size: 2rem !important; }
     .text-4xl { font-size: 2rem !important; }
 
-    /* TOSS Score 원형 게이지 모바일 축소 */
-    .toss-circle { width: 96px !important; height: 96px !important; }
+    /* SIFT Score 원형 게이지 모바일 축소 */
+    .sift-circle { width: 96px !important; height: 96px !important; }
 
     /* 차트 iframe 모바일 높이 축소 */
     iframe { height: 280px !important; }
@@ -548,7 +548,7 @@
 <div x-show="!user" class="overlay">
   <div class="modal space-y-4">
     <div class="text-center">
-      <div class="serif text-3xl font-semibold mb-1">Toss</div>
+      <div class="serif text-3xl font-semibold mb-1">Sift</div>
       <div class="text-sm text-ink-500">투자 분석 플랫폼</div>
     </div>
 
@@ -769,7 +769,7 @@
     <div class="flex items-center gap-3">
       <div class="w-9 h-9 rounded-lg bg-coral-500 flex items-center justify-center text-cream-50 serif text-xl font-semibold">T</div>
       <div>
-        <div class="serif text-xl md:text-2xl font-semibold leading-none">Toss</div>
+        <div class="serif text-xl md:text-2xl font-semibold leading-none">Sift</div>
         <div class="text-[10px] md:text-xs text-ink-600 mt-0.5 hidden sm:block">Quant Assistant · 단기 트레이딩 리서치</div>
       </div>
     </div>
@@ -878,7 +878,7 @@
             <thead class="text-[10px] uppercase text-ink-500 border-b border-[#222]">
               <tr>
                 <th class="text-left py-2">종목</th>
-                <th class="text-right">TOSS</th>
+                <th class="text-right">SIFT</th>
                 <th class="text-right">변동</th>
                 <th class="text-right">RSI</th>
                 <th class="text-right">RV</th>
@@ -894,8 +894,8 @@
                     <span class="text-[9px] ml-1 text-ink-500" x-text="r.market"></span>
                   </td>
                   <td class="text-right font-bold"
-                      :class="r.toss_score >= 60 ? 'ticker-up' : r.toss_score >= 45 ? 'text-amber-500' : 'ticker-down'"
-                      x-text="r.toss_score?.toFixed(0) + ' ' + r.grade"></td>
+                      :class="r.sift_score >= 60 ? 'ticker-up' : r.sift_score >= 45 ? 'text-amber-500' : 'ticker-down'"
+                      x-text="r.sift_score?.toFixed(0) + ' ' + r.grade"></td>
                   <td class="text-right" :class="r.change_pct >= 0 ? 'ticker-up' : 'ticker-down'"
                       x-text="(r.change_pct >= 0 ? '+' : '') + r.change_pct?.toFixed(2) + '%'"></td>
                   <td class="text-right" x-text="r.rsi?.toFixed(0)"></td>
@@ -1148,13 +1148,13 @@
       </div>
 
       <div class="text-[10px] text-ink-500 mb-1"
-           x-text="marketTab === 'US' ? '미주 인기 20종목 자동 분석 · TOSS Score 상위' : (rankingLabel + ' · 일반 종목만 (ETF/인버스 제외) · 5분 캐시')"></div>
+           x-text="marketTab === 'US' ? '미주 인기 20종목 자동 분석 · SIFT Score 상위' : (rankingLabel + ' · 일반 종목만 (ETF/인버스 제외) · 5분 캐시')"></div>
       <template x-for="p in filteredPicks" :key="p.symbol">
         <div @click="select(p.symbol)" class="surface-elevated p-2.5 cursor-pointer hover:border-coral-500/50 border border-transparent transition">
           <div class="flex items-center justify-between mb-1">
             <div class="flex items-center gap-1.5">
               <span class="px-1.5 py-0.5 rounded text-[10px] font-bold font-mono"
-                    :class="p.toss_score >= 70 ? 'bg-emerald-500/20 text-emerald-500' : 'bg-amber-500/20 text-amber-500'"
+                    :class="p.sift_score >= 70 ? 'bg-emerald-500/20 text-emerald-500' : 'bg-amber-500/20 text-amber-500'"
                     x-text="p.grade"></span>
               <span class="font-semibold text-sm" x-text="p.name"></span>
             </div>
@@ -1166,7 +1166,7 @@
             <span class="font-mono"
                   :class="p.change_pct >= 0 ? 'ticker-up' : 'ticker-down'"
                   x-text="(p.change_pct >= 0 ? '+' : '') + p.change_pct.toFixed(2) + '%'"></span>
-            <span class="text-ink-600 font-mono" x-text="'TOSS ' + p.toss_score.toFixed(0)"></span>
+            <span class="text-ink-600 font-mono" x-text="'SIFT ' + p.sift_score.toFixed(0)"></span>
             <span x-text="p.position_emoji + ' ' + p.position"></span>
           </div>
         </div>
@@ -1357,39 +1357,39 @@
           <div class="text-sm font-medium leading-relaxed" x-text="report.analysis.news_summary"></div>
         </div>
 
-        <!-- ⭐ TOSS Score — 단일 종합 점수 (헤드라인) -->
-        <template x-if="report.analysis.toss_score">
+        <!-- ⭐ SIFT Score — 단일 종합 점수 (헤드라인) -->
+        <template x-if="report.analysis.sift_score">
           <div class="surface-elevated p-5 relative overflow-hidden">
             <div class="flex items-center gap-5">
               <!-- 점수 원형 표시 -->
               <div class="relative shrink-0">
                 <div class="w-28 h-28 rounded-full flex flex-col items-center justify-center"
                      :style="'background: conic-gradient(' +
-                            (report.analysis.toss_score.score >= 60 ? '#10b981' :
-                             report.analysis.toss_score.score >= 45 ? '#f59e0b' : '#ef4444') +
-                            ' ' + (report.analysis.toss_score.score * 3.6) + 'deg, #1a1a1a 0deg)'">
+                            (report.analysis.sift_score.score >= 60 ? '#10b981' :
+                             report.analysis.sift_score.score >= 45 ? '#f59e0b' : '#ef4444') +
+                            ' ' + (report.analysis.sift_score.score * 3.6) + 'deg, #1a1a1a 0deg)'">
                   <div class="w-24 h-24 rounded-full bg-[#0a0a0a] flex flex-col items-center justify-center">
                     <div class="text-4xl font-bold font-mono"
-                         :class="report.analysis.toss_score.score >= 60 ? 'text-emerald-500' :
-                                 report.analysis.toss_score.score >= 45 ? 'text-amber-500' : 'text-rose-500'"
-                         x-text="report.analysis.toss_score.score"></div>
+                         :class="report.analysis.sift_score.score >= 60 ? 'text-emerald-500' :
+                                 report.analysis.sift_score.score >= 45 ? 'text-amber-500' : 'text-rose-500'"
+                         x-text="report.analysis.sift_score.score"></div>
                     <div class="text-[10px] text-ink-500 uppercase tracking-wider">/100</div>
                   </div>
                 </div>
               </div>
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2 mb-1">
-                  <span class="text-[10px] uppercase tracking-widest text-ink-500">TOSS Score</span>
+                  <span class="text-[10px] uppercase tracking-widest text-ink-500">SIFT Score</span>
                   <span class="px-2 py-0.5 rounded text-xs font-bold font-mono"
-                        :class="report.analysis.toss_score.score >= 60 ? 'bg-emerald-500/20 text-emerald-500' :
-                                report.analysis.toss_score.score >= 45 ? 'bg-amber-500/20 text-amber-500' : 'bg-rose-500/20 text-rose-500'"
-                        x-text="report.analysis.toss_score.grade"></span>
+                        :class="report.analysis.sift_score.score >= 60 ? 'bg-emerald-500/20 text-emerald-500' :
+                                report.analysis.sift_score.score >= 45 ? 'bg-amber-500/20 text-amber-500' : 'bg-rose-500/20 text-rose-500'"
+                        x-text="report.analysis.sift_score.grade"></span>
                 </div>
                 <div class="serif text-2xl font-semibold mb-2"
-                     x-text="report.analysis.toss_score.color + ' ' + report.analysis.toss_score.label"></div>
+                     x-text="report.analysis.sift_score.color + ' ' + report.analysis.sift_score.label"></div>
                 <!-- 5차원 breakdown 미니 막대 -->
                 <div class="space-y-1">
-                  <template x-for="(v, k) in report.analysis.toss_score.breakdown" :key="k">
+                  <template x-for="(v, k) in report.analysis.sift_score.breakdown" :key="k">
                     <div class="flex items-center gap-2 text-[11px]">
                       <span class="w-20 text-ink-600 shrink-0" x-text="k"></span>
                       <div class="flex-1 h-1.5 rounded-full overflow-hidden bg-[#1a1a1a] relative">
@@ -2394,8 +2394,8 @@ function app(){
     krwRate: 1400,
     mobileTab: 'watch',
     // 인증
-    user: JSON.parse(localStorage.getItem('toss_user') || 'null'),
-    authForm: { username: localStorage.getItem('toss_last_username') || '', password: '', password2: '', display_name: '' },
+    user: JSON.parse(localStorage.getItem('sift_user') || 'null'),
+    authForm: { username: localStorage.getItem('sift_last_username') || '', password: '', password2: '', display_name: '' },
     authError: '',
     authMode: 'login',
     regStep: 1,
@@ -2560,8 +2560,8 @@ function app(){
         const d = await r.json();
         if(!r.ok) { this.authError = d.detail; return; }
         this.user = d;
-        localStorage.setItem('toss_user', JSON.stringify(this.user));
-        localStorage.setItem('toss_last_username', this.authForm.username);
+        localStorage.setItem('sift_user', JSON.stringify(this.user));
+        localStorage.setItem('sift_last_username', this.authForm.username);
         this.refresh(); this.loadTrades();
       } catch(e) { this.authError = '서버 연결 실패'; }
     },
@@ -2572,20 +2572,20 @@ function app(){
         const d = await r.json();
         if(!r.ok) { this.authError = d.detail; return; }
         this.user = d;
-        localStorage.setItem('toss_user', JSON.stringify(this.user));
-        localStorage.setItem('toss_last_username', this.authForm.username);
+        localStorage.setItem('sift_user', JSON.stringify(this.user));
+        localStorage.setItem('sift_last_username', this.authForm.username);
         this.authMode = 'login'; this.regStep = 1;
         this.refresh(); this.loadTrades();
       } catch(e) { this.authError = '서버 연결 실패'; }
     },
     doLogout() {
       this.user = null;
-      localStorage.removeItem('toss_user');
+      localStorage.removeItem('sift_user');
       // toss_last_username은 의도적으로 남김 — 재로그인 시 아이디 자동 채움
       this.watch = []; this.trades = [];
     },
     forgetUser() {
-      localStorage.removeItem('toss_last_username');
+      localStorage.removeItem('sift_last_username');
       this.authForm.username = '';
     },
     async openAdmin() {
@@ -3176,7 +3176,7 @@ function app(){
     notify(m){
       try { document.getElementById('ding').play().catch(()=>{}); } catch{}
       if('Notification' in window && Notification.permission==='granted'){
-        new Notification(`Toss · ${m.symbol} ${this.alertLabel(m.kind)}`, { body: m.message });
+        new Notification(`Sift · ${m.symbol} ${this.alertLabel(m.kind)}`, { body: m.message });
       }
     },
     positionTone(p){

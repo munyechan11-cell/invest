@@ -1,7 +1,7 @@
 """스크린샷 → 포트폴리오 자동 추출 (Gemini Vision).
 
 지원 화면:
-- 토스증권 (Toss): 보유종목 + 평가금액 + 수량 (소수점) + 변동률
+- 토스증권: 보유종목 + 평가금액 + 수량 (소수점) + 변동률
 - 키움 영웅문 / 미래에셋 / 한국투자증권 등 일반 증권사
 - Robinhood / Webull / 야후 등 영문 화면
 
@@ -620,7 +620,7 @@ def extract_portfolio_from_image(image_bytes: bytes, krw_rate: float = 1380.0) -
             log.warning(f"OCR 정보 부족 ({sym}): 모두 0")
             continue
 
-        # 🔑 KEY FIX — 시세로 shares 역산 (Toss 메인은 shares 안 보임 → Gemini 추측 차단)
+        # 🔑 KEY FIX — 시세로 shares 역산 (토스증권 메인은 shares 안 보임 → Gemini 추측 차단)
         # Yahoo 무료 API로 현재가 fetch (native 단위: KR=원, US=달러)
         current_price_native = _fetch_current_price(sym)
 

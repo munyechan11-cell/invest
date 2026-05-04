@@ -23,7 +23,7 @@ from app.news import fetch_news, fetch_profile, fetch_market_flow
 from app.analyze import analyze
 from app.search import search_symbols
 from app.intelligence import (
-    compute_toss_score, explain_move, compute_multi_tf, detect_patterns,
+    compute_sift_score, explain_move, compute_multi_tf, detect_patterns,
     compute_relative_strength, get_benchmark_symbol,
 )
 from app.trade_kis import auto_order, is_live as kis_is_live
@@ -124,7 +124,7 @@ async def lifespan(_app: FastAPI):
         asyncio.create_task(screener_alerts.worker(broadcast)),
         asyncio.create_task(reports.daily_scheduler()),
     ]
-    log.info(f"Toss server ready ({len(tasks)} workers: alerts/brief/DART/screener/reports)")
+    log.info(f"Sift server ready ({len(tasks)} workers: alerts/brief/DART/screener/reports)")
     try:
         yield
     finally:
@@ -132,7 +132,7 @@ async def lifespan(_app: FastAPI):
             t.cancel()
 
 
-app = FastAPI(title="Toss — Quant Assistant", lifespan=lifespan)
+app = FastAPI(title="Sift — Quant Assistant", lifespan=lifespan)
 
 # ─── 미들웨어 ──────────────────────────────────────────────────────
 # 1) GZip 압축 — 모바일 트래픽 ~70% 감소
@@ -286,16 +286,16 @@ def _attach_brokers(ana: dict, symbol: str) -> dict:
 def _attach_intelligence(ana: dict, snap: dict, news: list[dict], flow: dict) -> dict:
     """경쟁 AI 플랫폼 핵심 5기능 일괄 주입.
 
-    1. TOSS Score (단일 종합 점수 0-100)
+    1. SIFT Score (단일 종합 점수 0-100)
     2. Move Explainer (왜 움직였나 1문장)
     3. Multi-TF Consensus (1H/1D/1W 시그널 일치도)
     4. Chart Patterns (자동 인식)
     5. Earnings/Analyst (flow에서 추출)
     """
     try:
-        ana["toss_score"] = compute_toss_score(snap, ana)
+        ana["sift_score"] = compute_sift_score(snap, ana)
     except Exception as e:
-        log.warning(f"toss_score 실패: {e}")
+        log.warning(f"sift_score 실패: {e}")
 
     try:
         ana["move_explainer"] = explain_move(snap, news, ana)
@@ -596,7 +596,7 @@ async def _send_analysis_to_telegram(user_id: int, symbol: str, snap: dict,
         chg = float(q.get("change_pct") or 0)
         position = ana.get("position") or "—"
         emoji = ana.get("position_emoji") or ""
-        ts = ana.get("toss_score") or {}
+        ts = ana.get("sift_score") or {}
         score_num = ts.get("score") if isinstance(ts, dict) else None
         grade = ts.get("grade") if isinstance(ts, dict) else ""
         entry = float(ana.get("entry_price") or price)
@@ -611,7 +611,7 @@ async def _send_analysis_to_telegram(user_id: int, symbol: str, snap: dict,
             f"포지션: {emoji} <b>{position}</b>",
         ]
         if score_num is not None:
-            lines.append(f"TOSS Score: <b>{score_num:.0f}/100</b> {grade}")
+            lines.append(f"SIFT Score: <b>{score_num:.0f}/100</b> {grade}")
         if rsi is not None:
             lines.append(f"RSI: {rsi:.1f}")
         lines.append("")
@@ -758,7 +758,7 @@ async def api_telegram_diagnose(user: dict = Depends(get_current_user)):
     if chat_id:
         send_res = await telegram_alert.send(
             chat_id,
-            "🔍 <b>Toss 진단 메시지</b>\n\n이 메시지가 보이면 텔레그램 알림이 정상 작동 중입니다.",
+            "🔍 <b>Sift 진단 메시지</b>\n\n이 메시지가 보이면 텔레그램 알림이 정상 작동 중입니다.",
         )
         if send_res.get("ok"):
             diag["steps"].append({
@@ -819,7 +819,7 @@ async def api_telegram_subscribe(body: TelegramChatIn, user: dict = Depends(get_
         raise HTTPException(400, "chat_id 비어있음")
 
     test_msg = (
-        "✅ <b>Toss 알림 연결 완료</b>\n\n"
+        "✅ <b>Sift 알림 연결 완료</b>\n\n"
         f"안녕하세요 <b>{user.get('display_name') or user.get('username')}</b>님,\n"
         "이제 매수/매도/익절/손절 시그널이 발생할 때마다\n"
         "이 채팅으로 즉시 푸시됩니다.\n\n"
@@ -866,7 +866,7 @@ async def api_scan_today(market: str = "BOTH", limit: int = 5,
                          ranking: str = "volume",
                          force: bool = False,
                          _: dict = Depends(get_current_user)):
-    """KR/US/BOTH 인기 종목 스캔 → TOSS Score 상위 N개. 5분 캐시.
+    """KR/US/BOTH 인기 종목 스캔 → SIFT Score 상위 N개. 5분 캐시.
 
     KR ranking 옵션:
     - volume: 거래량 TOP (기본)
@@ -1219,7 +1219,7 @@ async def api_telegram_test(user: dict = Depends(get_current_user)):
     sample = telegram_alert.format_alert(
         symbol="005930", kind="BUY", price=72500,
         message="✅ 봇 연결 테스트 — 실제 매매 신호 아님. 이렇게 알림이 도착합니다.",
-        toss_score={"score": 78.5, "grade": "A"},
+        sift_score={"score": 78.5, "grade": "A"},
         entry=72500, target=75000, stop=71000, is_kr=True,
     )
     res = await telegram_alert.send(chat_id, sample)
@@ -1323,7 +1323,7 @@ async def api_add_portfolio(data: dict, user: dict = Depends(get_current_user)):
 
 async def _post_portfolio_add(symbol: str, user_id: int,
                               entry_price: float, shares: float, krw_invested: float):
-    """포트폴리오 추가 후처리 — 분석(plan 생성) + 텔레그램 즉시 알림 + 토스 정보."""
+    """포트폴리오 추가 후처리 — 분석(plan 생성) + 텔레그램 즉시 알림 + 토스증권 정보."""
     try:
         # 1) 종목명 + 현재가 + (가능하면) 분석 plan
         existing_plan = await db.get_plan(symbol, max_age_sec=3600)

@@ -1,6 +1,6 @@
 """고차 분석 — 경쟁사 AI 플랫폼 핵심 기능 통합.
 
-1. TOSS Score (0-100) — Danelfin/Tickeron 스타일 단일 종합 점수
+1. SIFT Score (0-100) — Danelfin/Tickeron 스타일 단일 종합 점수
 2. Move Explainer — MarketReader 스타일 "왜 움직였나" 자동 설명
 3. Multi-Timeframe Consensus — Tickeron의 1H/1D/1W 시그널 일치도
 4. Chart Pattern Detection — Trade Ideas 스타일 패턴 자동 인식
@@ -13,9 +13,9 @@ log = logging.getLogger("intel")
 
 
 # ───────────────────────────────────────────────────────────────────
-# 1. TOSS SCORE (0-100 종합 점수)
+# 1. SIFT SCORE (0-100 종합 점수)
 # ───────────────────────────────────────────────────────────────────
-def compute_toss_score(snap: dict, ana: dict) -> dict:
+def compute_sift_score(snap: dict, ana: dict) -> dict:
     """5차원 합산 — 기술 / 모멘텀 / 수급 / 뉴스 / 신뢰도.
 
     각 차원의 부호 있는 raw score를 -50~+50 범위로 합산 → 50 중심 정규화.

@@ -1,7 +1,7 @@
 """모닝 브리프 — 매일 평일 9:00 KST 자동 텔레그램 발송.
 
 - TOP 5 매수 후보 (한+미 합산)
-- 각 종목의 TOSS Score, 포지션, 변동률, 거래량 강도
+- 각 종목의 SIFT Score, 포지션, 변동률, 거래량 강도
 - 토스 deeplink 포함
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ async def generate_brief() -> str:
 
     now = datetime.now(KST)
     lines = [
-        "<b>🌅 Toss Quant 모닝 브리프</b>",
+        "<b>🌅 Sift Quant 모닝 브리프</b>",
         f"<i>{now.strftime('%Y-%m-%d %A %H:%M KST')}</i>",
     ]
 
@@ -41,7 +41,7 @@ async def generate_brief() -> str:
         chg_icon = "🟢" if t["change_pct"] >= 0 else "🔴"
         lines.append(
             f"\n<b>{i}. {t['name']}</b> ({t['symbol']})\n"
-            f"   {t['position_emoji']} {t['position']} · TOSS <b>{t['toss_score']:.0f}</b> ({t['grade']})\n"
+            f"   {t['position_emoji']} {t['position']} · SIFT <b>{t['sift_score']:.0f}</b> ({t['grade']})\n"
             f"   {price_fmt} {chg_icon} {t['change_pct']:+.2f}% · "
             f"RV {t['rv']}x · RSI {t['rsi']:.0f}"
         )

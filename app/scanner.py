@@ -33,14 +33,14 @@ POPULAR_US = [
 
 
 async def scan_symbol(symbol: str, name: str, exchange: str = None) -> dict | None:
-    """단일 종목 빠른 평가 — 룰 엔진 + TOSS Score만."""
+    """단일 종목 빠른 평가 — 룰 엔진 + SIFT Score만."""
     from .market import get_snapshot
     from .analyze_rules import analyze_rules
-    from .intelligence import compute_toss_score
+    from .intelligence import compute_sift_score
     try:
         snap = await asyncio.to_thread(get_snapshot, symbol)
         ana = analyze_rules(symbol, snap, [], {}, {}, 1.0)
-        score = compute_toss_score(snap, ana)
+        score = compute_sift_score(snap, ana)
         q = snap.get("quote") or {}
         ind = snap.get("indicators") or {}
         return {
@@ -55,7 +55,7 @@ async def scan_symbol(symbol: str, name: str, exchange: str = None) -> dict | No
             "rsi": ind.get("rsi14", 50),
             "position": ana.get("position", "관망"),
             "position_emoji": ana.get("position_emoji", "⚪"),
-            "toss_score": score["score"],
+            "sift_score": score["score"],
             "grade": score["grade"],
             "label": score["label"],
         }
@@ -67,12 +67,12 @@ async def scan_symbol(symbol: str, name: str, exchange: str = None) -> dict | No
 async def scan_universe(market: str = "BOTH", limit: int = 5,
                         min_score: float = 55,
                         kr_source: str = "volume") -> list[dict]:
-    """전체 인기 종목 스캔 → TOSS Score 내림차순 TOP N.
+    """전체 인기 종목 스캔 → SIFT Score 내림차순 TOP N.
 
     Args:
         market: KR / US / BOTH
         limit: 반환 개수
-        min_score: TOSS Score 임계 (미달 시에도 폴백으로 상위 N개)
+        min_score: SIFT Score 임계 (미달 시에도 폴백으로 상위 N개)
         kr_source: "volume" = 실시간 거래량 TOP20+20 (네이버) / "popular" = 정적 시총
     """
     universe: list[tuple[str, str, str]] = []  # (symbol, name, exchange)
@@ -108,9 +108,9 @@ async def scan_universe(market: str = "BOTH", limit: int = 5,
         return_exceptions=False,
     )
     valid = [r for r in results if r]
-    valid.sort(key=lambda x: x["toss_score"], reverse=True)
+    valid.sort(key=lambda x: x["sift_score"], reverse=True)
     # 점수 임계 + 상위 N개
-    qualified = [r for r in valid if r["toss_score"] >= min_score][:limit]
+    qualified = [r for r in valid if r["sift_score"] >= min_score][:limit]
     return qualified or valid[:limit]  # 임계 미달이면 그래도 상위 N개
 
 

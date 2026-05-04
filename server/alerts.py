@@ -41,17 +41,17 @@ async def _push_telegram(symbol: str, kind: str, price: float, message: str,
         return
 
     is_kr = symbol.isdigit() and len(symbol) == 6
-    toss_score = (plan or {}).get("toss_score") if plan else None
+    sift_score = (plan or {}).get("sift_score") if plan else None
     text = telegram_alert.format_alert(
         symbol, kind, price, message,
-        toss_score=toss_score,
+        sift_score=sift_score,
         entry=(plan or {}).get("entry_price"),
         target=(plan or {}).get("target_price"),
         stop=(plan or {}).get("stop_price"),
         is_kr=is_kr,
     )
 
-    score_val = (toss_score or {}).get("score", 0) if isinstance(toss_score, dict) else 0
+    score_val = (sift_score or {}).get("score", 0) if isinstance(sift_score, dict) else 0
     for user_id, chat_id in subs:
         try:
             settings = await db.get_user_settings(user_id)
@@ -116,7 +116,7 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
                            f"권장 {size['shares']}주 (분할: {splits}), "
                            f"투입 {_fmt(sym, size['notional'])}, 최대손실 {_fmt(sym, size['max_loss'])}")
                 else:
-                    msg = f"💚 지금 {pos}! {pf} (진입가 {fmt_entry} 도달) — 토스에서 매수 진행"
+                    msg = f"💚 지금 {pos}! {pf} (진입가 {fmt_entry} 도달) — 토스증권에서 매수 진행"
                 await db.add_alert(sym, "BUY", msg, price)
                 await broadcast({"type": "alert", "symbol": sym, "kind": "BUY",
                                  "message": msg, "price": price, "user_id": user_id})

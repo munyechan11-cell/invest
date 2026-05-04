@@ -16,7 +16,7 @@ log = logging.getLogger("market_kr_yahoo")
 
 YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart"
 HDR = {
-    "User-Agent": "Mozilla/5.0 (compatible; Toss/1.0)",
+    "User-Agent": "Mozilla/5.0 (compatible; Sift/1.0)",
     "Accept": "application/json",
 }
 

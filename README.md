@@ -1,4 +1,4 @@
-# Toss — 단기투자 어시스턴트 (Web)
+# Sift — 단기투자 어시스턴트 (Web)
 
 티커 + 투자금을 입력하면 실시간 시세·뉴스를 종합해 퀀트 리포트를 띄우고,
 목표가/손절가 도달 시 브라우저 알림으로 "지금 분할매수!" / "지금 매도!" 를 쏘는 웹 대시보드.
@@ -39,7 +39,7 @@ python -m server.main
 2. https://render.com 가입 → New → Blueprint → 이 repo 선택
 3. `render.yaml` 자동 인식 → 환경변수 입력란에 `.env`의 키들 그대로 붙여넣기
 4. `JWT_SECRET_KEY`는 Render가 자동 생성, `ADMIN_PASSWORD`는 강한 비번으로 직접 입력
-5. Deploy → `https://toss-quant.onrender.com` 발급
+5. Deploy → `https://sift-quant.onrender.com` 발급
 > 무료티어는 15분 무사용 시 슬립. 깨어날 때 30초 지연. 24/7 원하면 Starter $7/월.
 
 ## 배포 (Railway 대안)

@@ -1,4 +1,4 @@
-"""Toss 운영용 CLI.
+"""Sift 운영용 CLI.
 
 사용:
     python -m server.cli create-admin <username> <password>

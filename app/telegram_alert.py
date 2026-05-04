@@ -174,10 +174,10 @@ def format_portfolio_added(symbol: str, name: str, entry_price: float,
 
     # AI 분석 결과 (이미 있다면)
     if ana:
-        ts = ana.get("toss_score")
+        ts = ana.get("sift_score")
         if ts:
             lines.append(
-                f"🎯 TOSS Score: <b>{ts.get('score','?')}/100</b> "
+                f"🎯 SIFT Score: <b>{ts.get('score','?')}/100</b> "
                 f"({ts.get('grade','?')}) {ts.get('label','')}"
             )
         pos = ana.get("position")
@@ -208,7 +208,7 @@ def format_portfolio_added(symbol: str, name: str, entry_price: float,
 
 
 def format_alert(symbol: str, kind: str, price: float, message: str,
-                 toss_score: dict | None = None,
+                 sift_score: dict | None = None,
                  entry: float | None = None,
                  target: float | None = None,
                  stop: float | None = None,
@@ -236,10 +236,10 @@ def format_alert(symbol: str, kind: str, price: float, message: str,
         lines.append(f"🎯 목표가: <code>{fmt_p(target)}</code>")
     if stop:
         lines.append(f"🛑 손절가: <code>{fmt_p(stop)}</code>")
-    if toss_score:
-        score = toss_score.get("score", 0)
-        grade = toss_score.get("grade", "?")
-        lines.append(f"📊 TOSS Score: <b>{score}/100</b> ({grade})")
+    if sift_score:
+        score = sift_score.get("score", 0)
+        grade = sift_score.get("grade", "?")
+        lines.append(f"📊 SIFT Score: <b>{score}/100</b> ({grade})")
 
     lines += ["", f"💬 {message}"]
 

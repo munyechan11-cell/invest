@@ -2,7 +2,7 @@
 # 사용법: https://render.com/deploy 에서 이 repo 선택
 services:
   - type: web
-    name: toss-quant
+    name: sift-quant
     runtime: python
     plan: starter            # Free→Starter (sleep 없음, 0.5 CPU)
     region: singapore
@@ -10,7 +10,7 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn server.main:app --host 0.0.0.0 --port $PORT
     disk:                    # 영구 저장소 — DB/캐시가 배포 후에도 살아남음
-      name: toss-data
+      name: sift-data
       mountPath: /var/data
       sizeGB: 1              # $1/월. 1GB면 SQLite 수년치 충분
     envVars:
@@ -19,7 +19,7 @@ services:
       - key: HOST
         value: 0.0.0.0
       - key: DB_PATH         # 영구 디스크에 DB 저장
-        value: /var/data/toss.db
+        value: /var/data/sift.db
       - key: LOG_FORMAT      # JSON 로그 (Render에서 검색·필터 쉬움)
         value: json
       # 아래 키들은 Render 대시보드에서 직접 입력
