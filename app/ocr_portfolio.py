@@ -373,32 +373,37 @@ def _resolve_via_naver(name: str) -> str | None:
 PROMPT = """이 이미지는 한국 증권사 앱(토스증권/키움/미래에셋/한국투자/NH투자) 또는
 미국/글로벌 브로커리지(Robinhood/Webull) 등의 보유 종목(포트폴리오) 화면입니다.
 
-각 보유 종목에서 다음 5가지를 정확히 추출하세요:
+각 보유 종목에서 다음 6가지를 정확히 추출하세요:
 
 1. **name** — 화면에 보이는 종목명 그대로 (한글이면 한글 유지). 예: "삼성전자", "마이크로소프트", "코스트코"
 2. **symbol** — 한국주식이면 6자리 숫자 코드(예 005930), 미국주식이면 영문 1~6자 티커(예 MSFT, AAPL). 화면에 코드가 안 보이면 null.
 3. **shares** — 보유 수량 (소수점 가능. 예 0.693214). 콤마/주 글자 제외.
-4. **current_value** — 현재 평가금액 (원 단위 한국주식이면 원, 달러면 달러). 콤마/통화기호 제거 순수 숫자.
-5. **market** — "KR" 또는 "US". 종목명이 한글이어도 평가금액에 ₩/원이 보이면 KR, $/달러면 US.
+4. **current_value** — 현재 평가금액 (콤마/통화기호 제거 순수 숫자, 화면에 표시된 그 값 그대로).
+5. **currency** — "KRW" 또는 "USD". 평가금액 옆에 "원" 또는 "₩" 또는 "₩" 보이면 KRW, "$" 또는 "달러" 보이면 USD. ⚠️ 매우 중요: 토스증권은 미국주식도 원화로 표시합니다. 화면 통화 기호 그대로 판별.
+6. **market** — "KR" 또는 "US". 종목 자체가 한국주식인지 미국주식인지. (예: 마이크로소프트는 currency=KRW여도 market=US)
 
 ⚠️ 절대 규칙:
 - 종목명은 영문으로 임의 변환하지 말 것 (마이크로소프트를 그대로, MSFT로 바꾸지 말 것)
 - 화면에 안 보이는 정보는 null (절대 추측 금지)
 - 그래프/차트/배너는 무시. 보유 종목 카드/리스트만.
-- 평균단가가 보이면 entry_price로 추가, 안 보이면 0 또는 생략
+- 평균단가가 보이면 entry_price로 추가 (단위는 currency와 동일), 안 보이면 0 또는 생략
 
 순수 JSON 배열만 출력 (마크다운 ```json``` 금지, 설명 금지):
 
-예시 1 (토스증권 한국주식):
+예시 1 (토스증권 한국주식 — 원화 표시):
 [
-  {"name": "삼성전자", "symbol": "005930", "shares": 10, "current_value": 750000, "entry_price": 70000, "market": "KR"},
-  {"name": "SK하이닉스", "symbol": "000660", "shares": 2, "current_value": 280000, "entry_price": 0, "market": "KR"}
+  {"name": "삼성전자", "symbol": "005930", "shares": 10, "current_value": 750000, "entry_price": 70000, "currency": "KRW", "market": "KR"}
 ]
 
-예시 2 (토스증권 미국주식, 원화 표기):
+예시 2 (토스증권 미국주식 — 원화 표시! market과 currency 다름!):
 [
-  {"name": "마이크로소프트", "symbol": "MSFT", "shares": 0.693214, "current_value": 423522, "entry_price": 0, "market": "US"},
-  {"name": "코스트코", "symbol": "COST", "shares": 1.5, "current_value": 1200000, "entry_price": 0, "market": "US"}
+  {"name": "마이크로소프트", "symbol": "MSFT", "shares": 0.693214, "current_value": 423522, "entry_price": 0, "currency": "KRW", "market": "US"},
+  {"name": "코스트코", "symbol": "COST", "shares": 0.283, "current_value": 421932, "entry_price": 0, "currency": "KRW", "market": "US"}
+]
+
+예시 3 (Robinhood 미국주식 — 달러 표시):
+[
+  {"name": "Apple", "symbol": "AAPL", "shares": 5, "current_value": 1100, "entry_price": 200, "currency": "USD", "market": "US"}
 ]
 
 종목 정보를 못 찾으면 빈 배열 [] 반환.
@@ -445,17 +450,23 @@ def _call_gemini(api_key: str, image_bytes: bytes, mime: str, retry_hint: str = 
         return []
 
 
-def extract_portfolio_from_image(image_bytes: bytes) -> list[dict]:
-    """포트폴리오 스크린샷 분석. 정확도 강화 + 재시도 + 검증."""
+def extract_portfolio_from_image(image_bytes: bytes, krw_rate: float = 1380.0) -> list[dict]:
+    """포트폴리오 스크린샷 분석. 정확도 강화 + 재시도 + 검증.
+
+    krw_rate: 현재 USD→KRW 환율. 토스가 미국주식을 원화로 표시하기 때문에
+              미국주식 entry_price를 USD 기준으로 변환할 때 사용.
+    """
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
         log.error("GEMINI_API_KEY 미설정")
         return []
     if not image_bytes:
         return []
+    if krw_rate <= 0:
+        krw_rate = 1380.0  # 합리적 디폴트
 
     mime = _detect_mime(image_bytes)
-    log.info(f"OCR start: {len(image_bytes)} bytes, mime={mime}, model={MODEL}")
+    log.info(f"OCR start: {len(image_bytes)} bytes, mime={mime}, model={MODEL}, krw_rate={krw_rate}")
 
     # 1차 호출
     items = _call_gemini(api_key, image_bytes, mime)
@@ -496,6 +507,19 @@ def extract_portfolio_from_image(image_bytes: bytes) -> list[dict]:
         shares = _clean_number(it.get("shares"))
         current_value = _clean_number(it.get("current_value") or it.get("krw_invested"))
         entry_price = _clean_number(it.get("entry_price"))
+        currency = str(it.get("currency") or "").upper()
+        is_kr_stock = sym.isdigit() and len(sym) == 6
+
+        # 통화 자동 추론 (Gemini가 currency 빠뜨렸을 때):
+        # - 한국주식이면 무조건 KRW
+        # - 미국주식 + current_value > 100,000이면 KRW (1주에 $100k 넘는 종목 거의 없음)
+        if not currency:
+            if is_kr_stock:
+                currency = "KRW"
+            elif current_value > 100_000:
+                currency = "KRW"
+            else:
+                currency = "USD"
 
         # 합리성 검증
         if shares <= 0 or shares > 10_000_000:
@@ -505,7 +529,7 @@ def extract_portfolio_from_image(image_bytes: bytes) -> list[dict]:
             log.warning(f"OCR 비정상 current_value ({sym}): {current_value}")
             continue
 
-        # 평균단가 자동 도출
+        # 평균단가 자동 도출 (현재 통화 기준)
         if entry_price <= 0 and shares > 0 and current_value > 0:
             chg = it.get("change_pct")
             if chg is not None:
@@ -520,6 +544,14 @@ def extract_portfolio_from_image(image_bytes: bytes) -> list[dict]:
             else:
                 entry_price = current_value / shares
 
+        # 🔑 핵심 변환 — DB는 stock의 native currency로 저장
+        # KR 종목 → KRW 그대로
+        # US 종목인데 화면이 KRW였으면 → USD로 환산 (entry_price 단위)
+        krw_invested_total = current_value if currency == "KRW" else current_value * krw_rate
+        if not is_kr_stock and currency == "KRW":
+            entry_price = entry_price / krw_rate  # KRW per share → USD per share
+            log.info(f"{sym}: KRW→USD 환산 entry_price={entry_price:.4f} (rate={krw_rate})")
+
         if entry_price <= 0:
             log.warning(f"OCR 평단가 도출 실패 ({sym})")
             continue
@@ -529,9 +561,11 @@ def extract_portfolio_from_image(image_bytes: bytes) -> list[dict]:
             "symbol": sym,
             "name": name or sym,
             "shares": round(shares, 6),
+            # entry_price는 stock native currency (KR=KRW per share, US=USD per share)
             "entry_price": round(entry_price, 4),
-            "krw_invested": round(current_value or shares * entry_price, 2),
-            "market": "KR" if (sym.isdigit() and len(sym) == 6) else "US",
+            # krw_invested는 항상 KRW (총 투자금) — 통일된 단위로 저장 → 손익 계산 일관성↑
+            "krw_invested": round(krw_invested_total, 2),
+            "market": "KR" if is_kr_stock else "US",
         })
 
     log.info(f"OCR 완료: {len(out)}개 — {[h['symbol'] for h in out]}")

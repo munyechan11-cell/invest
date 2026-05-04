@@ -1316,6 +1316,15 @@ async def api_remove_portfolio(pid: int, user: dict = Depends(get_current_user))
     return {"ok": True}
 
 
+@app.delete("/api/portfolio")
+async def api_clear_portfolio(user: dict = Depends(get_current_user)):
+    """포트폴리오 전체 비우기 — 잘못된 OCR 데이터 한번에 정리용."""
+    c = await db.get_db()
+    await c.execute("DELETE FROM portfolio WHERE user_id=?", (user["id"],))
+    await c.commit()
+    return {"ok": True}
+
+
 @app.post("/api/portfolio/{pid}/add")
 async def api_average_down(pid: int, data: dict, user: dict = Depends(get_current_user)):
     """추매 — 평단가 자동 재계산 (가중 평균)."""
@@ -1365,13 +1374,21 @@ async def _notify_average_down(chat_id: str, symbol: str, r: dict):
     await telegram_alert.send(chat_id, msg)
 
 from app.ocr_portfolio import extract_portfolio_from_image
-from fastapi import UploadFile, File
+from fastapi import UploadFile, File, Form
 
 @app.post("/api/portfolio/upload")
-async def api_upload_portfolio(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
-    """포트폴리오 스크린샷을 분석하여 일괄 등록"""
+async def api_upload_portfolio(
+    file: UploadFile = File(...),
+    krw_rate: float = Form(1380.0),
+    user: dict = Depends(get_current_user),
+):
+    """포트폴리오 스크린샷을 분석하여 일괄 등록.
+
+    krw_rate: 프론트엔드가 들고 있는 현재 USD→KRW 환율. 토스가 미국주식을
+              원화로 표시하기 때문에 USD entry_price 환산에 필요.
+    """
     content = await file.read()
-    holdings = await asyncio.to_thread(extract_portfolio_from_image, content)
+    holdings = await asyncio.to_thread(extract_portfolio_from_image, content, krw_rate)
     
     if not holdings:
         return {"ok": False, "msg": "이미지에서 종목 정보를 추출하지 못했습니다."}

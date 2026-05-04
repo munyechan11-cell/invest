@@ -659,16 +659,22 @@
       <div class="surface-elevated p-4">
         <div class="flex items-center justify-between mb-4">
           <div class="serif text-sm font-semibold text-ink-800">내 포트폴리오</div>
-          <label class="cursor-pointer text-[10px] bg-coral-500/10 text-coral-500 px-2 py-1 rounded hover:bg-coral-500/20 transition-colors">
-            📸 사진으로 등록
-            <input type="file" class="hidden" accept="image/*" @change="uploadPortfolioImage">
-          </label>
+          <div class="flex items-center gap-1.5">
+            <button x-show="holdings.length > 0" @click="clearAllPortfolio"
+                    class="text-[10px] bg-rust-500/10 text-rust-500 px-2 py-1 rounded hover:bg-rust-500/20 transition-colors">
+              🗑 전체 비우기
+            </button>
+            <label class="cursor-pointer text-[10px] bg-coral-500/10 text-coral-500 px-2 py-1 rounded hover:bg-coral-500/20 transition-colors">
+              📸 사진으로 등록
+              <input type="file" class="hidden" accept="image/*" @change="uploadPortfolioImage">
+            </label>
+          </div>
         </div>
       <div class="grid grid-cols-2 gap-2 text-sm">
-        <div><span class="text-ink-500">총 투자</span><br><span class="font-mono" x-text="'$'+portfolio.total_invested.toLocaleString()"></span></div>
-        <div><span class="text-ink-500">총 회수</span><br><span class="font-mono" x-text="'$'+portfolio.total_returned.toLocaleString()"></span></div>
-        <div><span class="text-ink-500">손익</span><br><span class="font-mono" :class="portfolio.total_pnl>=0?'ticker-up':'ticker-down'" x-text="(portfolio.total_pnl>=0?'+':'')+portfolio.total_pnl.toLocaleString()"></span></div>
-        <div><span class="text-ink-500">수익률</span><br><span class="font-mono" :class="portfolio.total_pnl_pct>=0?'ticker-up':'ticker-down'" x-text="(portfolio.total_pnl_pct>=0?'+':'')+portfolio.total_pnl_pct+'%'"></span></div>
+        <div><span class="text-ink-500">총 투자</span><br><span class="font-mono" x-text="'₩'+portfolio.total_invested.toLocaleString()"></span></div>
+        <div><span class="text-ink-500">총 회수</span><br><span class="font-mono" x-text="'₩'+portfolio.total_returned.toLocaleString()"></span></div>
+        <div><span class="text-ink-500">손익</span><br><span class="font-mono" :class="portfolio.total_pnl>=0?'ticker-up':'ticker-down'" x-text="(portfolio.total_pnl>=0?'+':'')+'₩'+Math.abs(portfolio.total_pnl).toLocaleString()"></span></div>
+        <div><span class="text-ink-500">수익률</span><br><span class="font-mono" :class="portfolio.total_pnl_pct>=0?'ticker-up':'ticker-down'" x-text="(portfolio.total_pnl_pct>=0?'+':'')+portfolio.total_pnl_pct.toFixed(2)+'%'"></span></div>
       </div>
       <button @click="showTradeModal=true; tradeForm.symbol=selected||''" class="btn btn-ghost w-full mt-3 text-xs">+ 매매 기록 추가</button>
 
@@ -696,11 +702,11 @@
                 <div class="grid grid-cols-3 gap-1 text-[10px]">
                   <div>
                     <div class="text-ink-500">현재가</div>
-                    <div class="font-mono font-semibold" x-text="cur(h.symbol)+h.current_price.toLocaleString()"></div>
+                    <div class="font-mono font-semibold" x-text="'₩'+Math.round(toKRW(h.current_price ?? 0, h.symbol)).toLocaleString()"></div>
                   </div>
                   <div>
                     <div class="text-ink-500">평단가</div>
-                    <div class="font-mono" x-text="cur(h.symbol)+(h.entry_price ?? 0).toLocaleString()"></div>
+                    <div class="font-mono" x-text="'₩'+Math.round(toKRW(h.entry_price ?? 0, h.symbol)).toLocaleString()"></div>
                   </div>
                   <div>
                     <div class="text-ink-500">수량</div>
@@ -1717,22 +1723,22 @@
             <div class="grid grid-cols-3 gap-2 text-xs mb-2">
               <div>
                 <div class="text-ink-500">평단가</div>
-                <div class="font-mono font-semibold" x-text="cur(h.symbol)+(h.entry_price ?? 0).toLocaleString()"></div>
+                <div class="font-mono font-semibold" x-text="'₩'+Math.round(toKRW(h.entry_price ?? 0, h.symbol)).toLocaleString()"></div>
               </div>
               <div>
                 <div class="text-ink-500">현재가</div>
                 <div class="font-mono font-semibold"
                      :class="h.current_price >= h.entry_price ? 'ticker-up' : 'ticker-down'"
-                     x-text="cur(h.symbol)+(h.current_price ?? 0).toLocaleString()"></div>
+                     x-text="'₩'+Math.round(toKRW(h.current_price ?? 0, h.symbol)).toLocaleString()"></div>
               </div>
               <div>
                 <div class="text-ink-500">평가손익</div>
                 <div class="font-mono font-semibold"
                      :class="(h.pnl ?? 0) >= 0 ? 'ticker-up' : 'ticker-down'"
-                     x-text="((h.pnl ?? 0) >= 0 ? '+' : '') + cur(h.symbol)+Math.abs(h.pnl ?? 0).toLocaleString()"></div>
+                     x-text="((h.pnl ?? 0) >= 0 ? '+' : '-') + '₩' + Math.round(Math.abs(toKRW(h.pnl ?? 0, h.symbol))).toLocaleString()"></div>
               </div>
             </div>
-            <div class="text-[11px] text-ink-500" x-text="(h.shares ?? 0).toLocaleString() + '주 보유 · 투입 ' + cur(h.symbol) + (((h.shares ?? 0) * (h.entry_price ?? 0)) || 0).toLocaleString()"></div>
+            <div class="text-[11px] text-ink-500" x-text="(h.shares ?? 0).toLocaleString() + '주 보유 · 투입 ₩' + Math.round(toKRW(((h.shares ?? 0) * (h.entry_price ?? 0)) || 0, h.symbol)).toLocaleString()"></div>
           </div>
           <div class="flex gap-2 mt-3 pt-3 border-t border-[#222]">
             <button @click="openAvgDown(h)"
@@ -2311,12 +2317,13 @@ function app(){
     async uploadPortfolioImage(e) {
       const file = e.target.files[0];
       if(!file) return;
-      
+
       this.loading = true;
       try {
         const formData = new FormData();
         formData.append('file', file);
-        
+        formData.append('krw_rate', String(this.krwRate || 1380));
+
         const r = await this.api('/api/portfolio/upload', { method:'POST', body: formData });
         const d = await r.json();
         if(d.ok) {
@@ -2333,14 +2340,16 @@ function app(){
       }
     },
     recalcPortfolioTotals() {
-      // 보유종목 합계로 포트폴리오 카드 즉시 갱신
+      // 모든 금액을 원화로 통일해서 합산 (US 종목은 krwRate 곱함)
+      const rate = this.krwRate || 1380;
       let invested = 0, current = 0;
       this.holdings.forEach(h => {
         const sh = parseFloat(h.shares) || 0;
         const ep = parseFloat(h.entry_price) || 0;
         const cp = parseFloat(h.current_price) || ep;
-        invested += sh * ep;
-        current += sh * cp;
+        const fx = this.isKR(h.symbol) ? 1 : rate;  // US → KRW 환산
+        invested += sh * ep * fx;
+        current += sh * cp * fx;
       });
       this.portfolio.total_invested = Math.round(invested);
       this.portfolio.total_returned = Math.round(current);
@@ -2591,6 +2600,14 @@ function app(){
       await this.api('/api/portfolio/'+id, { method:'DELETE' });
       await this.loadHoldings();
     },
+    async clearAllPortfolio() {
+      if(!confirm(`보유 종목 ${this.holdings.length}개를 전부 삭제할까요?\n(잘못 인식된 데이터를 비우고 다시 사진 등록할 때 사용)`)) return;
+      const r = await this.api('/api/portfolio', { method:'DELETE' });
+      if(r.ok) {
+        this.holdings = [];
+        this.recalcPortfolioTotals();
+      }
+    },
 
     select(sym){ this.selected = sym; this.report = null; this.mobileTab = 'report'; this.runAnalyze(); },
     async addWatch(){
@@ -2693,6 +2710,11 @@ function app(){
     },
     isKR(sym){ return sym && /^\d{6}$/.test(sym); },
     cur(sym){ return this.isKR(sym) ? '₩' : '$'; },
+    // 어떤 종목의 native 단위 금액 → KRW로 환산. 한국주식은 그대로, 미국주식은 환율 곱함.
+    toKRW(amount, sym){
+      const a = Number(amount) || 0;
+      return this.isKR(sym) ? a : a * (this.krwRate || 1380);
+    },
   }
 }
 </script>
