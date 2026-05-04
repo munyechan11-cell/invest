@@ -660,9 +660,10 @@
         <div class="flex items-center justify-between mb-4">
           <div class="serif text-sm font-semibold text-ink-800">내 포트폴리오</div>
           <div class="flex items-center gap-1.5">
-            <button x-show="holdings.length > 0" @click="clearAllPortfolio"
-                    class="text-[10px] bg-rust-500/10 text-rust-500 px-2 py-1 rounded hover:bg-rust-500/20 transition-colors">
-              🗑 전체 비우기
+            <button @click="clearAllPortfolio"
+                    class="text-[10px] bg-rust-500/10 text-rust-500 px-2 py-1 rounded hover:bg-rust-500/20 transition-colors"
+                    title="DB의 모든 보유 종목 강제 삭제 (화면이 비어있어도 동작)">
+              🗑 강제 비우기
             </button>
             <label class="cursor-pointer text-[10px] bg-coral-500/10 text-coral-500 px-2 py-1 rounded hover:bg-coral-500/20 transition-colors">
               📸 사진으로 등록
@@ -2151,8 +2152,8 @@ function app(){
         // 자동 갱신 — TOP 추천 5분 / 지수 30초
         setInterval(() => this.loadTopPicks(true), 5 * 60 * 1000);
         setInterval(() => this.loadIndices(), 30 * 1000);
-        // 5초마다 포트폴리오 실시간 갱신
-        setInterval(() => this.loadHoldings(), 5000);
+        // 30초마다 포트폴리오 갱신 (Render 512MB 부담 줄임 + WebSocket이 실시간 가격 처리)
+        setInterval(() => this.loadHoldings(), 30000);
       }
       this.connect(); this.fetchExchangeRate();
       const tick = () => this.now = new Date().toLocaleString('ko-KR', { hour12:false });
@@ -2673,11 +2674,19 @@ function app(){
       await this.loadHoldings();
     },
     async clearAllPortfolio() {
-      if(!confirm(`보유 종목 ${this.holdings.length}개를 전부 삭제할까요?\n(잘못 인식된 데이터를 비우고 다시 사진 등록할 때 사용)`)) return;
+      // 화면이 비어있어도 백엔드에 데이터 남아있을 수 있어 항상 호출 가능
+      const msg = this.holdings.length > 0
+        ? `보유 종목 ${this.holdings.length}개를 전부 삭제할까요?`
+        : '백엔드에 남아있는 모든 보유 종목을 강제 삭제할까요?\n(화면은 비어있지만 DB에 잔존 데이터 있을 수 있음)';
+      if(!confirm(msg)) return;
       const r = await this.api('/api/portfolio', { method:'DELETE' });
       if(r.ok) {
         this.holdings = [];
         this.recalcPortfolioTotals();
+        await this.loadHoldings();  // 백엔드에서 다시 가져와 확인
+        alert('모든 보유 종목이 삭제되었습니다.');
+      } else {
+        alert('삭제 실패: ' + await r.text());
       }
     },
     openEdit(h) {

@@ -1265,35 +1265,43 @@ async def api_list_trades(user: dict = Depends(get_current_user)):
 
 @app.get("/api/portfolio")
 async def api_portfolio(user: dict = Depends(get_current_user)):
-    """실시간 시세와 추천 포지션이 포함된 내 포트폴리오"""
+    """실시간 시세 + 캐시된 분석 결과가 포함된 내 포트폴리오.
+
+    안전장치:
+    - 모든 시세 조회를 병렬 + 종목당 8초 타임아웃 (한 종목 느리다고 전체 막히지 않음)
+    - 시세 실패 시에도 raw holding은 항상 반환 (current_price=0으로) → 프론트가 비어 보이지 않음
+    """
     holdings = await db.list_portfolio(user["id"])
-    if not holdings: return []
-    
-    results = []
-    for h in holdings:
+    if not holdings:
+        return []
+
+    async def _enrich(h):
         symbol = h["symbol"]
         try:
-            # 실시간 시세와 캐시된 분석 결과 가져오기
-            snap = await _cached_snapshot(symbol)
+            snap = await asyncio.wait_for(_cached_snapshot(symbol), timeout=8.0)
             plan = await db.get_plan(symbol)
-            
             cur_price = snap["quote"]["price"]
             pnl = (cur_price - h["entry_price"]) * h["shares"]
             pnl_pct = (cur_price / h["entry_price"] - 1) * 100 if h["entry_price"] > 0 else 0
-            
-            results.append({
+            return {
                 **h,
                 "current_price": cur_price,
-                "change_pct": snap["quote"]["change_pct"],
+                "change_pct": snap["quote"].get("change_pct", 0),
                 "pnl": round(pnl, 2),
                 "pnl_pct": round(pnl_pct, 2),
                 "position": plan["position"] if plan else "관망",
-                "emoji": plan["position_emoji"] if plan else "⚪"
-            })
-        except:
-            results.append({**h, "current_price": 0, "pnl": 0, "pnl_pct": 0, "position": "Error", "emoji": "❓"})
-    
-    return results
+                "emoji": plan["position_emoji"] if plan else "⚪",
+            }
+        except asyncio.TimeoutError:
+            log.warning(f"포트폴리오 시세 타임아웃: {symbol}")
+            return {**h, "current_price": h.get("entry_price", 0), "change_pct": 0,
+                    "pnl": 0, "pnl_pct": 0, "position": "—", "emoji": "⏱"}
+        except Exception as e:
+            log.warning(f"포트폴리오 시세 실패 ({symbol}): {e}")
+            return {**h, "current_price": h.get("entry_price", 0), "change_pct": 0,
+                    "pnl": 0, "pnl_pct": 0, "position": "—", "emoji": "⚠️"}
+
+    return await asyncio.gather(*[_enrich(h) for h in holdings])
 
 @app.post("/api/portfolio")
 async def api_add_portfolio(data: dict, user: dict = Depends(get_current_user)):
