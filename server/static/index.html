@@ -175,8 +175,12 @@
     <!-- 로그인 모드 -->
     <template x-if="authMode==='login'">
       <div class="space-y-3">
-        <input x-model="authForm.username" placeholder="아이디" class="input w-full">
-        <input x-model="authForm.password" type="password" placeholder="비밀번호" class="input w-full" @keydown.enter="doLogin">
+        <div x-show="authForm.username" class="flex items-center justify-between text-xs text-ink-500 px-1">
+          <span>최근 로그인: <span class="text-ink-300 font-medium" x-text="authForm.username"></span></span>
+          <button @click="forgetUser" class="text-ink-600 hover:text-ink-400 underline">다른 계정</button>
+        </div>
+        <input x-model="authForm.username" placeholder="아이디" class="input w-full" autocomplete="username">
+        <input x-model="authForm.password" type="password" placeholder="비밀번호" class="input w-full" autocomplete="current-password" @keydown.enter="doLogin" x-init="if(authForm.username) $nextTick(() => $el.focus())">
         <button @click="doLogin" class="btn btn-primary w-full">로그인</button>
         <button @click="authMode='register'; regStep=1" class="btn btn-ghost w-full">회원가입</button>
       </div>
@@ -1953,7 +1957,7 @@ function app(){
     mobileTab: 'watch',
     // 인증
     user: JSON.parse(localStorage.getItem('toss_user') || 'null'),
-    authForm: { username: '', password: '', password2: '', display_name: '' },
+    authForm: { username: localStorage.getItem('toss_last_username') || '', password: '', password2: '', display_name: '' },
     authError: '',
     authMode: 'login',
     regStep: 1,
@@ -2116,6 +2120,7 @@ function app(){
         if(!r.ok) { this.authError = d.detail; return; }
         this.user = d;
         localStorage.setItem('toss_user', JSON.stringify(this.user));
+        localStorage.setItem('toss_last_username', this.authForm.username);
         this.refresh(); this.loadTrades();
       } catch(e) { this.authError = '서버 연결 실패'; }
     },
@@ -2127,11 +2132,21 @@ function app(){
         if(!r.ok) { this.authError = d.detail; return; }
         this.user = d;
         localStorage.setItem('toss_user', JSON.stringify(this.user));
+        localStorage.setItem('toss_last_username', this.authForm.username);
         this.authMode = 'login'; this.regStep = 1;
         this.refresh(); this.loadTrades();
       } catch(e) { this.authError = '서버 연결 실패'; }
     },
-    doLogout() { this.user = null; localStorage.removeItem('toss_user'); this.watch = []; this.trades = []; },
+    doLogout() {
+      this.user = null;
+      localStorage.removeItem('toss_user');
+      // toss_last_username은 의도적으로 남김 — 재로그인 시 아이디 자동 채움
+      this.watch = []; this.trades = [];
+    },
+    forgetUser() {
+      localStorage.removeItem('toss_last_username');
+      this.authForm.username = '';
+    },
     async openAdmin() {
       const r = await this.api('/api/admin/users');
       if(r.ok) { this.adminUsers = await r.json(); this.showAdminPanel = true; }
