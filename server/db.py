@@ -2,7 +2,12 @@ import aiosqlite, json, time, hashlib, secrets, os, logging, jwt, binascii
 from datetime import datetime, timedelta
 from pathlib import Path
 
-DB = Path(__file__).resolve().parent.parent / "toss.db"
+# DB 경로 — DB_PATH 환경변수로 오버라이드 가능 (Render Persistent Disk 등)
+# 기본값은 레포 root의 toss.db. Render는 컨테이너 휘발성이므로 운영 환경에선
+# 반드시 DB_PATH=/var/data/toss.db 같이 영구 디스크 마운트 경로를 지정할 것.
+_db_env = os.environ.get("DB_PATH", "").strip()
+DB = Path(_db_env) if _db_env else (Path(__file__).resolve().parent.parent / "toss.db")
+DB.parent.mkdir(parents=True, exist_ok=True)
 _conn: aiosqlite.Connection | None = None
 
 # 보안 설정
