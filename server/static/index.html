@@ -397,37 +397,56 @@
   }
 
   /* ═══════════════════════════════════════════════════════════
-     모바일 (≤768px)
+     모바일 (≤768px) — 통합 블록 (옛 중복 정리)
      ═══════════════════════════════════════════════════════════ */
   .mobile-tabs { display: none; }
   @media (max-width: 768px) {
-    body { font-size: 15px; }
+    /* 가독성 — 본문 15px + 줄간격 1.65 */
+    body { font-size: 15px; line-height: 1.65; }
     main { padding-bottom: 88px !important; }
 
+    /* 헤더 — iOS 노치/상태바 시계와 겹치지 않게 safe-area 패딩 */
+    header.glass-top {
+      padding-top: max(10px, calc(env(safe-area-inset-top) + 6px)) !important;
+      padding-bottom: 10px !important;
+      padding-left: 14px !important;
+      padding-right: 14px !important;
+    }
+    header h1 { font-size: 1.1rem !important; }
+
+    /* 모달 — 풀스크린 슬라이드업 */
     .overlay { padding: 0; align-items: flex-end; }
     .modal {
       padding: 20px 16px 24px; width: 100%; max-width: 100%;
       border-radius: 18px 18px 0 0; max-height: 92vh;
-      animation: slideUp .28s cubic-bezier(0.32,0.72,0,1);
+      animation: slideUp .28s cubic-bezier(0.32, 0.72, 0, 1);
       padding-bottom: calc(env(safe-area-inset-bottom) + 16px);
     }
-    @keyframes slideUp { 0% {transform: translateY(100%);} 100% {transform:none;} }
+    @keyframes slideUp { 0% { transform: translateY(100%); } 100% { transform: none; } }
 
-    .btn { min-height: 44px; padding: 0 14px; font-size: 14px; }
+    /* 터치 타겟 (Apple HIG 44px) */
+    .btn { min-height: 44px; padding: 12px 16px; font-size: 15px; }
+    .input { min-height: 44px; padding: 12px 14px; font-size: 16px; }
     button { min-height: 36px; }
+    main li { min-height: 60px; }
+
+    /* 카드 + 컬럼 정렬 */
     .surface, .surface-elevated { border-radius: 14px; }
     main > section, main > aside { width: 100% !important; }
-    main li { min-height: 60px; }
+
+    /* 분석 카드 폰트 — 데스크탑 대비 압축 */
     .serif.text-3xl { font-size: 1.75rem !important; }
     .serif.text-4xl { font-size: 2rem !important; }
     .text-4xl { font-size: 2rem !important; }
+
+    /* SIFT Score 원형 게이지 + 차트 */
     .sift-circle { width: 96px !important; height: 96px !important; }
     iframe { height: 280px !important; }
 
-    /* 하단 탭바 */
+    /* 하단 탭바 — 글래스 + 골드 액센트 (톤 통일) */
     .mobile-tabs {
       display: flex; position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
-      background: rgba(14, 16, 20, 0.85);
+      background: rgba(11, 13, 16, 0.88);
       backdrop-filter: saturate(160%) blur(14px);
       -webkit-backdrop-filter: saturate(160%) blur(14px);
       border-top: 1px solid #23272F;
@@ -435,110 +454,48 @@
       padding-bottom: max(env(safe-area-inset-bottom, 6px), 6px);
     }
     .mobile-tabs button {
-      flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+      flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;
       font-size: 10px; color: #7C8392; padding: 8px 0; min-height: 56px;
       transition: color .15s;
     }
     .mobile-tabs button.active { color: #F0B429; }
-    .mobile-tabs button.active .tab-icon { transform: scale(1.05); }
-    .mobile-tabs button .tab-icon { font-size: 22px; line-height: 1; transition: transform .15s; }
+    .mobile-tabs button .tab-icon {
+      width: 22px; height: 22px; display: block;
+      stroke: currentColor; fill: none; stroke-width: 1.8;
+      stroke-linecap: round; stroke-linejoin: round;
+      transition: transform .15s;
+    }
+    .mobile-tabs button.active .tab-icon { transform: scale(1.08); stroke-width: 2.1; }
 
-    header { padding: 8px 0 !important; }
-    header h1 { font-size: 1.1rem !important; }
+    /* 입력 필드 iOS 자동 줌 방지 16px */
+    input[type="text"], input[type="number"], input[type="password"], input[type="email"], select {
+      font-size: 16px !important;
+    }
+
+    /* 시장 지수 ticker — 부드러운 스크롤 */
     [class*="overflow-x-auto"] { -webkit-overflow-scrolling: touch; }
+
+    /* 그리드 간격 압축 */
     .grid-cols-3, .grid-cols-4 { gap: 0.5rem !important; }
-    input[type="text"], input[type="number"], input[type="password"], select { font-size: 16px !important; }
+
+    /* 보유 종목 평가손익 강조 (Round 2 — 가독성) */
+    .pnl-strong { font-size: 1.05rem; font-weight: 700; }
   }
 
-  /* iPhone SE (≤375px) */
+  /* iPhone SE / 작은 모바일 (≤375px) */
   @media (max-width: 375px) {
-    .surface, .surface-elevated { padding: 14px !important; }
+    .surface, .surface-elevated { padding: 12px !important; }
     .text-xl { font-size: 1.05rem !important; }
     .text-2xl { font-size: 1.2rem !important; }
     .pill { padding: 4px 8px; font-size: 10px; }
     .btn { padding: 0 12px; font-size: 13px; }
   }
-  /* ────────── 모바일 UX 강화 ────────── */
-  .mobile-tabs { display:none; }
-  @media (max-width: 768px) {
-    /* 본문 패딩 (하단 탭바 회피) */
-    body { font-size: 15px; }
-    main { padding-bottom: 80px !important; }
 
-    /* 모달 풀스크린 슬라이드업 */
-    .overlay { padding: 0; align-items: flex-end; }
-    .modal {
-      padding: 20px 16px 24px;
-      width: 100%;
-      max-width: 100%;
-      border-radius: 16px 16px 0 0;
-      max-height: 92vh;
-      animation: slideUp 0.25s ease-out;
-    }
-    @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
-
-    /* 터치 타겟 최소 44px (Apple HIG) */
-    .btn { min-height: 44px; padding: 12px 16px; font-size: 15px; }
-    .input { min-height: 44px; padding: 12px 14px; font-size: 16px; }  /* iOS 줌 방지 16px */
-    button { min-height: 36px; }
-
-    /* 카드 간격 + 패딩 더 여유롭게 */
-    .surface, .surface-elevated { border-radius: 14px; }
-
-    /* 사이드바·메인·우측 카드 모두 위에서부터 단일 컬럼 */
-    main > section, main > aside { width: 100% !important; }
-
-    /* 워치리스트·포트폴리오 카드 터치 영역 확대 */
-    main li { min-height: 60px; }
-
-    /* 분석 카드 폰트/패딩 모바일 최적화 */
-    .serif.text-3xl { font-size: 1.75rem !important; }
-    .serif.text-4xl { font-size: 2rem !important; }
-    .text-4xl { font-size: 2rem !important; }
-
-    /* SIFT Score 원형 게이지 모바일 축소 */
-    .sift-circle { width: 96px !important; height: 96px !important; }
-
-    /* 차트 iframe 모바일 높이 축소 */
-    iframe { height: 280px !important; }
-
-    /* 하단 탭바 — 글래스 + 액센트 */
-    .mobile-tabs {
-      display:flex; position:fixed; bottom:0; left:0; right:0; z-index:30;
-      background: rgba(11,13,16,0.85);
-      backdrop-filter: blur(14px) saturate(140%);
-      border-top: 1px solid #232830;
-      padding:6px 0;
-      padding-bottom: max(env(safe-area-inset-bottom, 6px), 6px);
-    }
-    .mobile-tabs button {
-      flex:1; display:flex; flex-direction:column; align-items:center; gap:3px;
-      font-size:10px; color:#6f747c; padding:8px 0; min-height: 56px;
-      transition: color .15s;
-    }
-    .mobile-tabs button.active { color:#eda878; }
-    .mobile-tabs button.active .tab-icon { transform: scale(1.05); }
-    .mobile-tabs button .tab-icon { font-size: 22px; line-height: 1; transition: transform .15s; }
-
-    /* 헤더 슬림 */
-    header { padding: 8px 0 !important; }
-    header h1 { font-size: 1.1rem !important; }
-
-    /* 시장 지수 ticker 모바일 */
-    [class*="overflow-x-auto"] { -webkit-overflow-scrolling: touch; }
-
-    /* 그리드 mobile-friendly */
-    .grid-cols-3, .grid-cols-4 { gap: 0.5rem !important; }
-
-    /* 텔레그램 모달 등 폼 입력란 줌 방지 */
-    input[type="text"], input[type="number"], input[type="password"], select { font-size: 16px !important; }
-  }
-
-  /* 작은 모바일 (≤375px iPhone SE) */
-  @media (max-width: 375px) {
-    .surface, .surface-elevated { padding: 10px !important; }
-    .text-xl { font-size: 1.05rem !important; }
-    .text-2xl { font-size: 1.2rem !important; }
+  /* SIFT Score 카드 강조 (Round 2 — 정보 우선순위) */
+  .sift-headline-card {
+    border: 1.5px solid rgba(240, 180, 41, 0.25) !important;
+    box-shadow: 0 0 0 1px rgba(240, 180, 41, 0.08), 0 8px 24px -8px rgba(0, 0, 0, 0.5);
+    background: linear-gradient(180deg, rgba(240, 180, 41, 0.04) 0%, transparent 100%);
   }
 </style>
 <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
@@ -1481,7 +1438,7 @@
 
         <!-- ⭐ SIFT Score — 단일 종합 점수 (헤드라인) -->
         <template x-if="report.analysis.sift_score">
-          <div class="surface-elevated p-5 relative overflow-hidden">
+          <div class="surface-elevated sift-headline-card p-5 relative overflow-hidden">
             <div class="flex items-center gap-5">
               <!-- 점수 원형 표시 -->
               <div class="relative shrink-0">
@@ -2219,11 +2176,18 @@
                       :class="isKR(h.symbol) ? 'bg-blue-500/20 text-blue-400' : 'bg-zinc-700/50 text-zinc-400'"
                       x-text="isKR(h.symbol) ? 'KR' : 'US'"></span>
               </div>
-              <div class="text-base font-mono font-bold"
+              <div class="text-lg font-mono font-bold pnl-strong"
                    :class="h.pnl_pct >= 0 ? 'ticker-up' : 'ticker-down'"
                    x-text="(h.pnl_pct>=0?'+':'')+h.pnl_pct.toFixed(2)+'%'"></div>
             </div>
-            <div class="grid grid-cols-3 gap-2 text-xs mb-2">
+            <!-- 평가손익 헤드라인 (가독성 강조) -->
+            <div class="mb-3">
+              <div class="text-[10px] uppercase tracking-wider text-ink-500">평가손익</div>
+              <div class="font-mono font-bold text-xl mt-0.5"
+                   :class="(h.pnl ?? 0) >= 0 ? 'ticker-up' : 'ticker-down'"
+                   x-text="((h.pnl ?? 0) >= 0 ? '+' : '-') + '₩' + Math.round(Math.abs(toKRW(h.pnl ?? 0, h.symbol))).toLocaleString()"></div>
+            </div>
+            <div class="grid grid-cols-2 gap-2 text-xs mb-2">
               <div>
                 <div class="text-ink-500">평단가</div>
                 <div class="font-mono font-semibold" x-text="'₩'+Math.round(toKRW(h.entry_price ?? 0, h.symbol)).toLocaleString()"></div>
@@ -2233,12 +2197,6 @@
                 <div class="font-mono font-semibold"
                      :class="h.current_price >= h.entry_price ? 'ticker-up' : 'ticker-down'"
                      x-text="'₩'+Math.round(toKRW(h.current_price ?? 0, h.symbol)).toLocaleString()"></div>
-              </div>
-              <div>
-                <div class="text-ink-500">평가손익</div>
-                <div class="font-mono font-semibold"
-                     :class="(h.pnl ?? 0) >= 0 ? 'ticker-up' : 'ticker-down'"
-                     x-text="((h.pnl ?? 0) >= 0 ? '+' : '-') + '₩' + Math.round(Math.abs(toKRW(h.pnl ?? 0, h.symbol))).toLocaleString()"></div>
               </div>
             </div>
             <div class="text-[11px] text-ink-500" x-text="(h.shares ?? 0).toLocaleString() + '주 보유 · 투입 ₩' + Math.round(toKRW(((h.shares ?? 0) * (h.entry_price ?? 0)) || 0, h.symbol)).toLocaleString()"></div>
@@ -2302,26 +2260,42 @@
 <!-- 모바일 하단 탭 -->
 <nav class="mobile-tabs">
   <button @click="mobileTab='watch'" :class="mobileTab==='watch'&&'active'">
-    <span class="tab-icon">📋</span>
+    <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9 5h10M9 12h10M9 19h10"/>
+      <circle cx="5" cy="5" r="1.4"/><circle cx="5" cy="12" r="1.4"/><circle cx="5" cy="19" r="1.4"/>
+    </svg>
     <span>종목</span>
     <span x-show="watch.length" class="text-[9px] opacity-60" x-text="'(' + watch.length + ')'"></span>
   </button>
   <button @click="mobileTab='report'" :class="mobileTab==='report'&&'active'">
-    <span class="tab-icon">📊</span>
+    <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 17l5-5 4 4 7-9"/>
+      <path d="M14 7h6v6"/>
+    </svg>
     <span>분석</span>
   </button>
   <button @click="mobileTab='portfolio'" :class="mobileTab==='portfolio'&&'active'">
-    <span class="tab-icon">💼</span>
+    <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="7" width="18" height="13" rx="2"/>
+      <path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/>
+      <path d="M3 13h18"/>
+    </svg>
     <span>포트폴리오</span>
     <span x-show="holdings.length" class="text-[9px] opacity-60" x-text="'(' + holdings.length + ')'"></span>
   </button>
-  <button @click="mobileTab='alerts'" :class="mobileTab==='alerts'&&'active' + ' relative'">
-    <span class="tab-icon">🔔</span>
+  <button @click="mobileTab='alerts'" :class="mobileTab==='alerts'&&'active relative'" class="relative">
+    <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/>
+      <path d="M10 19a2 2 0 0 0 4 0"/>
+    </svg>
     <span>알림</span>
-    <span x-show="alerts.length" class="absolute top-2 right-1/3 w-2 h-2 rounded-full bg-coral-500 animate-pulse"></span>
+    <span x-show="alerts.length" class="absolute top-2 right-[33%] w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
   </button>
   <button @click="openTelegramSetup()">
-    <span class="tab-icon">📲</span>
+    <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M21 4 3 11l6 2 2 6 4-4 5 4z"/>
+      <path d="M9 13l8-7"/>
+    </svg>
     <span :class="tgInfo?.subscribed && 'text-emerald-500'">알림설정</span>
   </button>
 </nav>
