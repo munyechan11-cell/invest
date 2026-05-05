@@ -31,15 +31,15 @@ def _gc_cool():
 
 
 async def _push_telegram(symbol: str, kind: str, price: float, message: str,
-                         plan: dict | None = None, name: str | None = None):
-    """알림을 Telegram으로 푸시 — 등록된 사용자별 설정 적용 (min_score, snooze, inline 버튼)."""
+                         plan: dict | None = None, name: str | None = None,
+                         user_id: int | None = None):
+    """알림을 Telegram으로 푸시 — 대상 user_id 가 있으면 그 사용자에게만 발송.
+
+    user_id 누락 시(과거 호환) 모든 구독자에게 발송. 새 코드는 항상 user_id 명시.
+    이게 빠지면 사용자 2가 분석한 plan 으로 사용자 1 의 워치 item 알림이
+    전체 구독자에게 푸시되는 버그 발생.
+    """
     if not telegram_alert.is_configured():
-        return
-    try:
-        subs = await db.all_telegram_subscribers()
-    except Exception:
-        return
-    if not subs:
         return
 
     is_kr = symbol.isdigit() and len(symbol) == 6
@@ -53,26 +53,38 @@ async def _push_telegram(symbol: str, kind: str, price: float, message: str,
         is_kr=is_kr,
         name=name,
     )
-
     score_val = (sift_score or {}).get("score", 0) if isinstance(sift_score, dict) else 0
-    for user_id, chat_id in subs:
+
+    async def _send_to(uid: int, chat_id: str):
         try:
-            # Pro 가 아니면 텔레그램 알림 차단 (Free 사용자가 chat_id 등록만 남아있는 경우 대비)
-            if not await _sub.is_pro(user_id):
-                continue
-            settings = await db.get_user_settings(user_id)
-            # 사용자 min_score 미달 → 알림 스킵
+            if not await _sub.is_pro(uid):
+                return
+            settings = await db.get_user_settings(uid)
             if settings.get("telegram_min_score", 0) > score_val:
-                continue
-            # 스누즈 중이면 스킵
-            if await db.is_snoozed(user_id, symbol):
-                continue
-            # 인라인 버튼 옵션
+                return
+            if await db.is_snoozed(uid, symbol):
+                return
             buttons = (telegram_alert.build_alert_buttons(symbol, kind)
                        if settings.get("enable_inline_actions", 1) else None)
             await telegram_alert.send(chat_id, text, reply_markup=buttons)
         except Exception as e:
-            log.warning(f"telegram push uid={user_id}: {e}")
+            log.warning(f"telegram push uid={uid}: {e}")
+
+    # 대상 사용자 한정 발송 (정상 경로)
+    if user_id is not None:
+        chat_id = await db.get_telegram_chat_id(user_id)
+        if not chat_id:
+            return
+        await _send_to(user_id, chat_id)
+        return
+
+    # 호환 경로 — user_id 없으면 모든 구독자 (새 코드는 사용 X)
+    try:
+        subs = await db.all_telegram_subscribers()
+    except Exception:
+        return
+    for uid, chat_id in subs:
+        await _send_to(uid, chat_id)
 
 
 def _fmt(symbol: str, price: float) -> str:
@@ -130,7 +142,7 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
                 await db.add_alert(sym, "BUY", msg, price)
                 await broadcast({"type": "alert", "symbol": sym, "name": name, "kind": "BUY",
                                  "message": msg, "price": price, "user_id": user_id})
-                await _push_telegram(sym, "BUY", price, msg, plan, name=name)
+                await _push_telegram(sym, "BUY", price, msg, plan, name=name, user_id=user_id)
                 # 모의 트레이드 자동 시작 — 추후 TP/SL 도달 시 자동 청산
                 try:
                     await db.open_mock_trade_for_all(sym, "buy", price,
@@ -146,7 +158,7 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
             await db.add_alert(sym, "TP", msg, price)
             await broadcast({"type": "alert", "symbol": sym, "name": name, "kind": "TP",
                              "message": msg, "price": price, "user_id": user_id})
-            await _push_telegram(sym, "TP", price, msg, plan, name=name)
+            await _push_telegram(sym, "TP", price, msg, plan, name=name, user_id=user_id)
 
     # 손절(매수): 손절가 ≤ 이탈
     if is_buy and stop_price and price <= float(stop_price):
@@ -155,7 +167,7 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
             await db.add_alert(sym, "SL", msg, price)
             await broadcast({"type": "alert", "symbol": sym, "name": name, "kind": "SL",
                              "message": msg, "price": price, "user_id": user_id})
-            await _push_telegram(sym, "SL", price, msg, plan, name=name)
+            await _push_telegram(sym, "SL", price, msg, plan, name=name, user_id=user_id)
 
             # 자동 손절매: settings.auto_stoploss=1 + Pro 활성 시에만 발동
             try:
@@ -197,7 +209,7 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
             await db.add_alert(sym, "TP", msg, price)
             await broadcast({"type": "alert", "symbol": sym, "name": name, "kind": "TP",
                              "message": msg, "price": price, "user_id": user_id})
-            await _push_telegram(sym, "TP", price, msg, plan, name=name)
+            await _push_telegram(sym, "TP", price, msg, plan, name=name, user_id=user_id)
 
     # 매도 신호: 매도 포지션에서 진입가 부근 도달
     if is_sell and entry_price:
@@ -207,7 +219,7 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
                 await db.add_alert(sym, "SELL", msg, price)
                 await broadcast({"type": "alert", "symbol": sym, "name": name, "kind": "SELL",
                                  "message": msg, "price": price, "user_id": user_id})
-                await _push_telegram(sym, "SELL", price, msg, plan, name=name)
+                await _push_telegram(sym, "SELL", price, msg, plan, name=name, user_id=user_id)
 
 
 async def _check_price_alerts(symbol: str, price: float, broadcast):
@@ -329,14 +341,20 @@ async def worker(broadcast):
 
             # ── 알림 평가: 워치리스트 + 포트폴리오 둘 다 (이전엔 워치만)
             if plan:
-                # 워치리스트: 분석 시 입력한 capital/risk_pct 사용
-                for it in watch_items:
+                # 워치리스트: 분석한 사용자에게만 알림.
+                # last_position='관망' (기본값) = 분석 안 함 → 다른 사용자 plan 으로
+                # 발송되는 버그 차단. 분석하면 watchlist.last_position 갱신됨.
+                analyzed_watch = [
+                    it for it in watch_items
+                    if (it.get("last_position") or "관망").strip() not in ("", "관망")
+                ]
+                for it in analyzed_watch:
                     await _evaluate_item(it, plan, q, broadcast)
 
                 # 포트폴리오: 보유종목용 합성 item으로 평가
                 #  - capital은 실제 매수금액(krw_invested or shares*entry)
                 #  - 같은 user에 같은 symbol이 워치+포트 둘 다 있어도 _cool 쿨다운으로 중복 방지
-                already_alerted_users = {it.get("user_id") for it in watch_items}
+                already_alerted_users = {it.get("user_id") for it in analyzed_watch}
                 for p in port_items:
                     uid = p.get("user_id")
                     if uid in already_alerted_users:
