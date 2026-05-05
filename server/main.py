@@ -159,6 +159,21 @@ async def root():
     return FileResponse(STATIC / "index.html")
 
 
+@app.get("/terms")
+async def page_terms():
+    return FileResponse(STATIC / "legal" / "terms.html")
+
+
+@app.get("/privacy")
+async def page_privacy():
+    return FileResponse(STATIC / "legal" / "privacy.html")
+
+
+@app.get("/refund")
+async def page_refund():
+    return FileResponse(STATIC / "legal" / "refund.html")
+
+
 # ─── Auth ──────────────────────────────────────────────────────────
 class AuthIn(BaseModel):
     username: str
