@@ -1664,6 +1664,56 @@
           </div>
         </template>
 
+        <!-- ⭐ Confluence Score — 다중 신호 일치 (승률 향상 핵심) -->
+        <template x-if="report.analysis.confluence">
+          <div class="surface-elevated p-5"
+               :class="report.analysis.confluence.tier === 'high' ? 'sift-headline-card' : ''">
+            <div class="flex items-baseline justify-between mb-3">
+              <div>
+                <div class="text-[10px] uppercase tracking-widest text-ink-500 mb-0.5">시그널 신뢰도 (Confluence)</div>
+                <div class="serif text-lg font-semibold" x-text="report.analysis.confluence.label"></div>
+              </div>
+              <div class="font-mono text-2xl font-bold"
+                   :class="report.analysis.confluence.tier === 'high' ? 'text-amber-400' :
+                           report.analysis.confluence.tier === 'medium' ? 'text-amber-200' : 'text-ink-600'"
+                   x-text="report.analysis.confluence.score + '/5'"></div>
+            </div>
+
+            <!-- 5개 도트 -->
+            <div class="flex gap-1.5 mb-4">
+              <template x-for="i in 5" :key="i">
+                <div class="flex-1 h-1.5 rounded-full"
+                     :class="i <= report.analysis.confluence.score ? 'bg-amber-400' : 'bg-[#23272F]'"></div>
+              </template>
+            </div>
+
+            <!-- 통과 -->
+            <template x-if="report.analysis.confluence.passed?.length">
+              <div class="space-y-1 mb-2">
+                <template x-for="p in report.analysis.confluence.passed" :key="p">
+                  <div class="text-xs text-emerald-400 flex items-start gap-2">
+                    <span>✓</span><span x-text="p"></span>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <!-- 실패 -->
+            <template x-if="report.analysis.confluence.failed?.length">
+              <div class="space-y-1">
+                <template x-for="f in report.analysis.confluence.failed" :key="f">
+                  <div class="text-xs text-ink-500 flex items-start gap-2">
+                    <span>✗</span><span x-text="f"></span>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <div class="mt-3 pt-3 border-t border-[#23272F] text-[11px] text-ink-600">
+              💡 3/5 미만 시그널은 자동으로 알림 차단 — 노이즈 필터.
+              5/5 (HIGH) 가 통계적으로 가장 적중률 높은 구간입니다.
+            </div>
+          </div>
+        </template>
+
         <!-- ⭐ Move Explainer — "왜 움직였나" 한 줄 -->
         <template x-if="report.analysis.move_explainer">
           <div class="surface-elevated p-4 border-l-4 border-coral-500">

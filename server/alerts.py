@@ -126,22 +126,34 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
     is_buy = pos in ("분할 매수", "적극 매수")
     is_sell = pos in ("분할 매도", "적극 매도")
 
+    # Confluence 점수 — 약한 시그널은 자동 차단 (승률 향상 핵심)
+    # plan 에 confluence 가 없으면 폴백으로 직접 계산
+    confluence = (plan or {}).get("confluence") or {}
+    conf_score = int(confluence.get("score") or 0)
+    conf_label = confluence.get("label") or ""
+    conf_should_alert = bool(confluence.get("should_alert", True))  # 정보 부재 시 통과
+
     # 매수 신호: 매수 포지션에서 진입가 부근 (±0.3%) 도달
     if is_buy and entry_price:
         if abs(price - float(entry_price)) / float(entry_price) <= 0.003:
-            if not _cool(sym, f"BUY_{user_id}"):
+            if not conf_should_alert:
+                log.info(f"{sym} BUY 알림 confluence 차단 ({conf_score}/5) — 노이즈 의심")
+                # TP/SL 은 그대로 — 진입 신호만 차단
+            elif not _cool(sym, f"BUY_{user_id}"):
                 stop_for_size = float(stop_price) if stop_price else price * 0.97
                 size = shares_for(capital, risk_pct, price, stop_for_size) if capital > 0 else {"shares": 0, "notional": 0, "max_loss": 0}
                 splits = split_plan(size["shares"]) if capital > 0 else []
+                conf_prefix = f"{conf_label} · " if conf_score >= 4 else ""
                 if capital > 0:
-                    msg = (f"💚 {sym_label} · 지금 {pos}! {pf} (진입가 {fmt_entry} 도달) — "
+                    msg = (f"💚 {conf_prefix}{sym_label} · 지금 {pos}! {pf} (진입가 {fmt_entry} 도달) — "
                            f"권장 {size['shares']}주 (분할: {splits}), "
                            f"투입 {_fmt(sym, size['notional'])}, 최대손실 {_fmt(sym, size['max_loss'])}")
                 else:
-                    msg = f"💚 {sym_label} · 지금 {pos}! {pf} (진입가 {fmt_entry} 도달) — 토스증권에서 매수 진행"
+                    msg = f"💚 {conf_prefix}{sym_label} · 지금 {pos}! {pf} (진입가 {fmt_entry} 도달) — 토스증권에서 매수 진행"
                 await db.add_alert(sym, "BUY", msg, price)
                 await broadcast({"type": "alert", "symbol": sym, "name": name, "kind": "BUY",
-                                 "message": msg, "price": price, "user_id": user_id})
+                                 "message": msg, "price": price, "user_id": user_id,
+                                 "confluence_score": conf_score})
                 await _push_telegram(sym, "BUY", price, msg, plan, name=name, user_id=user_id)
                 # 모의 트레이드 자동 시작 — 추후 TP/SL 도달 시 자동 청산
                 try:
@@ -214,11 +226,15 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
     # 매도 신호: 매도 포지션에서 진입가 부근 도달
     if is_sell and entry_price:
         if abs(price - float(entry_price)) / float(entry_price) <= 0.003:
-            if not _cool(sym, f"SELL_{user_id}"):
-                msg = f"🔴 {sym_label} · 매도 진입가 도달! {pf} — {pos}"
+            if not conf_should_alert:
+                log.info(f"{sym} SELL 알림 confluence 차단 ({conf_score}/5) — 노이즈 의심")
+            elif not _cool(sym, f"SELL_{user_id}"):
+                conf_prefix = f"{conf_label} · " if conf_score >= 4 else ""
+                msg = f"🔴 {conf_prefix}{sym_label} · 매도 진입가 도달! {pf} — {pos}"
                 await db.add_alert(sym, "SELL", msg, price)
                 await broadcast({"type": "alert", "symbol": sym, "name": name, "kind": "SELL",
-                                 "message": msg, "price": price, "user_id": user_id})
+                                 "message": msg, "price": price, "user_id": user_id,
+                                 "confluence_score": conf_score})
                 await _push_telegram(sym, "SELL", price, msg, plan, name=name, user_id=user_id)
 
 

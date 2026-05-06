@@ -423,6 +423,16 @@ def _attach_intelligence(ana: dict, snap: dict, news: list[dict], flow: dict) ->
     except Exception as e:
         log.warning(f"volatility 실패: {e}")
 
+    # Confluence — 다중 신호 일치 점수 (승률 향상 핵심)
+    # SIFT/multi_tf 가 채워진 다음에 호출해야 정확
+    try:
+        from app.confluence import compute_confluence
+        pos = (ana.get("position") or "").strip()
+        direction = "sell" if "매도" in pos else "buy"
+        ana["confluence"] = compute_confluence(snap, ana, direction)
+    except Exception as e:
+        log.warning(f"confluence 실패: {e}")
+
     # flow에서 어닝/애널리스트를 ana로 끌어올림 (프론트가 한 곳에서 읽도록)
     if flow:
         if flow.get("analyst_consensus"):
