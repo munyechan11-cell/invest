@@ -298,18 +298,66 @@ async def _check_mock_trades(symbol: str, price: float):
         target = t.get("target_price")
         stop = t.get("stop_price")
         try:
+            closed = None
             if side == "buy":
                 if target and price >= float(target):
-                    await db.close_mock_trade(t["id"], price, "TP")
+                    closed = await db.close_mock_trade(t["id"], price, "TP")
                 elif stop and price <= float(stop):
-                    await db.close_mock_trade(t["id"], price, "SL")
+                    closed = await db.close_mock_trade(t["id"], price, "SL")
             else:  # sell
                 if target and price <= float(target):
-                    await db.close_mock_trade(t["id"], price, "TP")
+                    closed = await db.close_mock_trade(t["id"], price, "TP")
                 elif stop and price >= float(stop):
-                    await db.close_mock_trade(t["id"], price, "SL")
+                    closed = await db.close_mock_trade(t["id"], price, "SL")
+            if closed:
+                await _notify_mock_close(closed)
         except Exception as e:
             log.warning(f"mock close fail {t['id']}: {e}")
+
+
+async def _notify_mock_close(closed: dict) -> None:
+    """모의 트레이드 청산 결과를 본인에게만 텔레그램 발송 (Pro 한정).
+
+    closed: {user_id, symbol, entry_price, exit_price, pnl_pct, exit_reason,
+             confluence_score} — 가상 결과임을 명시하는 라벨 포함.
+    """
+    uid = closed.get("user_id")
+    if not uid:
+        return
+    if not await _sub.is_pro(uid):
+        return
+    chat_id = await db.get_telegram_chat_id(uid)
+    if not chat_id or not telegram_alert.is_configured():
+        return
+
+    sym = closed["symbol"]
+    name = _symbol_name(sym)
+    sym_label = f"{name} ({sym})" if name and name.upper() != sym.upper() else sym
+    is_kr = sym.isdigit() and len(sym) == 6
+    cur = "₩" if is_kr else "$"
+    fmt_p = (lambda v: f"{cur}{int(v):,}") if is_kr else (lambda v: f"{cur}{v:.2f}")
+
+    pnl = float(closed.get("pnl_pct") or 0)
+    reason = closed.get("exit_reason") or ""
+    icon = "🎯" if reason == "TP" else "🛑" if reason == "SL" else "📊"
+    sign = "+" if pnl >= 0 else ""
+    pnl_color = "🟢" if pnl >= 0 else "🔴"
+    cs = closed.get("confluence_score")
+    conf_line = f"\n🎯 진입 시 신뢰도: <b>{cs}/5</b>" if cs is not None else ""
+
+    text = (
+        f"<b>{icon} 백테스트 청산 — {reason}</b>\n"
+        f"<i>(가상 진입 결과 · 실제 매매 X)</i>\n\n"
+        f"<b>{sym_label}</b>\n"
+        f"진입: <code>{fmt_p(closed['entry_price'])}</code> → "
+        f"청산: <code>{fmt_p(closed['exit_price'])}</code>\n"
+        f"손익: {pnl_color} <b>{sign}{pnl:.2f}%</b>"
+        f"{conf_line}"
+    )
+    try:
+        await telegram_alert.send(chat_id, text)
+    except Exception as e:
+        log.warning(f"mock close telegram fail uid={uid}: {e}")
 
 
 async def worker(broadcast):

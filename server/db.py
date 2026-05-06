@@ -616,13 +616,16 @@ async def list_open_mock_trades() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-async def close_mock_trade(trade_id: int, exit_price: float, exit_reason: str):
+async def close_mock_trade(trade_id: int, exit_price: float, exit_reason: str) -> dict | None:
+    """모의 트레이드 청산. 청산된 trade row(symbol, user_id, pnl_pct 등)을
+    반환 — 호출자가 텔레그램 결과 알림 발송 가능."""
     c = await get_db()
     row = await (await c.execute(
-        "SELECT entry_price, side FROM mock_trades WHERE id=?", (trade_id,)
+        "SELECT id, user_id, symbol, entry_price, side, confluence_score "
+        "FROM mock_trades WHERE id=?", (trade_id,)
     )).fetchone()
     if not row:
-        return
+        return None
     entry = float(row["entry_price"])
     side = row["side"]
     if entry <= 0:
@@ -631,12 +634,24 @@ async def close_mock_trade(trade_id: int, exit_price: float, exit_reason: str):
         pnl_pct = (exit_price / entry - 1) * 100
     else:  # sell (숏)
         pnl_pct = (entry / exit_price - 1) * 100 if exit_price > 0 else 0
+    pnl_pct_r = round(pnl_pct, 2)
     await c.execute(
         "UPDATE mock_trades SET exit_price=?, exit_reason=?, status='closed', "
         "pnl_pct=?, closed_at=? WHERE id=?",
-        (exit_price, exit_reason, round(pnl_pct, 2), time.time(), trade_id)
+        (exit_price, exit_reason, pnl_pct_r, time.time(), trade_id)
     )
     await c.commit()
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "symbol": row["symbol"],
+        "side": side,
+        "entry_price": entry,
+        "exit_price": exit_price,
+        "pnl_pct": pnl_pct_r,
+        "exit_reason": exit_reason,
+        "confluence_score": row["confluence_score"],
+    }
 
 
 async def list_user_mock_trades(user_id: int, limit: int = 100) -> list[dict]:

@@ -1388,15 +1388,60 @@
       </template>
     </div>
 
-    <!-- 모의 시그널 성과 (옵션 D — 만 19세 후 실전 검증용 트랙레코드) -->
-    <div class="surface p-4 space-y-2.5" x-show="mockStats">
+    <!-- ⭐ 실제 매매 승률 (realized_pnl 기반 — 실거래 결과만) -->
+    <div class="surface p-4 space-y-2.5"
+         x-show="realizedStats && realizedStats.trades > 0"
+         style="border:1px solid rgba(240, 180, 41, 0.25); background:linear-gradient(180deg, rgba(240, 180, 41, 0.04) 0%, transparent 100%);">
       <div class="flex items-baseline justify-between">
-        <div class="serif text-sm font-semibold text-ink-800">시그널 성과 트래커</div>
-        <button @click="loadMockStats()" class="text-[10px] text-coral-500 hover:underline">새로고침</button>
+        <div>
+          <div class="serif text-sm font-semibold text-amber-300">⭐ 실제 매매 승률</div>
+          <div class="text-[10px] text-ink-500 mt-0.5">최근 1년 청산 기준</div>
+        </div>
+        <button @click="loadRealizedStats()" class="text-[10px] text-amber-400 hover:underline">새로고침</button>
       </div>
       <div class="grid grid-cols-2 gap-2 text-[11px]">
         <div class="surface-elevated p-2.5 text-center">
           <div class="text-ink-500 mb-0.5">승률</div>
+          <div class="font-mono text-base font-bold"
+               :class="(realizedStats?.win_rate ?? 0) >= 50 ? 'ticker-up' : 'text-ink-700'"
+               x-text="(realizedStats?.win_rate ?? 0) + '%'"></div>
+        </div>
+        <div class="surface-elevated p-2.5 text-center">
+          <div class="text-ink-500 mb-0.5">평균 수익</div>
+          <div class="font-mono text-base font-bold"
+               :class="(realizedStats?.avg_pnl_pct ?? 0) >= 0 ? 'ticker-up' : 'ticker-down'"
+               x-text="((realizedStats?.avg_pnl_pct ?? 0) >= 0 ? '+' : '') + (realizedStats?.avg_pnl_pct ?? 0) + '%'"></div>
+        </div>
+        <div class="surface-elevated p-2.5 text-center">
+          <div class="text-ink-500 mb-0.5">총 손익</div>
+          <div class="font-mono text-base font-bold"
+               :class="(realizedStats?.total_pnl ?? 0) >= 0 ? 'ticker-up' : 'ticker-down'"
+               x-text="((realizedStats?.total_pnl ?? 0) >= 0 ? '+₩' : '-₩') + Math.abs(Math.round(realizedStats?.total_pnl ?? 0)).toLocaleString()"></div>
+        </div>
+        <div class="surface-elevated p-2.5 text-center">
+          <div class="text-ink-500 mb-0.5">거래 (W/L)</div>
+          <div class="font-mono text-base font-bold text-ink-700">
+            <span x-text="realizedStats?.trades ?? 0"></span>
+            <span class="text-[10px] text-ink-500">
+              (<span class="ticker-up" x-text="realizedStats?.wins ?? 0"></span>/<span class="ticker-down" x-text="realizedStats?.losses ?? 0"></span>)
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 백테스트 시뮬레이션 (가상 진입 — 시스템 자동 추적) -->
+    <div class="surface p-4 space-y-2.5" x-show="mockStats">
+      <div class="flex items-baseline justify-between">
+        <div>
+          <div class="serif text-sm font-semibold text-ink-800">📈 백테스트 시뮬레이션</div>
+          <div class="text-[10px] text-amber-300/70 mt-0.5">참고용 · 실제 매매 X (가상 진입)</div>
+        </div>
+        <button @click="loadMockStats()" class="text-[10px] text-coral-500 hover:underline">새로고침</button>
+      </div>
+      <div class="grid grid-cols-2 gap-2 text-[11px]">
+        <div class="surface-elevated p-2.5 text-center">
+          <div class="text-ink-500 mb-0.5">시뮬 적중률</div>
           <div class="font-mono text-base font-bold"
                :class="(mockStats?.win_rate ?? 0) >= 50 ? 'ticker-up' : 'text-ink-700'"
                x-text="(mockStats?.win_rate ?? 0) + '%'"></div>
@@ -1422,15 +1467,15 @@
         </div>
       </div>
       <div class="text-[10px] text-ink-500 leading-snug pt-1 border-t border-[#222]">
-        ⓘ 매수 신호 시 자동으로 모의 진입 → 목표가/손절가 도달 시 자동 청산.
-        2~4주 데이터로 본인 시스템 신뢰도 검증 가능.
+        ⓘ 매수 신호 시 자동 가상 진입 → 목표가/손절가 도달 시 자동 청산.
+        <span class="text-amber-300/70">실제 매매가 아닌 시뮬레이션</span> — 시스템 신뢰도 백테스트용.
       </div>
 
-      <!-- Confluence 점수별 승률 breakdown — 백테스트 (어느 점수대가 진짜로 적중하나?) -->
+      <!-- Confluence 점수별 적중률 breakdown — 백테스트 (어느 점수대가 진짜로 적중하나?) -->
       <template x-if="mockStats?.by_confluence?.length">
         <div class="pt-2 border-t border-[#222] space-y-1.5">
           <div class="text-[10px] uppercase tracking-wider text-ink-500 mb-1">
-            🎯 Confluence 점수별 승률
+            🎯 Confluence 점수별 시뮬 적중률
           </div>
           <template x-for="row in mockStats.by_confluence" :key="row.score">
             <div class="flex items-center gap-2 text-[11px]">
@@ -2858,8 +2903,10 @@ function app(){
     // Toast 시스템 (alert 대체)
     toasts: [],
 
-    // 모의 시그널 트래커
+    // 모의 시그널 트래커 (가상)
     mockStats: null,
+    // 실제 매매 통계 (realized_pnl)
+    realizedStats: null,
 
     // 백테스트
     backtest: null,
@@ -2920,6 +2967,7 @@ function app(){
         this.loadRecommendations();
         this.loadHoldings();
         this.loadMockStats();
+        this.loadRealizedStats();
         this.loadTopPicks();        // 스마트 스캐너 (백그라운드)
         this.loadIndices();         // 시장 지수 ticker
         this.loadPortfolioRisk();   // 포트폴리오 리스크 분석
@@ -3428,6 +3476,15 @@ function app(){
       try {
         const r = await this.api('/api/mock-trades/stats');
         if (r.ok) this.mockStats = await r.json();
+      } catch(e) {}
+    },
+    async loadRealizedStats() {
+      try {
+        const r = await this.api('/api/realized-pnl');
+        if (r.ok) {
+          const d = await r.json();
+          this.realizedStats = d?.summary || null;
+        }
       } catch(e) {}
     },
 
