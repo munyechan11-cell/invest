@@ -190,7 +190,7 @@ def fetch_daily_candles(symbol: str, days: int = 100) -> list[dict]:
 
 
 def get_snapshot_kr(symbol: str) -> dict:
-    """한국주식 스냅샷. KIS 우선 → 실패 시 Yahoo Finance로 자동 폴백."""
+    """한국주식 스냅샷. KIS → Yahoo → Naver 3중 fallback."""
     import pandas as pd, numpy as np
 
     # ── KIS 시도
@@ -199,9 +199,21 @@ def get_snapshot_kr(symbol: str) -> dict:
         candles = fetch_daily_candles(symbol)
         flow = fetch_investor_flow(symbol)
     except Exception as e:
-        log.warning(f"KIS 실패 ({symbol}): {e} → Yahoo Finance로 폴백")
+        log.warning(f"KIS 실패 ({symbol}): {e} → Yahoo Finance 시도")
         from .market_kr_yahoo import get_snapshot_kr_yahoo
-        return get_snapshot_kr_yahoo(symbol)
+        try:
+            return get_snapshot_kr_yahoo(symbol)
+        except Exception as ye:
+            log.warning(f"Yahoo 도 실패 ({symbol}): {ye} → Naver Finance 마지막 시도")
+            from .market_kr_naver import get_snapshot_kr_naver
+            naver_snap = get_snapshot_kr_naver(symbol)
+            if naver_snap:
+                return naver_snap
+            # 3중 모두 실패 — 명확한 예외 (analyze endpoint 가 502 변환)
+            raise RuntimeError(
+                f"KR 시세 3중 fallback 모두 실패 ({symbol}): "
+                f"KIS={e} / Yahoo={ye} / Naver=None"
+            )
 
     if len(candles) < 30:
         # 지표 계산 불가 — 기본값

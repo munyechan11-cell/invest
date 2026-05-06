@@ -543,6 +543,45 @@
       animation: none !important;
     }
   }
+
+  /* Toast (alert 대체 — 모든 화면에서 일관성) */
+  .toast-stack {
+    position: fixed;
+    bottom: calc(100px + env(safe-area-inset-bottom));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+    width: max-content;
+    max-width: 92vw;
+  }
+  .toast {
+    background: rgba(20, 22, 28, 0.95);
+    backdrop-filter: saturate(160%) blur(18px);
+    -webkit-backdrop-filter: saturate(160%) blur(18px);
+    color: #F2F4F7;
+    padding: 12px 18px;
+    border-radius: 14px;
+    border: 1px solid #23272F;
+    font-size: 14px;
+    line-height: 1.5;
+    pointer-events: auto;
+    animation: toastIn 0.25s cubic-bezier(0.32, 0.72, 0, 1);
+    box-shadow: 0 12px 32px -10px rgba(0, 0, 0, 0.7);
+  }
+  .toast.success { border-color: rgba(16, 185, 129, 0.4); }
+  .toast.error   { border-color: rgba(244, 63, 94, 0.4); }
+  .toast.warn    { border-color: rgba(240, 180, 41, 0.4); }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: none; }
+  }
+  @media (max-width: 768px) {
+    .toast-stack { bottom: calc(90px + env(safe-area-inset-bottom)); }
+  }
 </style>
 <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
@@ -1196,8 +1235,13 @@
           </li>
         </template>
         <template x-if="watch.length===0">
-          <li class="text-center text-ink-500 text-sm py-8 px-2">
-            아직 종목이 없습니다.<br>위에서 첫 종목을 추가하세요.
+          <li class="text-center py-10 px-4">
+            <div class="text-3xl mb-3 opacity-40">📋</div>
+            <div class="text-sm text-ink-300 font-semibold mb-1">워치리스트가 비어있어요</div>
+            <div class="text-xs text-ink-500 leading-relaxed max-w-[240px] mx-auto">
+              위 검색창에 <span class="text-amber-400 font-mono">005930</span> 또는
+              <span class="text-amber-400 font-mono">AAPL</span> 같이 종목코드를 입력해 추가해보세요.
+            </div>
           </li>
         </template>
       </ul>
@@ -2391,6 +2435,13 @@
 </main>
 
 <!-- 모바일 하단 탭 -->
+<!-- Toast 알림 stack (alert() 대체) -->
+<div class="toast-stack" x-cloak>
+  <template x-for="t in toasts" :key="t.id">
+    <div class="toast" :class="t.type" x-text="t.msg"></div>
+  </template>
+</div>
+
 <nav class="mobile-tabs">
   <button @click="setMobileTab('watch')" :class="mobileTab==='watch'&&'active'">
     <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -2717,6 +2768,9 @@ function app(){
     couponMsg: '',
     couponLoading: false,
 
+    // Toast 시스템 (alert 대체)
+    toasts: [],
+
     // 모의 시그널 트래커
     mockStats: null,
 
@@ -2850,11 +2904,12 @@ function app(){
       let r = await this.api('/api/admin/users-detailed');
       if(!r.ok) r = await this.api('/api/admin/users');
       if(r.ok) { this.adminUsers = await r.json(); this.showAdminPanel = true; }
-      else { alert('권한이 없습니다.'); }
+      else { this.toastError('권한이 없습니다'); }
     },
     async deleteUser(uid) {
       if(!confirm('이 회원을 삭제하시겠습니까?')) return;
       await this.api('/api/admin/users/'+uid, { method:'DELETE' });
+      this.toastSuccess('삭제 완료');
       this.openAdmin();
     },
     async grantPro(uid, months) {
@@ -2865,14 +2920,14 @@ function app(){
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ months }),
       });
-      if(r.ok) { this.openAdmin(); }
-      else { alert('Pro 부여 실패'); }
+      if(r.ok) { this.toastSuccess(`${label} Pro 부여 완료`); this.openAdmin(); }
+      else { this.toastError('Pro 부여 실패'); }
     },
     async revokePro(uid) {
       if(!confirm('이 사용자의 Pro 를 회수하시겠습니까?')) return;
       const r = await this.api(`/api/admin/users/${uid}/revoke-pro`, { method: 'POST' });
-      if(r.ok) { this.openAdmin(); }
-      else { alert('회수 실패'); }
+      if(r.ok) { this.toastSuccess('Pro 회수 완료'); this.openAdmin(); }
+      else { this.toastError('회수 실패'); }
     },
     uid() { return this.user?.id || 0; },
     async refresh(){
@@ -2895,7 +2950,7 @@ function app(){
       this.portfolio = await r2.json();
     },
     async submitTrade() {
-      if(!this.tradeForm.shares || !this.tradeForm.price) return alert('수량과 가격을 입력하세요');
+      if(!this.tradeForm.shares || !this.tradeForm.price) { this.toastError('수량과 가격을 입력하세요'); return; }
       await this.api('/api/trades', { 
         method:'POST', 
         headers:{'content-type':'application/json'},
@@ -3044,7 +3099,7 @@ function app(){
 
       // 파일 크기 사전 체크
       if (file.size > 8_000_000) {
-        alert(`이미지가 너무 큽니다 (${Math.round(file.size/1024)}KB).\n8MB 이하로 압축해서 다시 올려주세요.`);
+        this.toastError(`이미지가 너무 큽니다 (${Math.round(file.size/1024)}KB). 8MB 이하로 압축해주세요`);
         e.target.value = '';
         return;
       }
@@ -3059,13 +3114,13 @@ function app(){
         const r = await this.api('/api/portfolio/upload', { method:'POST', body: formData });
         const d = await r.json();
         if(d.ok) {
-          alert(d.msg);
+          this.toastSuccess(d.msg || '포트폴리오 등록 완료');
           await this.loadHoldings();
         } else {
-          alert(d.msg);
+          this.toastError(d.msg || '분석 실패');
         }
       } catch(err) {
-        alert('이미지 분석 실패: ' + err.message);
+        this.toastError('이미지 분석 실패: ' + err.message);
       } finally {
         this.loading = false;
         e.target.value = ''; // 초기화
@@ -3098,6 +3153,22 @@ function app(){
       if (this.mobileTab !== tab) this.vibrate(8);  // 탭 전환만 진동
       this.mobileTab = tab;
     },
+
+    // ─── Toast (alert 대체) ─────────────────────────────
+    toast(msg, type = 'info', duration = 3000) {
+      const id = Date.now() + Math.random();
+      this.toasts.push({ id, msg, type });
+      // 에러는 좀 더 길게, 성공은 짧게
+      const ms = type === 'error' ? 4500 : (type === 'success' ? 2500 : duration);
+      setTimeout(() => {
+        this.toasts = this.toasts.filter(t => t.id !== id);
+      }, ms);
+      // 에러는 진동
+      if (type === 'error') this.vibrate(40);
+    },
+    toastSuccess(msg) { this.toast(msg, 'success'); },
+    toastError(msg)   { this.toast(msg, 'error'); },
+    toastWarn(msg)    { this.toast(msg, 'warn'); },
 
     // ─── 구독·쿠폰 ─────────────────────────────────────
     async loadSubscription() {
@@ -3284,8 +3355,8 @@ function app(){
     },
     async runCompare() {
       const syms = this.compareSymbols.map(s => s.trim().toUpperCase()).filter(s => s);
-      if (syms.length < 2) { alert('최소 2종목 입력'); return; }
-      if (syms.length > 5) { alert('최대 5종목'); return; }
+      if (syms.length < 2) { this.toastWarn('최소 2종목 입력'); return; }
+      if (syms.length > 5) { this.toastWarn('최대 5종목까지 비교 가능'); return; }
       this.compareLoading = true;
       try {
         const r = await this.api('/api/compare', {
@@ -3317,7 +3388,7 @@ function app(){
       const target = prompt(`${symbol} 가격 알림 — 목표 가격을 입력하세요`);
       if (!target) return;
       const tp = parseFloat(target);
-      if (isNaN(tp) || tp <= 0) { alert('잘못된 가격'); return; }
+      if (isNaN(tp) || tp <= 0) { this.toastError('잘못된 가격'); return; }
       const cond = confirm(`${symbol} ${tp.toLocaleString()}\n\n[확인] = 이상 도달 시 알림\n[취소] = 이하 도달 시 알림`) ? '>=' : '<=';
       try {
         const r = await this.api('/api/price-alerts', {
@@ -3325,10 +3396,10 @@ function app(){
           body: JSON.stringify({ symbol, target_price: tp, condition: cond, note: '' })
         });
         if (r.ok) {
-          alert(`✅ 알림 추가: ${symbol} ${cond} ${tp.toLocaleString()}`);
+          this.toastSuccess(`알림 추가: ${symbol} ${cond} ${tp.toLocaleString()}`);
           await this.loadMyPriceAlerts();
         }
-      } catch(e) { alert('실패: ' + e.message); }
+      } catch(e) { this.toastError('실패: ' + e.message); }
     },
     async removePriceAlert(id) {
       if (!confirm('가격 알림을 삭제할까요?')) return;
