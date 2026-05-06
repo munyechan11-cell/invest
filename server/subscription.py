@@ -15,9 +15,8 @@
 from __future__ import annotations
 import time
 import logging
-from typing import Literal
 
-from fastapi import Depends, HTTPException
+from fastapi import HTTPException
 
 from server import db
 
@@ -35,17 +34,14 @@ FREE_OCR_PER_MONTH = 1
 async def get_status(user_id: int) -> dict:
     """사용자 구독 상태 종합 — 만료 자동 정리 포함.
 
-    반환:
-      plan: 'free' | 'pro' (실제 권한 적용 기준 — trial/active/expired 정리 후)
-      raw_plan: DB의 plan 값
-      status: 'active' | 'trial' | 'expired' | 'cancelled'
-      expires_at: float | None
-      trial_ends_at: float | None
-      discount_percent: int  # 현재 적용 중인 할인 (없으면 0)
-      effective_price_krw: int  # 다음 결제 예상 금액 (월 기준)
+    관리자(is_admin=1)는 무조건 Pro 권한 (만료/결제 무관).
     """
     sub = await db.get_subscription(user_id)
     now = time.time()
+
+    # 관리자 자동 Pro — DB users.is_admin 체크
+    user_row = await db.get_user_by_id(user_id)
+    is_admin = bool(user_row and user_row.get("is_admin"))
 
     raw_plan = sub.get("plan") or "free"
     status = sub.get("status") or "active"
@@ -62,8 +58,11 @@ async def get_status(user_id: int) -> dict:
     # Trial 중인지 확인
     in_trial = bool(trial_ends_at and trial_ends_at > now)
 
-    # 권한 판정
-    if raw_plan == "pro":
+    # 권한 판정 — 관리자 우선
+    if is_admin:
+        effective_plan = "pro"
+        status = "admin"  # UI 에서 'PRO' 가 아닌 'ADMIN' 배지 가능
+    elif raw_plan == "pro":
         if expires_at and expires_at < now and not in_trial:
             # 만료됨 → free 로 강등
             await db.upsert_subscription(user_id, plan="free", status="expired")
@@ -81,6 +80,7 @@ async def get_status(user_id: int) -> dict:
         "raw_plan": raw_plan,
         "status": "trial" if in_trial else status,
         "in_trial": in_trial,
+        "is_admin": is_admin,
         "expires_at": expires_at,
         "trial_ends_at": trial_ends_at,
         "discount_percent": discount_pct,
@@ -89,6 +89,49 @@ async def get_status(user_id: int) -> dict:
         "base_price_krw": base_price,
         "effective_price_krw": effective_price,
     }
+
+
+async def grant_pro(user_id: int, months: int | None = None) -> dict:
+    """관리자가 사용자에게 Pro 부여. months=None 이면 평생(100년) Pro.
+
+    기존 구독 만료일 무시하고 새로 설정. applied_coupon_code='ADMIN_GRANT'
+    로 표시해서 추적 가능.
+    """
+    if months is None:
+        # 평생 (100년)
+        expires_at = time.time() + 100 * 365 * 86400
+        label = "ADMIN_LIFETIME"
+    else:
+        expires_at = time.time() + int(months) * 30 * 86400
+        label = f"ADMIN_{months}M"
+    await db.upsert_subscription(
+        user_id,
+        plan="pro",
+        status="active",
+        expires_at=expires_at,
+        trial_ends_at=None,
+        applied_coupon_code=label,
+        discount_percent=0,
+        discount_until=None,
+    )
+    log.info(f"admin granted pro: user={user_id} months={months} label={label}")
+    return await get_status(user_id)
+
+
+async def revoke_pro(user_id: int) -> dict:
+    """관리자가 부여한 Pro 회수 — Free 로 강등."""
+    await db.upsert_subscription(
+        user_id,
+        plan="free",
+        status="cancelled",
+        expires_at=None,
+        trial_ends_at=None,
+        applied_coupon_code=None,
+        discount_percent=0,
+        discount_until=None,
+    )
+    log.info(f"admin revoked pro: user={user_id}")
+    return await get_status(user_id)
 
 
 async def is_pro(user_id: int) -> bool:

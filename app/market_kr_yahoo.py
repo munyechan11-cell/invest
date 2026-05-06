@@ -40,20 +40,41 @@ def _yahoo_symbol(symbol: str) -> str:
 
 
 def _try_fetch(yahoo_sym: str, range_: str = "1mo", interval: str = "1d") -> dict | None:
-    try:
-        with httpx.Client(timeout=10, headers=HDR) as c:
-            r = c.get(f"{YAHOO}/{yahoo_sym}",
-                      params={"range": range_, "interval": interval, "includePrePost": "false"})
-            if r.status_code != 200:
-                return None
-            data = r.json()
-            res = data.get("chart", {}).get("result")
-            if not res:
-                return None
-            return res[0]
-    except Exception as e:
-        log.debug(f"yahoo fetch failed {yahoo_sym}: {e}")
-        return None
+    """Yahoo chart fetch — 일시 실패(429/5xx) 시 1회 백오프 재시도.
+
+    Yahoo 가 가끔 KR 종목에 대해 일시적으로 거부할 때 있어 재시도가 효과 큼.
+    """
+    import time as _t
+    last_err = None
+    for attempt in range(2):
+        try:
+            with httpx.Client(timeout=15, headers=HDR) as c:
+                r = c.get(f"{YAHOO}/{yahoo_sym}",
+                          params={"range": range_, "interval": interval, "includePrePost": "false"})
+                # 429(rate limit) / 5xx 는 재시도. 4xx 는 바로 실패.
+                if r.status_code == 429 or 500 <= r.status_code < 600:
+                    last_err = f"HTTP {r.status_code}"
+                    if attempt == 0:
+                        _t.sleep(0.6)
+                        continue
+                    return None
+                if r.status_code != 200:
+                    return None
+                data = r.json()
+                res = data.get("chart", {}).get("result")
+                if not res:
+                    return None
+                return res[0]
+        except Exception as e:
+            last_err = str(e)
+            if attempt == 0:
+                _t.sleep(0.6)
+                continue
+            log.debug(f"yahoo fetch failed {yahoo_sym}: {e}")
+            return None
+    if last_err:
+        log.info(f"yahoo fetch {yahoo_sym} 재시도 후 실패: {last_err}")
+    return None
 
 
 def _resolve(symbol: str) -> tuple[str, dict]:

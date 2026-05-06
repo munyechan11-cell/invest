@@ -238,6 +238,39 @@ async def api_admin_del_user(user_id: int, _: dict = Depends(check_admin)):
     return {"ok": True}
 
 
+@app.get("/api/admin/users-detailed")
+async def api_admin_users_detailed(_: dict = Depends(check_admin)):
+    """사용자 목록 + 각자의 구독 상태 — 관리자 패널용."""
+    users = await db.list_users()
+    out = []
+    for u in users:
+        st = await sub_mod.get_status(u["id"])
+        out.append({**u, "subscription": st})
+    return out
+
+
+class GrantProIn(BaseModel):
+    months: int | None = None  # None = 평생
+
+
+@app.post("/api/admin/users/{user_id}/grant-pro")
+async def api_admin_grant_pro(user_id: int, body: GrantProIn, _: dict = Depends(check_admin)):
+    """관리자가 사용자에게 Pro 부여. months=None 이면 평생(100년)."""
+    target = await db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(404, "사용자를 찾을 수 없습니다.")
+    return await sub_mod.grant_pro(user_id, body.months)
+
+
+@app.post("/api/admin/users/{user_id}/revoke-pro")
+async def api_admin_revoke_pro(user_id: int, _: dict = Depends(check_admin)):
+    """관리자가 부여한 Pro 회수 — Free 로 강등."""
+    target = await db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(404, "사용자를 찾을 수 없습니다.")
+    return await sub_mod.revoke_pro(user_id)
+
+
 # ─── Search ────────────────────────────────────────────────────────
 @app.get("/api/search")
 async def api_search(q: str = "", limit: int = 10,
@@ -594,6 +627,32 @@ async def api_analyze(symbol: str, user: dict = Depends(get_current_user)):
         # 벤치마크는 실패해도 분석은 진행
         if isinstance(bench_snap, Exception):
             bench_snap = None
+
+        # 핵심 데이터 (snap) 이 실패하면 분석 자체 의미 없음 → 명확한 502 에러
+        if isinstance(snap, Exception) or not snap:
+            err_msg = str(snap) if isinstance(snap, Exception) else "스냅샷 비어있음"
+            log.error(f"analyze {symbol} snapshot 실패: {err_msg}")
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "snapshot_unavailable",
+                    "symbol": symbol,
+                    "is_kr": is_kr,
+                    "message": (
+                        f"{symbol} 시세를 가져올 수 없습니다. "
+                        f"Yahoo Finance 일시 차단 또는 잘못된 종목코드일 수 있어요. "
+                        f"잠시 후 다시 시도하거나 다른 종목으로 확인해주세요."
+                    ),
+                    "reason": err_msg[:200],
+                },
+            )
+        # news / profile / flow 는 부재해도 분석 진행 (placeholder)
+        if isinstance(news, Exception) or news is None:
+            news = []
+        if isinstance(profile, Exception) or profile is None:
+            profile = {}
+        if isinstance(flow, Exception) or flow is None:
+            flow = {}
 
         watch = next((w for w in await db.list_watch(user["id"]) if w["symbol"] == symbol), None)
         risk_val = watch["risk_pct"] if watch else 1.0

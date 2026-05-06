@@ -795,7 +795,7 @@
       <div class="text-xs uppercase tracking-wider text-ink-500 mb-2">🎟️ 프로모션 코드</div>
       <div class="flex gap-2">
         <input x-model="couponInput" @keydown.enter="redeemCoupon()"
-               placeholder="예: FREE100, FIRST30, SPECIAL20"
+               placeholder="코드 입력"
                class="input flex-1 uppercase tracking-wider"
                style="text-transform: uppercase">
         <button @click="redeemCoupon()" :disabled="couponLoading || !couponInput"
@@ -824,16 +824,44 @@
       <div class="serif text-xl font-semibold">회원 관리 (관리자)</div>
       <button @click="showAdminPanel=false" class="text-ink-500 text-xl">✕</button>
     </div>
-    <div class="max-h-80 overflow-y-auto scroll-soft space-y-2">
+    <div class="max-h-[60vh] overflow-y-auto scroll-soft space-y-2">
       <template x-for="u in adminUsers" :key="u.id">
-        <div class="surface p-3 flex justify-between items-center">
-          <div>
-            <div class="font-semibold text-sm" x-text="u.display_name || u.username"></div>
-            <div class="text-xs text-ink-500">@<span x-text="u.username"></span> · <span x-text="new Date(u.created_at*1000).toLocaleDateString()"></span></div>
+        <div class="surface p-3">
+          <div class="flex justify-between items-start gap-3">
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2 flex-wrap">
+                <div class="font-semibold text-sm" x-text="u.display_name || u.username"></div>
+                <span x-show="u.is_admin" class="pill text-[10px]" style="background:rgba(240,180,41,0.15); color:#F0B429">관리자</span>
+                <span x-show="!u.is_admin && u.subscription?.plan === 'pro'" class="pill text-[10px]" style="background:rgba(240,180,41,0.15); color:#F0B429" x-text="u.subscription?.applied_coupon_code?.startsWith('ADMIN') ? 'PRO (수동)' : 'PRO'"></span>
+                <span x-show="!u.is_admin && u.subscription?.plan === 'free'" class="pill text-[10px]" style="background:#222; color:#7C8392">FREE</span>
+              </div>
+              <div class="text-xs text-ink-500 mt-1">
+                @<span x-text="u.username"></span> ·
+                <span x-text="new Date(u.created_at*1000).toLocaleDateString()"></span>
+                <span x-show="u.subscription?.expires_at && !u.is_admin" class="ml-1">
+                  · 만료 <span x-text="new Date(u.subscription.expires_at*1000).toLocaleDateString()"></span>
+                </span>
+              </div>
+            </div>
           </div>
-          <div class="flex gap-2 items-center">
-            <span x-show="u.is_admin" class="pill pill-coral text-xs">관리자</span>
-            <button x-show="!u.is_admin" @click="deleteUser(u.id)" class="btn btn-ghost text-xs text-red-400 py-1 px-2">삭제</button>
+          <div class="flex gap-2 items-center mt-2 flex-wrap" x-show="!u.is_admin">
+            <button x-show="u.subscription?.plan !== 'pro'"
+                    @click="grantPro(u.id, null)"
+                    class="text-[11px] px-2 py-1 rounded font-semibold"
+                    style="background:rgba(240,180,41,0.15); color:#F0B429">
+              ⭐ 평생 Pro
+            </button>
+            <button x-show="u.subscription?.plan !== 'pro'"
+                    @click="grantPro(u.id, 1)"
+                    class="text-[11px] px-2 py-1 rounded text-ink-500 hover:text-amber-400 border border-[#222]">
+              1개월 Pro
+            </button>
+            <button x-show="u.subscription?.plan === 'pro'"
+                    @click="revokePro(u.id)"
+                    class="text-[11px] px-2 py-1 rounded text-ink-500 hover:text-rose-400 border border-[#222]">
+              Pro 회수
+            </button>
+            <button @click="deleteUser(u.id)" class="text-[11px] px-2 py-1 rounded text-rose-400 hover:bg-rose-500/10 ml-auto">삭제</button>
           </div>
         </div>
       </template>
@@ -2805,7 +2833,9 @@ function app(){
       this.authForm.username = '';
     },
     async openAdmin() {
-      const r = await this.api('/api/admin/users');
+      // 구독 상태 포함된 detailed endpoint 우선, 실패 시 fallback
+      let r = await this.api('/api/admin/users-detailed');
+      if(!r.ok) r = await this.api('/api/admin/users');
       if(r.ok) { this.adminUsers = await r.json(); this.showAdminPanel = true; }
       else { alert('권한이 없습니다.'); }
     },
@@ -2813,6 +2843,23 @@ function app(){
       if(!confirm('이 회원을 삭제하시겠습니까?')) return;
       await this.api('/api/admin/users/'+uid, { method:'DELETE' });
       this.openAdmin();
+    },
+    async grantPro(uid, months) {
+      const label = months === null ? '평생' : `${months}개월`;
+      if(!confirm(`이 사용자에게 ${label} Pro 를 부여하시겠습니까?`)) return;
+      const r = await this.api(`/api/admin/users/${uid}/grant-pro`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ months }),
+      });
+      if(r.ok) { this.openAdmin(); }
+      else { alert('Pro 부여 실패'); }
+    },
+    async revokePro(uid) {
+      if(!confirm('이 사용자의 Pro 를 회수하시겠습니까?')) return;
+      const r = await this.api(`/api/admin/users/${uid}/revoke-pro`, { method: 'POST' });
+      if(r.ok) { this.openAdmin(); }
+      else { alert('회수 실패'); }
     },
     uid() { return this.user?.id || 0; },
     async refresh(){
