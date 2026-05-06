@@ -1412,8 +1412,21 @@
   <!-- ── 메인 리포트 ─────────────────────────────────── -->
   <section class="md:col-span-6 space-y-4 md:space-y-5" :class="mobileTab==='report' ? 'tab-enter md:!animate-none' : 'hidden md:block'">
 
+    <!-- 에러 상태 (분석 실패) -->
+    <template x-if="analyzeError && !loading">
+      <div class="surface-elevated p-8 text-center" style="border:1px solid rgba(244, 63, 94, 0.25); background:linear-gradient(180deg, rgba(244, 63, 94, 0.04) 0%, transparent 100%);">
+        <div class="text-3xl mb-2">⚠️</div>
+        <div class="serif text-lg font-semibold text-rose-400 mb-1">분석 실패</div>
+        <div class="text-sm text-ink-600 max-w-md mx-auto" x-text="analyzeError"></div>
+        <div class="flex gap-2 justify-center mt-5">
+          <button @click="runAnalyze()" class="btn btn-primary text-sm">다시 시도</button>
+          <button @click="analyzeError=''; selected=null;" class="btn btn-ghost text-sm">취소</button>
+        </div>
+      </div>
+    </template>
+
     <!-- 빈 상태 -->
-    <template x-if="!report && !loading">
+    <template x-if="!report && !loading && !analyzeError">
       <div class="surface-elevated p-12 text-center">
         <div class="serif text-3xl font-semibold mb-2">실시간 퀀트 분석</div>
         <p class="text-ink-600 max-w-md mx-auto">
@@ -2625,7 +2638,7 @@ function app(){
   return {
     form: { symbol:'', capital: '', capital_str: '', currency: 'USD', risk_pct: 1 },
     watch: [], ticks: {}, alerts: [], selected: null, report: null,
-    loading: false, wsConnected: false, now: '',
+    loading: false, wsConnected: false, now: '', analyzeError: '',
     krwRate: 1400,
     mobileTab: 'watch',
     // 인증
@@ -3430,7 +3443,7 @@ function app(){
       }
     },
 
-    select(sym){ this.selected = sym; this.report = null; this.mobileTab = 'report'; this.runAnalyze(); },
+    select(sym){ this.selected = sym; this.report = null; this.analyzeError = ''; this.mobileTab = 'report'; this.runAnalyze(); },
     async addWatch(){
       if(!this.form.symbol) return;
       // 한글/기업명도 입력 가능 — 자동으로 가장 비슷한 티커 매칭
@@ -3494,11 +3507,23 @@ function app(){
     async runAnalyze(){
       if(!this.selected) return;
       this.loading = true;
+      this.analyzeError = '';
       try{
         const r = await this.api('/api/analyze/'+this.selected, {method:'POST'});
-        if(!r.ok) throw new Error(await r.text());
+        if(!r.ok) {
+          let msg = '분석 실패';
+          try {
+            const d = await r.json();
+            msg = (d?.detail?.message) || (typeof d?.detail === 'string' ? d.detail : null) || msg;
+          } catch { /* json parse 실패 시 기본 메시지 */ }
+          throw new Error(msg);
+        }
         this.report = await r.json();
-      }catch(e){ alert('분석 실패: '+e.message); }
+      }catch(e){
+        // 옛 alert() 대신 inline error state — UX 개선
+        this.analyzeError = e.message || '분석 중 알 수 없는 오류';
+        this.report = null;
+      }
       finally{ this.loading = false; }
     },
     enableNotif(){ if('Notification' in window) Notification.requestPermission(); },
