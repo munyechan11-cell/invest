@@ -1425,6 +1425,43 @@
         ⓘ 매수 신호 시 자동으로 모의 진입 → 목표가/손절가 도달 시 자동 청산.
         2~4주 데이터로 본인 시스템 신뢰도 검증 가능.
       </div>
+
+      <!-- Confluence 점수별 승률 breakdown — 백테스트 (어느 점수대가 진짜로 적중하나?) -->
+      <template x-if="mockStats?.by_confluence?.length">
+        <div class="pt-2 border-t border-[#222] space-y-1.5">
+          <div class="text-[10px] uppercase tracking-wider text-ink-500 mb-1">
+            🎯 Confluence 점수별 승률
+          </div>
+          <template x-for="row in mockStats.by_confluence" :key="row.score">
+            <div class="flex items-center gap-2 text-[11px]">
+              <div class="font-mono w-10 shrink-0"
+                   :class="row.score >= 5 ? 'text-amber-400 font-bold' :
+                           row.score >= 4 ? 'text-amber-200' :
+                           row.score >= 3 ? 'text-ink-300' : 'text-ink-600'">
+                <span x-text="row.score"></span>/5
+              </div>
+              <!-- 도트 시각화 -->
+              <div class="flex gap-0.5 shrink-0">
+                <template x-for="i in 5" :key="i">
+                  <div class="w-1.5 h-1.5 rounded-full"
+                       :class="i <= row.score ? 'bg-amber-400' : 'bg-[#23272F]'"></div>
+                </template>
+              </div>
+              <div class="flex-1 font-mono text-right"
+                   :class="row.win_rate >= 55 ? 'ticker-up' :
+                           row.win_rate >= 45 ? 'text-amber-300' : 'ticker-down'">
+                <span x-text="row.win_rate + '%'"></span>
+                <span class="text-[10px] text-ink-500 ml-1">
+                  (<span x-text="row.wins + 'W ' + row.losses + 'L'"></span>)
+                </span>
+              </div>
+            </div>
+          </template>
+          <div class="text-[10px] text-ink-600 italic leading-snug pt-1">
+            5/5 시그널이 통계적으로 가장 높은 승률 — 본인 데이터로 검증
+          </div>
+        </div>
+      </template>
     </div>
 
     <!-- 실시간 미주 추천 -->

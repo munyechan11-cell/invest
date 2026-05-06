@@ -44,6 +44,7 @@ async def _push_telegram(symbol: str, kind: str, price: float, message: str,
 
     is_kr = symbol.isdigit() and len(symbol) == 6
     sift_score = (plan or {}).get("sift_score") if plan else None
+    confluence = (plan or {}).get("confluence") if plan else None
     text = telegram_alert.format_alert(
         symbol, kind, price, message,
         sift_score=sift_score,
@@ -52,6 +53,7 @@ async def _push_telegram(symbol: str, kind: str, price: float, message: str,
         stop=(plan or {}).get("stop_price"),
         is_kr=is_kr,
         name=name,
+        confluence=confluence,
     )
     score_val = (sift_score or {}).get("score", 0) if isinstance(sift_score, dict) else 0
 
@@ -156,10 +158,14 @@ async def _evaluate_item(item: dict, plan: dict, quote: any, broadcast) -> None:
                                  "confluence_score": conf_score})
                 await _push_telegram(sym, "BUY", price, msg, plan, name=name, user_id=user_id)
                 # 모의 트레이드 자동 시작 — 추후 TP/SL 도달 시 자동 청산
+                # confluence_score 도 함께 저장 → 백테스트 승률 비교
                 try:
-                    await db.open_mock_trade_for_all(sym, "buy", price,
-                                                    float(target) if target else None,
-                                                    float(stop_price) if stop_price else None)
+                    await db.open_mock_trade_for_all(
+                        sym, "buy", price,
+                        float(target) if target else None,
+                        float(stop_price) if stop_price else None,
+                        confluence_score=conf_score if conf_score > 0 else None,
+                    )
                 except Exception as e:
                     log.warning(f"mock_trade open fail: {e}")
 

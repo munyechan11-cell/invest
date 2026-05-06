@@ -213,10 +213,12 @@ def format_alert(symbol: str, kind: str, price: float, message: str,
                  target: float | None = None,
                  stop: float | None = None,
                  is_kr: bool | None = None,
-                 name: str | None = None) -> str:
+                 name: str | None = None,
+                 confluence: dict | None = None) -> str:
     """알림 메시지 포맷 (HTML). 토스 앱 deeplink 포함.
 
     name: 종목 한글/영문명. 있으면 헤더에 '종목명 (티커)' 형식으로 표기.
+    confluence: {score:int, tier:str, label:str, ...} — 5개 도트로 시각화.
     """
     if is_kr is None:
         is_kr = symbol.isdigit() and len(symbol) == 6
@@ -249,6 +251,14 @@ def format_alert(symbol: str, kind: str, price: float, message: str,
         score = sift_score.get("score", 0)
         grade = sift_score.get("grade", "?")
         lines.append(f"📊 SIFT Score: <b>{score}/100</b> ({grade})")
+
+    # Confluence 도트 시각화 (●●●●● vs ●●●○○) + 점수 + tier
+    if confluence and isinstance(confluence, dict):
+        cs = int(confluence.get("score") or 0)
+        tier = confluence.get("tier") or ""
+        dots = "●" * cs + "○" * (5 - cs)
+        tier_emoji = "⭐" if tier == "high" else "✅" if cs >= 4 else "🟡" if cs >= 3 else "⚠️"
+        lines.append(f"🎯 신뢰도: <code>{dots}</code> <b>{cs}/5</b> {tier_emoji}")
 
     lines += ["", f"💬 {message}"]
 

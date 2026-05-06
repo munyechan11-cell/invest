@@ -199,6 +199,7 @@ CREATE TABLE IF NOT EXISTS mock_trades (
   exit_reason TEXT,
   status TEXT NOT NULL DEFAULT 'open',
   pnl_pct REAL,
+  confluence_score INTEGER,
   opened_at REAL NOT NULL,
   closed_at REAL
 );
@@ -575,8 +576,13 @@ async def open_mock_trade(user_id: int, symbol: str, side: str,
 
 async def open_mock_trade_for_all(symbol: str, side: str,
                                   entry: float, target: float | None,
-                                  stop: float | None) -> int:
-    """모의 트레이드 추적이 켜진 모든 유저에게 자동 기록."""
+                                  stop: float | None,
+                                  confluence_score: int | None = None) -> int:
+    """모의 트레이드 추적이 켜진 모든 유저에게 자동 기록.
+
+    confluence_score: 알림 발송 시점의 confluence 점수 (0-5). 백테스트 승률
+    분석용 — 점수별 win rate 비교 가능.
+    """
     c = await get_db()
     rows = await (await c.execute(
         "SELECT id FROM users WHERE mock_trade_enabled=1"
@@ -591,9 +597,10 @@ async def open_mock_trade_for_all(symbol: str, side: str,
         if existing:
             continue
         await c.execute(
-            "INSERT INTO mock_trades(user_id,symbol,side,entry_price,target_price,stop_price,opened_at) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (r["id"], symbol.upper(), side, entry, target, stop, time.time())
+            "INSERT INTO mock_trades(user_id,symbol,side,entry_price,target_price,stop_price,"
+            "confluence_score,opened_at) VALUES(?,?,?,?,?,?,?,?)",
+            (r["id"], symbol.upper(), side, entry, target, stop,
+             confluence_score, time.time())
         )
         count += 1
     await c.commit()
@@ -642,34 +649,65 @@ async def list_user_mock_trades(user_id: int, limit: int = 100) -> list[dict]:
 
 
 async def mock_trade_stats(user_id: int) -> dict:
+    """전체 통계 + confluence 점수별 breakdown (백테스트 — 어느 점수대가
+    실제로 승률 높은지 사용자가 직접 확인 가능)."""
     c = await get_db()
     rows = await (await c.execute(
-        "SELECT pnl_pct, exit_reason, status FROM mock_trades WHERE user_id=?",
+        "SELECT pnl_pct, exit_reason, status, confluence_score "
+        "FROM mock_trades WHERE user_id=?",
         (user_id,)
     )).fetchall()
     closed = [dict(r) for r in rows if r["status"] == "closed" and r["pnl_pct"] is not None]
     open_count = sum(1 for r in rows if r["status"] == "open")
 
+    base = {
+        "total_signals": len(rows),
+        "open": open_count,
+        "closed": len(closed),
+        "wins": 0, "losses": 0, "win_rate": 0,
+        "avg_return_pct": 0, "best_pct": 0, "worst_pct": 0,
+        "cumulative_pct": 0,
+        "by_confluence": [],
+    }
+
     if not closed:
-        return {
-            "total_signals": len(rows), "open": open_count, "closed": 0,
-            "wins": 0, "losses": 0, "win_rate": 0,
-            "avg_return_pct": 0, "best_pct": 0, "worst_pct": 0,
-            "cumulative_pct": 0,
-        }
+        return base
 
     pnls = [r["pnl_pct"] for r in closed]
     wins = sum(1 for p in pnls if p > 0)
     losses = sum(1 for p in pnls if p <= 0)
+
+    # Confluence 점수별 breakdown (5/5, 4/5, 3/5, ...) — 추적 가능한 closed 만
+    by_conf: dict[int, list[float]] = {}
+    for r in closed:
+        cs = r.get("confluence_score")
+        if cs is None:
+            continue
+        by_conf.setdefault(int(cs), []).append(float(r["pnl_pct"]))
+    confluence_breakdown = []
+    for score in sorted(by_conf.keys(), reverse=True):
+        ps = by_conf[score]
+        w = sum(1 for p in ps if p > 0)
+        confluence_breakdown.append({
+            "score": score,
+            "trades": len(ps),
+            "wins": w,
+            "losses": len(ps) - w,
+            "win_rate": round(w / len(ps) * 100, 1),
+            "avg_return_pct": round(sum(ps) / len(ps), 2),
+        })
+
     return {
         "total_signals": len(rows),
-        "open": open_count, "closed": len(closed),
+        "open": open_count,
+        "closed": len(closed),
         "wins": wins, "losses": losses,
         "win_rate": round(wins / len(pnls) * 100, 1) if pnls else 0,
         "avg_return_pct": round(sum(pnls) / len(pnls), 2),
         "best_pct": round(max(pnls), 2),
         "worst_pct": round(min(pnls), 2),
         "cumulative_pct": round(sum(pnls), 2),
+        "by_confluence": confluence_breakdown,
     }
 
 
@@ -706,6 +744,15 @@ async def init():
     except Exception:
         try:
             await c.execute("ALTER TABLE user_settings ADD COLUMN auto_stoploss INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+
+    # mock_trades.confluence_score 마이그레이션 (백테스트 승률 분석용)
+    try:
+        await c.execute("SELECT confluence_score FROM mock_trades LIMIT 1")
+    except Exception:
+        try:
+            await c.execute("ALTER TABLE mock_trades ADD COLUMN confluence_score INTEGER")
         except Exception:
             pass
     
