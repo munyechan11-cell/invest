@@ -80,16 +80,28 @@ def _bbands(close: pd.Series, period: int = 20, k: float = 2.0):
 def fetch_realtime_quote(symbol: str) -> Quote:
     """실시간 시세 — 시장별 다중 소스 폴백.
 
-    KR: KIS → Yahoo (.KS/.KQ)
+    KR: KIS → Naver → Yahoo
+        (KIS: 정확한 실시간, Naver: 한국 거래소 직접 — 거의 실시간,
+         Yahoo: 종종 stale → last resort)
     US: Finnhub → Yahoo
     """
     if market_of(symbol) == "KR":
+        # 1차: KIS API (정확한 실시간 — 키 있을 때만)
         try:
             from .market_kr import fetch_realtime_quote as _kr
             k = _kr(symbol)
-        except Exception:
-            from .market_kr_yahoo import fetch_realtime_quote as _yh
-            k = _yh(symbol)
+        except Exception as kis_err:
+            log.debug(f"KIS 실패 ({symbol}): {kis_err} → Naver 시도")
+            # 2차: Naver Finance — 한국 거래소 직결 (Yahoo 보다 신선)
+            from .market_kr_naver import fetch_naver_quote
+            n = fetch_naver_quote(symbol)
+            if n is not None:
+                k = n
+            else:
+                # 3차: Yahoo (가장 stale 위험 — last resort)
+                log.info(f"Naver 도 실패 ({symbol}) → Yahoo 시도")
+                from .market_kr_yahoo import fetch_realtime_quote as _yh
+                k = _yh(symbol)
         return Quote(symbol=k.symbol, price=k.price, day_high=k.day_high,
                      day_low=k.day_low, day_open=k.day_open,
                      prev_close=k.prev_close, change_pct=k.change_pct, ts=k.ts)

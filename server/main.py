@@ -70,9 +70,10 @@ if os.environ.get("LOG_FORMAT", "").lower() == "json":
     for h in logging.root.handlers:
         h.setFormatter(_JsonFormatter())
 
-# 스냅샷 인메모리 캐시 — AI 분석은 10분 캐시지만 시세는 더 자주 새로
+# 스냅샷 인메모리 캐시 — AI 분석은 10분 캐시지만 시세는 더 자주 새로.
+# 정규장 중 신선함이 중요해서 5초로 단축 (worker 폴링 5초와 일치).
 _snapshot_cache: dict[str, tuple[float, dict]] = {}
-_SNAPSHOT_TTL = 8  # 초
+_SNAPSHOT_TTL = 5  # 초
 
 
 async def _cached_snapshot(symbol: str) -> dict:

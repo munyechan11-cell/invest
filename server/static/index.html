@@ -956,6 +956,10 @@
       <div class="hidden md:flex items-center gap-2 text-sm text-ink-600">
         <span class="pulse-dot" :class="!wsConnected && 'off'"></span>
         <span x-text="wsConnected ? '실시간 연결' : '재연결 중'"></span>
+        <!-- 마지막 시세 도착 시각 — 30초 이상 무소식이면 회색 -->
+        <span x-show="lastTickTs > 0" class="text-[10px] font-mono"
+              :class="(Date.now() - lastTickTs) < 30000 ? 'text-emerald-400' : 'text-ink-700'"
+              x-text="'· tick ' + Math.max(0, Math.round((Date.now() - lastTickTs)/1000)) + 's 전'"></span>
       </div>
       <div class="hidden lg:block text-sm text-ink-600 font-mono" x-text="now"></div>
       <button x-show="user" @click="openPricing()"
@@ -2862,6 +2866,7 @@ function app(){
     watch: [], ticks: {}, alerts: [], selected: null, report: null,
     loading: false, wsConnected: false, now: '', analyzeError: '',
     watchLoaded: false, holdingsLoaded: false,
+    lastTickTs: 0,  // 마지막 시세 도착 — UI freshness 표시
     krwRate: 1400,
     mobileTab: 'watch',
     // 인증
@@ -3155,6 +3160,7 @@ function app(){
         const m = JSON.parse(e.data);
         if(m.type==='tick') {
           this.ticks[m.symbol] = m;
+          this.lastTickTs = Date.now();  // 마지막 시세 도착 시각 (UI freshness 표시)
           // 워치리스트 카드의 가격도 자동 갱신됨 (Alpine 반응성)
           // 보유 종목에 같은 심볼이 있으면 가격 부분 동기화
           this.holdings.forEach(h => {
