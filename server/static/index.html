@@ -1234,7 +1234,21 @@
             </div>
           </li>
         </template>
-        <template x-if="watch.length===0">
+        <!-- 첫 로딩 skeleton (watchLoaded=false 동안) -->
+        <template x-if="watch.length===0 && !watchLoaded">
+          <li class="space-y-2 py-2">
+            <div class="skel-card" style="padding:10px">
+              <div class="skel skel-line" style="width:30%"></div>
+              <div class="skel skel-line lg" style="width:60%"></div>
+            </div>
+            <div class="skel-card" style="padding:10px">
+              <div class="skel skel-line" style="width:35%"></div>
+              <div class="skel skel-line lg" style="width:55%"></div>
+            </div>
+          </li>
+        </template>
+        <!-- 진짜 빈 상태 (로딩 끝났는데 0개) -->
+        <template x-if="watch.length===0 && watchLoaded">
           <li class="text-center py-10 px-4">
             <div class="text-3xl mb-3 opacity-40">📋</div>
             <div class="text-sm text-ink-300 font-semibold mb-1">워치리스트가 비어있어요</div>
@@ -2467,10 +2481,35 @@
       </div>
     </template>
 
-    <template x-if="!holdings.length">
-      <div class="surface p-8 text-center text-ink-500 text-sm">
-        보유 종목이 없습니다.<br>
-        분석 페이지에서 [포트폴리오 담기]로 추가하세요.
+    <!-- 첫 로딩 skeleton -->
+    <template x-if="!holdings.length && !holdingsLoaded">
+      <div class="space-y-2.5">
+        <div class="skel-card">
+          <div class="flex justify-between mb-2">
+            <div class="skel skel-line" style="width:30%"></div>
+            <div class="skel skel-line lg" style="width:25%; height:24px"></div>
+          </div>
+          <div class="skel skel-line" style="width:40%"></div>
+          <div class="skel skel-line lg" style="width:60%"></div>
+        </div>
+        <div class="skel-card">
+          <div class="flex justify-between mb-2">
+            <div class="skel skel-line" style="width:35%"></div>
+            <div class="skel skel-line lg" style="width:25%; height:24px"></div>
+          </div>
+          <div class="skel skel-line" style="width:45%"></div>
+        </div>
+      </div>
+    </template>
+    <!-- 빈 상태 -->
+    <template x-if="!holdings.length && holdingsLoaded">
+      <div class="surface p-8 text-center">
+        <div class="text-3xl mb-3 opacity-40">💼</div>
+        <div class="text-sm text-ink-300 font-semibold mb-1">보유 종목이 없어요</div>
+        <div class="text-xs text-ink-500 leading-relaxed max-w-[260px] mx-auto">
+          <span class="text-amber-400">분석 페이지</span>에서 <strong>[포트폴리오 담기]</strong>를 누르거나<br>
+          <span class="text-amber-400">사진 업로드</span>로 토스 화면을 한 번에 자동 등록할 수 있어요.
+        </div>
       </div>
     </template>
 
@@ -2822,6 +2861,7 @@ function app(){
     form: { symbol:'', capital: '', capital_str: '', currency: 'USD', risk_pct: 1 },
     watch: [], ticks: {}, alerts: [], selected: null, report: null,
     loading: false, wsConnected: false, now: '', analyzeError: '',
+    watchLoaded: false, holdingsLoaded: false,
     krwRate: 1400,
     mobileTab: 'watch',
     // 인증
@@ -3075,6 +3115,7 @@ function app(){
         const a = await r2.json();
         this.alerts = a.map(x => ({...x, ts: x.created_at}));
       } catch(e) { console.error(e); }
+      finally { this.watchLoaded = true; }
     },
     async loadTrades() {
       const [r1, r2] = await Promise.all([
@@ -3392,9 +3433,9 @@ function app(){
         const d = await r.json();
         this.tgCandidates = d.candidates || [];
         if (this.tgCandidates.length === 0) {
-          alert('아직 봇과 대화한 사용자가 없습니다.\n\n1) 텔레그램에서 본인 봇 검색\n2) /start 또는 아무 메시지 보내기\n3) 다시 [자동 찾기] 클릭');
+          this.toastWarn('아직 봇과 대화한 사용자가 없습니다 — 텔레그램에서 봇 검색 → /start 보내고 다시 시도');
         }
-      } catch(e) { alert('자동 찾기 실패: '+e.message); }
+      } catch(e) { this.toastError('자동 찾기 실패: '+e.message); }
     },
     async subscribeTelegram(chatId) {
       if (!chatId) return;
@@ -3403,24 +3444,25 @@ function app(){
           method:'POST', headers:{'content-type':'application/json'},
           body: JSON.stringify({ chat_id: String(chatId) })
         });
-        if (!r.ok) { alert('등록 실패: ' + (await r.text())); return; }
-        alert('✅ 등록 완료! 텔레그램에서 테스트 메시지를 확인하세요.');
-        await this.openTelegramSetup();  // 재로드
-      } catch(e) { alert('등록 오류: '+e.message); }
+        if (!r.ok) { this.toastError('등록 실패: ' + (await r.text())); return; }
+        this.toastSuccess('등록 완료! 텔레그램에서 테스트 메시지 확인');
+        await this.openTelegramSetup();
+      } catch(e) { this.toastError('등록 오류: '+e.message); }
     },
     async unsubscribeTelegram() {
       if (!confirm('텔레그램 알림을 해지할까요?')) return;
       await this.api('/api/telegram/subscribe', { method:'DELETE' });
+      this.toastSuccess('해지 완료');
       await this.openTelegramSetup();
     },
     async testTelegram() {
       try {
         const r = await this.api('/api/telegram/test', { method:'POST' });
         const d = await r.json();
-        if (r.ok) alert('✅ 텔레그램에서 메시지 확인하세요!\n\n' + d.msg);
-        else alert('❌ 실패: ' + (d.detail || JSON.stringify(d)));
+        if (r.ok) this.toastSuccess(d.msg || '텔레그램 메시지 발송됨');
+        else this.toastError(d?.detail || '발송 실패');
       } catch(e) {
-        alert('❌ 오류: ' + e.message);
+        this.toastError('오류: ' + e.message);
       }
     },
 
@@ -3556,6 +3598,7 @@ function app(){
         const r = await this.api('/api/portfolio');
         if(r.ok) this.holdings = await r.json();
       } catch(e) { console.error('포트폴리오 로드 실패', e); }
+      finally { this.holdingsLoaded = true; }
     },
     openPortfolioModal() {
       this.portForm = { symbol: this.selected, krw_invested: 0, entry_price: this.report.snapshot.quote.price, shares: 0 };
@@ -3588,20 +3631,20 @@ function app(){
         });
         if (!r.ok) {
           const err = await r.json();
-          alert('추매 실패: ' + (err.detail || JSON.stringify(err)));
+          this.toastError('추매 실패: ' + (err.detail || JSON.stringify(err)));
           return;
         }
         const result = await r.json();
         this.showAvgDownModal = false;
         await this.loadHoldings();
         const dirIcon = result.new_avg < result.old_avg ? '🟢 물타기' : '🟠 불타기';
-        alert(`✅ 추매 완료 (${dirIcon})\n\n` +
-              `기존 평단: ${this.cur(this.avgDownTarget.symbol)}${result.old_avg.toLocaleString()}\n` +
-              `새 평단: ${this.cur(this.avgDownTarget.symbol)}${result.new_avg.toLocaleString()} (${result.avg_change_pct >= 0 ? '+' : ''}${result.avg_change_pct.toFixed(2)}%)\n` +
-              `총 보유: ${result.new_shares.toLocaleString()}주\n` +
-              `총 투입: ${this.cur(this.avgDownTarget.symbol)}${result.total_invested.toLocaleString()}`);
+        this.toastSuccess(
+          `${dirIcon} 추매 완료 — 평단 ${result.new_avg.toLocaleString()} ` +
+          `(${result.avg_change_pct >= 0 ? '+' : ''}${result.avg_change_pct.toFixed(2)}%) · ` +
+          `총 ${result.new_shares.toLocaleString()}주`
+        );
       } catch(e) {
-        alert('오류: ' + e.message);
+        this.toastError('오류: ' + e.message);
       }
     },
 
@@ -3621,9 +3664,9 @@ function app(){
         this.holdings = [];
         this.recalcPortfolioTotals();
         await this.loadHoldings();  // 백엔드에서 다시 가져와 확인
-        alert('모든 보유 종목이 삭제되었습니다.');
+        this.toastSuccess('모든 보유 종목 삭제됨');
       } else {
-        alert('삭제 실패: ' + await r.text());
+        this.toastError('삭제 실패: ' + await r.text());
       }
     },
     openEdit(h) {
@@ -3638,7 +3681,7 @@ function app(){
     async confirmEdit() {
       if(!this.editTarget) return;
       if(this.editForm.shares <= 0 || this.editForm.entry_price <= 0) {
-        alert('수량과 평단가는 0보다 커야 합니다.');
+        this.toastWarn('수량과 평단가는 0보다 커야 합니다');
         return;
       }
       const r = await this.api(`/api/portfolio/${this.editTarget.id}`, {
@@ -3654,7 +3697,7 @@ function app(){
         await this.loadHoldings();
       } else {
         const err = await r.text();
-        alert('수정 실패: ' + err);
+        this.toastError('수정 실패: ' + err);
       }
     },
 
@@ -3664,7 +3707,7 @@ function app(){
       // 한글/기업명도 입력 가능 — 자동으로 가장 비슷한 티커 매칭
       const sym = await this._resolveSymbol(this.form.symbol);
       if (!sym) {
-        alert(`"${this.form.symbol}"와 일치하는 종목을 찾을 수 없습니다.`);
+        this.toastWarn(`"${this.form.symbol}"와 일치하는 종목을 찾을 수 없어요`);
         return;
       }
       this.form.symbol = sym;
@@ -3698,11 +3741,11 @@ function app(){
         });
         if (!r.ok) {
           const err = await r.text();
-          alert(`종목 추가 실패: ${err}`);
+          this.toastError(`종목 추가 실패: ${err}`);
           return;
         }
       } catch(e) {
-        alert('네트워크 오류: ' + e.message);
+        this.toastError('네트워크 오류: ' + e.message);
         return;
       }
 
