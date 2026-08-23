@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from quant.config.loader import load_config
 from quant.config.schema import StrategyConfig
@@ -119,15 +119,35 @@ class SetupRequest(BaseModel):
 
 
 class LimitsRequest(BaseModel):
-    max_daily_notional: float = 0.0
-    max_daily_orders: int = 0
-    max_daily_loss: float = 0.0
-    max_daily_loss_pct: float = 0.0
+    """Daily caps. Omitted fields are left alone; an explicit 0 removes a cap.
+
+    Partial by design: a client that raises the order count must not silently
+    release the loss cap it never mentioned.
+    """
+
+    max_daily_notional: Optional[float] = None
+    max_daily_orders: Optional[int] = None
+    max_daily_loss: Optional[float] = None
+    max_daily_loss_pct: Optional[float] = None
+
+
+#: (요청 필드, TradingBudget 속성, .env 키, 변환)
+_LIMIT_FIELDS = (
+    ("max_daily_notional", "max_notional", "QUANT_LIMIT_DAILY_NOTIONAL", float),
+    ("max_daily_orders", "max_orders", "QUANT_LIMIT_DAILY_ORDERS", int),
+    ("max_daily_loss", "max_loss", "QUANT_LIMIT_DAILY_LOSS",
+     lambda v: abs(float(v))),
+    ("max_daily_loss_pct", "max_loss_pct", "QUANT_LIMIT_DAILY_LOSS_PCT",
+     lambda v: abs(float(v))),
+)
 
 
 class StartRequest(BaseModel):
     config_path: str
     mode: str = Field(default="dry_run", pattern="^(dry_run|live)$")
+    #: 실거래일 때만 필요합니다. `quant live` 가 콘솔에서 받는 것과 같은 확인 —
+    #: 전략 이름을 정확히 적어야 합니다.
+    confirm: str = ""
 
 
 #: 이 주소들만 "내 컴퓨터에서만 보인다" 고 말할 수 있습니다.
@@ -157,6 +177,36 @@ def assert_safe_to_bind(host: str) -> None:
         "  해결: QUANT_API_TOKEN=$(python3 -c \"import secrets;print(secrets.token_urlsafe(32))\") "
         "를 환경변수로 설정하거나, --host 127.0.0.1 로 로컬에서만 여세요."
     )
+
+
+def assert_live_start_allowed(config: StrategyConfig, confirm: str) -> None:
+    """`quant live` 가 요구하는 것과 정확히 같은 조건을 API 에도 건다.
+
+    대시보드가 실거래로 가는 더 쉬운 길이 되면 안 됩니다. CLI 는 세 가지를
+    요구합니다 — 설정 파일 자체가 mode: live 일 것, live_trading_confirmed
+    일 것, 사람이 전략 이름을 직접 입력할 것. API 는 두 번째만 손으로 검사했고
+    `cfg.mode = ...` 대입은 pydantic 검증을 다시 돌리지 않으므로, '하루 한도
+    없는 실거래'가 POST 한 번으로 만들어졌습니다.
+    """
+    if config.mode is not RunMode.LIVE:
+        raise HTTPException(
+            400,
+            f"설정 파일 mode 가 {config.mode.value} 입니다. "
+            "실거래는 설정 파일이 직접 mode: live 라고 선언한 경우에만 시작합니다 "
+            "— API 로 모드를 바꿔 실거래로 넘어갈 수는 없습니다.",
+        )
+    if not config.broker.live_trading_confirmed:
+        raise HTTPException(
+            400,
+            "refusing to start live trading: set broker.live_trading_confirmed "
+            "in the config file, not through the API",
+        )
+    if confirm.strip() != config.name:
+        raise HTTPException(
+            400,
+            f'실거래 확인이 필요합니다: confirm 에 전략 이름 "{config.name}" 을 '
+            "정확히 넣으세요 (CLI 가 콘솔에서 묻는 것과 같은 확인입니다).",
+        )
 
 
 def create_app(config: StrategyConfig | None = None,
@@ -194,10 +244,12 @@ def create_app(config: StrategyConfig | None = None,
     app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(
         CORSMiddleware,
-        # 토큰을 쓰는 배포에서 기본값 "*" 는 아무 웹페이지나 이 API 를
-        # 부를 수 있게 합니다. 토큰이 있으면 명시된 출처만 허용합니다.
-        allow_origins=([o for o in os.environ.get("CORS_ORIGINS", "").split(",") if o]
-                       or ([] if token else ["*"])),
+        # No cross-origin caller by default, token or not. The dashboard is
+        # served by this same app, so it never needs a CORS header; the only
+        # thing "*" bought was letting any page the operator happens to visit
+        # POST /api/manual/close_all or /api/setup at their own localhost.
+        # Anyone genuinely serving the UI from elsewhere names it explicitly.
+        allow_origins=[o for o in os.environ.get("CORS_ORIGINS", "").split(",") if o],
         allow_methods=["*"], allow_headers=["*"],
     )
     app.state.quant = state
@@ -428,27 +480,49 @@ def create_app(config: StrategyConfig | None = None,
     async def limits_save(req: LimitsRequest, _=Depends(require_token)):
         """Apply daily caps now, and persist them for the next restart.
 
+        **Partial.** Only the caps named in the request body change; a field
+        that is absent (or null) is left exactly as it was, in the running bot
+        and in `.env` alike. Sending an explicit `0` removes that cap — which
+        means unlimited — and the response names every cap it removed.
+
         Written to `.env` rather than back into the strategy YAML, so the
         operator's file — comments and all — is never reformatted by a UI.
         """
         store = CredentialStore(os.environ.get("QUANT_ENV_FILE", ".env"))
-        store.update({
-            "QUANT_LIMIT_DAILY_NOTIONAL": str(req.max_daily_notional or ""),
-            "QUANT_LIMIT_DAILY_ORDERS": str(req.max_daily_orders or ""),
-            "QUANT_LIMIT_DAILY_LOSS": str(req.max_daily_loss or ""),
-            "QUANT_LIMIT_DAILY_LOSS_PCT": str(req.max_daily_loss_pct or ""),
-        })
-        applied = None
-        if state.trader is not None:
-            budget = state.trader.engine.budget
-            budget.max_notional = req.max_daily_notional
-            budget.max_orders = req.max_daily_orders
-            budget.max_loss = abs(req.max_daily_loss)
-            budget.max_loss_pct = abs(req.max_daily_loss_pct)
-            applied = budget.status()
+        budget = state.trader.engine.budget if state.trader is not None else None
+        write: dict[str, str] = {}
+        clear: list[str] = []
+        updated: list[str] = []
+        removed: list[str] = []
+        for field_name, attr, env_key, cast in _LIMIT_FIELDS:
+            sent = getattr(req, field_name)
+            if sent is None:
+                continue
+            value = cast(sent)
+            previous = (getattr(budget, attr) if budget is not None
+                        else float(os.environ.get(env_key, 0) or 0))
+            updated.append(field_name)
+            if value:
+                write[env_key] = str(value)
+            else:
+                clear.append(env_key)
+                if previous:
+                    removed.append(field_name)
+            if budget is not None:
+                setattr(budget, attr, value)
+        if write:
+            store.update(write)
+        if clear:
+            store.remove(clear)
+        applied = budget.status() if budget is not None else None
+        note = ("실행 중인 봇에는 즉시 적용됩니다" if applied
+                else "다음 실행부터 적용됩니다")
+        if removed:
+            note += f" — 주의: {', '.join(removed)} 한도가 해제되었습니다 (무제한)"
+            log.warning("일일 한도 해제: %s — 다시 설정하기 전까지 무제한입니다",
+                        ", ".join(removed))
         return {"saved": True, "applied_now": applied,
-                "note": "실행 중인 봇에는 즉시 적용됩니다" if applied
-                        else "다음 실행부터 적용됩니다"}
+                "updated": updated, "removed": removed, "note": note}
 
     @app.get("/api/limits")
     async def limits_get(_=Depends(require_token)):
@@ -568,10 +642,19 @@ def create_app(config: StrategyConfig | None = None,
 
     @app.post("/api/setup")
     async def setup_save(req: SetupRequest, _=Depends(require_token)):
+        """Store setup values. Only the keys this screen owns are accepted.
+
+        Anything else — a typo, or a `HTTPS_PROXY` that would reroute the next
+        broker call — is refused and named in `rejected`.
+        """
         store = CredentialStore(os.environ.get("QUANT_ENV_FILE", ".env"))
-        written = store.update(req.values)
-        return {"written": written, "state": store.state().to_dict(),
-                "note": "저장된 값은 다시 조회할 수 없습니다 (재발급만 가능)"}
+        report = store.update(req.values)
+        note = "저장된 값은 다시 조회할 수 없습니다 (재발급만 가능)"
+        if report.rejected:
+            note += (" — 거부된 항목: "
+                     + ", ".join(f"{k}({v})" for k, v in report.rejected.items()))
+        return {"written": report.written, "rejected": report.rejected,
+                "state": store.state().to_dict(), "note": note}
 
     @app.post("/api/setup/verify/{venue_id}")
     async def setup_verify(venue_id: str, _=Depends(require_token)):
@@ -624,18 +707,33 @@ def create_app(config: StrategyConfig | None = None,
 
     @app.post("/api/trader/start")
     async def start_trader(req: StartRequest, _=Depends(require_token)):
+        """Start a dry-run or live trader from a config file on this machine.
+
+        `mode: "live"` carries exactly the preconditions `quant live` does: the
+        config file must itself declare `mode: live`, `broker.live_trading_confirmed`
+        must be true, at least one daily cap must be set under `limits:`, and
+        `confirm` must repeat the strategy name — the API's stand-in for the
+        name the CLI makes a human type.
+        """
         from quant.live.trader import LiveTrader
 
         if state.trader is not None and state.trader.running:
             raise HTTPException(409, "a trader is already running")
-        cfg = load_config(req.config_path)
-        cfg.mode = RunMode(req.mode)
-        if cfg.mode is RunMode.LIVE and not cfg.broker.live_trading_confirmed:
+        try:
+            cfg = load_config(req.config_path)
+        except Exception as exc:
+            raise HTTPException(400, f"설정을 불러오지 못했습니다: {exc}") from exc
+        mode = RunMode(req.mode)
+        if mode is RunMode.LIVE:
+            assert_live_start_allowed(cfg, req.confirm)
+        # 모드를 바꿨으면 스키마 검증을 다시 돌린다. 대입만으로는 돌지 않아서
+        # 하루 한도 없는 실거래·paper 브로커 실거래가 그대로 통과했습니다.
+        try:
+            cfg = StrategyConfig.model_validate({**cfg.model_dump(), "mode": mode})
+        except ValidationError as exc:
             raise HTTPException(
-                400,
-                "refusing to start live trading: set broker.live_trading_confirmed "
-                "in the config file, not through the API",
-            )
+                400, f"이 설정으로는 시작할 수 없습니다: {exc.errors()[0]['msg']}"
+            ) from exc
         trader = LiveTrader(cfg, state.state_path)
         trader.engine.ctx.bus.on(None, state.hub.publish)
         state.trader, state.config = trader, cfg

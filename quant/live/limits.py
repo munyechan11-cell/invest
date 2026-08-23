@@ -91,16 +91,18 @@ class TradingBudget:
         self.today: DayLedger | None = None
         self.history: list[DayLedger] = []
         self._halted_reason = ""
+        #: durable store, once one is bound — see `bind_store`.
+        self._store = None
 
     # ── day boundary ─────────────────────────────────────────────────────
     def _now(self) -> datetime:
         return self.clock.now() if self.clock is not None else datetime.now(UTC)
 
-    def _local_day(self, now: datetime | None = None) -> date:
+    def local_day(self, now: datetime | None = None) -> date:
         return ((now or self._now()) + self.tz_offset).date()
 
     def roll(self, now: datetime | None = None, equity: float = 0.0) -> DayLedger:
-        day = self._local_day(now)
+        day = self.local_day(now)
         if self.today is None:
             self.today = DayLedger(day, starting_equity=equity)
         elif self.today.day != day:
@@ -112,6 +114,7 @@ class TradingBudget:
                      self.today.realized_pnl)
             self.today = DayLedger(day, starting_equity=equity)
             self._halted_reason = ""
+            self._persist()
         elif equity and not self.today.starting_equity:
             self.today.starting_equity = equity
         return self.today
@@ -162,6 +165,7 @@ class TradingBudget:
             log.warning(self._halted_reason)
         if self.today is not None:
             self.today.blocked += 1
+        self._persist()
         return False, self._halted_reason or reason
 
     # ── bookkeeping ──────────────────────────────────────────────────────
@@ -171,13 +175,16 @@ class TradingBudget:
         ledger.orders += 1
         ledger.notional += abs(float(order.quantity)) * price * float(
             order.symbol.multiplier)
+        self._persist()
 
     def record_fill(self, fill: Fill, now: datetime | None = None) -> None:
         ledger = self.roll(now)
         ledger.fees += fill.fee
+        self._persist()
 
     def record_trade(self, pnl: float, now: datetime | None = None) -> None:
         self.roll(now).realized_pnl += pnl
+        self._persist()
 
     def blocked_count(self) -> int:
         return self.today.blocked if self.today else 0
@@ -205,6 +212,90 @@ class TradingBudget:
                     "내일 자동으로 복구됩니다.",
                     ledger.day, self._halted_reason or "중단 없음")
         self._halted_reason = ""
+        self._persist()
+
+    # ── durability ───────────────────────────────────────────────────────
+    def bind_store(self, store) -> None:
+        """Write the ledger through to `store` on every change.
+
+        Binding rather than snapshotting on a timer is deliberate: an order can
+        go out between two snapshots, and a ledger that is one order behind at
+        the moment of the crash is exactly the order a restart would let
+        through twice.
+        """
+        self._store = store
+
+    def _persist(self) -> None:
+        if self._store is None:
+            return
+        try:
+            self._store.save_budget(self)
+        except Exception:
+            # Never let a bookkeeping failure stop the trading path, but say so
+            # loudly: from here the caps only hold until the next restart.
+            self._store = None
+            log.exception("일일 한도 저장 실패 — 재시작하면 오늘 사용량이 초기화됩니다")
+
+    def to_state(self) -> dict:
+        """Today's ledger as a plain dict, for the state DB."""
+        if self.today is None:
+            return {}
+        return {
+            "day": self.today.day.isoformat(),
+            "notional": self.today.notional,
+            "orders": self.today.orders,
+            "realized_pnl": self.today.realized_pnl,
+            "fees": self.today.fees,
+            "starting_equity": self.today.starting_equity,
+            "blocked": self.today.blocked,
+            "halt_reason": self._halted_reason,
+            "tz_offset_hours": self.tz_offset.total_seconds() / 3600,
+        }
+
+    def load_state(self, state: dict, now: datetime | None = None) -> bool:
+        """Adopt a stored ledger if it is still today's. Returns whether it was.
+
+        Call this once, before trading resumes. The day guard is the whole
+        point: yesterday's usage must not bound today, and today's must not be
+        forgotten just because the process died. `released` is deliberately not
+        carried over — an operator waiving the caps is a decision about a
+        running bot, not a standing setting, so a restart re-halts and asks
+        again. That is the safe direction to be wrong in.
+        """
+        if not state:
+            return False
+        stored_tz = float(state.get("tz_offset_hours") or 0.0)
+        if abs(stored_tz - self.tz_offset.total_seconds() / 3600) > 1e-9:
+            log.warning("일일 한도 복원 취소: 저장 시점의 시간대(UTC%+g)가 현재 설정(UTC%+g)과 "
+                        "다릅니다 — '오늘'의 범위가 달라져 그대로 쓸 수 없습니다",
+                        stored_tz, self.tz_offset.total_seconds() / 3600)
+            return False
+        try:
+            day = date.fromisoformat(str(state["day"]))
+        except (KeyError, TypeError, ValueError):
+            log.warning("일일 한도 복원 취소: 저장된 날짜를 읽을 수 없습니다 (%r)",
+                        state.get("day"))
+            return False
+        today = self.local_day(now)
+        if day != today:
+            log.info("저장된 일일 한도는 %s 자 — 오늘(%s)은 새 한도로 시작합니다", day, today)
+            return False
+
+        self.today = DayLedger(
+            day,
+            notional=float(state.get("notional") or 0.0),
+            orders=int(state.get("orders") or 0),
+            realized_pnl=float(state.get("realized_pnl") or 0.0),
+            fees=float(state.get("fees") or 0.0),
+            starting_equity=float(state.get("starting_equity") or 0.0),
+            blocked=int(state.get("blocked") or 0),
+        )
+        self._halted_reason = state.get("halt_reason") or ""
+        if self._halted_reason:
+            log.warning("복원: 일일 한도 중단 상태 — %s", self._halted_reason)
+        log.info("복원: %s 일일 사용량 (거래대금 %.0f, 주문 %d건, 손익 %+.0f)",
+                 day, self.today.notional, self.today.orders, self.today.realized_pnl)
+        return True
 
     def status(self, now: datetime | None = None) -> dict:
         ledger = self.roll(now)

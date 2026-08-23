@@ -82,6 +82,20 @@ def merge_bars(series: dict[str, list[Bar]]) -> list[tuple[datetime, dict[str, B
     return [(ts, buckets[ts]) for ts in sorted(buckets)]
 
 
+def _flow_consumers(alpha, feed) -> list[str]:
+    """Names of the alpha models that read 수급 from `feed`.
+
+    Reported by identity rather than by type so a config with no flow alpha at
+    all stays quiet — a warning everyone learns to ignore protects nobody.
+    """
+    models = getattr(alpha, "models", [alpha])
+    return sorted(
+        getattr(m, "name", type(m).__name__)
+        for m in models
+        if getattr(m, "feed", None) is feed or getattr(m, "flow_feed", None) is feed
+    )
+
+
 async def run_backtest(
     config: StrategyConfig,
     provider: DataProvider | None = None,
@@ -112,9 +126,18 @@ async def run_backtest(
     if not symbols:
         raise ValueError("universe is empty — nothing to backtest")
 
+    # The benchmark is fetched but never traded: the attribution ledger prices
+    # it to turn realised return into '초과'(excess), and a symbol that is only
+    # ever priced cannot receive an order.
+    bench = ctx.benchmark
+    to_fetch = list(symbols)
+    if bench is not None and bench.key not in {s.key for s in symbols}:
+        to_fetch.append(bench)
+
     log.info("loading %d symbols from %s (%s → %s, warm-up from %s)",
-             len(symbols), provider.name, start.date(), end.date(), warmup_start.date())
-    series = await gather_history(provider, symbols, config.data.timeframe, warmup_start, end)
+             len(to_fetch), provider.name, start.date(), end.date(), warmup_start.date())
+    series = await gather_history(provider, to_fetch, config.data.timeframe,
+                                  warmup_start, end)
 
     tradable: list[Symbol] = []
     warm_counts: dict[str, int] = {}
@@ -132,13 +155,44 @@ async def run_backtest(
         raise ValueError("no symbol had usable data in the requested window")
     engine.set_universe(tradable)
 
-    flow_feed = getattr(engine, "flow_feed", None)
-    if flow_feed is not None and not isinstance(flow_feed.provider, NullFlowProvider):
-        await flow_feed.backfill(tradable, warmup_start, end)
-        if not flow_feed.has_data:
+    bench_bars: list[Bar] = []
+    benchmark_priced = False
+    if bench is not None:
+        bench_series = series.get(bench.key, [])
+        bench_window = [b for b in bench_series if start <= b.ts < end]
+        if len(bench_window) < 2:
             warnings.append(
-                "flow provider returned no 수급 data — flow-based models will stay silent"
+                f"benchmark {bench.ticker} returned no usable bars from "
+                f"{provider.name} — the '초과'(excess) column is the raw return, "
+                f"NOT benchmark-relative"
             )
+            log.warning("benchmark %s has no data — excess == raw return", bench.ticker)
+        else:
+            benchmark_priced = True
+            if bench.key not in {s.key for s in tradable}:
+                ctx.seed_history(bench, [b for b in bench_series if b.ts < start])
+                bench_bars = bench_window
+
+    flow_feed = getattr(engine, "flow_feed", None)
+    if flow_feed is not None:
+        consumers = _flow_consumers(engine.alpha, flow_feed)
+        if isinstance(flow_feed.provider, NullFlowProvider):
+            # `flows()` warns on first use, but a backtest never calls it: the
+            # feed is served entirely from backfill, which we skip here. So the
+            # one failure mode the README promises to catch would go unreported.
+            if consumers:
+                log.warning("investor flow unavailable: %s", flow_feed.provider.reason)
+                warnings.append(
+                    f"no 수급 source configured (flow.provider: none) but "
+                    f"{', '.join(consumers)} read it — those models emitted no "
+                    f"signals at all, so this run is NOT a 수급 backtest"
+                )
+        else:
+            await flow_feed.backfill(tradable, warmup_start, end)
+            if not flow_feed.has_data:
+                warnings.append(
+                    "flow provider returned no 수급 data — flow-based models will stay silent"
+                )
 
     # Counted from the raw series, not ctx.history() — the sim clock still sits
     # at warmup_start here, so history() would correctly report nothing yet.
@@ -149,9 +203,14 @@ async def run_backtest(
             f"{'…' if len(thin) > 6 else ''} — early signals may be unreliable"
         )
 
-    stream = merge_bars({
+    stream_src = {
         s.key: [b for b in series.get(s.key, []) if start <= b.ts < end] for s in tradable
-    })
+    }
+    if bench_bars:
+        # Safe because the engine keeps history for every symbol in the batch
+        # while the alpha layer only ever sees `ctx.universe`.
+        stream_src[bench.key] = bench_bars
+    stream = merge_bars(stream_src)
     if not stream:
         raise ValueError("no bars inside the backtest window")
 
@@ -197,8 +256,9 @@ async def run_backtest(
     attribution_lines = engine.ledger.summary_lines()
     worst = engine.ledger.worst_source
     if worst:
+        basis = "benchmark-excess" if benchmark_priced else "raw"
         warnings.append(
-            f"alpha '{worst}' has a negative benchmark-excess expectancy — "
+            f"alpha '{worst}' has a negative {basis} expectancy — "
             f"the composite may be better off without it"
         )
     if selector is not None and selector.last_report is not None:

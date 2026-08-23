@@ -179,11 +179,28 @@ def build_costs(config: StrategyConfig) -> tuple[FeeModel, SlippageModel, FillMo
 
     if config.costs.preset != "custom":
         fee, slip = PRESETS[config.costs.preset]()
+        if config.costs.sell_tax_bps is not None:
+            fee = _with_sell_tax(cost_mod, fee, config.costs.sell_tax_bps)
     else:
         fee = _resolve_cost(cost_mod, config.costs.fee, "fee")
         slip = _resolve_cost(cost_mod, config.costs.slippage, "slippage")
     fill = _resolve_cost(cost_mod, config.costs.fill, "fill") if config.costs.fill else None
     return fee, slip, fill
+
+
+def _with_sell_tax(module, fee, sell_tax_bps: float):
+    """Re-point a preset's sell-side tax at the rate the operator asked for."""
+    if not isinstance(fee, module.SideAwareFeeModel):
+        raise TypeError(
+            "costs.sell_tax_bps needs a side-aware fee model, but this preset "
+            f"builds {type(fee).__name__}"
+        )
+    log.info("매도 거래세 %.2fbp 적용 (프리셋 기본값 대신)", sell_tax_bps)
+    return module.SideAwareFeeModel(
+        fee.base,
+        sell_extra=module.KoreanEquitySellTax(sell_tax_bps=sell_tax_bps),
+        buy_extra=fee.buy_extra,
+    )
 
 
 def _resolve_cost(module, spec: ModelSpec | None, kind: str):
@@ -192,7 +209,26 @@ def _resolve_cost(module, spec: ModelSpec | None, kind: str):
     cls = getattr(module, spec.type, None)
     if cls is None:
         raise KeyError(f"unknown {kind} model {spec.type!r} in quant.execution.costs")
-    return cls(**spec.params)
+    return cls(**{k: _resolve_nested_cost(module, v, kind)
+                  for k, v in spec.params.items()})
+
+
+def _resolve_nested_cost(module, value, kind: str):
+    """Turn a `{type: ..., params: {...}}` nested inside params into an instance.
+
+    Composite cost models take other models as arguments — the only way to
+    configure a Korean sell tax without editing code. Left unresolved, the dict
+    reaches the model as-is and the run dies on its first fill, hours in.
+    """
+    if isinstance(value, dict) and "type" in value:
+        cls = getattr(module, value["type"], None)
+        if cls is None:
+            raise KeyError(
+                f"unknown {kind} model {value['type']!r} in quant.execution.costs"
+            )
+        return cls(**{k: _resolve_nested_cost(module, v, kind)
+                      for k, v in (value.get("params") or {}).items()})
+    return value
 
 
 def build_portfolio_model(config: StrategyConfig) -> PortfolioConstructionModel:
@@ -288,6 +324,21 @@ def _build_pairs(spec: ModelSpec):
 def build_brokerage(config: StrategyConfig, portfolio: Portfolio,
                     fee: FeeModel, slippage: SlippageModel,
                     fill: FillModel | None) -> Brokerage:
+    # A backtest is a simulation: it must never construct a venue adapter,
+    # authenticate, or depend on broker.type. Only dry_run and live get the real
+    # adapter. `quant backtest` / `optimize` / `walkforward` force this mode onto
+    # whatever config they are handed, including live ones, and a venue adapter
+    # there produces zero fills, zero cost and a flat curve rather than a result.
+    if config.mode is RunMode.BACKTEST and config.broker.type != "paper":
+        log.warning(
+            "backtest 모드 — broker.type=%r 대신 시뮬레이션 브로커로 체결합니다 "
+            "(해당 어댑터는 dryrun/live 에서만 쓰입니다)",
+            config.broker.type,
+        )
+        return PaperBrokerage(
+            portfolio, fee_model=fee, slippage_model=slippage, fill_model=fill,
+            allow_short=config.portfolio.allow_short, run_mode=config.mode,
+        )
     if config.broker.type == "paper":
         return PaperBrokerage(
             portfolio, fee_model=fee, slippage_model=slippage, fill_model=fill,
@@ -378,17 +429,28 @@ def build_engine(
                           **config.execution.model.params}),
         "execution",
     )
-    # The config file is the source of truth; the setup screen writes these
-    # env fallbacks so a cap entered in the UI survives a restart without
-    # rewriting (and reformatting) the operator's commented YAML.
+    # Two sources set the same cap: the YAML, and the env vars the setup screen
+    # writes so a cap entered in the UI survives a restart without rewriting the
+    # operator's commented YAML. Whichever is tighter wins, and the loser is
+    # named in the log. Letting either side silently raise the other's ceiling
+    # is the one outcome nobody asks for: both numbers were typed by someone who
+    # meant them as a maximum. Zero still means "no cap", so it never competes.
     def _cap(configured: float, env_var: str) -> float:
-        if configured:
-            return configured
         try:
-            return float(os.environ.get(env_var, "") or 0)
+            from_env = float(os.environ.get(env_var, "") or 0)
         except ValueError:
             log.warning("%s 값이 숫자가 아닙니다 — 무시합니다", env_var)
+            from_env = 0.0
+        candidates = [v for v in (configured, from_env) if v]
+        if not candidates:
             return 0.0
+        chosen = min(candidates)
+        if configured and from_env and configured != from_env:
+            log.warning(
+                "%s 한도: 설정 파일 %s, 설정 화면 %s — 더 낮은 %s 를 적용합니다",
+                env_var, f"{configured:,.10g}", f"{from_env:,.10g}", f"{chosen:,.10g}",
+            )
+        return chosen
 
     budget = TradingBudget(
         max_daily_notional=_cap(config.limits.max_daily_notional,

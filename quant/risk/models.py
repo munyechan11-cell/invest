@@ -250,10 +250,16 @@ class MaxPositionCount(RiskManagementModel):
 
     def manage(self, ctx, targets):
         held = {p.symbol.key for p in ctx.portfolio.open_positions}
+        keyed = {t.symbol.key for t in targets}
         opening = [t for t in targets if t.quantity != 0 and t.symbol.key not in held]
         keeping = [t for t in targets if t.quantity != 0 and t.symbol.key in held]
         closing = [t for t in targets if t.quantity == 0]
-        slots = max(0, self.max_positions - len(keeping))
+        # A holding the portfolio model left out of this batch still occupies a
+        # slot. The rebalance deadband drops any name whose weight barely moved,
+        # so counting only the targets turns the cap into a per-bar entry rate:
+        # the book grows without limit as long as the old names stay quiet.
+        silent = held - keyed
+        slots = max(0, self.max_positions - len(keeping) - len(silent))
         if len(opening) <= slots:
             return targets
         opening.sort(key=lambda t: abs(float(t.quantity)) * ctx.price(t.symbol), reverse=True)

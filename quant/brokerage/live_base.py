@@ -27,16 +27,32 @@ class LiveBrokerage(Brokerage):
         self,
         portfolio: Portfolio,
         live: bool = False,
+        paper_venue: bool = False,
         max_order_notional: float = 10_000.0,
         max_orders_per_minute: int = 20,
         reconcile_on_start: bool = True,
     ):
         self.portfolio = portfolio
-        self.live = live
-        self.run_mode = RunMode.LIVE if live else RunMode.DRY_RUN
+        #: real money. Nothing else may set `run_mode` to LIVE.
+        self.live = bool(live)
+        #: the broker's own simulated account (KIS 모의투자, Alpaca paper).
+        #: Real orders leave the process, but no real money is at stake — so it
+        #: is a *destination*, not a permission level, and `live` stays False.
+        self.paper_venue = bool(paper_venue) and not self.live
+        #: `live` used to mean both "which venue" and "may we send at all",
+        #: which made 모의투자 unreachable: the only mode that actually
+        #: submitted was real money. Submission keys off this instead.
+        self.sends_orders = self.live or self.paper_venue
+        self.run_mode = RunMode.LIVE if self.live else RunMode.DRY_RUN
         self.max_order_notional = max_order_notional
         self.max_orders_per_minute = max_orders_per_minute
         self.reconcile_on_start = reconcile_on_start
+        #: an adapter that cannot see its own fills is trading blind, so it
+        #: stops submitting until the channel comes back. Adapters flip this
+        #: through `fill_channel_down()` / `fill_channel_up()`.
+        self.fill_channel_ok = True
+        self.fill_channel_error = ""
+        self._cash_warned = False
         self._orders: dict[str, Order] = {}
         self._recent_submits: list[float] = []
         #: (symbol, side, rounded qty) → timestamp, to stop a retry after a
@@ -58,15 +74,49 @@ class LiveBrokerage(Brokerage):
     async def _venue_positions(self) -> dict[str, Decimal]:  # pragma: no cover
         raise NotImplementedError
 
+    async def _venue_costs(self) -> dict[str, float]:
+        """Venue-reported average cost per position key. Optional."""
+        return {}
+
+    async def _venue_cash(self) -> float | None:
+        """Venue-reported free cash in the portfolio's base currency. Optional."""
+        return None
+
+    # ── fill visibility ──────────────────────────────────────────────────
+    def fill_channel_down(self, reason: str) -> None:
+        if self.fill_channel_ok:
+            log.error("%s fill channel is down: %s", self.name, reason)
+        self.fill_channel_ok = False
+        self.fill_channel_error = reason
+
+    def fill_channel_up(self) -> None:
+        if not self.fill_channel_ok:
+            log.warning("%s fill channel recovered", self.name)
+        self.fill_channel_ok = True
+        self.fill_channel_error = ""
+
     # ── guard rails ──────────────────────────────────────────────────────
     def _guard(self, order: Order) -> None:
         allowed, reason = self._budget_check(order)
         if not allowed:
             raise BrokerageError(reason)
+        if self.sends_orders and not self.fill_channel_ok:
+            raise BrokerageError(
+                f"체결 조회 채널이 끊겼습니다 ({self.fill_channel_error}) — "
+                "체결을 볼 수 없는 상태에서는 주문하지 않습니다"
+            )
         self.validate(order)
         price = order.limit_price or self.portfolio.position(order.symbol).last_price
-        notional = abs(float(order.quantity)) * (price or 0) * float(order.symbol.multiplier)
-        if price and notional > self.max_order_notional:
+        if not price or price <= 0:
+            # An order nobody can price is an order nobody can bound. The
+            # ceiling used to be skipped in exactly this case, which is every
+            # market order opening a new position.
+            raise BrokerageError(
+                f"{order.symbol.ticker} 의 가격을 알 수 없어 주문 금액을 계산할 수 "
+                "없습니다 — 한도를 확인할 수 없는 주문은 보내지 않습니다"
+            )
+        notional = abs(float(order.quantity)) * price * float(order.symbol.multiplier)
+        if notional > self.max_order_notional:
             raise BrokerageError(
                 f"order notional {notional:,.2f} exceeds the "
                 f"{self.max_order_notional:,.2f} per-order limit — refusing to send"
@@ -95,7 +145,7 @@ class LiveBrokerage(Brokerage):
                 log.warning("blocked order for %s: %s", order.symbol.ticker, exc)
                 return order
 
-            if not self.live:
+            if not self.sends_orders:
                 # Dry run: everything except the network call, so the same code
                 # path, guard rails and logging are exercised.
                 order.status = OrderStatus.SUBMITTED
@@ -104,6 +154,7 @@ class LiveBrokerage(Brokerage):
                 log.info("[DRY RUN] would send %s %s %s @ %s", order.side.value,
                          order.quantity, order.symbol.ticker, order.limit_price or "market")
                 self._orders[order.id] = order
+                self._record_submission(order)
                 return order
 
             try:
@@ -118,16 +169,26 @@ class LiveBrokerage(Brokerage):
             order.status = OrderStatus.SUBMITTED
             order.updated_at = utcnow()
             self._orders[order.id] = order
-            self._recent_submits.append(time.monotonic())
-            self._budget_record(order)
-            self._dedupe[(order.symbol.key, order.side.value, str(order.quantity))] = \
-                time.monotonic()
+            self._record_submission(order)
             log.info("sent %s %s %s (broker id %s)", order.side.value, order.quantity,
                      order.symbol.ticker, broker_id)
             return order
 
+    def _record_submission(self, order: Order) -> None:
+        """Book an accepted order against the rate limit, the daily budget and
+        the duplicate window.
+
+        A dry run has to run this too. Skipping it left the 하루 거래대금/주문건수
+        caps and the duplicate suppressor at zero usage in the only mode the
+        operator gets to rehearse them in.
+        """
+        now = time.monotonic()
+        self._recent_submits.append(now)
+        self._budget_record(order)
+        self._dedupe[(order.symbol.key, order.side.value, str(order.quantity))] = now
+
     async def cancel(self, order: Order) -> bool:
-        if not self.live or order.broker_id is None:
+        if not self.sends_orders or order.broker_id is None:
             self._orders.pop(order.id, None)
             order.status = OrderStatus.CANCELED
             return True
@@ -149,6 +210,45 @@ class LiveBrokerage(Brokerage):
         out, self._pending_fills = self._pending_fills, []
         return out
 
+    def _known_symbols(self) -> dict[str, Symbol]:
+        """Venue position key → Symbol, for every instrument this session knows.
+
+        A venue key the engine cannot map to a Symbol cannot become a position:
+        quantity alone is not tradable — lot size, tick size and multiplier all
+        come from the Symbol.
+        """
+        symbols = {key: pos.symbol for key, pos in self.portfolio.positions.items()}
+        for order in self._orders.values():
+            symbols.setdefault(order.symbol.key, order.symbol)
+        return symbols
+
+    async def _report_cash(self, report: dict) -> None:
+        """Surface the venue's cash without adopting it.
+
+        Quantities are a claim about the world and the venue is always right
+        about them. Cash is not the same kind of fact: `portfolio.cash` is the
+        budget the operator gave *this strategy*, which is routinely a slice of
+        a larger account. Overwriting it would silently resize every position
+        to the whole account. Adopting a position already debits what it cost,
+        so the book stays honest; a divergence beyond that is worth saying out
+        loud, not acting on.
+        """
+        try:
+            cash = await self._venue_cash()
+        except Exception as exc:
+            log.debug("venue cash unavailable: %s", exc)
+            return
+        if cash is None:
+            return
+        local = self.portfolio.cash
+        report["cash"] = {"local": local, "venue": float(cash)}
+        material = abs(float(cash) - local) > max(abs(local), 1.0) * 0.01
+        if material and not self._cash_warned:
+            log.warning("현금 불일치: 엔진 장부 %.0f, 계좌 %.0f — 이 전략의 예산은 "
+                        "장부 쪽입니다. 계좌 전체를 굴릴 생각이면 "
+                        "portfolio.starting_cash 를 맞추세요.", local, float(cash))
+        self._cash_warned = material
+
     async def sync(self) -> dict:
         """Reconcile local positions against the venue. The venue wins."""
         try:
@@ -157,26 +257,87 @@ class LiveBrokerage(Brokerage):
             log.error("position sync failed: %s", exc)
             return {"ok": False, "error": str(exc)}
 
-        drift: dict[str, dict] = {}
+        report = {"ok": True, "venue_positions": {k: float(v) for k, v in venue.items()}}
+        if not self.sends_orders:
+            # A dry run's positions were never sent anywhere, so the venue has
+            # never heard of them. Letting it "win" here flattened the whole
+            # simulation on every cycle.
+            report.update({"drift": {}, "corrected": {}, "uncorrected": {},
+                           "observed_only": "no orders are being sent to this venue"})
+            return report
+
+        try:
+            costs = await self._venue_costs()
+        except Exception as exc:
+            log.debug("venue average costs unavailable: %s", exc)
+            costs = {}
+        symbols = self._known_symbols()
+
+        corrected: dict[str, dict] = {}
+        uncorrected: dict[str, dict] = {}
         for key, qty in venue.items():
             local = self.portfolio.positions.get(key)
             local_qty = local.quantity if local else Decimal("0")
-            if local_qty != qty:
-                drift[key] = {"local": float(local_qty), "venue": float(qty)}
-                if local is not None:
-                    local.quantity = qty
+            if local_qty == qty:
+                continue
+            entry = {"local": float(local_qty), "venue": float(qty)}
+            if local is None:
+                symbol = symbols.get(key)
+                if symbol is None:
+                    uncorrected[key] = entry
+                    continue
+                local = self.portfolio.position(symbol)
+            avg = float(costs.get(key) or 0.0)
+            if avg <= 0:
+                avg = local.avg_price
+            adopted = qty - local_qty
+            local.quantity = qty
+            if avg > 0:
+                if local.avg_price <= 0:
+                    local.avg_price = avg
+                # Shares that appeared out of nowhere were paid for with real
+                # cash. Booking the quantity and not the money invents equity.
+                self.portfolio.cash -= (
+                    float(adopted) * avg * float(local.symbol.multiplier)
+                )
+            corrected[key] = entry
         for key, pos in self.portfolio.positions.items():
             if not pos.is_flat and key not in venue:
-                drift[key] = {"local": float(pos.quantity), "venue": 0.0}
+                corrected[key] = {"local": float(pos.quantity), "venue": 0.0}
+                # Something closed this outside the engine. Return the cost
+                # basis rather than deleting the capital: the exit price is
+                # unknowable from here, and guessing at it fabricates a
+                # realized gain or loss. Dropping the quantity alone left the
+                # book permanently poorer by the whole position.
+                self.portfolio.cash += (float(pos.quantity) * pos.avg_price
+                                        * float(pos.symbol.multiplier))
                 pos.quantity = Decimal("0")
                 pos.avg_price = 0.0
-        if drift:
-            log.warning("position drift corrected against the venue: %s", drift)
-        return {"ok": True, "drift": drift, "venue_positions": {k: float(v)
-                                                               for k, v in venue.items()}}
+
+        await self._report_cash(report)
+
+        if corrected:
+            log.warning("position drift corrected against the venue: %s", corrected)
+        if uncorrected:
+            # Deliberately louder than the corrected case: these holdings exist
+            # at the broker and the engine cannot even name them, so no stop,
+            # no sizing rule and no daily cap applies to them.
+            log.error(
+                "UNCORRECTED position drift — the engine is trading blind on %s. "
+                "These are held at %s but map to no symbol in this run.",
+                sorted(uncorrected), self.name,
+            )
+        report.update({"drift": {**corrected, **uncorrected},
+                       "corrected": corrected, "uncorrected": uncorrected})
+        return report
 
     async def connect(self) -> None:
         if self.reconcile_on_start:
             await self.sync()
-        mode = "LIVE — real money" if self.live else "DRY RUN — no orders will be sent"
+        if self.live:
+            mode = "LIVE — real money"
+        elif self.paper_venue:
+            mode = "PAPER VENUE — orders go to the broker's simulated account"
+        else:
+            mode = "DRY RUN — no orders will be sent"
         log.warning("%s connected in %s mode", self.name, mode)

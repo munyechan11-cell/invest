@@ -10,6 +10,11 @@ Rules this module enforces rather than documents:
 
 * **Secrets are never read back out.** Every API response redacts them. If you
   lose a key you reissue it at the venue; you do not recover it from here.
+* **Only the keys the setup screen owns can be written.** The file is loaded
+  into `os.environ` at every entrypoint, so a writer that accepts arbitrary
+  variable names is not a settings form — it is remote control of the process.
+  One `HTTPS_PROXY` and the next broker call carries the KIS keys to whoever
+  set it.
 * **The file is 0600 and gitignored.** Written atomically, so a crash mid-write
   cannot leave a half-file that silently drops a credential.
 * **Nothing is trusted until it has been used once.** `verify()` makes a real
@@ -154,6 +159,56 @@ OPERATOR_FIELDS = [
 ]
 
 
+#: 거래소·운영자 항목 말고도 설정 화면이 다루는 것으로 인정된 키들.
+_VETTED_EXTRA = (
+    "OPENAI_API_KEY", "GOOGLE_API_KEY",     # 데스크가 앤트로픽 외 제공자를 쓸 때
+    "CORS_ORIGINS",                         # 대시보드를 다른 출처에서 열 때
+    "QUANT_LIMIT_DAILY_NOTIONAL", "QUANT_LIMIT_DAILY_ORDERS",
+    "QUANT_LIMIT_DAILY_LOSS", "QUANT_LIMIT_DAILY_LOSS_PCT",
+)
+
+#: 이 파일에 쓸 수 있는 키의 전부. 화면에 없는 항목은 여기에도 없습니다.
+WRITABLE_KEYS: frozenset[str] = frozenset(
+    [env for venue in VENUES for env, _, _ in venue.fields]
+    + [env for env, _, _ in OPERATOR_FIELDS]
+    + list(_VETTED_EXTRA)
+)
+
+#: 자격증명이 아니라 프로세스 자체를 조종하는 변수들. 허용 목록에 실수로
+#: 섞여 들어오더라도 여기서 먼저 막습니다 — 이쪽 실수의 대가가 훨씬 큽니다.
+_PROCESS_CONTROL = frozenset({
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "PATH",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+})
+_PROCESS_CONTROL_PREFIXES = ("LD_", "DYLD_", "PYTHON")
+
+
+def rejection_reason(key: str) -> str:
+    """이 키를 저장할 수 없는 이유. 저장해도 되면 빈 문자열.
+
+    대소문자를 접어서 비교합니다. httpx·requests 는 `https_proxy` 소문자도
+    똑같이 존중하므로, 대문자만 막으면 막지 않은 것과 같습니다.
+    """
+    folded = key.strip().upper()
+    if folded in _PROCESS_CONTROL or folded.startswith(_PROCESS_CONTROL_PREFIXES):
+        return "프로세스 동작을 바꾸는 변수라 저장할 수 없습니다"
+    if key.strip() not in WRITABLE_KEYS:
+        return "설정 화면이 다루는 항목이 아닙니다"
+    return ""
+
+
+@dataclass
+class WriteReport:
+    """`update()` 의 결과 — 무엇이 저장됐고, 무엇이 왜 거절됐는지.
+
+    거절을 조용히 삼키면 호출자는 저장된 줄 압니다. 프록시 주입 시도든
+    단순 오타든, 안 쓴 것은 안 썼다고 돌려줘야 합니다.
+    """
+
+    written: list[str] = field(default_factory=list)
+    rejected: dict[str, str] = field(default_factory=dict)
+
+
 @dataclass
 class SetupState:
     configured: bool = False
@@ -233,31 +288,43 @@ class CredentialStore:
         return out
 
     # ── write ────────────────────────────────────────────────────────────
-    def update(self, values: dict[str, str]) -> list[str]:
-        """Merge values in, preserving anything already there. Returns keys written.
+    def update(self, values: dict[str, str]) -> WriteReport:
+        """Merge values in, preserving anything already there.
 
         An empty string means "leave whatever is already set alone", so the UI
         can submit a form with blank secret fields without wiping them — the
         single most annoying way a settings page loses a credential.
+
+        Only `WRITABLE_KEYS` may be written, and everything refused comes back
+        in the report with its reason.
         """
         raw = self._raw()
-        written: list[str] = []
+        report = WriteReport()
         for key, value in values.items():
             key = key.strip()
-            if not key or not re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
-                log.warning("자격증명 키 형식이 올바르지 않아 무시: %r", key)
+            reason = rejection_reason(key)
+            if reason:
+                report.rejected[key or "(빈 키)"] = reason
+                log.warning("설정 저장 거부: %r — %s", key, reason)
                 continue
             value = (value or "").strip()
             if not value:
                 continue
+            if "\n" in value or "\r" in value:
+                # One line per key: a newline inside a value is a second key,
+                # and that is the allow-list bypassed from the value side.
+                reason = "값에 줄바꿈이 있어 저장할 수 없습니다"
+                report.rejected[key] = reason
+                log.warning("설정 저장 거부: %r — %s", key, reason)
+                continue
             raw[key] = value
-            written.append(key)
-        if written:
+            report.written.append(key)
+        if report.written:
             self._write(raw)
             # Make them live in this process too, so a restart is not required.
-            for key in written:
+            for key in report.written:
                 os.environ[key] = raw[key]
-        return written
+        return report
 
     def remove(self, keys: list[str]) -> list[str]:
         raw = self._raw()

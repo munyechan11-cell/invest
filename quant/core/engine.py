@@ -77,6 +77,11 @@ class Engine:
         brokerage.budget = self.budget
         brokerage.portfolio = ctx.portfolio
         self.bars_processed = 0
+        # An empty `ctx.universe` is ambiguous on its own — it means both "this
+        # strategy never configured selection" and "the screen admitted nothing
+        # today". Remembering that a universe was ever handed over tells the two
+        # apart; see _active.
+        self._universe_configured = bool(ctx.universe)
         self.orders: list[Order] = []
         self.protection_events: list[dict] = []
         self._started = False
@@ -108,6 +113,12 @@ class Engine:
         added = [s for k, s in current.items() if k not in previous]
         removed = [s for k, s in previous.items() if k not in current]
         self.ctx.universe = list(symbols)
+        self._universe_configured = True
+        if not symbols:
+            # The one place an operator can ever learn that the screen went
+            # blank. Silence here reads exactly like a quiet market.
+            log.warning("유니버스 선정 결과 0종목 (직전 %d종목) — 다음 갱신까지 "
+                        "신규 진입을 하지 않습니다", len(previous))
         if added or removed:
             self.alpha.on_universe_changed(self.ctx, added, removed)
 
@@ -251,12 +262,21 @@ class Engine:
     def _active(self, bars: dict[str, Bar]) -> dict[str, Bar]:
         """The subset of this batch the models are allowed to act on.
 
-        An empty universe means "no restriction" so a strategy that never
-        configures universe selection behaves exactly as before.
+        No universe at all means "no restriction", so a strategy that never
+        configures selection behaves exactly as before. A universe that *was*
+        configured and came back empty means the filters admitted nothing —
+        the models get nothing, never the whole candidate list. Exits are
+        unaffected: they come from the portfolio and risk layers, which see the
+        held book regardless of what the screen returned.
         """
-        if not self.ctx.universe:
+        universe = self.ctx.universe
+        if universe:
+            # Wiring code assigns ctx.universe directly instead of calling
+            # set_universe, so the flag has to latch here as well.
+            self._universe_configured = True
+        elif not self._universe_configured:
             return bars
-        keys = {s.key for s in self.ctx.universe}
+        keys = {s.key for s in universe}
         return {k: b for k, b in bars.items() if k in keys}
 
     async def _settle(self, bars: dict[str, Bar]) -> list[Fill]:

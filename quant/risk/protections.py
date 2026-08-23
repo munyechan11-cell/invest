@@ -112,7 +112,11 @@ class CooldownPeriod(Protection):
         self.only_after_loss = only_after_loss
 
     def check(self, ctx, symbol):
-        trades = self._recent(ctx, symbol)
+        # Only a real exit starts a cooldown. Scaling out realises PnL and is
+        # recorded as a trade, but the strategy still holds the name — treating
+        # a trim as an exit locks it out of a position it is in the middle of
+        # managing.
+        trades = [t for t in self._recent(ctx, symbol) if t.closes_position]
         if not trades:
             return False, ""
         last = max(trades, key=lambda t: t.exit_ts)

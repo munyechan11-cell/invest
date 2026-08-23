@@ -474,6 +474,12 @@ class ClosedTrade:
     fees: float
     entry_tag: str = ""
     exit_tag: str = ""
+    #: Did this take the position flat, or only trim it?
+    #: Scaling out realises PnL and belongs in the trade log and the tax
+    #: totals, but it is not an exit — and protections that ask "did we just
+    #: leave this name" have to be able to tell the difference, or a rebalance
+    #: that trims 30% locks the symbol the strategy still holds.
+    closes_position: bool = True
 
     @property
     def duration(self) -> timedelta:

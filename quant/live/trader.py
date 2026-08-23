@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import signal
+import time
 from datetime import datetime, timedelta
 from typing import Callable
 
@@ -29,6 +30,11 @@ log = logging.getLogger("quant.live")
 
 
 class LiveTrader:
+    #: How often a sleeping loop re-checks `running`. The stop *event* wakes it
+    #: instantly, but `/api/trader/stop` only clears the flag, so the poll is
+    #: what makes that path prompt too.
+    stop_poll_s = 1.0
+
     def __init__(
         self,
         config: StrategyConfig,
@@ -61,6 +67,11 @@ class LiveTrader:
         self.started_at: datetime | None = None
         self._seen: dict[str, datetime] = {}
         self._announced_closed = False
+        # Built on the running loop rather than here: a trader is constructed
+        # outside async context (CLI, API) and an Event binds to a loop eagerly.
+        self._stop: asyncio.Event | None = None
+        self._task: asyncio.Task | None = None
+        self._stopped = False
 
     # ── wiring ───────────────────────────────────────────────────────────
     def _attach_observers(self) -> None:
@@ -79,6 +90,7 @@ class LiveTrader:
                 )
                 self.state.snapshot_positions(self.engine.ctx.portfolio)
                 self.state.save_locks(self.engine.ctx.export_locks())
+                self.state.save_pins(self.engine.ctx.pinned)
             elif event.type in (EventType.PROTECTION, EventType.ORDER_REJECTED,
                                 EventType.RISK_ACTION, EventType.ERROR):
                 self.state.record_event(event.type.value, payload)
@@ -96,7 +108,14 @@ class LiveTrader:
         start = end - self.config.warmup_delta
         log.info("warming up %d symbols with %d bars of %s history",
                  len(symbols), self.config.data.warmup_bars, self.config.data.timeframe)
-        series = await gather_history(self.provider, symbols,
+        # The benchmark is warmed like everything else but stays out of the
+        # universe: unpriced, the attribution panel's '초과' column is the raw
+        # return wearing a benchmark's name.
+        bench = ctx.benchmark
+        to_fetch = list(symbols)
+        if bench is not None and bench.key not in {s.key for s in symbols}:
+            to_fetch.append(bench)
+        series = await gather_history(self.provider, to_fetch,
                                       self.config.data.timeframe, start, end)
         usable = []
         for sym in symbols:
@@ -112,6 +131,16 @@ class LiveTrader:
         if not usable:
             raise RuntimeError("no symbol produced usable warm-up data")
         self.engine.set_universe(usable)
+
+        if bench is not None and bench.key not in {s.key for s in usable}:
+            bars = series.get(bench.key, [])
+            if len(bars) < 10:
+                log.warning("벤치마크 %s 데이터 없음 — 리포트의 '초과'는 벤치마크 대비가 "
+                            "아니라 원수익률입니다", bench.ticker)
+            else:
+                ctx.seed_history(bench, bars)
+                ctx.portfolio.mark(bench, bars[-1].close)
+                self._seen[bench.key] = bars[-1].ts
 
         flow_feed = getattr(self.engine, "flow_feed", None)
         if flow_feed is not None:
@@ -137,11 +166,17 @@ class LiveTrader:
         # Restore *after* warm-up, so every symbol in the stored book is known
         # and a position in a name that has since left the universe is still
         # reported rather than silently dropped.
+        symbols = {s.key: s for s in self.engine.ctx.universe}
         if resumed:
-            symbols = {s.key: s for s in self.engine.ctx.universe}
             restored = self.state.restore_positions(self.engine.ctx.portfolio, symbols)
             self.engine.ctx.import_locks(self.state.restore_locks(datetime.now(UTC)))
-            log.info("run %s 복원: 포지션 %d건", self.state.run_id, restored)
+            pinned = self.state.restore_pins(self.engine.ctx, symbols)
+            log.info("run %s 복원: 포지션 %d건, 핀 %d건", self.state.run_id,
+                     restored, pinned)
+        # Bind the ledger whether or not we resumed. A fresh run has to survive
+        # its own first crash too, and a daily cap that a restart clears is not
+        # a cap — it is a cap plus a reset button the failure mode presses.
+        self.state.restore_budget(self.engine.budget, datetime.now(UTC))
         await self.engine.start()
         self.started_at = datetime.now(UTC)
         self.running = True
@@ -158,9 +193,51 @@ class LiveTrader:
         log.warning(banner)
         await self.notifier.send(banner)
 
+    # ── stopping ─────────────────────────────────────────────────────────
+    @property
+    def stopping(self) -> bool:
+        """A stop has been asked for but the flush has not finished yet."""
+        return not self.running and self.started_at is not None and not self._stopped
+
+    def _stop_event(self) -> asyncio.Event:
+        if self._stop is None:
+            self._stop = asyncio.Event()
+        return self._stop
+
+    def request_stop(self) -> None:
+        """Finish the current cycle and exit. Safe from a signal handler."""
+        self.running = False
+        self._stop_event().set()
+
+    async def _sleep(self, seconds: float) -> bool:
+        """Sleep unless a stop arrives. Returns False if one did.
+
+        The wait is sliced instead of one long timer because that timer is what
+        a stop has to cut through: `docker stop` allows 10s before SIGKILL, and
+        on a 1d timeframe a bare sleep parks the loop for up to a full day —
+        so every redeploy would land mid-cycle with the state flush skipped.
+        """
+        stop = self._stop_event()
+        deadline = time.monotonic() + seconds
+        while self.running and not stop.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            try:
+                await asyncio.wait_for(stop.wait(),
+                                       timeout=min(remaining, self.stop_poll_s))
+            except asyncio.TimeoutError:
+                continue
+        return False
+
     # ── the loop ─────────────────────────────────────────────────────────
     async def run(self) -> None:
+        self._task = asyncio.current_task()
         await self.start()
+        if self._stop is not None and self._stop.is_set():
+            # A signal during warm-up: start() has just set running = True, so
+            # without this the stop would be forgotten until the next signal.
+            self.running = False
         tf = self.config.data.timeframe
         try:
             while self.running:
@@ -170,10 +247,16 @@ class LiveTrader:
                 sleep_for = (wake - datetime.now(UTC)).total_seconds()
                 if sleep_for > 0:
                     log.debug("sleeping %.1fs until %s", sleep_for, wake.isoformat())
-                    await asyncio.sleep(sleep_for)
+                    if not await self._sleep(sleep_for):
+                        break
                 if not self.running:
                     break
                 await self._tick()
+        except asyncio.CancelledError:
+            # A second signal, or the API shutting the loop down. Swallowed on
+            # purpose: the flush below is the reason we were cancelled at all.
+            log.warning("cancelled mid-cycle — flushing state and exiting")
+            self.running = False
         finally:
             await self.shutdown()
 
@@ -190,7 +273,7 @@ class LiveTrader:
         if nxt is None:
             log.error("%s: no upcoming session found — check the holiday table",
                       self.calendar.name)
-            await asyncio.sleep(3600)
+            await self._sleep(3600)
             return True
         wait_s = max((nxt - datetime.now(UTC)).total_seconds(), 0)
         if not self._announced_closed:
@@ -199,7 +282,8 @@ class LiveTrader:
             self._announced_closed = True
         # Wake periodically rather than sleeping for hours in one go, so a stop
         # signal is honoured promptly and a clock jump cannot strand the loop.
-        await asyncio.sleep(min(wait_s + 2, 300))
+        if not await self._sleep(min(wait_s + 2, 300)):
+            return True
         if self.calendar.is_open(datetime.now(UTC)):
             self._announced_closed = False
             log.info("%s 개장", self.calendar.name)
@@ -278,6 +362,10 @@ class LiveTrader:
         for pos in self.engine.ctx.portfolio.open_positions:
             if pos.symbol.key not in seen:
                 watched.append(pos.symbol)       # never stop pricing what we hold
+                seen.add(pos.symbol.key)
+        bench = self.engine.ctx.benchmark
+        if bench is not None and bench.key not in seen and self._seen.get(bench.key):
+            watched.append(bench)                # priced every cycle, never traded
         results = await asyncio.gather(
             *(self.provider.latest_bars(s, tf, 3) for s in watched),
             return_exceptions=True,
@@ -296,8 +384,11 @@ class LiveTrader:
 
     # ── shutdown ─────────────────────────────────────────────────────────
     async def shutdown(self) -> None:
-        if not self.running and self.started_at is None:
+        if self._stopped or (not self.running and self.started_at is None):
             return
+        # Set before the first await: a signal arriving mid-flush must not start
+        # a second one against a half-closed state store.
+        self._stopped = True
         self.running = False
         log.warning("shutting down %s", self.config.name)
         try:
@@ -305,6 +396,7 @@ class LiveTrader:
         finally:
             self.state.snapshot_positions(self.engine.ctx.portfolio)
             self.state.save_locks(self.engine.ctx.export_locks())
+            self.state.save_pins(self.engine.ctx.pinned)
             self.state.stop_run()
             await self.notifier.send(
                 f"⏹ stopped {self.config.name}\n"
@@ -321,8 +413,16 @@ class LiveTrader:
         loop = asyncio.get_running_loop()
 
         def stop() -> None:
+            if self._stop is not None and self._stop.is_set():
+                # Asked twice: stop waiting on whatever the cycle is stuck in
+                # (a hung fetch, a broker that never answers). run() catches the
+                # cancellation so the state flush still happens.
+                log.warning("second signal — cancelling the current cycle")
+                if self._task is not None:
+                    self._task.cancel()
+                return
             log.warning("signal received — finishing the current cycle then stopping")
-            self.running = False
+            self.request_stop()
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
@@ -346,6 +446,7 @@ class LiveTrader:
             "strategy": self.config.name,
             "mode": self.config.mode.value,
             "running": self.running,
+            "stopping": self.stopping,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "last_bar": self.last_bar_ts.isoformat() if self.last_bar_ts else None,
             "consecutive_errors": self.errors,

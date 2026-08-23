@@ -44,6 +44,9 @@ class Portfolio:
         self.total_fees = 0.0
         # entry context kept per symbol so a round trip can be reconstructed
         self._entry: dict[str, tuple[datetime, float, str]] = {}
+        # entry-side fees owed by the quantity still held, charged to each
+        # slice as it exits so the ledger's fee column foots to `total_fees`
+        self._entry_fees: dict[str, float] = {}
 
     # ── position access ──────────────────────────────────────────────────
     def position(self, symbol: Symbol) -> Position:
@@ -124,16 +127,28 @@ class Portfolio:
     def apply_fill(self, fill: Fill) -> ClosedTrade | None:
         """Settle a fill against cash and the position book.
 
-        Returns a ClosedTrade whenever the fill takes a position back to flat
-        (or flips it), which is what the protections and analytics layers key on.
+        Returns a ClosedTrade for *every* fill that reduces an open position,
+        not only the one that takes it back to flat. Scaling out is a real
+        exit — the proceeds are banked, the fee and the 거래세 are charged, and
+        the loss or gain is realized right there. Booking only the zero-crossing
+        fill dropped four out of five exits on a scale-out strategy, taking most
+        of the realized PnL and nearly all of the sell-side cost with them, so
+        the win rate, profit factor and tax totals derived from this ledger
+        described a different account than the equity curve did.
+
+        Each record covers only its own slice (`closed_qty` is capped at the
+        quantity that was actually held), so the final exit does not re-book
+        what earlier trims already reported.
         """
+        key = fill.symbol.key
         pos = self.position(fill.symbol)
         was_flat = pos.is_flat
         prior_qty = pos.quantity
         prior_avg = pos.avg_price
         prior_dir = pos.direction
 
-        notional = fill.notional * float(fill.symbol.multiplier)
+        mult = float(fill.symbol.multiplier)
+        notional = fill.notional * mult
         self.cash -= notional * fill.side.sign
         self.cash -= fill.fee
         self.total_fees += fill.fee
@@ -141,37 +156,60 @@ class Portfolio:
         pos.apply(fill)
 
         if was_flat and not pos.is_flat:
-            self._entry[fill.symbol.key] = (fill.ts, fill.price, "")
+            self._entry[key] = (fill.ts, fill.price, "")
 
-        closed: ClosedTrade | None = None
-        crossed_zero = prior_dir != 0 and (pos.is_flat or pos.direction != prior_dir)
-        if crossed_zero:
-            entry_ts, entry_px, entry_tag = self._entry.get(
-                fill.symbol.key, (fill.ts, prior_avg, "")
-            )
-            closed_qty = min(abs(fill.quantity), abs(prior_qty))
-            gross = float(closed_qty) * (fill.price - prior_avg) * prior_dir
-            gross *= float(fill.symbol.multiplier)
-            basis = abs(float(closed_qty) * prior_avg * float(fill.symbol.multiplier))
-            closed = ClosedTrade(
-                symbol=fill.symbol,
-                side=OrderSide.BUY if prior_dir > 0 else OrderSide.SELL,
-                quantity=closed_qty,
-                entry_price=prior_avg,
-                exit_price=fill.price,
-                entry_ts=entry_ts,
-                exit_ts=fill.ts,
-                pnl=gross - fill.fee,
-                pnl_pct=(gross - fill.fee) / basis if basis > 0 else 0.0,
-                fees=fill.fee,
-                entry_tag=entry_tag,
-                exit_tag=fill.tag or fill.liquidity,
-            )
-            self.closed_trades.append(closed)
-            if pos.is_flat:
-                self._entry.pop(fill.symbol.key, None)
-            else:
-                self._entry[fill.symbol.key] = (fill.ts, fill.price, "")
+        reducing = prior_dir != 0 and fill.side.sign != prior_dir and fill.quantity > 0
+        if not reducing:
+            # An entry fee is a cost of the round trip, not of the day it was
+            # paid: it waits in the pool and rides out with the slices it bought.
+            self._entry_fees[key] = self._entry_fees.get(key, 0.0) + fill.fee
+            return None
+
+        closed_qty = min(abs(fill.quantity), abs(prior_qty))
+        # A flip pays one fee for two jobs; only the closing share belongs here.
+        exit_fee = fill.fee * float(closed_qty) / float(abs(fill.quantity))
+        pool = self._entry_fees.get(key, 0.0)
+        # Drain the pool outright on a full close so float dust cannot survive
+        # the position and be charged to the next round trip.
+        entry_fee = pool if closed_qty >= abs(prior_qty) else (
+            pool * float(closed_qty) / float(abs(prior_qty))
+        )
+        fees = exit_fee + entry_fee
+
+        entry_ts, _entry_px, entry_tag = self._entry.get(key, (fill.ts, prior_avg, ""))
+        gross = float(closed_qty) * (fill.price - prior_avg) * prior_dir * mult
+        basis = abs(float(closed_qty) * prior_avg * mult)
+        closed = ClosedTrade(
+            symbol=fill.symbol,
+            side=OrderSide.BUY if prior_dir > 0 else OrderSide.SELL,
+            quantity=closed_qty,
+            entry_price=prior_avg,
+            exit_price=fill.price,
+            entry_ts=entry_ts,
+            exit_ts=fill.ts,
+            pnl=gross - fees,
+            pnl_pct=(gross - fees) / basis if basis > 0 else 0.0,
+            fees=fees,
+            entry_tag=entry_tag,
+            exit_tag=fill.tag or fill.liquidity,
+            # Flat *or* flipped: selling 150 of a 100 long closes the long
+            # and opens a short, and the long really did end.
+            closes_position=closed_qty >= abs(prior_qty),
+        )
+        self.closed_trades.append(closed)
+
+        if pos.is_flat:
+            self._entry.pop(key, None)
+            self._entry_fees.pop(key, None)
+        elif pos.direction != prior_dir:
+            # flipped through zero — the remainder is a new position whose entry
+            # cost is the unspent share of this fill's fee
+            self._entry[key] = (fill.ts, fill.price, "")
+            self._entry_fees[key] = fill.fee - exit_fee
+        else:
+            # trimmed — the surviving quantity keeps the entry ts and price it
+            # was opened at, or hold time and the next slice's basis both drift
+            self._entry_fees[key] = pool - entry_fee
 
         return closed
 

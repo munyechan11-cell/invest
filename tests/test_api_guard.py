@@ -48,3 +48,46 @@ def test_hostname_containing_localhost_is_not_loopback():
     """'localhost' 가 부분 문자열이라고 루프백은 아닙니다."""
     with pytest.raises(UnsafeBind):
         assert_safe_to_bind("localhost.attacker.example")
+
+
+# ── 교차출처 ────────────────────────────────────────────────────────────
+def _app(monkeypatch, cors=None):
+    from quant.api.server import create_app
+    if cors is None:
+        monkeypatch.delenv("CORS_ORIGINS", raising=False)
+    else:
+        monkeypatch.setenv("CORS_ORIGINS", cors)
+    return create_app(None, state_path=":memory:")
+
+
+def _preflight(app, origin):
+    from fastapi.testclient import TestClient
+    return TestClient(app).options("/api/setup", headers={
+        "Origin": origin,
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type",
+    })
+
+
+def test_no_origin_is_allowed_by_default(monkeypatch, tmp_path):
+    """기본값 '*' 는 사용자가 방문한 아무 페이지나 로컬 대시보드에 주문을
+    넣을 수 있게 합니다. 대시보드는 같은 출처에서 서빙되므로 필요 없습니다."""
+    monkeypatch.chdir(tmp_path)
+    app = _app(monkeypatch)
+    r = _preflight(app, "https://evil.example")
+    assert "access-control-allow-origin" not in {k.lower() for k in r.headers}
+
+
+def test_an_explicitly_named_origin_is_allowed(monkeypatch, tmp_path):
+    """UI 를 다른 곳에서 서빙하는 사람은 직접 적으면 됩니다."""
+    monkeypatch.chdir(tmp_path)
+    app = _app(monkeypatch, cors="https://desk.example")
+    r = _preflight(app, "https://desk.example")
+    assert r.headers.get("access-control-allow-origin") == "https://desk.example"
+
+
+def test_naming_one_origin_does_not_admit_another(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    app = _app(monkeypatch, cors="https://desk.example")
+    r = _preflight(app, "https://evil.example")
+    assert r.headers.get("access-control-allow-origin") != "https://evil.example"

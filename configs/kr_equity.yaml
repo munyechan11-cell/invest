@@ -1,4 +1,6 @@
 # 한국 주식 — KIS 일봉. 국내 수수료·증권거래세를 반영한 비용 모델을 사용한다.
+# 일봉을 받으려면 .env 에 KIS_APP_KEY / KIS_APP_SECRET 이 있어야 한다 (주문과는 무관 —
+# 아래 broker 는 백테스트용 시뮬레이션 체결이라 계좌번호도 주문 권한도 쓰지 않는다).
 name: kr-swing-daily
 description: KOSPI 대형주 추세추종 + 눌림목 매수, 변동성 타겟 사이징.
 mode: backtest
@@ -49,12 +51,15 @@ execution:
 
 costs:
   preset: kr_equity              # 수수료 + 매도 시 거래세 0.18%
+  # sell_tax_bps: 15.0           # 거래세율을 구간에 맞게 지정 (법정 세율은 여러 번 바뀌었다)
 
 broker:
-  type: kis
-  params: {product_code: "01"}
-  max_order_notional: 3000000
-  live_trading_confirmed: false
+  type: paper                    # 백테스트는 시뮬레이션 체결 — mode 와 반드시 짝이 맞아야 한다
+  # 실계좌/모의투자로 돌릴 때는 위 mode 를 dry_run 으로 바꾸고 아래를 대신 쓴다:
+  # type: kis
+  # params: {product_code: "01"}
+  # max_order_notional: 3000000
+  # live_trading_confirmed: false
 
 backtest:
   start: 2021-01-01T00:00:00Z

@@ -7,22 +7,53 @@ this equity curve" always has an answer.
 """
 from __future__ import annotations
 
+import difflib
 from datetime import datetime, timedelta
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from quant.core.types import RunMode, timeframe_seconds
 
 
-class ModelSpec(BaseModel):
+class ConfigBlock(BaseModel):
+    """Base for every config section: a key it does not recognise is an error.
+
+    Pydantic's default is to drop unknown keys, which turns a one-character typo
+    into a silent deletion — `rsik:` removes every stop and kill-switch, and the
+    run proceeds as if the operator had asked for none. Nothing downstream can
+    detect that, because by then the block simply is not there.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_unknown_keys(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        known = sorted(cls.model_fields)
+        unknown = [k for k in data if k not in cls.model_fields]
+        if not unknown:
+            return data
+        named = []
+        for key in unknown:
+            near = difflib.get_close_matches(str(key), known, n=1, cutoff=0.6)
+            named.append(f"{key!r}" + (f" (did you mean {near[0]!r}?)" if near else ""))
+        raise ValueError(
+            f"unknown config key{'s' if len(named) > 1 else ''}: {', '.join(named)}. "
+            f"valid keys here: {known}"
+        )
+
+
+class ModelSpec(ConfigBlock):
     """`{type: ..., params: {...}}` — one entry per pluggable model."""
 
     type: str
     params: dict[str, Any] = Field(default_factory=dict)
 
 
-class SymbolSpec(BaseModel):
+class SymbolSpec(ConfigBlock):
     ticker: str
     venue: str = "SIM"
     asset_class: str = "equity"
@@ -33,7 +64,7 @@ class SymbolSpec(BaseModel):
     multiplier: float = 1.0
 
 
-class DataConfig(BaseModel):
+class DataConfig(ConfigBlock):
     provider: str = "synthetic"
     params: dict[str, Any] = Field(default_factory=dict)
     timeframe: str = "1d"
@@ -51,7 +82,7 @@ class DataConfig(BaseModel):
         return v
 
 
-class FlowConfig(BaseModel):
+class FlowConfig(ConfigBlock):
     """Investor supply/demand feed (수급) — currently KIS for Korean equities.
 
     Kept separate from `data` because flow is a different feed with a different
@@ -65,7 +96,7 @@ class FlowConfig(BaseModel):
     refresh_every_bars: int = 1
 
 
-class UniverseConfig(BaseModel):
+class UniverseConfig(ConfigBlock):
     """What to trade.
 
     `symbols` alone is a fixed book. Add `filters` to narrow it each cycle, or
@@ -89,14 +120,30 @@ class UniverseConfig(BaseModel):
         return self
 
 
-class CostConfig(BaseModel):
+class CostConfig(ConfigBlock):
     preset: Literal["crypto_spot", "us_equity", "kr_equity", "zero_cost", "custom"] = "us_equity"
     fee: Optional[ModelSpec] = None
     slippage: Optional[ModelSpec] = None
     fill: Optional[ModelSpec] = None
+    #: 매도 증권거래세율 (bps) — `preset: kr_equity` 의 기본값을 덮어쓴다.
+    #: 법정 세율은 한 번의 백테스트 구간 안에서도 여러 차례 바뀌었으므로,
+    #: 프리셋에 박힌 하나의 값은 구간의 일부에서만 맞다.
+    sell_tax_bps: Optional[float] = Field(default=None, ge=0.0)
+
+    @model_validator(mode="after")
+    def _sell_tax_belongs_to_kr_preset(self) -> "CostConfig":
+        if self.sell_tax_bps is not None and self.preset != "kr_equity":
+            raise ValueError(
+                f"costs.sell_tax_bps applies to preset: kr_equity, not "
+                f"{self.preset!r}. With preset: custom, set the rate on the "
+                "sell-side model instead: fee: {type: SideAwareFeeModel, params: "
+                "{base: {type: KoreanEquityFeeModel, params: {commission_bps: 1.5}}, "
+                "sell_extra: {type: KoreanEquitySellTax, params: {sell_tax_bps: 15.0}}}}"
+            )
+        return self
 
 
-class PortfolioConfig(BaseModel):
+class PortfolioConfig(ConfigBlock):
     starting_cash: float = 100_000.0
     base_currency: str = "USD"
     model: ModelSpec = Field(default_factory=lambda: ModelSpec(type="vol_target"))
@@ -107,17 +154,17 @@ class PortfolioConfig(BaseModel):
     min_trade_weight: float = 0.005
 
 
-class RiskConfig(BaseModel):
+class RiskConfig(ConfigBlock):
     models: list[ModelSpec] = Field(default_factory=list)
     protections: list[ModelSpec] = Field(default_factory=list)
 
 
-class ExecutionConfig(BaseModel):
+class ExecutionConfig(ConfigBlock):
     model: ModelSpec = Field(default_factory=lambda: ModelSpec(type="immediate"))
     min_order_notional: float = 10.0
 
 
-class BrokerConfig(BaseModel):
+class BrokerConfig(ConfigBlock):
     type: Literal["paper", "ccxt", "kis", "alpaca", "toss"] = "paper"
     params: dict[str, Any] = Field(default_factory=dict)
     #: hard ceiling on a single order's notional; the last line of defence
@@ -127,7 +174,7 @@ class BrokerConfig(BaseModel):
     live_trading_confirmed: bool = False
 
 
-class LimitsConfig(BaseModel):
+class LimitsConfig(ConfigBlock):
     """하루 거래 한도 — the caps that assume the strategy is misbehaving.
 
     Every other limit here is a strategy limit and assumes it is not. These sit
@@ -146,7 +193,7 @@ class LimitsConfig(BaseModel):
     halt_until_next_day: bool = True
 
 
-class BacktestConfig(BaseModel):
+class BacktestConfig(ConfigBlock):
     start: Optional[datetime] = None
     end: Optional[datetime] = None
     #: how many parameter variants were evaluated — feeds the deflated Sharpe
@@ -154,7 +201,7 @@ class BacktestConfig(BaseModel):
     risk_free_rate: float = 0.0
 
 
-class NotifyConfig(BaseModel):
+class NotifyConfig(ConfigBlock):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     on_events: list[str] = Field(
@@ -162,7 +209,7 @@ class NotifyConfig(BaseModel):
     )
 
 
-class StrategyConfig(BaseModel):
+class StrategyConfig(ConfigBlock):
     name: str = "unnamed"
     description: str = ""
     mode: RunMode = RunMode.BACKTEST
@@ -196,6 +243,22 @@ class StrategyConfig(BaseModel):
                 "mode: live requires at least one daily cap under `limits:` "
                 "(max_daily_notional / max_daily_orders / max_daily_loss / "
                 "max_daily_loss_pct). A bug in a signal costs whatever you let it."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _backtest_needs_the_simulator(self) -> "StrategyConfig":
+        # A file that declares both is asking for something impossible: a venue
+        # adapter has no fill simulation, so the run places orders that never
+        # fill, charges no commission and no 거래세, and reports a flat curve.
+        # (Forcing backtest onto a dry_run/live file from the CLI is a different
+        # thing — build_brokerage substitutes the simulator there, on purpose.)
+        if self.mode is RunMode.BACKTEST and self.broker.type != "paper":
+            raise ValueError(
+                f"mode: backtest with broker.type: {self.broker.type} — a venue "
+                "adapter cannot simulate fills, so the backtest would end with "
+                "zero trades and zero cost. Use broker.type: paper to backtest, "
+                "or mode: dry_run to run against the venue."
             )
         return self
 
