@@ -155,7 +155,7 @@ class Portfolio:
                 pnl_pct=(gross - fill.fee) / basis if basis > 0 else 0.0,
                 fees=fill.fee,
                 entry_tag=entry_tag,
-                exit_tag=fill.liquidity,
+                exit_tag=fill.tag or fill.liquidity,
             )
             self.closed_trades.append(closed)
             if pos.is_flat:

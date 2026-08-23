@@ -348,6 +348,9 @@ class Fill:
     ts: datetime
     liquidity: str = "taker"
     slippage: float = 0.0
+    #: why this order was sent, carried from the target that produced it. Not
+    #: cosmetic: protections key off it to tell a stop-out from a take-profit.
+    tag: str = ""
     id: str = field(default_factory=lambda: new_id("fil_"))
 
     @property
@@ -449,6 +452,12 @@ class Position:
         return realized - fill.fee
 
 
+#: exit reasons that count as "the risk layer forced us out"
+EXIT_STOP_REASONS = frozenset({
+    "stop_loss", "trailing_stop", "max_dd_portfolio", "time_stop", "risk_veto",
+})
+
+
 @dataclass
 class ClosedTrade:
     """A completed round trip, recorded for analytics and protections."""
@@ -473,6 +482,22 @@ class ClosedTrade:
     @property
     def is_win(self) -> bool:
         return self.pnl > 0
+
+    @property
+    def exit_reason(self) -> str:
+        """Canonical reason this trade closed.
+
+        Risk models prefix their tags with a stable token (`stop_loss:`,
+        `trailing_stop:`, …) precisely so protections can count *stop-outs*
+        rather than merely losing trades — a distinction that matters, because
+        a strategy can bleed steadily without ever tripping a stop.
+        """
+        head = (self.exit_tag or "").split(":", 1)[0].strip().lower()
+        return head.replace(" ", "_") if head else "unknown"
+
+    @property
+    def was_stopped_out(self) -> bool:
+        return self.exit_reason in EXIT_STOP_REASONS
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -27,7 +27,7 @@ class MaximumDrawdownPerSecurity(RiskManagementModel):
         for pos in ctx.portfolio.open_positions:
             if pos.unrealized_pct >= -self.limit:
                 continue
-            reason = f"stop-loss {pos.unrealized_pct:+.2%} < -{self.limit:.2%}"
+            reason = f"stop_loss: {pos.unrealized_pct:+.2%} < -{self.limit:.2%}"
             by_key[pos.symbol.key] = self._flatten(
                 by_key.get(pos.symbol.key, PortfolioTarget(pos.symbol, Decimal("0"))), reason
             )
@@ -83,7 +83,7 @@ class TrailingStopRiskModel(RiskManagementModel):
             if hit:
                 by_key[pos.symbol.key] = self._flatten(
                     by_key.get(pos.symbol.key, PortfolioTarget(pos.symbol, Decimal("0"))),
-                    f"trailing stop {trail:.2%} from {extreme:.4f}",
+                    f"trailing_stop: {trail:.2%} from {extreme:.4f}",
                 )
         return list(by_key.values())
 
@@ -107,7 +107,7 @@ class MaximumUnrealizedProfit(RiskManagementModel):
             if pos.unrealized_pct >= self.target:
                 by_key[pos.symbol.key] = self._flatten(
                     by_key.get(pos.symbol.key, PortfolioTarget(pos.symbol, Decimal("0"))),
-                    f"take-profit {pos.unrealized_pct:+.2%}",
+                    f"take_profit: {pos.unrealized_pct:+.2%}",
                 )
         return list(by_key.values())
 
@@ -153,14 +153,14 @@ class MaximumDrawdownPortfolio(RiskManagementModel):
                 log.info("drawdown halt lifted; high-water mark rebased to %.2f",
                          ctx.portfolio.equity)
             else:
-                return [self._flatten(t, "portfolio drawdown halt") for t in targets]
+                return [self._flatten(t, "max_dd_portfolio: drawdown halt") for t in targets]
 
         dd = ctx.portfolio.drawdown
         if dd >= self.limit:
             self.tripped = True
             self.trips += 1
             self._resume_at = ctx.now + ctx.bar_delta * self.halt_bars
-            reason = (f"portfolio drawdown {dd:.2%} >= {self.limit:.2%} — flattening "
+            reason = (f"max_dd_portfolio: drawdown {dd:.2%} >= {self.limit:.2%} — flattening "
                       f"(trip {self.trips}/{self.max_trips})")
             log.warning(reason)
             if self.trips >= self.max_trips:
@@ -291,7 +291,7 @@ class TimeStopRiskModel(RiskManagementModel):
                 continue
             by_key[pos.symbol.key] = self._flatten(
                 by_key.get(pos.symbol.key, PortfolioTarget(pos.symbol, Decimal("0"))),
-                f"time stop: {held_bars:.0f} bars, {pos.unrealized_pct:+.2%}",
+                f"time_stop: {held_bars:.0f} bars, {pos.unrealized_pct:+.2%}",
             )
         return list(by_key.values())
 

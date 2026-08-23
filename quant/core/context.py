@@ -171,6 +171,14 @@ class Context:
                 self._locks.pop(key, None)
         return False, ""
 
+    def export_locks(self) -> dict[str, tuple[datetime, str]]:
+        """Raw lock map, for persistence across a restart."""
+        now = self.now
+        return {k: v for k, v in self._locks.items() if v[0] > now}
+
+    def import_locks(self, locks: dict[str, tuple[datetime, str]]) -> None:
+        self._locks.update(locks)
+
     def active_locks(self) -> dict[str, dict]:
         now = self.now
         return {

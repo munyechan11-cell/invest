@@ -70,18 +70,29 @@ class StoplossGuard(Protection):
 
     def __init__(self, lookback_bars: int = 60, trade_limit: int = 4,
                  stop_bars: int = 12, only_per_symbol: bool = False,
-                 required_profit: float = 0.0):
+                 required_profit: float = 0.0, stops_only: bool = True):
         super().__init__(lookback_bars, stop_bars)
         self.trade_limit = trade_limit
         self.per_symbol = only_per_symbol
         self.required_profit = required_profit
+        #: Count only risk-forced exits. A run of small losses closed by the
+        #: strategy's own signal is ordinary; a run of *stop-outs* means the
+        #: setup is misreading the regime, which is what this guard is for.
+        self.stops_only = stops_only
 
     def check(self, ctx, symbol):
-        losses = [t for t in self._recent(ctx, symbol) if t.pnl_pct < self.required_profit]
-        if len(losses) >= self.trade_limit:
+        recent = self._recent(ctx, symbol)
+        if self.stops_only:
+            hits = [t for t in recent if t.was_stopped_out]
+            label = "stop-outs"
+        else:
+            hits = [t for t in recent if t.pnl_pct < self.required_profit]
+            label = "losing trades"
+        if len(hits) >= self.trade_limit:
+            reasons = {t.exit_reason for t in hits}
             return True, (
-                f"{len(losses)} losing trades in {self.lookback_bars} bars "
-                f"(limit {self.trade_limit})"
+                f"{len(hits)} {label} in {self.lookback_bars} bars "
+                f"(limit {self.trade_limit}) — {', '.join(sorted(reasons))}"
             )
         return False, ""
 

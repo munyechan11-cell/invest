@@ -146,6 +146,7 @@ class PaperBrokerage(Brokerage):
             order_id=order.id, symbol=order.symbol, side=order.side, quantity=qty,
             price=price, fee=fee, ts=bar.end_ts,
             liquidity="maker" if is_maker else "taker", slippage=slip,
+            tag=order.tag,
         )
         order.apply_fill(fill)
         self.fills.append(fill)

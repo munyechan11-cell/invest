@@ -58,6 +58,19 @@ CREATE TABLE IF NOT EXISTS positions (
   avg_price REAL, opened_at TEXT, peak_price REAL,
   PRIMARY KEY (run_id, symbol_key)
 );
+CREATE TABLE IF NOT EXISTS run_state (
+  run_id INTEGER PRIMARY KEY,
+  cash REAL NOT NULL,
+  realized_pnl REAL NOT NULL DEFAULT 0,
+  high_water_mark REAL NOT NULL DEFAULT 0,
+  total_fees REAL NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS locks (
+  run_id INTEGER NOT NULL, symbol_key TEXT NOT NULL,
+  until TEXT NOT NULL, reason TEXT,
+  PRIMARY KEY (run_id, symbol_key)
+);
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id INTEGER NOT NULL, ts TEXT NOT NULL,
@@ -91,12 +104,23 @@ class StateStore:
         return self.run_id
 
     def resume_run(self, strategy: str, mode: str) -> int | None:
+        """Reopen the most recent run for this strategy and mode.
+
+        Deliberately ignores `stopped_at`. A clean shutdown does not flatten
+        the book — the positions are still there when the process comes back —
+        so scoping resume to "runs that were never stopped" meant every normal
+        restart woke up believing it held nothing and had its full starting
+        cash. In live mode that is a second position on top of the first.
+        """
         row = self.conn.execute(
-            "SELECT id FROM runs WHERE strategy=? AND mode=? AND stopped_at IS NULL "
-            "ORDER BY id DESC LIMIT 1", (strategy, mode)
+            "SELECT id FROM runs WHERE strategy=? AND mode=? ORDER BY id DESC LIMIT 1",
+            (strategy, mode),
         ).fetchone()
-        if row:
-            self.run_id = row["id"]
+        if not row:
+            return None
+        self.run_id = row["id"]
+        self.conn.execute("UPDATE runs SET stopped_at=NULL WHERE id=?", (self.run_id,))
+        self.conn.commit()
         return self.run_id
 
     def stop_run(self) -> None:
@@ -138,6 +162,21 @@ class StateStore:
         self.conn.commit()
 
     def snapshot_positions(self, portfolio: Portfolio) -> None:
+        """Persist the whole book: cash first, then positions.
+
+        Cash matters as much as the positions do. Restoring 100 shares while
+        resetting cash to the configured starting balance produces an equity
+        figure that is wrong by the cost of the position, and every subsequent
+        size is computed from that wrong number.
+        """
+        self.conn.execute(
+            "INSERT OR REPLACE INTO run_state(run_id, cash, realized_pnl, "
+            "high_water_mark, total_fees, updated_at) VALUES(?,?,?,?,?,?)",
+            (self.run_id, portfolio.cash,
+             sum(p.realized_pnl for p in portfolio.positions.values()),
+             portfolio.high_water_mark, portfolio.total_fees,
+             datetime.now(UTC).isoformat()),
+        )
         self.conn.execute("DELETE FROM positions WHERE run_id=?", (self.run_id,))
         self.conn.executemany(
             "INSERT INTO positions(run_id, symbol_key, ticker, venue, quantity, "
@@ -148,6 +187,35 @@ class StateStore:
              for p in portfolio.open_positions],
         )
         self.conn.commit()
+
+    def save_locks(self, locks: dict[str, tuple[datetime, str]]) -> None:
+        """Persist trading locks.
+
+        Without this a crash is a free pass: every protection the engine has —
+        stoploss guard, cooldown, low-profit, drawdown halt — lives in memory,
+        so a restart re-enters exactly the names that were just locked out,
+        at exactly the worst moment.
+        """
+        self.conn.execute("DELETE FROM locks WHERE run_id=?", (self.run_id,))
+        self.conn.executemany(
+            "INSERT INTO locks(run_id, symbol_key, until, reason) VALUES(?,?,?,?)",
+            [(self.run_id, key, until.isoformat(), reason)
+             for key, (until, reason) in locks.items()],
+        )
+        self.conn.commit()
+
+    def restore_locks(self, now: datetime) -> dict[str, tuple[datetime, str]]:
+        rows = self.conn.execute(
+            "SELECT symbol_key, until, reason FROM locks WHERE run_id=?", (self.run_id,)
+        ).fetchall()
+        out: dict[str, tuple[datetime, str]] = {}
+        for r in rows:
+            until = datetime.fromisoformat(r["until"])
+            if until > now:
+                out[r["symbol_key"]] = (until, r["reason"] or "")
+        if out:
+            log.info("복원: 거래 잠금 %d건", len(out))
+        return out
 
     def record_event(self, event_type: str, payload: dict) -> None:
         self.conn.execute(
@@ -166,6 +234,19 @@ class StateStore:
         this and corrects any drift. This exists so the bot starts from
         *approximately* right rather than from zero.
         """
+        state = self.conn.execute(
+            "SELECT * FROM run_state WHERE run_id=?", (self.run_id,)
+        ).fetchone()
+        if state is not None:
+            portfolio.cash = state["cash"]
+            portfolio.total_fees = state["total_fees"]
+            portfolio.high_water_mark = max(state["high_water_mark"], 0.0) or portfolio.cash
+            log.info("복원: 현금 %.2f, 최고자산 %.2f", portfolio.cash,
+                     portfolio.high_water_mark)
+        else:
+            log.warning("이전 현금 잔고 기록 없음 — 설정값 %.2f 로 시작합니다",
+                        portfolio.cash)
+
         rows = self.conn.execute(
             "SELECT * FROM positions WHERE run_id=?", (self.run_id,)
         ).fetchall()

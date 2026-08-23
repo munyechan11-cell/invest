@@ -73,6 +73,7 @@ class LiveTrader:
                     payload.get("cash", 0.0), payload.get("drawdown_pct", 0.0) / 100,
                 )
                 self.state.snapshot_positions(self.engine.ctx.portfolio)
+                self.state.save_locks(self.engine.ctx.export_locks())
             elif event.type in (EventType.PROTECTION, EventType.ORDER_REJECTED,
                                 EventType.RISK_ACTION, EventType.ERROR):
                 self.state.record_event(event.type.value, payload)
@@ -120,18 +121,22 @@ class LiveTrader:
 
     async def start(self) -> None:
         cfg = self.config
-        if self.resume and self.state.resume_run(cfg.name, cfg.mode.value):
-            restored = self.state.restore_positions(
-                self.engine.ctx.portfolio,
-                {s.key: s for s in self.engine.ctx.universe},
-            )
-            log.info("resumed run %s with %d positions", self.state.run_id, restored)
-        else:
+        resumed = self.resume and self.state.resume_run(cfg.name, cfg.mode.value)
+        if not resumed:
             self.state.start_run(cfg.name, cfg.mode.value, cfg.portfolio.starting_cash,
                                  cfg.model_dump_json())
 
         self._attach_observers()
         await self.warmup()
+
+        # Restore *after* warm-up, so every symbol in the stored book is known
+        # and a position in a name that has since left the universe is still
+        # reported rather than silently dropped.
+        if resumed:
+            symbols = {s.key: s for s in self.engine.ctx.universe}
+            restored = self.state.restore_positions(self.engine.ctx.portfolio, symbols)
+            self.engine.ctx.import_locks(self.state.restore_locks(datetime.now(UTC)))
+            log.info("run %s 복원: 포지션 %d건", self.state.run_id, restored)
         await self.engine.start()
         self.started_at = datetime.now(UTC)
         self.running = True
@@ -294,6 +299,7 @@ class LiveTrader:
             await self.engine.stop()
         finally:
             self.state.snapshot_positions(self.engine.ctx.portfolio)
+            self.state.save_locks(self.engine.ctx.export_locks())
             self.state.stop_run()
             await self.notifier.send(
                 f"⏹ stopped {self.config.name}\n"
