@@ -1,0 +1,24 @@
+name: readme-intraday-cap
+mode: backtest
+data:
+  provider: synthetic
+  params: {seed: 5, annual_vol: 0.6}
+  timeframe: 1h
+  warmup_bars: 60
+universe:
+  symbols:
+    - {ticker: AAA, venue: SIM, tick_size: 0.01}
+    - {ticker: BBB, venue: SIM, tick_size: 0.01}
+    - {ticker: CCC, venue: SIM, tick_size: 0.01}
+alpha:
+  - {type: ema_cross, params: {fast: 3, slow: 8, hold_bars: 2}}
+portfolio: {starting_cash: 100000, model: {type: equal_weight}, max_position_weight: 0.3}
+execution: {model: {type: immediate}}
+costs: {preset: us_equity}
+broker: {type: paper}
+limits:
+  max_daily_orders: 2
+  timezone_offset_hours: 9
+backtest:
+  start: 2025-06-01T00:00:00Z
+  end: 2025-07-01T00:00:00Z

@@ -1,0 +1,61 @@
+# US equity cross-sectional momentum on daily bars, free Yahoo data.
+name: readme-zerocost
+description: 12-1 volatility-adjusted momentum, risk-parity sized, regime filtered.
+mode: backtest
+
+data:
+  provider: yahoo
+  timeframe: 1d
+  warmup_bars: 300
+
+universe:
+  benchmark: SPY
+  symbols:
+    - {ticker: AAPL, venue: yahoo}
+    - {ticker: MSFT, venue: yahoo}
+    - {ticker: NVDA, venue: yahoo}
+    - {ticker: GOOGL, venue: yahoo}
+    - {ticker: AMZN, venue: yahoo}
+    - {ticker: META, venue: yahoo}
+    - {ticker: JPM,  venue: yahoo}
+    - {ticker: XOM,  venue: yahoo}
+    - {ticker: UNH,  venue: yahoo}
+    - {ticker: WMT,  venue: yahoo}
+    - {ticker: LLY,  venue: yahoo}
+    - {ticker: AVGO, venue: yahoo}
+
+alpha:
+  - {type: xs_momentum, params: {lookback: 126, skip: 21, top_n: 4, rebalance_every: 21,
+                                 vol_adjust: true}}
+  - {type: regime_filter, params: {period: 200, max_annual_vol: 0.9}}
+
+portfolio:
+  starting_cash: 100000
+  model: {type: risk_parity, params: {lookback: 120}}
+  max_position_weight: 0.30
+  max_gross_leverage: 0.95
+  cash_reserve_pct: 0.02
+
+risk:
+  models:
+    - {type: max_dd_per_security, params: {max_drawdown_pct: 0.15}}
+    - {type: trailing_stop, params: {atr_multiple: 4.0, activate_at_pct: 0.06}}
+    - {type: max_dd_portfolio, params: {max_drawdown_pct: 0.25, halt_bars: 21}}
+  protections:
+    - {type: cooldown, params: {stop_bars: 2}}
+
+execution:
+  model: {type: pov, params: {participation: 0.05}}
+  min_order_notional: 200
+
+costs:
+  preset: zero_cost
+
+broker:
+  type: paper
+  max_order_notional: 40000
+
+backtest:
+  start: 2019-01-01T00:00:00Z
+  end: 2026-01-01T00:00:00Z
+  risk_free_rate: 0.03
