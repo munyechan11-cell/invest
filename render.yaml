@@ -1,15 +1,25 @@
-# Render blueprint — dashboard + a dry-run worker.
+# Render blueprint — 단일 서비스.
 #
-# The worker deliberately runs `dryrun`, not `live`. Promoting to live is a
-# manual, deliberate act: flip mode + broker.live_trading_confirmed in the
-# strategy config and change the start command. A deploy pipeline should never
-# be one typo away from trading real money.
+# 대시보드와 트레이더를 **한 서비스**에 둡니다. 갈라놓고 싶은 유혹이 있지만
+# Render 디스크는 서비스 하나에만 붙습니다. 워커를 따로 두면 워커가 쓰는
+# 상태 DB 를 대시보드가 볼 수 없어서, 화면에는 "실행 중 아님"이 뜨는데
+# 실제로는 봇이 주문을 내고 있는 상태가 됩니다. 그건 자동매매에서
+# 가장 위험한 종류의 불일치입니다.
+#
+# 트레이더는 API 가 같은 프로세스 안에서 띄웁니다: POST /api/trader/start.
+# 그래서 상태·현금·잠금이 전부 같은 DB 한 곳에 있습니다.
+#
+# 실매매로 올리는 것은 배포가 아니라 사람이 하는 별도의 결정입니다.
+# 설정에서 mode 와 broker.live_trading_confirmed 를 직접 바꿔야 합니다.
+# 배포 파이프라인이 오타 하나로 실제 돈을 굴리게 두지 않습니다.
 services:
   - type: web
-    name: quant-dashboard
+    name: quant-desk
     runtime: python
+    # free 플랜은 쓰지 마세요. 유휴 시 슬립되는데, 자동매매 봇이 자다가
+    # 깨면 그 사이 장이 움직인 걸 못 봅니다.
     plan: starter
-    region: singapore
+    region: singapore          # KRX·아시아 거래소에 가장 가까운 리전
     healthCheckPath: /api/health
     buildCommand: pip install -r requirements.txt
     startCommand: python -m quant serve configs/demo.yaml --host 0.0.0.0 --port $PORT --state $DB_PATH
@@ -21,29 +31,31 @@ services:
       - {key: PYTHON_VERSION, value: 3.13.0}
       - {key: DB_PATH, value: /var/data/quant_state.db}
       - {key: LOG_FORMAT, value: json}
+
+      # 없으면 서버가 아예 뜨지 않습니다 — 0.0.0.0 바인딩에 토큰은 필수입니다.
+      # generateValue 로 Render 가 만들어 주고, 값은 대시보드에서 확인합니다.
       - {key: QUANT_API_TOKEN, generateValue: true}
+
+      # 브라우저에서 접속할 주소만 허용합니다. 비워두면(토큰이 설정된 경우)
+      # 아무 출처도 허용하지 않습니다 — 배포 후 실제 URL 로 채우세요.
+      - {key: CORS_ORIGINS, sync: false}
+
+      # ── LLM (데스크를 켤 때만 필요) ────────────────────────────────
+      # 셋 중 있는 것을 씁니다. 하나도 없으면 데스크는 꺼진 채로 돌고
+      # 규칙 기반 알파만 동작합니다 — 그래도 매매는 됩니다.
+      - {key: GOOGLE_API_KEY, sync: false}
       - {key: ANTHROPIC_API_KEY, sync: false}
+      - {key: OPENAI_API_KEY, sync: false}
+
+      # ── 브로커 (실매매로 올릴 때만) ────────────────────────────────
       - {key: KIS_APP_KEY, sync: false}
       - {key: KIS_APP_SECRET, sync: false}
       - {key: KIS_ACCOUNT_NO, sync: false}
-      - {key: ALPACA_API_KEY, sync: false}
-      - {key: ALPACA_SECRET_KEY, sync: false}
-      - {key: TELEGRAM_BOT_TOKEN, sync: false}
-      - {key: TELEGRAM_CHAT_ID, sync: false}
-
-  - type: worker
-    name: quant-trader
-    runtime: python
-    plan: starter
-    region: singapore
-    buildCommand: pip install -r requirements.txt
-    startCommand: python -m quant dryrun $STRATEGY_CONFIG --state $DB_PATH
-    envVars:
-      - {key: PYTHON_VERSION, value: 3.13.0}
-      - {key: STRATEGY_CONFIG, value: configs/live_crypto.yaml}
-      - {key: DB_PATH, value: /var/data/quant_state.db}
-      - {key: LOG_FORMAT, value: json}
+      - {key: TOSS_APP_KEY, sync: false}
+      - {key: TOSS_APP_SECRET, sync: false}
       - {key: BINANCE_KEY, sync: false}
       - {key: BINANCE_SECRET, sync: false}
+
+      # ── 알림 ───────────────────────────────────────────────────────
       - {key: TELEGRAM_BOT_TOKEN, sync: false}
       - {key: TELEGRAM_CHAT_ID, sync: false}

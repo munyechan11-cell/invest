@@ -130,6 +130,35 @@ class StartRequest(BaseModel):
     mode: str = Field(default="dry_run", pattern="^(dry_run|live)$")
 
 
+#: 이 주소들만 "내 컴퓨터에서만 보인다" 고 말할 수 있습니다.
+_LOOPBACK = {"127.0.0.1", "::1", "localhost", ""}
+
+
+class UnsafeBind(RuntimeError):
+    """공개 인터페이스에 토큰 없이 붙이려 할 때."""
+
+
+def assert_safe_to_bind(host: str) -> None:
+    """토큰 없는 API 를 외부에 노출하려 하면 뜨지 않습니다.
+
+    이전에는 경고 한 줄만 찍고 그대로 떴습니다. 그런데 호스팅 플랫폼은
+    예외 없이 0.0.0.0 바인딩을 요구하므로, 하필 실제 배포 구성에서만
+    경고가 무시되고 매수·매도·전량청산 엔드포인트가 인증 없이 열립니다.
+    로그로 남길 성질이 아니라 뜨지 말아야 할 상태입니다.
+    """
+    if host.strip().lower() in _LOOPBACK:
+        return
+    if os.environ.get("QUANT_API_TOKEN", "").strip():
+        return
+    raise UnsafeBind(
+        f"{host} 로 바인딩하려는데 QUANT_API_TOKEN 이 없습니다. "
+        "이 API 는 매수·매도·전량청산·자격증명 저장을 수행하므로 "
+        "인증 없이 외부에 열 수 없습니다.\n"
+        "  해결: QUANT_API_TOKEN=$(python3 -c \"import secrets;print(secrets.token_urlsafe(32))\") "
+        "를 환경변수로 설정하거나, --host 127.0.0.1 로 로컬에서만 여세요."
+    )
+
+
 def create_app(config: StrategyConfig | None = None,
                state_path: str = "quant_state.db") -> FastAPI:
     # The setup screen writes credentials to .env; load them before anything
@@ -165,10 +194,14 @@ def create_app(config: StrategyConfig | None = None,
     app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[o for o in os.environ.get("CORS_ORIGINS", "").split(",") if o] or ["*"],
+        # 토큰을 쓰는 배포에서 기본값 "*" 는 아무 웹페이지나 이 API 를
+        # 부를 수 있게 합니다. 토큰이 있으면 명시된 출처만 허용합니다.
+        allow_origins=([o for o in os.environ.get("CORS_ORIGINS", "").split(",") if o]
+                       or ([] if token else ["*"])),
         allow_methods=["*"], allow_headers=["*"],
     )
     app.state.quant = state
+    app.state.api_token = token
 
     # ── read-only ────────────────────────────────────────────────────────
     @app.get("/api/health")

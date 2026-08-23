@@ -172,7 +172,13 @@ async def cmd_live(args) -> int:
 async def cmd_serve(args) -> int:
     import uvicorn
 
-    from quant.api.server import create_app
+    from quant.api.server import UnsafeBind, assert_safe_to_bind, create_app
+
+    try:
+        assert_safe_to_bind(args.host)
+    except UnsafeBind as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
 
     config = _load(args.config) if args.config else None
     app = create_app(config, state_path=args.state)
