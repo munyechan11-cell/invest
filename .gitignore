@@ -10,8 +10,10 @@ investor_profile.json
 *.db-wal
 *.db-shm
 results/
-data/
-!data/.gitkeep
+# 앞의 / 가 없으면 git 은 모든 깊이에서 매칭합니다 — 그래서 첫 소스 패키지인
+# quant/data/ 가 통째로 커밋에서 빠졌고, clone 하면 import 조차 안 됐습니다.
+/data/
+!/data/.gitkeep
 
 # python
 __pycache__/
@@ -34,3 +36,4 @@ env/
 
 # 검증하며 생기는 일회용 설정 — 저장소에 남길 이유가 없습니다
 configs/tmp_*.yaml
+.audit_findings.json
