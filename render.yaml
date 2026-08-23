@@ -1,0 +1,49 @@
+# Render blueprint — dashboard + a dry-run worker.
+#
+# The worker deliberately runs `dryrun`, not `live`. Promoting to live is a
+# manual, deliberate act: flip mode + broker.live_trading_confirmed in the
+# strategy config and change the start command. A deploy pipeline should never
+# be one typo away from trading real money.
+services:
+  - type: web
+    name: quant-dashboard
+    runtime: python
+    plan: starter
+    region: singapore
+    healthCheckPath: /api/health
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m quant serve configs/demo.yaml --host 0.0.0.0 --port $PORT --state $DB_PATH
+    disk:
+      name: quant-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - {key: PYTHON_VERSION, value: 3.13.0}
+      - {key: DB_PATH, value: /var/data/quant_state.db}
+      - {key: LOG_FORMAT, value: json}
+      - {key: QUANT_API_TOKEN, generateValue: true}
+      - {key: ANTHROPIC_API_KEY, sync: false}
+      - {key: KIS_APP_KEY, sync: false}
+      - {key: KIS_APP_SECRET, sync: false}
+      - {key: KIS_ACCOUNT_NO, sync: false}
+      - {key: ALPACA_API_KEY, sync: false}
+      - {key: ALPACA_SECRET_KEY, sync: false}
+      - {key: TELEGRAM_BOT_TOKEN, sync: false}
+      - {key: TELEGRAM_CHAT_ID, sync: false}
+
+  - type: worker
+    name: quant-trader
+    runtime: python
+    plan: starter
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m quant dryrun $STRATEGY_CONFIG --state $DB_PATH
+    envVars:
+      - {key: PYTHON_VERSION, value: 3.13.0}
+      - {key: STRATEGY_CONFIG, value: configs/live_crypto.yaml}
+      - {key: DB_PATH, value: /var/data/quant_state.db}
+      - {key: LOG_FORMAT, value: json}
+      - {key: BINANCE_KEY, sync: false}
+      - {key: BINANCE_SECRET, sync: false}
+      - {key: TELEGRAM_BOT_TOKEN, sync: false}
+      - {key: TELEGRAM_CHAT_ID, sync: false}

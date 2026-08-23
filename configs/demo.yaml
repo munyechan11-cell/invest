@@ -1,0 +1,72 @@
+# Runnable with no API keys: synthetic data, paper broker.
+#   python -m quant backtest configs/demo.yaml
+name: demo-multi-alpha
+description: >
+  Trend + mean-reversion + cross-sectional momentum on synthetic data,
+  sized by volatility targeting, with stops, protections and realistic costs.
+mode: backtest
+
+data:
+  provider: synthetic
+  params: {seed: 42, annual_drift: 0.10, annual_vol: 0.32}
+  timeframe: 1d
+  warmup_bars: 260
+
+universe:
+  symbols:
+    - {ticker: AAA, venue: SIM, tick_size: 0.01}
+    - {ticker: BBB, venue: SIM, tick_size: 0.01}
+    - {ticker: CCC, venue: SIM, tick_size: 0.01}
+    - {ticker: DDD, venue: SIM, tick_size: 0.01}
+    - {ticker: EEE, venue: SIM, tick_size: 0.01}
+    - {ticker: FFF, venue: SIM, tick_size: 0.01}
+
+alpha:
+  - type: donchian_breakout
+    params: {entry_period: 20, exit_period: 10, hold_bars: 25, allow_short: false}
+  - type: ema_cross
+    params: {fast: 20, slow: 60, adx_min: 20, hold_bars: 15}
+  - type: rsi_reversion
+    params: {period: 14, oversold: 30, require_trend: true, allow_short: false}
+  - type: xs_momentum
+    params: {lookback: 120, skip: 20, top_n: 3, rebalance_every: 20}
+  - type: regime_filter
+    params: {period: 200, max_annual_vol: 1.1}
+
+portfolio:
+  starting_cash: 100000
+  base_currency: USD
+  model: {type: vol_target, params: {target_annual_vol: 0.15, lookback: 60}}
+  max_position_weight: 0.30
+  max_gross_leverage: 0.95
+  cash_reserve_pct: 0.02
+  allow_short: false
+
+risk:
+  models:
+    - {type: max_dd_per_security, params: {max_drawdown_pct: 0.10, lock_bars: 5}}
+    - {type: trailing_stop, params: {trail_pct: 0.08, atr_multiple: 3.0, activate_at_pct: 0.03}}
+    - {type: time_stop, params: {max_bars_held: 45, min_progress_pct: 0.015}}
+    - {type: max_positions, params: {max_positions: 4}}
+    - {type: max_dd_portfolio, params: {max_drawdown_pct: 0.22, halt_bars: 15}}
+  protections:
+    - {type: cooldown, params: {stop_bars: 2}}
+    - {type: stoploss_guard, params: {lookback_bars: 60, trade_limit: 5, stop_bars: 10}}
+    - {type: max_drawdown, params: {lookback_bars: 120, max_drawdown: 0.15, stop_bars: 20}}
+
+execution:
+  model: {type: immediate}
+  min_order_notional: 50
+
+costs:
+  preset: us_equity
+
+broker:
+  type: paper
+  max_order_notional: 40000
+
+backtest:
+  start: 2021-01-01T00:00:00Z
+  end: 2026-01-01T00:00:00Z
+  trials: 1
+  risk_free_rate: 0.03

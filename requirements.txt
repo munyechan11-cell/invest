@@ -1,0 +1,15 @@
+# ── core engine (required) ────────────────────────────────────────────────
+pydantic>=2.9,<3
+numpy>=1.26
+PyYAML>=6.0
+httpx>=0.27
+python-dotenv>=1.0
+
+# ── dashboard / control API (quant serve) ─────────────────────────────────
+fastapi>=0.115
+uvicorn[standard]>=0.30
+
+# ── optional, install what you actually use ───────────────────────────────
+# ccxt>=4.4          # crypto exchanges (data + live orders)
+# optuna>=4.0        # TPE parameter search; without it hyperopt uses random search
+# pandas>=2.2        # only needed for external analysis of exported results

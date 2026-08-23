@@ -1,0 +1,79 @@
+# Crypto momentum + breakout, 4h bars, Binance via ccxt.
+#
+#   python -m quant validate configs/live_crypto.yaml
+#   python -m quant backtest configs/live_crypto.yaml
+#   python -m quant dryrun   configs/live_crypto.yaml     # live prices, no orders
+#
+# Going live is a two-step, on-purpose change: set mode: live AND
+# broker.live_trading_confirmed: true, then `quant live`.
+name: crypto-trend-4h
+description: Donchian breakout + squeeze release on major pairs, vol-targeted.
+mode: dry_run
+
+data:
+  provider: ccxt
+  params: {exchange: binance, sandbox: true}
+  timeframe: 4h
+  warmup_bars: 400
+
+universe:
+  symbols:
+    - {ticker: "BTC/USDT", venue: binance, asset_class: crypto, quote_currency: USDT,
+       lot_size: 0.00001, tick_size: 0.01, min_notional: 10}
+    - {ticker: "ETH/USDT", venue: binance, asset_class: crypto, quote_currency: USDT,
+       lot_size: 0.0001, tick_size: 0.01, min_notional: 10}
+    - {ticker: "SOL/USDT", venue: binance, asset_class: crypto, quote_currency: USDT,
+       lot_size: 0.001, tick_size: 0.01, min_notional: 10}
+    - {ticker: "BNB/USDT", venue: binance, asset_class: crypto, quote_currency: USDT,
+       lot_size: 0.001, tick_size: 0.1, min_notional: 10}
+
+alpha:
+  - {type: donchian_breakout, params: {entry_period: 30, exit_period: 12, hold_bars: 40,
+                                       min_atr_pct: 0.008, allow_short: false}}
+  - {type: squeeze, params: {bb_period: 20, kc_period: 20, hold_bars: 24}}
+  - {type: regime_filter, params: {period: 200, max_annual_vol: 2.0}}
+
+portfolio:
+  starting_cash: 10000
+  base_currency: USDT
+  model: {type: vol_target, params: {target_annual_vol: 0.35, lookback: 90}}
+  max_position_weight: 0.35
+  max_gross_leverage: 0.9
+  cash_reserve_pct: 0.05
+
+risk:
+  models:
+    - {type: max_dd_per_security, params: {max_drawdown_pct: 0.12, lock_bars: 6}}
+    - {type: trailing_stop, params: {atr_multiple: 3.5, activate_at_pct: 0.04}}
+    - {type: max_positions, params: {max_positions: 3}}
+    - {type: max_dd_portfolio, params: {max_drawdown_pct: 0.25, halt_bars: 24, max_trips: 3}}
+  protections:
+    - {type: cooldown, params: {stop_bars: 3}}
+    - {type: stoploss_guard, params: {lookback_bars: 90, trade_limit: 4, stop_bars: 18}}
+    - {type: low_profit, params: {lookback_bars: 180, min_trades: 4, stop_bars: 36}}
+
+execution:
+  model: {type: limit, params: {offset_bps: 8, urgent_after_bars: 2}}
+  min_order_notional: 15
+
+costs:
+  preset: crypto_spot
+
+broker:
+  type: ccxt
+  params:
+    exchange: binance
+    api_key: "${BINANCE_KEY}"
+    secret: "${BINANCE_SECRET}"
+    sandbox: true
+  max_order_notional: 3000
+  live_trading_confirmed: false
+
+backtest:
+  start: 2023-01-01T00:00:00Z
+  end: 2026-01-01T00:00:00Z
+
+notify:
+  telegram_bot_token: "${TELEGRAM_BOT_TOKEN}"
+  telegram_chat_id: "${TELEGRAM_CHAT_ID}"
+  on_events: [order_filled, trade_closed, protection, order_rejected, error, state]

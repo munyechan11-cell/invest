@@ -1,0 +1,32 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# state & results — never commit a live trading database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+results/
+data/
+!data/.gitkeep
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# archived pre-rewrite code
+.legacy_backup/
+
+# tooling / os
+.idea/
+.vscode/
+.DS_Store
+*.log

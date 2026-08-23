@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quant Engine</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#fff; --border:#e3e6ea; --text:#14181d; --muted:#697586;
+    --up:#0a8f5b; --down:#d1344b; --accent:#3b6fd4; --warn:#b7791f;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#0d1117;--panel:#161b22;--border:#262d36;--text:#e6edf3;--muted:#8b949e;
+          --up:#3fb950;--down:#f85149;--accent:#589bff;--warn:#d29922;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:14px 20px;
+         border-bottom:1px solid var(--border);background:var(--panel);
+         position:sticky;top:0;z-index:10;flex-wrap:wrap}
+  h1{font-size:15px;margin:0;font-weight:650;letter-spacing:-.01em}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+  .dot.on{background:var(--up);box-shadow:0 0 0 3px color-mix(in srgb,var(--up) 22%,transparent)}
+  .dot.off{background:var(--down)}
+  .spacer{flex:1}
+  .pill{font:11px/1 var(--mono);padding:5px 9px;border:1px solid var(--border);
+        border-radius:999px;color:var(--muted)}
+  main{max-width:1440px;margin:0 auto;padding:20px;display:grid;gap:16px;
+       grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;
+        padding:16px;min-width:0}
+  .card.wide{grid-column:1/-1}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
+           margin:0 0 12px;font-weight:600}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px}
+  .stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+  .stat .v{font:600 20px/1.25 var(--mono);margin-top:3px;letter-spacing:-.02em}
+  .up{color:var(--up)} .down{color:var(--down)} .warn{color:var(--warn)}
+  table{width:100%;border-collapse:collapse;font:12px/1.5 var(--mono)}
+  th{text-align:left;color:var(--muted);font-weight:500;padding:6px 8px;
+     border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--panel)}
+  td{padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap}
+  tr:last-child td{border-bottom:0}
+  .num{text-align:right}
+  .scroll{max-height:320px;overflow:auto;margin:-4px -4px 0}
+  .feed{font:11px/1.6 var(--mono);max-height:320px;overflow:auto}
+  .feed div{padding:3px 0;border-bottom:1px solid var(--border);display:flex;gap:8px}
+  .feed .t{color:var(--muted);flex:0 0 62px}
+  .feed .ty{flex:0 0 130px;font-weight:600}
+  .feed .m{color:var(--muted);overflow:hidden;text-overflow:ellipsis}
+  canvas{width:100%;height:230px;display:block}
+  .empty{color:var(--muted);font-size:12px;padding:20px 0;text-align:center}
+  .bar{height:6px;border-radius:3px;background:var(--border);overflow:hidden;margin-top:6px}
+  .bar>i{display:block;height:100%;background:var(--accent)}
+  footer{max-width:1440px;margin:0 auto;padding:8px 20px 32px;color:var(--muted);font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="conn"></span>
+  <h1 id="strategy">Quant Engine</h1>
+  <span class="pill" id="mode">—</span>
+  <span class="pill" id="universe">—</span>
+  <div class="spacer"></div>
+  <span class="pill" id="lastbar">no data</span>
+</header>
+
+<main>
+  <section class="card wide">
+    <h2>Equity</h2>
+    <canvas id="chart"></canvas>
+  </section>
+
+  <section class="card">
+    <h2>Portfolio</h2>
+    <div class="stats" id="stats"><div class="empty">waiting for the first tick…</div></div>
+  </section>
+
+  <section class="card">
+    <h2>Positions</h2>
+    <div class="scroll"><table id="positions"><tbody></tbody></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Recent trades</h2>
+    <div class="scroll"><table id="trades"><tbody></tbody></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Live events</h2>
+    <div class="feed" id="feed"></div>
+  </section>
+</main>
+<footer>
+  Read-only view. Start and stop are deliberately CLI-only.
+  Historical results are not a prediction; trading involves risk of loss.
+</footer>
+
+<script>
+const $ = s => document.querySelector(s);
+const token = new URLSearchParams(location.search).get("token") || "";
+const auth = token ? {Authorization: "Bearer " + token} : {};
+const fmt = (n, d = 2) => n == null || !isFinite(n) ? "—"
+  : n.toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d});
+const pct = n => n == null ? "—" : (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+const cls = n => n > 0 ? "up" : n < 0 ? "down" : "";
+
+let equity = [];
+
+async function api(path) {
+  const r = await fetch(path, {headers: auth});
+  if (!r.ok) throw new Error(r.status + " " + path);
+  return r.json();
+}
+
+function drawChart() {
+  const c = $("#chart"), ctx = c.getContext("2d");
+  const dpr = devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  c.width = w * dpr; c.height = h * dpr; ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  if (equity.length < 2) {
+    ctx.fillStyle = getComputedStyle(document.body).getPropertyValue("--muted");
+    ctx.font = "12px system-ui"; ctx.textAlign = "center";
+    ctx.fillText("no equity history yet", w / 2, h / 2);
+    return;
+  }
+  const vals = equity.map(p => p.equity);
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const pad = (hi - lo) * 0.08 || 1;
+  const y = v => h - 12 - (v - lo + pad) / (hi - lo + pad * 2) * (h - 24);
+  const x = i => 4 + i / (equity.length - 1) * (w - 8);
+  const style = getComputedStyle(document.body);
+  const up = vals[vals.length - 1] >= vals[0];
+  const color = style.getPropertyValue(up ? "--up" : "--down").trim();
+
+  // high-water line, so drawdown is visible rather than inferred
+  let peak = -Infinity;
+  ctx.beginPath();
+  equity.forEach((p, i) => { peak = Math.max(peak, p.equity);
+    i ? ctx.lineTo(x(i), y(peak)) : ctx.moveTo(x(i), y(peak)); });
+  ctx.strokeStyle = style.getPropertyValue("--border").trim();
+  ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
+
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, color + "44"); grad.addColorStop(1, color + "00");
+  ctx.beginPath();
+  equity.forEach((p, i) => i ? ctx.lineTo(x(i), y(p.equity)) : ctx.moveTo(x(i), y(p.equity)));
+  ctx.strokeStyle = color; ctx.lineWidth = 1.8; ctx.stroke();
+  ctx.lineTo(x(equity.length - 1), h); ctx.lineTo(x(0), h); ctx.closePath();
+  ctx.fillStyle = grad; ctx.fill();
+}
+
+function renderStats(p) {
+  if (!p) return;
+  const items = [
+    ["equity", fmt(p.equity, 0), ""],
+    ["return", pct(p.total_return_pct), cls(p.total_return_pct)],
+    ["drawdown", pct(-Math.abs(p.drawdown_pct)), p.drawdown_pct > 10 ? "warn" : ""],
+    ["cash", fmt(p.cash, 0), ""],
+    ["unrealized", fmt(p.unrealized_pnl, 0), cls(p.unrealized_pnl)],
+    ["positions", p.open_positions, ""],
+    ["trades", p.closed_trades, ""],
+    ["fees", fmt(p.total_fees, 0), ""],
+  ];
+  $("#stats").innerHTML = items.map(([k, v, c]) =>
+    `<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
+
+  $("#positions").querySelector("tbody").innerHTML = (p.positions || []).length
+    ? `<tr><th>symbol</th><th class="num">qty</th><th class="num">avg</th>
+       <th class="num">last</th><th class="num">P&L</th></tr>` +
+      p.positions.map(x => `<tr><td>${x.symbol}</td>
+        <td class="num">${fmt(x.quantity, 4)}</td>
+        <td class="num">${fmt(x.avg_price, 4)}</td>
+        <td class="num">${fmt(x.last_price, 4)}</td>
+        <td class="num ${cls(x.unrealized_pct)}">${pct(x.unrealized_pct)}</td></tr>`).join("")
+    : `<tr><td class="empty">flat</td></tr>`;
+}
+
+function renderTrades(rows) {
+  $("#trades").querySelector("tbody").innerHTML = rows.length
+    ? `<tr><th>exit</th><th>symbol</th><th class="num">P&L</th><th class="num">%</th></tr>` +
+      rows.map(t => `<tr><td>${(t.exit_ts || "").slice(5, 16).replace("T", " ")}</td>
+        <td>${t.symbol}</td><td class="num ${cls(t.pnl)}">${fmt(t.pnl)}</td>
+        <td class="num ${cls(t.pnl_pct)}">${pct(t.pnl_pct * 100)}</td></tr>`).join("")
+    : `<tr><td class="empty">no closed trades</td></tr>`;
+}
+
+const feed = $("#feed");
+function pushEvent(e) {
+  const p = e.payload || {};
+  let msg = "";
+  if (e.type === "order_filled") msg = `${p.side} ${p.quantity} ${p.symbol} @ ${p.price}`;
+  else if (e.type === "trade_closed") msg = `${p.symbol} ${pct(p.pnl_pct)} (${fmt(p.pnl)})`;
+  else if (e.type === "protection") msg = `${p.protection} · ${p.symbol} · ${p.reason}`;
+  else if (e.type === "order_rejected") msg = `${p.symbol}: ${p.reject_reason || p.reason}`;
+  else if (e.type === "insight") msg = `${p.symbol} ${p.direction} ${p.source} — ${p.tag || ""}`;
+  else if (e.type === "equity") return;
+  else msg = JSON.stringify(p).slice(0, 160);
+  const color = e.type === "trade_closed" ? cls(p.pnl)
+    : e.type.includes("reject") || e.type === "error" ? "down"
+    : e.type === "protection" ? "warn" : "";
+  const div = document.createElement("div");
+  div.innerHTML = `<span class="t">${(e.ts || "").slice(11, 19)}</span>
+    <span class="ty ${color}">${e.type}</span><span class="m">${msg}</span>`;
+  feed.prepend(div);
+  while (feed.childNodes.length > 200) feed.lastChild.remove();
+}
+
+async function refresh() {
+  try {
+    const h = await api("/api/health");
+    $("#conn").className = "dot " + (h.trader_running ? "on" : "off");
+  } catch { $("#conn").className = "dot off"; }
+
+  try {
+    const s = await api("/api/status");
+    if (s.running !== false || s.portfolio) {
+      $("#strategy").textContent = s.strategy || "Quant Engine";
+      $("#mode").textContent = s.mode || "—";
+      $("#universe").textContent = (s.universe || []).length + " symbols";
+      $("#lastbar").textContent = s.last_bar ? "last bar " + s.last_bar.slice(0, 16).replace("T", " ") : "no data";
+      renderStats(s.portfolio);
+    }
+  } catch {}
+
+  try { equity = (await api("/api/equity?limit=1500")).points || []; drawChart(); } catch {}
+  try { renderTrades((await api("/api/trades?limit=60")).trades || []); } catch {}
+}
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws${token ? "?token=" + token : ""}`);
+  ws.onmessage = m => {
+    const e = JSON.parse(m.data);
+    if (e.type === "equity") renderStats(e.payload); else pushEvent(e);
+  };
+  // Reconnect on drop: a dashboard that silently goes stale is worse than one
+  // that shows it is disconnected.
+  ws.onclose = () => { $("#conn").className = "dot off"; setTimeout(connect, 4000); };
+  ws.onopen = () => setInterval(() => ws.readyState === 1 && ws.send("ping"), 25000);
+}
+
+refresh(); connect();
+setInterval(refresh, 15000);
+addEventListener("resize", drawChart);
+</script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# Parameter space for `quant optimize` / `quant walkforward`.
+# `path` is a dotted address into the strategy config; list indices are allowed.
+#
+#   python -m quant walkforward configs/demo.yaml --space configs/space.yaml \
+#          --folds 5 --trials 30 --purge 20
+space:
+  - {path: "alpha.0.params.entry_period", kind: int,   low: 10,   high: 60,  step: 5}
+  - {path: "alpha.0.params.exit_period",  kind: int,   low: 5,    high: 30,  step: 5}
+  - {path: "alpha.1.params.fast",         kind: int,   low: 8,    high: 30,  step: 2}
+  - {path: "alpha.1.params.slow",         kind: int,   low: 40,   high: 120, step: 10}
+  - {path: "alpha.1.params.adx_min",      kind: float, low: 12,   high: 32}
+  - {path: "portfolio.model.params.target_annual_vol", kind: float, low: 0.08, high: 0.30}
+  - {path: "risk.models.0.params.max_drawdown_pct",    kind: float, low: 0.05, high: 0.20}

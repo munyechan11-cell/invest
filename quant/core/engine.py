@@ -1,0 +1,253 @@
+"""The engine: one bar-processing pipeline used by backtest, dry run and live.
+
+Per bar batch, in this exact order:
+
+    1. resting orders fill against the *new* bar   (they were placed last bar)
+    2. positions are marked, closed trades booked
+    3. protections evaluate the fresh trade history and may set locks
+    4. alpha models produce insights
+    5. portfolio construction turns insights into target quantities
+    6. risk models shrink or veto those targets
+    7. execution diffs targets vs holdings and emits orders
+    8. orders are submitted — to rest until the next bar
+
+Step 1 preceding steps 4-8 is the whole no-look-ahead story: a decision made on
+bar *t* can only ever be filled using data from bar *t+1*.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+from typing import Sequence
+
+from quant.alpha.base import AlphaModel, InsightCollection
+from quant.brokerage.base import Brokerage
+from quant.brokerage.paper import PaperBrokerage
+from quant.core.context import Context
+from quant.core.events import EventBus, EventType
+from quant.core.types import (
+    Bar,
+    ClosedTrade,
+    Fill,
+    Insight,
+    Order,
+    OrderStatus,
+    PortfolioTarget,
+    Symbol,
+)
+from quant.execution.base import ExecutionModel
+from quant.portfolio.base import PortfolioConstructionModel
+from quant.risk.base import CompositeRiskModel, RiskManagementModel
+from quant.risk.protections import ProtectionManager
+
+log = logging.getLogger("quant.engine")
+
+
+class Engine:
+    def __init__(
+        self,
+        ctx: Context,
+        alpha: AlphaModel,
+        portfolio_model: PortfolioConstructionModel,
+        execution_model: ExecutionModel,
+        brokerage: Brokerage,
+        risk_models: Sequence[RiskManagementModel] = (),
+        protections: ProtectionManager | None = None,
+        insight_decay: float = 0.5,
+    ):
+        self.ctx = ctx
+        self.alpha = alpha
+        self.portfolio_model = portfolio_model
+        self.execution_model = execution_model
+        self.brokerage = brokerage
+        self.risk = CompositeRiskModel(*risk_models)
+        self.protections = protections or ProtectionManager()
+        self.insights = InsightCollection(insight_decay)
+        self.bars_processed = 0
+        self.orders: list[Order] = []
+        self.protection_events: list[dict] = []
+        self._started = False
+
+    @property
+    def bus(self) -> EventBus:
+        return self.ctx.bus
+
+    # ── lifecycle ────────────────────────────────────────────────────────
+    async def start(self) -> None:
+        if self._started:
+            return
+        await self.brokerage.connect()
+        await self.alpha.on_start(self.ctx)
+        self._started = True
+        await self.bus.publish(EventType.STATE, {"state": "started",
+                                                 "mode": self.ctx.run_mode.value})
+
+    async def stop(self) -> None:
+        for order in await self.brokerage.open_orders():
+            await self.brokerage.cancel(order)
+        await self.brokerage.close()
+        self._started = False
+        await self.bus.publish(EventType.STATE, {"state": "stopped"})
+
+    def set_universe(self, symbols: list[Symbol]) -> None:
+        previous = {s.key: s for s in self.ctx.universe}
+        current = {s.key: s for s in symbols}
+        added = [s for k, s in current.items() if k not in previous]
+        removed = [s for k, s in previous.items() if k not in current]
+        self.ctx.universe = list(symbols)
+        if added or removed:
+            self.alpha.on_universe_changed(self.ctx, added, removed)
+
+    # ── the pipeline ─────────────────────────────────────────────────────
+    async def on_bars(self, bars: dict[str, Bar], ts: datetime | None = None) -> None:
+        if not bars:
+            return
+        ctx = self.ctx
+        bar_ts = ts or max(b.end_ts for b in bars.values())
+        if hasattr(ctx.clock, "set"):
+            ctx.clock.set(bar_ts)
+
+        # 1 — fills first, using the bar that just closed
+        fills = await self._settle(bars)
+
+        # 2 — mark the book
+        for bar in bars.values():
+            ctx.push_bar(bar)
+            ctx.portfolio.mark(bar.symbol, bar.close)
+        ctx.portfolio.record_equity(bar_ts)
+        await self.bus.publish(EventType.EQUITY, ctx.portfolio.snapshot())
+
+        self.bars_processed += 1
+
+        # 3 — protections react to the trade history including this bar's exits
+        events = self.protections.apply(ctx)
+        if events:
+            self.protection_events.extend(events)
+            for e in events:
+                await self.bus.publish(EventType.PROTECTION, e)
+
+        # 4 — alpha
+        try:
+            fresh = await self.alpha.update(ctx, bars)
+        except Exception:
+            log.exception("alpha layer failed on %s", bar_ts)
+            fresh = []
+        if fresh:
+            self.insights.add(fresh)
+            for ins in fresh:
+                await self.bus.publish(EventType.INSIGHT, _insight_dict(ins))
+        self.insights.expire(ctx.now)
+
+        # 5 — portfolio construction
+        try:
+            targets = self.portfolio_model.create_targets(ctx, self.insights.active(ctx.now))
+        except Exception:
+            log.exception("portfolio construction failed on %s", bar_ts)
+            return
+
+        # 6 — risk
+        targets = self.risk.manage(ctx, targets)
+        for t in targets:
+            await self.bus.publish(EventType.TARGET, _target_dict(t))
+
+        # 7/8 — execution
+        try:
+            orders = self.execution_model.execute(ctx, targets)
+        except Exception:
+            log.exception("execution model failed on %s", bar_ts)
+            return
+        for order in orders:
+            submitted = await self.brokerage.submit(order)
+            self.orders.append(submitted)
+            if submitted.status is OrderStatus.REJECTED:
+                await self.bus.publish(EventType.ORDER_REJECTED, _order_dict(submitted))
+            else:
+                await self.bus.publish(EventType.ORDER_SUBMITTED, _order_dict(submitted))
+
+        _ = fills  # already published in _settle
+
+    async def _settle(self, bars: dict[str, Bar]) -> list[Fill]:
+        """Fill resting orders and book the resulting position changes."""
+        fills: list[Fill] = []
+        if isinstance(self.brokerage, PaperBrokerage):
+            seen_rejections = len(self.brokerage.rejections)
+            for bar in bars.values():
+                fills.extend(self.brokerage.process_bar(bar, self.ctx.quote(bar.symbol)))
+            # Orders can also be rejected *during* a fill attempt (cash ran out
+            # between submission and execution); surface those too.
+            for rejection in self.brokerage.rejections[seen_rejections:]:
+                await self.bus.publish(EventType.ORDER_REJECTED, rejection)
+        else:
+            fills.extend(await _drain_live_fills(self.brokerage))
+
+        for fill in fills:
+            closed = self.ctx.portfolio.apply_fill(fill)
+            await self.bus.publish(EventType.ORDER_FILLED, _fill_dict(fill))
+            if closed is not None:
+                self.risk.on_trade_closed(self.ctx, closed)
+                await self.bus.publish(EventType.TRADE_CLOSED, _trade_dict(closed))
+        return fills
+
+    # ── reporting ────────────────────────────────────────────────────────
+    def summary(self) -> dict:
+        return {
+            "bars_processed": self.bars_processed,
+            "orders": len(self.orders),
+            "rejected": sum(1 for o in self.orders if o.status is OrderStatus.REJECTED),
+            "active_insights": len(self.insights),
+            "protection_events": len(self.protection_events),
+            "locks": self.ctx.active_locks(),
+            "portfolio": self.ctx.portfolio.snapshot(),
+        }
+
+
+async def _drain_live_fills(brokerage: Brokerage) -> list[Fill]:
+    getter = getattr(brokerage, "poll_fills", None)
+    if getter is None:
+        return []
+    return await getter()
+
+
+# ── serialisation helpers (used by the event stream and the API) ─────────
+def _insight_dict(i: Insight) -> dict:
+    return {
+        "id": i.id, "symbol": i.symbol.ticker, "venue": i.symbol.venue,
+        "direction": i.direction.name, "confidence": round(i.confidence, 3),
+        "magnitude": i.magnitude, "source": i.source, "tag": i.tag,
+        "generated_at": i.generated_at.isoformat(), "closes_at": i.close_time.isoformat(),
+    }
+
+
+def _target_dict(t: PortfolioTarget) -> dict:
+    return {"symbol": t.symbol.ticker, "quantity": float(t.quantity),
+            "tag": t.tag, "source": t.source}
+
+
+def _order_dict(o: Order) -> dict:
+    return {
+        "id": o.id, "symbol": o.symbol.ticker, "side": o.side.value,
+        "quantity": float(o.quantity), "type": o.type.value,
+        "limit_price": o.limit_price, "status": o.status.value, "tag": o.tag,
+        "reject_reason": o.reject_reason, "created_at": o.created_at.isoformat(),
+    }
+
+
+def _fill_dict(f: Fill) -> dict:
+    return {
+        "order_id": f.order_id, "symbol": f.symbol.ticker, "side": f.side.value,
+        "quantity": float(f.quantity), "price": f.price, "fee": round(f.fee, 4),
+        "slippage_bps": round(f.slippage * 10_000, 2), "liquidity": f.liquidity,
+        "ts": f.ts.isoformat(),
+    }
+
+
+def _trade_dict(t: ClosedTrade) -> dict:
+    return {
+        "symbol": t.symbol.ticker, "side": t.side.value, "quantity": float(t.quantity),
+        "entry_price": t.entry_price, "exit_price": t.exit_price,
+        "pnl": round(t.pnl, 2), "pnl_pct": round(t.pnl_pct * 100, 3),
+        "fees": round(t.fees, 4), "entry_ts": t.entry_ts.isoformat(),
+        "exit_ts": t.exit_ts.isoformat(), "duration_hours": round(
+            t.duration.total_seconds() / 3600, 2),
+        "exit_tag": t.exit_tag,
+    }

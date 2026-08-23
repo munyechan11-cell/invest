@@ -1,0 +1,305 @@
+"""REST + WebSocket control plane and dashboard.
+
+Deliberately not a user system: there are no accounts, plans, or tiers. There
+is exactly one optional shared token (`QUANT_API_TOKEN`) because this API can
+start and stop a live trading bot, and an unauthenticated endpoint that can do
+that should not be reachable from the internet.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import secrets
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional
+
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from quant.config.loader import load_config
+from quant.config.schema import StrategyConfig
+from quant.core.events import Event, EventType
+from quant.core.types import UTC, RunMode
+from quant.live.state import StateStore
+
+log = logging.getLogger("quant.api")
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+class Hub:
+    """Fan-out of engine events to connected WebSocket clients."""
+
+    def __init__(self, ring_size: int = 500):
+        self.clients: set[WebSocket] = set()
+        self.ring: list[dict] = []
+        self.ring_size = ring_size
+
+    async def publish(self, event: Event) -> None:
+        payload = {
+            "type": event.type.value,
+            "ts": event.ts.isoformat(),
+            "source": event.source,
+            "payload": event.payload,
+        }
+        self.ring.append(payload)
+        if len(self.ring) > self.ring_size:
+            del self.ring[: len(self.ring) - self.ring_size]
+        if not self.clients:
+            return
+        text = json.dumps(payload, ensure_ascii=False, default=str)
+        for ws in list(self.clients):
+            try:
+                await ws.send_text(text)
+            except Exception:
+                self.clients.discard(ws)
+
+    def recent(self, limit: int = 100, types: set[str] | None = None) -> list[dict]:
+        items = self.ring if types is None else [e for e in self.ring if e["type"] in types]
+        return items[-limit:]
+
+
+class AppState:
+    def __init__(self, config: StrategyConfig | None, state_path: str):
+        self.config = config
+        self.state_path = state_path
+        self.hub = Hub()
+        self.trader: Any = None
+        self.trader_task: asyncio.Task | None = None
+        self.backtests: dict[str, dict] = {}
+        self.started_at = datetime.now(UTC)
+
+
+class BacktestRequest(BaseModel):
+    config_path: Optional[str] = None
+    config: Optional[dict] = None
+    start: Optional[str] = None
+    end: Optional[str] = None
+    starting_cash: Optional[float] = None
+
+
+class StartRequest(BaseModel):
+    config_path: str
+    mode: str = Field(default="dry_run", pattern="^(dry_run|live)$")
+
+
+def create_app(config: StrategyConfig | None = None,
+               state_path: str = "quant_state.db") -> FastAPI:
+    state = AppState(config, state_path)
+    token = os.environ.get("QUANT_API_TOKEN", "").strip()
+
+    async def require_token(request: Request) -> None:
+        if not token:
+            return
+        header = request.headers.get("authorization", "")
+        supplied = header[7:] if header.lower().startswith("bearer ") else \
+            request.query_params.get("token", "")
+        if not secrets.compare_digest(supplied, token):
+            raise HTTPException(401, "invalid or missing API token")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        if not token:
+            log.warning(
+                "QUANT_API_TOKEN is not set — the control API is unauthenticated. "
+                "Bind to localhost or set a token before exposing this."
+            )
+        yield
+        if state.trader is not None:
+            state.trader.running = False
+        if state.trader_task is not None:
+            state.trader_task.cancel()
+
+    app = FastAPI(title="Quant Engine", version="1.0.0", lifespan=lifespan)
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[o for o in os.environ.get("CORS_ORIGINS", "").split(",") if o] or ["*"],
+        allow_methods=["*"], allow_headers=["*"],
+    )
+    app.state.quant = state
+
+    # ── read-only ────────────────────────────────────────────────────────
+    @app.get("/api/health")
+    async def health():
+        return {
+            "ok": True,
+            "version": "1.0.0",
+            "uptime_s": round((datetime.now(UTC) - state.started_at).total_seconds(), 1),
+            "trader_running": bool(state.trader and state.trader.running),
+            "authenticated": bool(token),
+        }
+
+    @app.get("/api/config")
+    async def get_config(_=Depends(require_token)):
+        if state.config is None:
+            raise HTTPException(404, "no config loaded")
+        data = json.loads(state.config.model_dump_json())
+        return _redact(data)
+
+    @app.get("/api/status")
+    async def status(_=Depends(require_token)):
+        if state.trader is None:
+            return {"running": False, "message": "no trader started"}
+        return state.trader.status()
+
+    @app.get("/api/equity")
+    async def equity(limit: int = 2000, _=Depends(require_token)):
+        store = StateStore(state.state_path)
+        try:
+            if state.config:
+                store.resume_run(state.config.name, state.config.mode.value)
+            return {"points": store.equity_curve(limit)}
+        finally:
+            store.close()
+
+    @app.get("/api/trades")
+    async def trades(limit: int = 100, _=Depends(require_token)):
+        store = StateStore(state.state_path)
+        try:
+            if state.config:
+                store.resume_run(state.config.name, state.config.mode.value)
+            return {"trades": store.recent_trades(limit)}
+        finally:
+            store.close()
+
+    @app.get("/api/events")
+    async def events(limit: int = 100, type: Optional[str] = None,
+                     _=Depends(require_token)):
+        types = {t.strip() for t in type.split(",")} if type else None
+        return {"events": state.hub.recent(limit, types)}
+
+    @app.get("/api/models")
+    async def models(_=Depends(require_token)):
+        from quant.execution.models import BUILTIN_EXECUTION_MODELS
+        from quant.portfolio.models import BUILTIN_PORTFOLIO_MODELS
+        from quant.risk.models import BUILTIN_RISK_MODELS
+        from quant.risk.protections import BUILTIN_PROTECTIONS
+        from quant.strategy.builder import BUILTIN_ALPHA_MODELS
+
+        return {
+            "alpha": sorted(BUILTIN_ALPHA_MODELS) + ["council"],
+            "portfolio": sorted(BUILTIN_PORTFOLIO_MODELS),
+            "risk": sorted(BUILTIN_RISK_MODELS),
+            "protections": sorted(BUILTIN_PROTECTIONS),
+            "execution": sorted(BUILTIN_EXECUTION_MODELS),
+        }
+
+    # ── actions ──────────────────────────────────────────────────────────
+    @app.post("/api/backtest")
+    async def backtest(req: BacktestRequest, _=Depends(require_token)):
+        from quant.backtest.runner import run_backtest
+
+        if req.config_path:
+            cfg = load_config(req.config_path)
+        elif req.config:
+            cfg = StrategyConfig.model_validate(req.config)
+        elif state.config:
+            cfg = state.config.model_copy(deep=True)
+        else:
+            raise HTTPException(400, "supply config_path or config")
+        cfg.mode = RunMode.BACKTEST
+        if req.start:
+            cfg.backtest.start = datetime.fromisoformat(req.start.replace("Z", "+00:00"))
+        if req.end:
+            cfg.backtest.end = datetime.fromisoformat(req.end.replace("Z", "+00:00"))
+        if req.starting_cash:
+            cfg.portfolio.starting_cash = req.starting_cash
+        try:
+            result = await run_backtest(cfg)
+        except Exception as exc:
+            raise HTTPException(400, f"backtest failed: {exc}") from exc
+        return result.to_dict()
+
+    @app.post("/api/trader/start")
+    async def start_trader(req: StartRequest, _=Depends(require_token)):
+        from quant.live.trader import LiveTrader
+
+        if state.trader is not None and state.trader.running:
+            raise HTTPException(409, "a trader is already running")
+        cfg = load_config(req.config_path)
+        cfg.mode = RunMode(req.mode)
+        if cfg.mode is RunMode.LIVE and not cfg.broker.live_trading_confirmed:
+            raise HTTPException(
+                400,
+                "refusing to start live trading: set broker.live_trading_confirmed "
+                "in the config file, not through the API",
+            )
+        trader = LiveTrader(cfg, state.state_path)
+        trader.engine.ctx.bus.on(None, state.hub.publish)
+        state.trader, state.config = trader, cfg
+        state.trader_task = asyncio.create_task(trader.run())
+        return {"started": True, "strategy": cfg.name, "mode": cfg.mode.value}
+
+    @app.post("/api/trader/stop")
+    async def stop_trader(_=Depends(require_token)):
+        if state.trader is None:
+            raise HTTPException(404, "no trader running")
+        state.trader.running = False
+        return {"stopping": True,
+                "note": "the current cycle finishes first; open positions are left as-is"}
+
+    @app.post("/api/trader/sync")
+    async def sync_positions(_=Depends(require_token)):
+        if state.trader is None:
+            raise HTTPException(404, "no trader running")
+        return await state.trader.engine.brokerage.sync()
+
+    # ── stream ───────────────────────────────────────────────────────────
+    @app.websocket("/ws")
+    async def stream(ws: WebSocket):
+        if token:
+            supplied = ws.query_params.get("token", "")
+            if not secrets.compare_digest(supplied, token):
+                await ws.close(code=4401)
+                return
+        await ws.accept()
+        state.hub.clients.add(ws)
+        try:
+            for item in state.hub.recent(50):
+                await ws.send_text(json.dumps(item, default=str))
+            while True:
+                await ws.receive_text()          # keep-alive / client pings
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+        finally:
+            state.hub.clients.discard(ws)
+
+    # ── dashboard ────────────────────────────────────────────────────────
+    if STATIC_DIR.exists():
+        app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+        @app.get("/")
+        async def index():
+            return FileResponse(STATIC_DIR / "index.html")
+
+    @app.exception_handler(Exception)
+    async def unhandled(_request: Request, exc: Exception):
+        log.exception("unhandled API error")
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
+    return app
+
+
+_SECRET_HINTS = ("key", "secret", "token", "password", "passphrase")
+
+
+def _redact(node: Any) -> Any:
+    """Never hand a credential back through the API, even to an authed caller."""
+    if isinstance(node, dict):
+        return {
+            k: ("***" if any(h in k.lower() for h in _SECRET_HINTS) and v else _redact(v))
+            for k, v in node.items()
+        }
+    if isinstance(node, list):
+        return [_redact(v) for v in node]
+    return node
