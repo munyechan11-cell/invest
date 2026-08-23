@@ -104,6 +104,15 @@ class LiveTrader:
         if not usable:
             raise RuntimeError("no symbol produced usable warm-up data")
         self.engine.set_universe(usable)
+
+        flow_feed = getattr(self.engine, "flow_feed", None)
+        if flow_feed is not None:
+            added = await flow_feed.refresh(usable, force=True)
+            if flow_feed.has_data:
+                log.info("수급 데이터 %d 세션 적재 완료", added)
+            elif flow_feed.failures:
+                log.warning("수급 데이터 없음: %s", flow_feed.failures)
+
         # Push the clock past the last warm-up bar so ctx.history() sees it.
         self.last_bar_ts = max(self._seen.values())
 
@@ -232,8 +241,18 @@ class LiveTrader:
             except NotImplementedError:      # Windows
                 signal.signal(sig, lambda *_: stop())
 
+    def desk(self):
+        """The TradingDesk instance if one is configured, else None."""
+        alpha = self.engine.alpha
+        models = getattr(alpha, "models", [alpha])
+        for m in models:
+            if getattr(m, "name", "") == "desk":
+                return m
+        return None
+
     def status(self) -> dict:
         pf = self.engine.ctx.portfolio
+        desk = self.desk()
         return {
             "strategy": self.config.name,
             "mode": self.config.mode.value,
@@ -244,6 +263,7 @@ class LiveTrader:
             "universe": [s.ticker for s in self.engine.ctx.universe],
             "engine": self.engine.summary(),
             "portfolio": pf.snapshot(),
+            "desk": desk.status() if desk is not None else None,
         }
 
 

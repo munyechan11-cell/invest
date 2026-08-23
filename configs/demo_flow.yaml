@@ -1,0 +1,70 @@
+# 수급(외국인/기관/개인) 알파 데모 — API 키 없이 동작합니다.
+#   python -m quant backtest configs/demo_flow.yaml
+#
+# 주의: 합성 수급과 합성 가격은 서로 독립적인 난수 과정입니다. 따라서 이 데모의
+# 손익은 의미가 없습니다 — 배관이 동작하는지(수급을 읽고, 신호를 내고, 주문까지
+# 흐르는지)만 보여줍니다. 수급 신호가 실제로 돈이 되는지는 flow.provider 를 kis 로
+# 바꿔 실데이터로, 그것도 walkforward 로 확인해야 합니다.
+name: flow-demo
+description: 외국인·기관 매집 추종 + 개인 과열 역발상, 변동성 타겟 사이징.
+mode: backtest
+
+data:
+  provider: synthetic
+  params: {seed: 42, annual_drift: 0.06, annual_vol: 0.30}
+  timeframe: 1d
+  warmup_bars: 200
+
+flow:
+  provider: synthetic
+  params: {seed: 42, avg_volume: 1200000, price: 100, regime_days: 14}
+  history_sessions: 160
+  refresh_every_bars: 1
+
+universe:
+  symbols:
+    - {ticker: AAA, venue: SIM}
+    - {ticker: BBB, venue: SIM}
+    - {ticker: CCC, venue: SIM}
+    - {ticker: DDD, venue: SIM}
+    - {ticker: EEE, venue: SIM}
+
+alpha:
+  - {type: investor_flow, params: {window: 20, min_streak: 3, min_participation: 0.008,
+                                   hold_bars: 12, allow_short: false}}
+  - {type: retail_contrarian, params: {window: 20, min_zscore: 1.8, hold_bars: 8}}
+  - {type: donchian_breakout, params: {entry_period: 20, hold_bars: 20, allow_short: false}}
+  - {type: regime_filter, params: {period: 200, max_annual_vol: 1.1}}
+
+portfolio:
+  starting_cash: 100000
+  base_currency: USD
+  model: {type: vol_target, params: {target_annual_vol: 0.16, lookback: 60}}
+  max_position_weight: 0.35
+  max_gross_leverage: 0.9
+  cash_reserve_pct: 0.03
+
+risk:
+  models:
+    - {type: max_dd_per_security, params: {max_drawdown_pct: 0.10, lock_bars: 4}}
+    - {type: trailing_stop, params: {atr_multiple: 3.0, activate_at_pct: 0.04}}
+    - {type: max_positions, params: {max_positions: 3}}
+    - {type: max_dd_portfolio, params: {max_drawdown_pct: 0.22, halt_bars: 15}}
+  protections:
+    - {type: cooldown, params: {stop_bars: 2}}
+    - {type: stoploss_guard, params: {lookback_bars: 60, trade_limit: 4, stop_bars: 10}}
+
+execution:
+  model: {type: immediate}
+  min_order_notional: 200
+
+costs:
+  preset: us_equity
+
+broker:
+  type: paper
+  max_order_notional: 40000
+
+backtest:
+  start: 2021-01-01T00:00:00Z
+  end: 2026-01-01T00:00:00Z

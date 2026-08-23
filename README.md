@@ -96,7 +96,8 @@ Shipped configs: `demo.yaml` (no keys needed), `us_equity.yaml` (Yahoo),
 
 **Alpha** — `ema_cross`, `macd`, `rsi_reversion`, `donchian_breakout`,
 `squeeze`, `xs_momentum` (cross-sectional 12-1), `pairs` (stat-arb),
-`regime_filter` (veto), `council` (LLM multi-agent).
+`regime_filter` (veto), `investor_flow` (수급), `retail_contrarian`,
+`desk` (16-seat LLM desk), `council` (its 4-seat predecessor).
 Combine freely; they are netted at the portfolio layer, and a `FLAT` insight is
 a hard veto rather than one vote among many.
 
@@ -169,35 +170,102 @@ with its positions rather than buying everything a second time.
 
 ---
 
-## LLM research council
+## 실시간 16인 트레이딩 데스크
 
-`council` is an alpha model that runs a TradingAgents-style pipeline per symbol:
-four analysts (technical, fundamental, news, macro) → a bull/bear debate → a
-research manager verdict → a risk panel that can scale the position or veto it.
-Its output is an `Insight` like any other, and the rule-based risk layer keeps
-its veto regardless of how confident the model sounds.
+`desk` 알파는 매 사이클마다 16개 좌석이 실제로 토론해서 하나의 매매 결정을
+만들어냅니다. 구조는 TradingAgents에서, "그 결정이 규칙 기반 리스크 계층 아래에
+머무른다"는 점은 LEAN과 Freqtrade에서 가져왔습니다.
 
-Two things are deliberately awkward, because the alternative is lying to
-yourself:
+```
+분석 8석 (동시)  기술적 · 수급 · 펀더멘털 · 뉴스 · 센티먼트 · 매크로 · 미시구조 · 퀀트
+      ↓
+토론 2석 (N라운드)  강세론자 ⚔ 약세론자      — 서로의 직전 주장을 보고 반박
+      ↓
+리스크 3석         공격형 ⇄ 보수형 → 중립형이 포지션 배율로 수렴 (또는 거부)
+      ↓
+결정 3석           리서치 매니저 → 트레이더(체결 계획) → 데스크 헤드(최종 결정)
+```
 
-- **It is disabled in backtests by default.** A language model's training data
-  postdates any historical bar, so running it over history produces spectacular
-  and entirely fake results. Enabling it requires `allow_in_backtest: true` and,
-  to be meaningful, a point-in-time `context_source`.
-- **It is cost-controlled.** A full council run is a dozen LLM calls, so it runs
-  on a cadence over a shortlist, with per-bar caching.
+각 좌석은 **자기 몫의 브리프만** 봅니다. 펀더멘털 데이터를 못 보는 좌석은
+펀더멘털에 대해 의견을 가질 수 없고, 그것이 프롬프트가 경고하는 실패 모드를
+구조적으로 막습니다. 좌석 정의와 프롬프트는 전부
+[quant/alpha/seats.py](quant/alpha/seats.py) 한 곳에 있습니다.
+
+데스크의 출력은 다른 알파와 똑같은 `Insight` 하나입니다. 즉 손절, 트레일링 스톱,
+프로텍션, 주문 한도는 모델이 아무리 확신에 차 있어도 그대로 적용됩니다.
+
+**회고(memory).** 데스크는 과거 판단을 기억하고, 보유기간이 지나면 실제 가격으로
+채점합니다. 확신 0.7 이상 판단의 적중률이 낮으면 다음 심의에서 헤드에게 그 사실을
+그대로 알려줍니다 — 프롬프트 체인은 스스로 "이 종목에서 여섯 번 연속 틀렸다"를
+알아차릴 수 없기 때문입니다.
+
+**의도적으로 불편한 두 가지:**
+
+- **백테스트에서는 기본 비활성화.** LLM의 학습 데이터는 어떤 과거 봉보다 뒤에
+  있습니다. 과거에 돌리면 화려하고 완전히 가짜인 결과가 나옵니다. 켜려면
+  `allow_in_backtest: true`가 필요하고, 의미 있으려면 시점 기준 `context_source`도
+  필요합니다.
+- **비용 통제.** 16석 한 바퀴는 LLM 호출 약 19회입니다. cadence로 주기를 두고,
+  후보를 추려서, 봉 단위로 캐시하며, 누적 비용이 한도에 닿으면 심의를 멈춥니다.
+
+**지연 시간(latency).** 실시간이므로 심의는 한 봉 안에 끝나야 합니다. 마감시간을
+넘기면 늦은 결정을 내는 대신 분석가 합의로 축약하고(사이즈는 절반으로 제한),
+그 사실을 `degraded`에 기록합니다.
 
 ```yaml
 alpha:
-  - {type: donchian_breakout}
-  - type: council
+  - {type: investor_flow}          # 수급은 규칙 기반으로도 따로 본다
+  - type: desk
     params:
-      llm: {provider: anthropic, model: claude-opus-5}
-      cadence_bars: 5
+      llm:          {provider: anthropic, model: claude-opus-5}
+      decision_llm: {provider: anthropic, model: claude-opus-5}  # 판정 좌석용
+      cadence_bars: 1
       max_symbols_per_run: 3
+      debate_rounds: 2
+      risk_debate_rounds: 1
+      deadline_s: 120
       min_conviction: 0.6
-      language: ko
+      cost_limit_usd: 20
 ```
+
+좌석을 줄이려면 `seats: [technical, flow, microstructure]` 처럼 분석 좌석만
+고르면 됩니다. 토론·리스크·결정 좌석은 뺄 수 없습니다 — 빼면 제안은 하지만
+결정은 못 하는 파이프라인이 됩니다.
+
+`council`(4인 축약판)도 남아 있지만, 새 설정에는 `desk`를 쓰세요.
+
+---
+
+## 수급 — 외국인 · 기관 · 개인
+
+한국 시장에서 가격 다음으로 정보량이 큰 데이터를 OHLCV와 같은 급의 1급 타입으로
+다룹니다.
+
+```yaml
+flow:
+  provider: kis                      # kis | synthetic | none
+  params: {app_key: "${KIS_APP_KEY}", app_secret: "${KIS_APP_SECRET}", paper: true}
+  history_sessions: 120
+
+alpha:
+  - {type: investor_flow, params: {min_streak: 3, min_participation: 0.01}}
+  - {type: retail_contrarian, params: {min_zscore: 1.8}}
+```
+
+`InvestorFlowAlpha`가 보는 것:
+
+- **지속성** — 외국인·기관은 주문을 며칠에 걸쳐 쪼개 집행합니다. 하루치는 노이즈,
+  연속 순매수일이 신호입니다.
+- **참여율 정규화** — 절대 수량이 아니라 거래량 대비 비중과, 그 종목 자신의 과거
+  대비 z-score로 강도를 봅니다. 대형주와 소형주에 같은 임계값을 쓸 수 있는 이유입니다.
+- **다이버전스** — 주가가 빠지는데 외국인·기관이 사면 매집, 오르는데 팔면 분산.
+  가격과 수급이 같은 방향인 경우보다 확신도를 높게 잡습니다.
+- **프로그램 분리** — 프로그램 순매수는 지수·차익거래 물량일 수 있어 종목 고유의
+  뷰가 아닙니다.
+
+수급 소스가 없으면 `NullFlowProvider`가 조용히 0을 반환하는 대신 **한 번 경고하고
+빈 데이터를 반환**합니다. 수급을 읽는 줄 알았는데 0을 읽고 있는 전략은 자신 있게
+헛소리를 하기 때문입니다.
 
 ---
 
@@ -239,7 +307,8 @@ quant/
   core/        types, clock, event bus, portfolio state, Context, Engine
   data/        provider interface + yahoo / ccxt / kis / csv / synthetic
   indicators/  incremental O(1) indicators — same values in backtest and live
-  alpha/       AlphaModel + technical models + LLM research council
+  alpha/       AlphaModel + technical + 수급 models + the 16-seat LLM desk
+  data/flow    investor flow (외국인/기관/개인) as a first-class data type
   portfolio/   construction models + optimizers (risk parity, HRP, mean-variance)
   risk/        risk models + protections
   execution/   execution models + fee / slippage / fill models

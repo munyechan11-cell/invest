@@ -32,6 +32,7 @@ class EventType(str, Enum):
     TRADE_CLOSED = "trade_closed"
     RISK_ACTION = "risk_action"
     PROTECTION = "protection"
+    DELIBERATION = "deliberation"
     EQUITY = "equity"
     STATE = "state"
     ERROR = "error"

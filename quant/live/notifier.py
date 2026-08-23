@@ -12,6 +12,7 @@ import time
 
 import httpx
 
+from quant.core.aio import LazyLock
 from quant.core.events import Event, EventType
 
 log = logging.getLogger("quant.live.notifier")
@@ -30,7 +31,7 @@ class TelegramNotifier:
         self._last_sent = 0.0
         self._hour_bucket: list[float] = []
         self._client = httpx.AsyncClient(timeout=10)
-        self._lock = asyncio.Lock()
+        self._lock = LazyLock()
 
     async def handle(self, event: Event) -> None:
         if not self.enabled or event.type.value not in self.on_events:

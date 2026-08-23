@@ -21,6 +21,7 @@ from quant.core.clock import SimClock
 from quant.core.engine import Engine, _trade_dict
 from quant.core.events import EventBus
 from quant.core.types import UTC, Bar, RunMode, Symbol, timeframe_delta
+from quant.data.flow import NullFlowProvider
 from quant.data.provider import DataProvider, gather_history
 from quant.strategy.builder import build_engine
 
@@ -125,6 +126,14 @@ async def run_backtest(
     if not tradable:
         raise ValueError("no symbol had usable data in the requested window")
     engine.set_universe(tradable)
+
+    flow_feed = getattr(engine, "flow_feed", None)
+    if flow_feed is not None and not isinstance(flow_feed.provider, NullFlowProvider):
+        await flow_feed.backfill(tradable, warmup_start, end)
+        if not flow_feed.has_data:
+            warnings.append(
+                "flow provider returned no 수급 data — flow-based models will stay silent"
+            )
 
     # Counted from the raw series, not ctx.history() — the sim clock still sits
     # at warmup_start here, so history() would correctly report nothing yet.

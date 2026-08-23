@@ -1,251 +1,742 @@
 <!doctype html>
-<html lang="en">
+<html lang="ko">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Quant Engine</title>
+<title>◆ QUANT TRADING FLOOR ◆</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
 <style>
-  :root{
-    --bg:#f6f7f9; --panel:#fff; --border:#e3e6ea; --text:#14181d; --muted:#697586;
-    --up:#0a8f5b; --down:#d1344b; --accent:#3b6fd4; --warn:#b7791f;
-    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
-  }
-  @media (prefers-color-scheme:dark){
-    :root{--bg:#0d1117;--panel:#161b22;--border:#262d36;--text:#e6edf3;--muted:#8b949e;
-          --up:#3fb950;--down:#f85149;--accent:#589bff;--warn:#d29922;}
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--text);
-       font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif}
-  header{display:flex;align-items:center;gap:14px;padding:14px 20px;
-         border-bottom:1px solid var(--border);background:var(--panel);
-         position:sticky;top:0;z-index:10;flex-wrap:wrap}
-  h1{font-size:15px;margin:0;font-weight:650;letter-spacing:-.01em}
-  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:0 0 auto}
-  .dot.on{background:var(--up);box-shadow:0 0 0 3px color-mix(in srgb,var(--up) 22%,transparent)}
-  .dot.off{background:var(--down)}
-  .spacer{flex:1}
-  .pill{font:11px/1 var(--mono);padding:5px 9px;border:1px solid var(--border);
-        border-radius:999px;color:var(--muted)}
-  main{max-width:1440px;margin:0 auto;padding:20px;display:grid;gap:16px;
-       grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
-  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;
-        padding:16px;min-width:0}
-  .card.wide{grid-column:1/-1}
-  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
-           margin:0 0 12px;font-weight:600}
-  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px}
-  .stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
-  .stat .v{font:600 20px/1.25 var(--mono);margin-top:3px;letter-spacing:-.02em}
-  .up{color:var(--up)} .down{color:var(--down)} .warn{color:var(--warn)}
-  table{width:100%;border-collapse:collapse;font:12px/1.5 var(--mono)}
-  th{text-align:left;color:var(--muted);font-weight:500;padding:6px 8px;
-     border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--panel)}
-  td{padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap}
-  tr:last-child td{border-bottom:0}
-  .num{text-align:right}
-  .scroll{max-height:320px;overflow:auto;margin:-4px -4px 0}
-  .feed{font:11px/1.6 var(--mono);max-height:320px;overflow:auto}
-  .feed div{padding:3px 0;border-bottom:1px solid var(--border);display:flex;gap:8px}
-  .feed .t{color:var(--muted);flex:0 0 62px}
-  .feed .ty{flex:0 0 130px;font-weight:600}
-  .feed .m{color:var(--muted);overflow:hidden;text-overflow:ellipsis}
-  canvas{width:100%;height:230px;display:block}
-  .empty{color:var(--muted);font-size:12px;padding:20px 0;text-align:center}
-  .bar{height:6px;border-radius:3px;background:var(--border);overflow:hidden;margin-top:6px}
-  .bar>i{display:block;height:100%;background:var(--accent)}
-  footer{max-width:1440px;margin:0 auto;padding:8px 20px 32px;color:var(--muted);font-size:11px}
+/* Pixel Hangul is optional: drop a woff2 into static/fonts/ and it is picked up.
+   Missing files fail silently, so the stack just falls through. */
+@font-face{font-family:"PixelKR";src:url("/static/fonts/galmuri11.woff2") format("woff2");font-display:swap}
+@font-face{font-family:"PixelKR2";src:url("/static/fonts/neodgm.woff2") format("woff2");font-display:swap}
+
+:root{
+  --bg:#07080c; --panel:#0e1119; --plate:#151a25; --line:#252c3a;
+  --gold:#f0c040; --gold-dim:#8a6f27; --red:#e0453c; --up:#57d977; --down:#ff5a52;
+  --ink:#e8ecf2; --muted:#7b8494; --white:#fff;
+  --wood:#8a6a45; --wood-dark:#6d5236; --turf:#2f6b4a; --turf-dark:#255840;
+  --px:"Silkscreen","PixelKR","PixelKR2",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  --kr:"PixelKR","PixelKR2","Silkscreen","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--ink)}
+body{font-family:var(--kr);font-size:14px;line-height:1.5;
+     image-rendering:pixelated;-webkit-font-smoothing:none;overflow-x:hidden}
+svg,canvas{image-rendering:pixelated;shape-rendering:crispEdges}
+.px{font-family:var(--px);letter-spacing:.04em}
+
+/* ── frame ───────────────────────────────────────────────────────────── */
+.wrap{max-width:1180px;margin:0 auto;padding:0 12px 96px}
+
+header.top{position:sticky;top:0;z-index:40;background:var(--bg);
+  border-bottom:3px solid var(--red);padding:10px 12px 8px}
+.top-in{max-width:1180px;margin:0 auto;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.brand{font-family:var(--px);color:var(--gold);font-size:17px;font-weight:700;
+  text-shadow:2px 2px 0 #000;white-space:nowrap}
+.brand i{font-style:normal;color:var(--gold-dim)}
+.mode{font-family:var(--px);font-size:10px;padding:3px 8px;border:2px solid var(--red);
+  color:var(--red);text-transform:uppercase}
+.mode.dry{border-color:var(--gold);color:var(--gold)}
+.mode.backtest{border-color:var(--muted);color:var(--muted)}
+.grow{flex:1}
+.tab{font-family:var(--px);font-size:11px;background:var(--plate);border:2px solid var(--line);
+  border-bottom:none;padding:5px 12px;color:var(--muted)}
+.tab.on{color:var(--gold);border-color:var(--gold-dim)}
+.conn{width:9px;height:9px;background:var(--muted);flex:0 0 auto}
+.conn.on{background:var(--up);box-shadow:0 0 0 3px rgba(87,217,119,.18)}
+.conn.off{background:var(--red)}
+
+/* ── panels ──────────────────────────────────────────────────────────── */
+.panel{background:var(--panel);border:2px solid var(--line);margin-top:12px}
+.plate{display:inline-flex;align-items:center;gap:6px;background:var(--plate);
+  border:2px solid var(--gold-dim);color:var(--gold);font-family:var(--px);font-size:11px;
+  padding:4px 10px;margin:-2px 0 0 -2px}
+.plate .d{color:var(--gold-dim)}
+.body{padding:12px}
+
+/* ── HUD ─────────────────────────────────────────────────────────────── */
+.hud{display:grid;grid-template-columns:minmax(260px,1fr) minmax(280px,1.4fr);gap:0}
+@media(max-width:760px){.hud{grid-template-columns:1fr}}
+.hud-l{padding:14px 16px;border-right:2px solid var(--line)}
+@media(max-width:760px){.hud-l{border-right:none;border-bottom:2px solid var(--line)}}
+.sym{font-family:var(--px);font-size:13px;color:var(--muted);letter-spacing:.1em}
+.big{font-family:var(--px);font-size:34px;color:var(--white);text-shadow:2px 2px 0 #000;
+  margin:4px 0 2px;word-break:break-all}
+@media(max-width:520px){.big{font-size:26px}}
+.chg{font-family:var(--px);font-size:15px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:10px;margin-top:14px}
+.kpi .k{font-family:var(--px);font-size:9px;color:var(--muted);letter-spacing:.08em}
+.kpi .v{font-family:var(--px);font-size:15px;margin-top:2px}
+.hud-r{padding:10px 12px;min-height:150px}
+#equity{width:100%;height:150px;display:block}
+
+/* ── tables ──────────────────────────────────────────────────────────── */
+table{width:100%;border-collapse:collapse;font-family:var(--px);font-size:11px}
+th{color:var(--muted);text-align:left;font-weight:400;padding:5px 8px;
+  border-bottom:2px solid var(--line);letter-spacing:.06em}
+td{padding:5px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+tr:last-child td{border-bottom:0}
+.num{text-align:right}
+.up{color:var(--up)} .down{color:var(--down)} .gold{color:var(--gold)}
+.dim{color:var(--muted)}
+.scroll{overflow:auto;max-height:260px}
+
+/* ── the floor ───────────────────────────────────────────────────────── */
+.room{position:relative;padding:30px 10px 12px;overflow:hidden}
+.room.wood{background:
+  repeating-linear-gradient(90deg,var(--wood) 0 46px,var(--wood-dark) 46px 48px),
+  repeating-linear-gradient(0deg,rgba(0,0,0,.10) 0 22px,rgba(0,0,0,0) 22px 24px)}
+.room.turf{background:
+  repeating-linear-gradient(90deg,var(--turf) 0 30px,var(--turf-dark) 30px 32px),
+  repeating-linear-gradient(0deg,rgba(0,0,0,.10) 0 30px,rgba(0,0,0,0) 30px 32px)}
+.room .plate{position:absolute;top:0;left:0;margin:0}
+.round{position:absolute;top:0;right:0;font-family:var(--px);font-size:10px;
+  background:var(--plate);border:2px solid var(--line);border-top:none;border-right:none;
+  padding:4px 10px;color:var(--gold)}
+
+.seats{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;align-items:flex-end}
+.seat{width:132px;display:flex;flex-direction:column;align-items:center;position:relative;
+  padding-top:84px}
+@media(max-width:520px){.seat{width:104px;padding-top:88px}}
+.seat .seatname{font-family:var(--px);font-size:11px;color:#2a1d0e;text-shadow:1px 1px 0 rgba(255,255,255,.28)}
+.seat .role{font-family:var(--px);font-size:9px;background:#efe6d2;border:2px solid #2a1d0e;
+  color:#2a1d0e;padding:1px 5px;margin-top:3px;white-space:nowrap}
+.seat.idle{opacity:.55;filter:grayscale(.8)}
+.seat.active .avatar{animation:bob .55s steps(2) infinite}
+@keyframes bob{0%{transform:translateY(0)}50%{transform:translateY(-3px)}100%{transform:translateY(0)}}
+.avatar{width:56px;height:64px}
+.desk{width:88px;height:12px;background:#7a5a38;border:2px solid #2a1d0e;margin-top:-4px}
+
+/* speech bubble */
+.bubble{position:absolute;bottom:calc(100% - 80px);left:50%;transform:translateX(-50%);
+  width:186px;background:#fdfbf3;border:2px solid #2a1d0e;color:#171310;
+  font-size:11px;line-height:1.45;padding:6px 8px;z-index:5;
+  box-shadow:3px 3px 0 rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .12s}
+.seat.talking .bubble{opacity:1}
+.bubble:after{content:"";position:absolute;top:100%;left:50%;margin-left:-5px;
+  width:0;height:0;border:5px solid transparent;border-top-color:#2a1d0e}
+.bubble b{display:block;font-family:var(--px);font-size:9px;margin-bottom:3px}
+.bubble.bull b{color:#0a7a3c} .bubble.bear b{color:#a11c17} .bubble.neutral b{color:#5a5a5a}
+
+/* debate room */
+.duel{display:flex;align-items:flex-end;justify-content:center;gap:18px;flex-wrap:wrap}
+.vs{font-family:var(--px);font-size:20px;color:#ffe9a8;text-shadow:2px 2px 0 #143a26;
+  align-self:center;padding-bottom:36px}
+
+/* decision banner */
+.verdict{margin-top:12px;border:3px solid var(--gold);background:#12101a;padding:12px 14px;
+  display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.verdict.hidden{display:none}
+.verdict .act{font-family:var(--px);font-size:22px;padding:6px 14px;border:3px solid currentColor}
+.verdict .meta{font-family:var(--px);font-size:11px;color:var(--muted);line-height:1.9}
+.verdict .why{flex:1;min-width:220px;font-size:12px;color:var(--ink)}
+.verdict .why em{display:block;color:var(--gold);font-style:normal;font-family:var(--px);
+  font-size:9px;margin-bottom:3px}
+
+/* flow bars */
+.flowrow{display:grid;grid-template-columns:96px 1fr;gap:10px;align-items:center;
+  padding:6px 0;border-bottom:1px solid var(--line)}
+.flowrow:last-child{border-bottom:0}
+.flowsym{font-family:var(--px);font-size:11px}
+.bars{display:flex;gap:3px;align-items:center;height:22px}
+.bars .b{flex:1;height:100%;position:relative;background:#12161f;border:1px solid var(--line)}
+.bars .b i{position:absolute;left:0;right:0;bottom:0;display:block}
+.bars .lbl{font-family:var(--px);font-size:8px;color:var(--muted);width:30px;text-align:right}
+
+/* event feed */
+.feed{font-family:var(--px);font-size:10px;max-height:250px;overflow:auto}
+.feed div{display:flex;gap:8px;padding:3px 0;border-bottom:1px solid var(--line)}
+.feed .t{color:var(--muted);flex:0 0 54px}
+.feed .ty{flex:0 0 118px}
+.feed .m{color:#aeb6c4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ticker tape */
+.tape{position:fixed;left:0;right:0;bottom:0;z-index:50;background:#000;
+  border-top:3px solid var(--gold-dim);overflow:hidden;height:34px}
+.tape-in{display:inline-flex;gap:34px;white-space:nowrap;padding:9px 0;
+  font-family:var(--px);font-size:11px;animation:tape 42s linear infinite}
+@keyframes tape{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+.tape b{color:var(--gold);font-weight:400;margin-right:6px}
+
+.btn{font-family:var(--px);font-size:10px;background:var(--plate);border:2px solid var(--gold-dim);
+  color:var(--gold);padding:5px 10px;cursor:pointer}
+.btn:hover{background:#1c2231}
+.demo-tag{font-family:var(--px);font-size:9px;color:#000;background:var(--gold);padding:2px 6px}
+.empty{font-family:var(--px);font-size:10px;color:var(--muted);text-align:center;padding:18px}
+footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-size:11px}
 </style>
 </head>
 <body>
-<header>
-  <span class="dot" id="conn"></span>
-  <h1 id="strategy">Quant Engine</h1>
-  <span class="pill" id="mode">—</span>
-  <span class="pill" id="universe">—</span>
-  <div class="spacer"></div>
-  <span class="pill" id="lastbar">no data</span>
+
+<header class="top">
+  <div class="top-in">
+    <span class="conn" id="conn"></span>
+    <span class="brand"><i>◆</i> QUANT TRADING FLOOR <i>◆</i></span>
+    <span class="mode backtest px" id="mode">OFFLINE</span>
+    <span class="grow"></span>
+    <button class="btn" id="demoBtn">▶ 데모 재생</button>
+    <span class="tab on px" id="strategy">—</span>
+  </div>
 </header>
 
-<main>
-  <section class="card wide">
-    <h2>Equity</h2>
-    <canvas id="chart"></canvas>
+<div class="wrap">
+
+  <!-- HUD -->
+  <section class="panel">
+    <span class="plate"><span class="d">◆</span> 계좌 <span class="d">◆</span></span>
+    <div class="hud">
+      <div class="hud-l">
+        <div class="sym" id="hudSym">PORTFOLIO</div>
+        <div class="big" id="hudEquity">—</div>
+        <div class="chg" id="hudChange">—</div>
+        <div class="kpis" id="hudKpis"></div>
+      </div>
+      <div class="hud-r"><canvas id="equity"></canvas></div>
+    </div>
   </section>
 
-  <section class="card">
-    <h2>Portfolio</h2>
-    <div class="stats" id="stats"><div class="empty">waiting for the first tick…</div></div>
+  <!-- positions -->
+  <section class="panel">
+    <span class="plate"><span class="d">◆</span> 보유 종목 <span class="d">◆</span></span>
+    <div class="body scroll"><table id="positions"><tbody></tbody></table></div>
   </section>
 
-  <section class="card">
-    <h2>Positions</h2>
-    <div class="scroll"><table id="positions"><tbody></tbody></table></div>
+  <!-- analyst room -->
+  <section class="panel">
+    <div class="room wood">
+      <span class="plate"><span class="d">◆</span> 애널리스트 데스크 <span class="d">◆</span></span>
+      <span class="round px" id="deskSubject">대기 중</span>
+      <div class="seats" id="analystSeats"></div>
+    </div>
   </section>
 
-  <section class="card">
-    <h2>Recent trades</h2>
-    <div class="scroll"><table id="trades"><tbody></tbody></table></div>
+  <!-- debate room -->
+  <section class="panel">
+    <div class="room turf">
+      <span class="plate"><span class="d">◆</span> 토론장 <span class="d">◆</span></span>
+      <span class="round px" id="roundTag">ROUND —</span>
+      <div class="duel" id="debateSeats"></div>
+    </div>
   </section>
 
-  <section class="card">
-    <h2>Live events</h2>
-    <div class="feed" id="feed"></div>
+  <!-- risk committee -->
+  <section class="panel">
+    <div class="room turf">
+      <span class="plate"><span class="d">◆</span> 리스크 위원회 <span class="d">◆</span></span>
+      <span class="round px" id="riskTag">SCALE —</span>
+      <div class="duel" id="riskSeats"></div>
+    </div>
   </section>
-</main>
+
+  <!-- decision desk -->
+  <section class="panel">
+    <div class="room wood">
+      <span class="plate"><span class="d">◆</span> 결정 데스크 <span class="d">◆</span></span>
+      <div class="duel" id="decisionSeats"></div>
+    </div>
+    <div class="body">
+      <div class="verdict hidden" id="verdict"></div>
+    </div>
+  </section>
+
+  <!-- flow -->
+  <section class="panel">
+    <span class="plate"><span class="d">◆</span> 수급 · 외국인 / 기관 / 개인 <span class="d">◆</span></span>
+    <div class="body" id="flowBody"><div class="empty">수급 데이터 없음 — config 의 flow.provider 를 설정하세요</div></div>
+  </section>
+
+  <!-- feed -->
+  <section class="panel">
+    <span class="plate"><span class="d">◆</span> 이벤트 로그 <span class="d">◆</span></span>
+    <div class="body"><div class="feed" id="feed"></div></div>
+  </section>
+
+</div>
+
 <footer>
-  Read-only view. Start and stop are deliberately CLI-only.
-  Historical results are not a prediction; trading involves risk of loss.
+  읽기 전용 화면입니다. 시작·정지는 CLI 전용.
+  과거 성과는 예측이 아니며, 매매에는 원금 손실 위험이 있습니다.
 </footer>
 
+<div class="tape"><div class="tape-in" id="tape"></div></div>
+
 <script>
+"use strict";
 const $ = s => document.querySelector(s);
 const token = new URLSearchParams(location.search).get("token") || "";
 const auth = token ? {Authorization: "Bearer " + token} : {};
-const fmt = (n, d = 2) => n == null || !isFinite(n) ? "—"
-  : n.toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d});
-const pct = n => n == null ? "—" : (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const num = (n, d = 0) => n == null || !isFinite(n) ? "—"
+  : Number(n).toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d});
+const pct = n => n == null || !isFinite(n) ? "—" : (n >= 0 ? "+" : "") + Number(n).toFixed(2) + "%";
 const cls = n => n > 0 ? "up" : n < 0 ? "down" : "";
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-let equity = [];
+/* ── pixel sprites ───────────────────────────────────────────────────── */
+const SPRITE = [
+  "..HHHHHH..",
+  ".HHHHHHHH.",
+  ".HFFFFFFH.",
+  ".FFEFFEFF.",
+  ".FFFFFFFF.",
+  "..FFMMFF..",
+  "...SSSS...",
+  "..SSSSSS..",
+  ".KSSSSSSK.",
+  "KKSSSSSSKK",
+  ".KSSSSSSK.",
+  "..SSSSSS..",
+  "..PP..PP..",
+  "..PP..PP..",
+];
+const PALETTE = {H:"hair", F:"#f2c9a0", E:"#20160e", M:"#b8724f", S:"shirt", K:"#f2c9a0", P:"#2b3244"};
 
+function sprite(hair, shirt) {
+  const px = 4, w = SPRITE[0].length, h = SPRITE.length;
+  let r = `<svg class="avatar" viewBox="0 0 ${w * px} ${h * px}" aria-hidden="true">`;
+  SPRITE.forEach((row, y) => [...row].forEach((ch, x) => {
+    if (ch === ".") return;
+    let c = PALETTE[ch];
+    if (c === "hair") c = hair; else if (c === "shirt") c = shirt;
+    r += `<rect x="${x * px}" y="${y * px}" width="${px}" height="${px}" fill="${c}"/>`;
+  }));
+  // desk monitor glow
+  r += `<rect x="${px * 2}" y="${px * (h - 2)}" width="${px * 6}" height="${px * 2}" fill="#12331f"/>`;
+  r += `<rect x="${px * 3}" y="${px * (h - 2) + 2}" width="${px * 4}" height="${px * 2 - 4}" fill="#57d977"/>`;
+  return r + "</svg>";
+}
+
+/* ── seats ───────────────────────────────────────────────────────────── */
+const ANALYSTS = [
+  {key: "technical",      name: "TARO",   role: "기술적 분석", hair: "#2f4fa8", shirt: "#3b6fd4"},
+  {key: "flow",           name: "FLUX",   role: "수급 분석",   hair: "#7a3fa0", shirt: "#a45fd0"},
+  {key: "fundamental",    name: "DIANA",  role: "펀더멘털",    hair: "#a0642f", shirt: "#d99a4e"},
+  {key: "news",           name: "NOVA",   role: "뉴스·공시",   hair: "#2f8f7a", shirt: "#3fb99e"},
+  {key: "sentiment",      name: "ECHO",   role: "센티먼트",    hair: "#8f2f6a", shirt: "#c94f9a"},
+  {key: "macro",          name: "ATLAS",  role: "매크로",      hair: "#5a5f6b", shirt: "#8a91a0"},
+  {key: "microstructure", name: "MICRO",  role: "미시구조",    hair: "#8a6a1f", shirt: "#c9a53c"},
+  {key: "quant",          name: "SIGMA",  role: "퀀트",        hair: "#1f5f6a", shirt: "#2f8fa0"},
+];
+const DEBATERS = [
+  {key: "bull", name: "BULL", role: "강세론자", hair: "#1d6b38", shirt: "#2f9c52"},
+  {key: "bear", name: "BEAR", role: "약세론자", hair: "#7a1f1a", shirt: "#c33a31"},
+];
+const RISKERS = [
+  {key: "risk_aggressive",   name: "BLAZE",  role: "공격형", hair: "#8a2f1a", shirt: "#d9622f"},
+  {key: "risk_conservative", name: "WARDEN", role: "보수형", hair: "#2f3a4a", shirt: "#4f5f7a"},
+  {key: "risk_neutral",      name: "JUDGE",  role: "중립·판정", hair: "#3a4a6a", shirt: "#5f7bb0"},
+];
+const DECIDERS = [
+  {key: "research_manager", name: "SAGE",  role: "리서치 매니저", hair: "#4a2f6a", shirt: "#7f5fb0"},
+  {key: "trader",           name: "BLITZ", role: "트레이더",      hair: "#1a4a6a", shirt: "#2f8fd0"},
+  {key: "head",             name: "CHIEF", role: "데스크 헤드",   hair: "#5a3a1a", shirt: "#e0b040"},
+];
+
+function seatHtml(s) {
+  return `<div class="seat idle" id="seat-${s.key}">
+      <div class="bubble neutral" id="bub-${s.key}"><b>${esc(s.name)}</b><span></span></div>
+      <div class="avatar-wrap">${sprite(s.hair, s.shirt)}</div>
+      <div class="desk"></div>
+      <div class="seatname px">${esc(s.name)}</div>
+      <div class="role">${esc(s.role)}</div>
+    </div>`;
+}
+$("#analystSeats").innerHTML = ANALYSTS.map(seatHtml).join("");
+$("#debateSeats").innerHTML =
+  seatHtml(DEBATERS[0]) + `<div class="vs px">VS</div>` + seatHtml(DEBATERS[1]);
+$("#riskSeats").innerHTML =
+  seatHtml(RISKERS[0]) + `<div class="vs px">⇄</div>` + seatHtml(RISKERS[1]) +
+  `<div class="vs px">→</div>` + seatHtml(RISKERS[2]);
+$("#decisionSeats").innerHTML = DECIDERS.map(seatHtml).join("");
+
+const ALL_KEYS = [...ANALYSTS, ...DEBATERS, ...RISKERS, ...DECIDERS].map(s => s.key);
+
+function say(key, text, tone) {
+  const seat = document.getElementById("seat-" + key);
+  const bub = document.getElementById("bub-" + key);
+  if (!seat || !bub) return;
+  // One speaker at a time. Bubbles are wider than a seat, so two at once
+  // overlap into an unreadable pile — and a desk where everyone talks
+  // simultaneously is not a deliberation.
+  ALL_KEYS.forEach(k => {
+    const other = document.getElementById("seat-" + k);
+    if (other && k !== key) other.classList.remove("talking");
+  });
+  bub.className = "bubble " + (tone || "neutral");
+  bub.querySelector("span").textContent = text || "";
+  seat.classList.remove("idle");
+  seat.classList.add("active", "talking");
+}
+function hush(key) {
+  const seat = document.getElementById("seat-" + key);
+  if (seat) seat.classList.remove("talking");
+}
+function resetFloor() {
+  ALL_KEYS.forEach(k => {
+    const s = document.getElementById("seat-" + k);
+    if (s) { s.classList.add("idle"); s.classList.remove("active", "talking"); }
+  });
+  $("#roundTag").textContent = "ROUND —";
+  $("#riskTag").textContent = "SCALE —";
+}
+
+/* ── deliberation replay ─────────────────────────────────────────────── */
+const TONE = {bullish: "bull", bearish: "bear", neutral: "neutral"};
+let playing = false;
+
+async function playDeliberation(d, opts) {
+  if (playing) return;
+  playing = true;
+  const speed = (opts && opts.speed) || 1;
+  const wait = ms => sleep(ms * speed);
+  try {
+    resetFloor();
+    $("#verdict").classList.add("hidden");
+    $("#deskSubject").textContent =
+      (opts && opts.demo ? "DEMO · " : "") + (d.symbol || "—") + " 심의 중";
+
+    // 1) 분석 8석 — each states its read in turn
+    for (const a of ANALYSTS) {
+      const r = (d.analysts || {})[a.key];
+      if (!r) continue;
+      const line = !r.data_sufficient
+        ? "데이터 부족 — 판단 보류"
+        : ((r.key_points || [])[0] || r.stance || "");
+      say(a.key, `[${r.stance || "?"} ${Math.round((r.conviction || 0) * 100)}%] ${line}`,
+          TONE[r.stance] || "neutral");
+      await wait(850);
+    }
+    await wait(450);
+
+    // 2) 강세 vs 약세, round by round
+    const rounds = (d.debate && d.debate.rounds) || [];
+    for (let i = 0; i < rounds.length; i++) {
+      $("#roundTag").textContent = `ROUND ${i + 1}/${rounds.length}`;
+      for (const side of ["bull", "bear"]) {
+        const r = rounds[i][side];
+        if (!r) continue;
+        hush(side === "bull" ? "bear" : "bull");
+        say(side, r.argument || "", side);
+        await wait(1800);
+      }
+    }
+    hush("bull"); hush("bear");
+    await wait(300);
+
+    // 3) 리스크 위원회 — aggressive vs conservative, then the neutral verdict
+    const riskRounds = (d.risk_debate && d.risk_debate.rounds) || [];
+    for (let i = 0; i < riskRounds.length; i++) {
+      for (const side of ["aggressive", "conservative"]) {
+        const key = side === "aggressive" ? "risk_aggressive" : "risk_conservative";
+        const r = riskRounds[i][side];
+        if (!r) continue;
+        const scale = Math.round((r.proposed_scale || 0) * 100);
+        say(key, `배율 ${scale}% — ${r.argument || ""}`,
+            side === "aggressive" ? "bull" : "bear");
+        await wait(1600);
+      }
+    }
+    if (d.risk) {
+      const scale = Math.round((d.position_scale || 0) * 100);
+      $("#riskTag").textContent = d.vetoed ? "VETO" : `SCALE ${scale}%`;
+      say("risk_neutral",
+          (d.vetoed ? "⛔ 거부: " + (d.veto_reason || "") : `최종 배율 ${scale}% — `) +
+          (d.risk.reasoning || ""),
+          d.vetoed ? "bear" : "neutral");
+      await wait(1800);
+    }
+    hush("risk_aggressive"); hush("risk_conservative");
+
+    // 4) 결정 데스크 — plan, then execution, then the call
+    if (d.plan) {
+      say("research_manager",
+          `[${d.plan.rating || "?"}] ${d.plan.rationale || ""}`,
+          (d.plan.rating || "").includes("buy") ? "bull"
+            : (d.plan.rating || "").includes("sell") ? "bear" : "neutral");
+      await wait(1700);
+    }
+    if (d.trade) {
+      say("trader",
+          `${d.trade.entry_style || ""} ${d.trade.tranches ? "· " + d.trade.tranches + "분할" : ""} — ${d.trade.execution_note || ""}`,
+          "neutral");
+      await wait(1600);
+    }
+    say("head", `${(d.action || "hold").toUpperCase()} · 확신 ${Math.round((d.conviction || 0) * 100)}% — ${d.rationale || ""}`,
+        (d.action || "").includes("buy") ? "bull"
+          : (d.action || "").includes("sell") || (d.action || "") === "reduce" ? "bear" : "neutral");
+    renderVerdict(d, opts && opts.demo);
+    $("#deskSubject").textContent = (opts && opts.demo ? "DEMO · " : "") +
+      (d.symbol || "—") + " 결정 완료";
+  } finally {
+    playing = false;
+  }
+}
+
+const ACTION_STYLE = {
+  strong_buy: ["적극 매수", "var(--up)"], buy: ["매수", "var(--up)"],
+  hold: ["관망", "var(--muted)"], reduce: ["축소", "var(--gold)"],
+  sell: ["매도", "var(--down)"], strong_sell: ["적극 매도", "var(--down)"],
+};
+
+function renderVerdict(d, demo) {
+  const [label, color] = ACTION_STYLE[d.action] || ["관망", "var(--muted)"];
+  const v = $("#verdict");
+  v.classList.remove("hidden");
+  v.innerHTML = `
+    <div class="act px" style="color:${color}">${d.vetoed ? "거부" : esc(label)}</div>
+    <div class="meta">
+      ${esc(d.symbol || "")}<br>
+      확신 ${Math.round((d.conviction || 0) * 100)}% · 합의 ${(d.consensus >= 0 ? "+" : "")}${(d.consensus || 0).toFixed(2)}<br>
+      투표 ${d.voting_seats != null ? d.voting_seats : "—"}/8석 · 반대 ${Math.round((d.dissent_ratio || 0) * 100)}%<br>
+      배율 ${Math.round((d.position_scale || 0) * 100)}% · ${d.horizon_bars || "—"}봉<br>
+      <span class="dim">${(d.elapsed_s || 0).toFixed(1)}s · ${d.llm_calls || 0} calls</span>
+      ${demo ? ' <span class="demo-tag">DEMO</span>' : ""}
+      ${d.degraded ? ' <span class="demo-tag">축약</span>' : ""}
+    </div>
+    <div class="why">
+      <em>판단 근거</em>${esc(d.rationale || "")}
+      <em style="margin-top:8px">무효화 조건</em>${esc(d.invalidation || "—")}
+      ${d.dissent ? `<em style="margin-top:8px">반대 의견</em>${esc(d.dissent)}` : ""}
+    </div>`;
+}
+
+/* ── data plumbing ───────────────────────────────────────────────────── */
 async function api(path) {
   const r = await fetch(path, {headers: auth});
   if (!r.ok) throw new Error(r.status + " " + path);
   return r.json();
 }
 
-function drawChart() {
-  const c = $("#chart"), ctx = c.getContext("2d");
-  const dpr = devicePixelRatio || 1;
-  const w = c.clientWidth, h = c.clientHeight;
-  c.width = w * dpr; c.height = h * dpr; ctx.scale(dpr, dpr);
+let equity = [];
+function drawEquity() {
+  const c = $("#equity"), ctx = c.getContext("2d");
+  const dpr = devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  c.width = w * dpr; c.height = h * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
   if (equity.length < 2) {
-    ctx.fillStyle = getComputedStyle(document.body).getPropertyValue("--muted");
-    ctx.font = "12px system-ui"; ctx.textAlign = "center";
-    ctx.fillText("no equity history yet", w / 2, h / 2);
+    ctx.fillStyle = "#7b8494"; ctx.font = '10px Silkscreen, monospace';
+    ctx.textAlign = "center"; ctx.fillText("NO EQUITY HISTORY", w / 2, h / 2);
     return;
   }
   const vals = equity.map(p => p.equity);
-  const lo = Math.min(...vals), hi = Math.max(...vals);
-  const pad = (hi - lo) * 0.08 || 1;
-  const y = v => h - 12 - (v - lo + pad) / (hi - lo + pad * 2) * (h - 24);
-  const x = i => 4 + i / (equity.length - 1) * (w - 8);
-  const style = getComputedStyle(document.body);
-  const up = vals[vals.length - 1] >= vals[0];
-  const color = style.getPropertyValue(up ? "--up" : "--down").trim();
-
-  // high-water line, so drawdown is visible rather than inferred
+  const lo = Math.min(...vals), hi = Math.max(...vals), pad = (hi - lo) * .1 || 1;
+  const X = i => (i / (equity.length - 1)) * (w - 2) + 1;
+  const Y = v => h - 6 - (v - lo + pad) / (hi - lo + pad * 2) * (h - 12);
+  // high-water line so drawdown is visible, not inferred
   let peak = -Infinity;
   ctx.beginPath();
   equity.forEach((p, i) => { peak = Math.max(peak, p.equity);
-    i ? ctx.lineTo(x(i), y(peak)) : ctx.moveTo(x(i), y(peak)); });
-  ctx.strokeStyle = style.getPropertyValue("--border").trim();
-  ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
-
-  const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, color + "44"); grad.addColorStop(1, color + "00");
+    i ? ctx.lineTo(X(i), Y(peak)) : ctx.moveTo(X(i), Y(peak)); });
+  ctx.strokeStyle = "#2a3140"; ctx.lineWidth = 1; ctx.stroke();
+  const up = vals[vals.length - 1] >= vals[0];
   ctx.beginPath();
-  equity.forEach((p, i) => i ? ctx.lineTo(x(i), y(p.equity)) : ctx.moveTo(x(i), y(p.equity)));
-  ctx.strokeStyle = color; ctx.lineWidth = 1.8; ctx.stroke();
-  ctx.lineTo(x(equity.length - 1), h); ctx.lineTo(x(0), h); ctx.closePath();
-  ctx.fillStyle = grad; ctx.fill();
+  equity.forEach((p, i) => i ? ctx.lineTo(X(i), Y(p.equity)) : ctx.moveTo(X(i), Y(p.equity)));
+  ctx.strokeStyle = up ? "#57d977" : "#ff5a52"; ctx.lineWidth = 2; ctx.stroke();
 }
 
-function renderStats(p) {
+function renderHud(p) {
   if (!p) return;
+  $("#hudEquity").textContent = num(p.equity, 0) + (p.currency === "KRW" ? "" : "");
+  const ch = $("#hudChange");
+  ch.textContent = pct(p.total_return_pct);
+  ch.className = "chg " + cls(p.total_return_pct);
+  $("#hudSym").textContent = "PORTFOLIO · " + (p.currency || "");
   const items = [
-    ["equity", fmt(p.equity, 0), ""],
-    ["return", pct(p.total_return_pct), cls(p.total_return_pct)],
-    ["drawdown", pct(-Math.abs(p.drawdown_pct)), p.drawdown_pct > 10 ? "warn" : ""],
-    ["cash", fmt(p.cash, 0), ""],
-    ["unrealized", fmt(p.unrealized_pnl, 0), cls(p.unrealized_pnl)],
-    ["positions", p.open_positions, ""],
-    ["trades", p.closed_trades, ""],
-    ["fees", fmt(p.total_fees, 0), ""],
+    ["CASH", num(p.cash, 0), ""],
+    ["DRAWDOWN", pct(-Math.abs(p.drawdown_pct || 0)), p.drawdown_pct > 10 ? "down" : ""],
+    ["미실현", num(p.unrealized_pnl, 0), cls(p.unrealized_pnl)],
+    ["보유", p.open_positions, ""],
+    ["매매", p.closed_trades, ""],
+    ["수수료", num(p.total_fees, 0), ""],
   ];
-  $("#stats").innerHTML = items.map(([k, v, c]) =>
-    `<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
+  $("#hudKpis").innerHTML = items.map(([k, v, c]) =>
+    `<div class="kpi"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
 
-  $("#positions").querySelector("tbody").innerHTML = (p.positions || []).length
-    ? `<tr><th>symbol</th><th class="num">qty</th><th class="num">avg</th>
-       <th class="num">last</th><th class="num">P&L</th></tr>` +
-      p.positions.map(x => `<tr><td>${x.symbol}</td>
-        <td class="num">${fmt(x.quantity, 4)}</td>
-        <td class="num">${fmt(x.avg_price, 4)}</td>
-        <td class="num">${fmt(x.last_price, 4)}</td>
+  const tb = $("#positions").querySelector("tbody");
+  tb.innerHTML = (p.positions || []).length
+    ? `<tr><th>종목</th><th class="num">수량</th><th class="num">평단</th><th class="num">현재가</th><th class="num">손익</th></tr>` +
+      p.positions.map(x => `<tr><td class="gold">${esc(x.symbol)}</td>
+        <td class="num">${num(x.quantity, 4)}</td><td class="num">${num(x.avg_price, 2)}</td>
+        <td class="num">${num(x.last_price, 2)}</td>
         <td class="num ${cls(x.unrealized_pct)}">${pct(x.unrealized_pct)}</td></tr>`).join("")
-    : `<tr><td class="empty">flat</td></tr>`;
+    : `<tr><td class="empty">보유 없음</td></tr>`;
 }
 
-function renderTrades(rows) {
-  $("#trades").querySelector("tbody").innerHTML = rows.length
-    ? `<tr><th>exit</th><th>symbol</th><th class="num">P&L</th><th class="num">%</th></tr>` +
-      rows.map(t => `<tr><td>${(t.exit_ts || "").slice(5, 16).replace("T", " ")}</td>
-        <td>${t.symbol}</td><td class="num ${cls(t.pnl)}">${fmt(t.pnl)}</td>
-        <td class="num ${cls(t.pnl_pct)}">${pct(t.pnl_pct * 100)}</td></tr>`).join("")
-    : `<tr><td class="empty">no closed trades</td></tr>`;
+function renderFlow(data) {
+  const box = $("#flowBody");
+  if (!data || !data.available) {
+    box.innerHTML = `<div class="empty">${esc((data && data.message) ||
+      "수급 데이터 없음 — config 의 flow.provider 를 설정하세요")}</div>`;
+    return;
+  }
+  const rows = Object.entries(data.symbols || {}).filter(([, v]) => v.summary);
+  if (!rows.length) { box.innerHTML = `<div class="empty">수급 데이터 대기 중</div>`; return; }
+  box.innerHTML = rows.map(([ticker, v]) => {
+    const s = v.summary;
+    const trio = [
+      ["외국인", s.foreign_net_qty], ["기관", s.institution_net_qty], ["개인", s.retail_net_qty],
+    ];
+    const scale = Math.max(...trio.map(t => Math.abs(t[1])), 1);
+    return `<div class="flowrow">
+      <div class="flowsym">${esc(ticker)}<br><span class="dim" style="font-size:8px">${esc(s.divergence)}</span></div>
+      <div class="bars">
+        ${trio.map(([n, q]) => {
+          const h = Math.max(Math.abs(q) / scale * 100, 3);
+          const c = q >= 0 ? "#57d977" : "#ff5a52";
+          return `<span class="lbl">${n}</span>
+            <span class="b" title="${n} ${num(q)}"><i style="height:${h}%;background:${c}"></i></span>`;
+        }).join("")}
+        <span class="lbl">${s.foreign_streak >= 0 ? "+" : ""}${s.foreign_streak}일</span>
+      </div></div>`;
+  }).join("");
+}
+
+function renderTape(symbols) {
+  if (!symbols || !symbols.length) return;
+  const one = symbols.map(s =>
+    `<span><b>${esc(s.ticker)}</b><span class="${cls(s.change_pct)}">${num(s.price, 2)} ${pct(s.change_pct)}</span></span>`
+  ).join("");
+  $("#tape").innerHTML = one + one;   // duplicated so the marquee loops seamlessly
 }
 
 const feed = $("#feed");
 function pushEvent(e) {
   const p = e.payload || {};
-  let msg = "";
-  if (e.type === "order_filled") msg = `${p.side} ${p.quantity} ${p.symbol} @ ${p.price}`;
-  else if (e.type === "trade_closed") msg = `${p.symbol} ${pct(p.pnl_pct)} (${fmt(p.pnl)})`;
-  else if (e.type === "protection") msg = `${p.protection} · ${p.symbol} · ${p.reason}`;
-  else if (e.type === "order_rejected") msg = `${p.symbol}: ${p.reject_reason || p.reason}`;
-  else if (e.type === "insight") msg = `${p.symbol} ${p.direction} ${p.source} — ${p.tag || ""}`;
-  else if (e.type === "equity") return;
-  else msg = JSON.stringify(p).slice(0, 160);
-  const color = e.type === "trade_closed" ? cls(p.pnl)
-    : e.type.includes("reject") || e.type === "error" ? "down"
-    : e.type === "protection" ? "warn" : "";
+  let msg = "", tone = "";
+  switch (e.type) {
+    case "order_filled":
+      msg = `${p.side} ${p.quantity} ${p.symbol} @ ${p.price}`;
+      tone = p.side === "buy" ? "up" : "down"; break;
+    case "trade_closed":
+      msg = `${p.symbol} ${pct(p.pnl_pct)} (${num(p.pnl, 0)})`; tone = cls(p.pnl); break;
+    case "protection":
+      msg = `${p.protection} · ${p.symbol} · ${p.reason}`; tone = "gold"; break;
+    case "order_rejected":
+      msg = `${p.symbol}: ${p.reject_reason || p.reason}`; tone = "down"; break;
+    case "deliberation":
+      msg = `${p.symbol} → ${p.action} (${Math.round((p.conviction || 0) * 100)}%)`;
+      tone = "gold"; break;
+    case "insight":
+      msg = `${p.symbol} ${p.direction} ${p.source} — ${p.tag || ""}`; break;
+    case "equity": return;
+    default: msg = JSON.stringify(p).slice(0, 140);
+  }
   const div = document.createElement("div");
-  div.innerHTML = `<span class="t">${(e.ts || "").slice(11, 19)}</span>
-    <span class="ty ${color}">${e.type}</span><span class="m">${msg}</span>`;
+  div.innerHTML = `<span class="t">${esc((e.ts || "").slice(11, 19))}</span>
+    <span class="ty ${tone}">${esc(e.type)}</span><span class="m">${esc(msg)}</span>`;
   feed.prepend(div);
-  while (feed.childNodes.length > 200) feed.lastChild.remove();
+  while (feed.childNodes.length > 150) feed.lastChild.remove();
 }
 
+/* ── polling + stream ────────────────────────────────────────────────── */
 async function refresh() {
   try {
     const h = await api("/api/health");
-    $("#conn").className = "dot " + (h.trader_running ? "on" : "off");
-  } catch { $("#conn").className = "dot off"; }
+    $("#conn").className = "conn " + (h.trader_running ? "on" : "off");
+  } catch { $("#conn").className = "conn off"; }
 
   try {
     const s = await api("/api/status");
-    if (s.running !== false || s.portfolio) {
-      $("#strategy").textContent = s.strategy || "Quant Engine";
-      $("#mode").textContent = s.mode || "—";
-      $("#universe").textContent = (s.universe || []).length + " symbols";
-      $("#lastbar").textContent = s.last_bar ? "last bar " + s.last_bar.slice(0, 16).replace("T", " ") : "no data";
-      renderStats(s.portfolio);
+    if (s.portfolio) {
+      $("#strategy").textContent = s.strategy || "—";
+      const m = $("#mode");
+      m.textContent = (s.mode || "offline").replace("_", " ").toUpperCase();
+      m.className = "mode px " + (s.mode === "live" ? "" : s.mode === "dry_run" ? "dry" : "backtest");
+      renderHud(s.portfolio);
     }
   } catch {}
 
-  try { equity = (await api("/api/equity?limit=1500")).points || []; drawChart(); } catch {}
-  try { renderTrades((await api("/api/trades?limit=60")).trades || []); } catch {}
+  try { equity = (await api("/api/equity?limit=1200")).points || []; drawEquity(); } catch {}
+  try { renderTape((await api("/api/universe")).symbols); } catch {}
+  try { renderFlow(await api("/api/flow")); } catch {}
+
+  // Replay the newest deliberation we have not shown yet.
+  try {
+    const d = await api("/api/desk?limit=1");
+    const latest = (d.deliberations || [])[0];
+    if (latest && latest.decided_at !== lastShown) {
+      lastShown = latest.decided_at;
+      playDeliberation(latest, {speed: .55});
+    }
+  } catch {}
 }
+let lastShown = null;
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws${token ? "?token=" + token : ""}`);
   ws.onmessage = m => {
-    const e = JSON.parse(m.data);
-    if (e.type === "equity") renderStats(e.payload); else pushEvent(e);
+    let e; try { e = JSON.parse(m.data); } catch { return; }
+    if (e.type === "equity") { renderHud(e.payload); return; }
+    if (e.type === "deliberation") {
+      lastShown = (e.payload || {}).decided_at;
+      playDeliberation(e.payload);
+    }
+    pushEvent(e);
   };
-  // Reconnect on drop: a dashboard that silently goes stale is worse than one
-  // that shows it is disconnected.
-  ws.onclose = () => { $("#conn").className = "dot off"; setTimeout(connect, 4000); };
+  // A dashboard that silently goes stale is worse than one that says it is offline.
+  ws.onclose = () => { $("#conn").className = "conn off"; setTimeout(connect, 4000); };
   ws.onopen = () => setInterval(() => ws.readyState === 1 && ws.send("ping"), 25000);
 }
 
+/* ── demo replay (clearly labelled — not market data) ─────────────────── */
+const DEMO = {
+  symbol: "005930", decided_at: "demo", action: "buy", conviction: 0.72,
+  position_scale: 0.6, horizon_bars: 12, consensus: 0.38, voting_seats: 7,
+  dissent_ratio: 0.29, elapsed_s: 31.6, llm_calls: 19,
+  rationale: "외국인 6일 연속 순매수에 기관이 동조했고, 주가는 20일선 눌림목에서 지지받는 중. 수급이 가격을 앞서고 있다는 판단. 다만 퀀트·미시구조 좌석의 이견을 반영해 사이즈는 절반 수준으로.",
+  invalidation: "외국인 순매도 2일 연속 전환, 또는 종가가 20일선 아래로 마감.",
+  dissent: "미시구조(MICRO)는 스프레드 3틱을 근거로 분할 진입을, 퀀트(SIGMA)는 표본 부족을 이유로 확신도 하향을 요구.",
+  analysts: {
+    technical: {stance: "bullish", conviction: .68, data_sufficient: true,
+      key_points: ["ADX 27 — 추세 국면. 20일선 눌림목 지지 확인"]},
+    flow: {stance: "bullish", conviction: .81, data_sufficient: true,
+      key_points: ["외국인 6일 연속 순매수, 참여율 z=+2.1, 기관 동조"]},
+    fundamental: {stance: "neutral", conviction: .18, data_sufficient: false,
+      key_points: ["브리프에 재무 데이터 없음 — 판단 보류"]},
+    news: {stance: "bullish", conviction: .55, data_sufficient: true,
+      key_points: ["증설 공시 — 거래량 2.3배, 상당 부분 선반영 추정"]},
+    sentiment: {stance: "neutral", conviction: .35, data_sufficient: true,
+      key_points: ["개인 순매수 z=+0.7 — 아직 극단 아님"]},
+    macro: {stance: "neutral", conviction: .40, data_sufficient: true,
+      key_points: ["원/달러 상승은 외국인 수급 지속의 최대 변수"]},
+    microstructure: {stance: "neutral", conviction: .45, data_sufficient: true,
+      key_points: ["스프레드 3틱, 왕복 비용 0.24% — 분할 진입 권고"]},
+    quant: {stance: "neutral", conviction: .42, data_sufficient: true,
+      key_points: ["관측 20봉으로 표본 부족. 효과 크기는 일변동성의 0.8배"]},
+  },
+  debate: {rounds: [
+    {round: 1,
+     bull: {argument: "수급이 6일째 한 방향이고 개인이 반대편이다. 외국인·기관이 동시에 사는 구조는 통계적으로 며칠 더 이어진다.", conviction: .70},
+     bear: {argument: "그 수급은 이미 +9% 오른 뒤의 수급이다. 매집이 아니라 추격일 수 있고, 그렇다면 진입 시점이 늦었다.", conviction: .55}},
+    {round: 2,
+     bull: {argument: "눌림목이라 늦지 않았다. 20일선에서 되돌린 지점이 진입 자리이며, 손절폭도 그만큼 좁아진다.", conviction: .72},
+     bear: {argument: "환율이 흔들리면 외국인이 가장 먼저 나간다. 그것을 무효화 조건으로 명시하지 않으면 이 논거는 검증 불가능하다.", conviction: .52}},
+  ]},
+  risk_debate: {rounds: [
+    {round: 1,
+     aggressive: {argument: "손절폭이 20일선까지 3.2%로 명확하고 좁다. 유동성도 충분하고 기존 보유와 상관도 낮다. 여기서 작게 들어가면 맞아도 의미가 없다.", proposed_scale: .85},
+     conservative: {argument: "실적 발표가 8거래일 뒤다. 근거의 절반이 관측이 아니라 수급 지속성에 대한 추론이고, 미시구조 좌석도 비용을 경고했다.", proposed_scale: .40}},
+  ]},
+  risk: {position_scale: .60, veto: false, max_loss_pct: 3.5,
+    reasoning: "보수형이 '실적 발표 임박'이라는 이름 붙일 수 있는 위험을 제시했고 공격형의 근거는 손절폭 하나뿐이다. 보수 쪽에 가중해 60%."},
+  plan: {rating: "buy", conviction: .68,
+    rationale: "강세 논거가 이겼다. 약세 측의 '추격 매수' 지적은 타당하나, 눌림목 진입으로 손절폭이 좁아진다는 반론을 넘지 못했다.",
+    strategic_actions: "20일선 이탈 없이 유지되는 동안 2회 분할 진입, 손절은 20일선 종가 이탈."},
+  trade: {action: "buy", entry_style: "scale_in", tranches: 2, limit_offset_bps: 6,
+    timeout_bars: 3, if_unfilled: "다음 봉 시장가 전환",
+    execution_note: "스프레드 3틱 — 지정가 중간에 2회 분할. 3봉 내 미체결 시 시장가."},
+  vetoed: false, degraded: "",
+};
+$("#demoBtn").addEventListener("click", () => playDeliberation(DEMO, {demo: true, speed: 1}));
+
 refresh(); connect();
 setInterval(refresh, 15000);
-addEventListener("resize", drawChart);
+addEventListener("resize", drawEquity);
 </script>
 </body>
 </html>

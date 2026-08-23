@@ -176,6 +176,84 @@ def create_app(config: StrategyConfig | None = None,
         types = {t.strip() for t in type.split(",")} if type else None
         return {"events": state.hub.recent(limit, types)}
 
+    @app.get("/api/desk")
+    async def desk(limit: int = 20, _=Depends(require_token)):
+        """Desk status plus recent deliberations, newest first.
+
+        This is what the trading-floor view renders: one entry per full
+        ten-seat deliberation, including every seat's own output so the debate
+        can be replayed rather than just summarised.
+        """
+        trader = state.trader
+        model = trader.desk() if trader is not None else None
+        if model is None:
+            return {"enabled": False,
+                    "message": "no desk configured — add an alpha of type 'desk'",
+                    "deliberations": []}
+        status = model.status()
+        status["deliberations"] = [d.to_dict() for d in reversed(model.history[-limit:])]
+        status.pop("latest", None)
+        return status
+
+    @app.get("/api/desk/{ticker}")
+    async def desk_symbol(ticker: str, _=Depends(require_token)):
+        trader = state.trader
+        model = trader.desk() if trader is not None else None
+        if model is None:
+            raise HTTPException(404, "no desk configured")
+        for decision in reversed(model.history):
+            if decision.ticker.upper() == ticker.upper():
+                return decision.to_dict()
+        raise HTTPException(404, f"no deliberation recorded for {ticker}")
+
+    @app.get("/api/flow")
+    async def flow(symbol: Optional[str] = None, window: int = 20,
+                   sessions: int = 30, _=Depends(require_token)):
+        """투자자별 수급 — foreign / institution / retail net buying."""
+        trader = state.trader
+        if trader is None:
+            return {"available": False, "message": "no trader running", "symbols": {}}
+        feed = getattr(trader.engine, "flow_feed", None)
+        if feed is None or not feed.has_data:
+            return {"available": False,
+                    "message": "flow feed is empty — set flow.provider in the config",
+                    "failures": getattr(feed, "failures", {}), "symbols": {}}
+        ctx = trader.engine.ctx
+        wanted = [s for s in ctx.universe
+                  if symbol is None or s.ticker.upper() == symbol.upper()]
+        out = {}
+        for sym in wanted:
+            summary = feed.summary(sym, ctx.now, window)
+            recent = feed.get(sym, ctx.now)[-sessions:]
+            out[sym.ticker] = {
+                "summary": summary.to_dict() if summary else None,
+                "sessions": [f.to_dict() for f in recent],
+            }
+        return {"available": True, "window": window, "symbols": out}
+
+    @app.get("/api/universe")
+    async def universe(_=Depends(require_token)):
+        """Symbols with their last mark — drives the ticker tape."""
+        trader = state.trader
+        if trader is None:
+            return {"symbols": []}
+        ctx = trader.engine.ctx
+        out = []
+        for sym in ctx.universe:
+            bars = ctx.history(sym, 2)
+            last = bars[-1] if bars else None
+            prev = bars[0] if len(bars) > 1 else None
+            change = ((last.close / prev.close - 1) * 100
+                      if last and prev and prev.close > 0 else 0.0)
+            out.append({
+                "ticker": sym.ticker, "venue": sym.venue,
+                "currency": sym.quote_currency,
+                "price": round(last.close, 4) if last else None,
+                "change_pct": round(change, 2),
+                "invested": ctx.is_invested(sym),
+            })
+        return {"symbols": out}
+
     @app.get("/api/models")
     async def models(_=Depends(require_token)):
         from quant.execution.models import BUILTIN_EXECUTION_MODELS

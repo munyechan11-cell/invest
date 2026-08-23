@@ -30,6 +30,7 @@ from quant.core.context import Context
 from quant.core.engine import Engine
 from quant.core.events import EventBus
 from quant.core.types import UTC, AssetClass, RunMode, Symbol
+from quant.data.flow import FlowFeed, NullFlowProvider, create_flow_provider
 from quant.data.provider import CachingProvider, DataProvider, create_provider
 from quant.execution.costs import PRESETS, FeeModel, FillModel, SlippageModel
 from quant.execution.models import BUILTIN_EXECUTION_MODELS
@@ -54,6 +55,9 @@ BUILTIN_ALPHA_MODELS = {
     "pairs": PairsTradingAlpha,
     "regime_filter": TrendRegimeFilter,
 }
+
+#: alpha models that need the shared investor-flow feed injected
+FLOW_ALPHA_MODELS = {"investor_flow", "retail_contrarian"}
 
 
 def _resolve(registry: dict, spec: ModelSpec, kind: str):
@@ -90,6 +94,31 @@ def build_data_provider(config: StrategyConfig) -> DataProvider:
         from quant.data.providers import kis as _k  # noqa: F401
     provider = create_provider(config.data.provider, **config.data.params)
     return CachingProvider(provider) if config.data.cache else provider
+
+
+def build_flow_feed(config: StrategyConfig) -> FlowFeed:
+    """One feed per engine, shared by every model that reads 수급.
+
+    Sharing matters: without it a bar costs one flow fetch per consumer, and
+    KIS rate-limits hard enough that three consumers would be three times the
+    chance of a throttled cycle.
+    """
+    if config.flow.provider in ("kis",):
+        from quant.data.providers import kis_flow as _kf  # noqa: F401
+    elif config.flow.provider in ("synthetic",):
+        from quant.data.providers import synthetic_flow as _sf  # noqa: F401
+    try:
+        provider = create_flow_provider(config.flow.provider, **config.flow.params)
+    except Exception as exc:
+        log.warning("flow provider %r unavailable (%s) — continuing without 수급 data",
+                    config.flow.provider, exc)
+        provider = NullFlowProvider(str(exc))
+    return FlowFeed(
+        provider,
+        history=config.flow.history_sessions,
+        refresh_every_bars=config.flow.refresh_every_bars,
+        live=config.mode is not RunMode.BACKTEST,
+    )
 
 
 def build_costs(config: StrategyConfig) -> tuple[FeeModel, SlippageModel, FillModel | None]:
@@ -142,18 +171,46 @@ def build_protections(config: StrategyConfig) -> ProtectionManager:
     )
 
 
-def build_alpha(config: StrategyConfig) -> AlphaModel:
+def build_alpha(config: StrategyConfig, flow_feed: FlowFeed | None = None) -> AlphaModel:
     if not config.alpha:
         raise ValueError("no alpha models configured — the engine has nothing to trade on")
     models: list[AlphaModel] = []
     for spec in config.alpha:
-        if spec.type == "council":
+        if spec.type == "desk":
+            models.append(_build_desk(spec, flow_feed))
+        elif spec.type == "council":
             models.append(_build_council(spec))
         elif spec.type == "pairs":
             models.append(_build_pairs(spec))
+        elif spec.type in FLOW_ALPHA_MODELS:
+            models.append(_build_flow_alpha(spec, flow_feed))
         else:
             models.append(_resolve(BUILTIN_ALPHA_MODELS, spec, "alpha"))
     return models[0] if len(models) == 1 else CompositeAlphaModel(*models)
+
+
+def _build_flow_alpha(spec: ModelSpec, flow_feed: FlowFeed | None):
+    from quant.alpha.flow import InvestorFlowAlpha, RetailContrarianAlpha
+
+    if flow_feed is None:
+        raise ValueError(
+            f"alpha {spec.type!r} needs investor-flow data — set flow.provider "
+            f"(e.g. 'kis' for Korean equities, 'synthetic' to try it out)"
+        )
+    cls = {"investor_flow": InvestorFlowAlpha,
+           "retail_contrarian": RetailContrarianAlpha}[spec.type]
+    return cls(feed=flow_feed, **spec.params)
+
+
+def _build_desk(spec: ModelSpec, flow_feed: FlowFeed | None):
+    from quant.alpha.desk import TradingDesk
+    from quant.alpha.llm_client import LLMConfig
+
+    params = dict(spec.params)
+    llm = LLMConfig(**params.pop("llm", {}))
+    decision_raw = params.pop("decision_llm", None)
+    decision = LLMConfig(**decision_raw) if decision_raw else None
+    return TradingDesk(llm, decision_llm=decision, flow_feed=flow_feed, **params)
 
 
 def _build_council(spec: ModelSpec):
@@ -232,6 +289,7 @@ def build_engine(
     if config.universe.benchmark:
         ctx.benchmark = Symbol(config.universe.benchmark, venue=config.data.provider)
 
+    flow_feed = build_flow_feed(config)
     fee, slippage, fill = build_costs(config)
     execution = _resolve(
         BUILTIN_EXECUTION_MODELS,
@@ -242,11 +300,14 @@ def build_engine(
     )
     engine = Engine(
         ctx=ctx,
-        alpha=build_alpha(config),
+        alpha=build_alpha(config, flow_feed),
         portfolio_model=build_portfolio_model(config),
         execution_model=execution,
         brokerage=build_brokerage(config, portfolio, fee, slippage, fill),
         risk_models=build_risk_models(config),
         protections=build_protections(config),
     )
+    # Carried on the engine so the backtest runner and the live loop can
+    # backfill it without threading another return value through everything.
+    engine.flow_feed = flow_feed
     return engine, build_data_provider(config)

@@ -12,6 +12,7 @@ import logging
 import time
 from decimal import Decimal
 
+from quant.core.aio import LazyLock
 from quant.brokerage.base import Brokerage, BrokerageError
 from quant.core.account import Portfolio
 from quant.core.types import Fill, Order, OrderStatus, RunMode, Symbol, utcnow
@@ -42,7 +43,7 @@ class LiveBrokerage(Brokerage):
         #: network timeout from becoming a second real position
         self._dedupe: dict[tuple, float] = {}
         self._pending_fills: list[Fill] = []
-        self._lock = asyncio.Lock()
+        self._lock = LazyLock()
 
     # ── hooks ────────────────────────────────────────────────────────────
     async def _venue_submit(self, order: Order) -> str:  # pragma: no cover - abstract

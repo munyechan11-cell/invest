@@ -35,15 +35,25 @@ class ExecutionModel(ABC):
             price = ctx.price(t.symbol)
             if price <= 0:
                 continue
-            delta = t.symbol.round_qty(t.quantity - ctx.portfolio.quantity(t.symbol))
+            current = ctx.portfolio.quantity(t.symbol)
+            delta = t.symbol.round_qty(t.quantity - current)
             if delta == 0:
                 continue
-            notional = abs(float(delta)) * price * float(t.symbol.multiplier)
-            floor = max(self.min_order_notional, float(t.symbol.min_notional))
-            if notional < floor:
-                # Below the venue minimum the order would just be rejected; below
-                # our own floor it is not worth the fee.
-                continue
+
+            # A minimum-notional floor is a cost heuristic for *entries*. Applying
+            # it to an exit is how a stop-loss silently fails: the target says
+            # flat, the order is never sent, and the position rides to zero. Any
+            # target that reduces the position is therefore exempt.
+            reducing = abs(t.quantity) < abs(current) or (
+                current != 0 and (t.quantity > 0) != (current > 0)
+            )
+            if not reducing:
+                notional = abs(float(delta)) * price * float(t.symbol.multiplier)
+                floor = max(self.min_order_notional, float(t.symbol.min_notional))
+                if notional < floor:
+                    # Below the venue minimum the order would be rejected anyway;
+                    # below our own floor it is not worth the fee.
+                    continue
             out.append((t, delta, price))
         return out
 

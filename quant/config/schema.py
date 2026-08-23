@@ -47,6 +47,20 @@ class DataConfig(BaseModel):
         return v
 
 
+class FlowConfig(BaseModel):
+    """Investor supply/demand feed (수급) — currently KIS for Korean equities.
+
+    Kept separate from `data` because flow is a different feed with a different
+    cadence and different failure modes: losing it should degrade the signal,
+    not stop the bars arriving.
+    """
+
+    provider: str = "none"          # none | kis | synthetic
+    params: dict[str, Any] = Field(default_factory=dict)
+    history_sessions: int = 120
+    refresh_every_bars: int = 1
+
+
 class UniverseConfig(BaseModel):
     symbols: list[SymbolSpec] = Field(default_factory=list)
     #: optional dynamic selection, e.g. {type: top_volume, params: {n: 20}}
@@ -113,6 +127,7 @@ class StrategyConfig(BaseModel):
     description: str = ""
     mode: RunMode = RunMode.BACKTEST
     data: DataConfig = Field(default_factory=DataConfig)
+    flow: FlowConfig = Field(default_factory=FlowConfig)
     universe: UniverseConfig = Field(default_factory=UniverseConfig)
     alpha: list[ModelSpec] = Field(default_factory=list)
     portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)

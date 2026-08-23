@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Awaitable, Callable, Sequence
 
+from quant.core.aio import LazySemaphore
 from quant.alpha.base import AlphaModel
 from quant.alpha.llm_client import LLMClient, LLMConfig, LLMError
 from quant.core.context import Context
@@ -151,7 +152,9 @@ class ResearchCouncilAlpha(AlphaModel):
         language: str = "en",
         concurrency: int = 4,
     ):
-        self.client = llm if isinstance(llm, LLMClient) else LLMClient(llm)
+        # duck-typed: an LLMConfig, an LLMClient, or any object exposing
+        # `await complete(system, user, schema)` and a `.usage` counter
+        self.client = llm if hasattr(llm, "complete") else LLMClient(llm)
         self.cadence = max(cadence_bars, 1)
         self.max_symbols = max_symbols_per_run
         self.debate_rounds = max(debate_rounds, 0)
@@ -162,7 +165,7 @@ class ResearchCouncilAlpha(AlphaModel):
         self.context_source = context_source
         self.shortlist_fn = shortlist
         self.language = language
-        self._sem = asyncio.Semaphore(concurrency)
+        self._sem = LazySemaphore(concurrency)
         self._bar_count = 0
         self._cache: dict[str, CouncilVerdict] = {}
         self.verdicts: dict[str, CouncilVerdict] = {}
