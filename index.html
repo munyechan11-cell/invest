@@ -1,4 +1,7 @@
 <meta charset="utf-8">
+<!-- 없으면 모바일 브라우저가 980px 로 렌더한 뒤 통째로 축소합니다 —
+     글씨가 작아지고 미디어쿼리는 한 줄도 걸리지 않습니다. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>픽셀 트레이딩 플로어</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -140,6 +143,7 @@ body::before{content:""; position:fixed; inset:0; z-index:99; pointer-events:non
 @keyframes slide{to{transform:translateX(-50%)}}
 .ticker b{font-weight:600; color:var(--bone)}
 .ticker .u{color:var(--sang)} .ticker .d{color:var(--ha)}
+.ticker .sep{color:var(--faint)}
 
 /* ── 조작부 ───────────────────────────────────────────────── */
 .prog{height:3px; background:var(--rule)}
@@ -191,23 +195,30 @@ button[aria-pressed="true"]{border-color:var(--gold); color:var(--gold)}
   text-shadow:none}
 .vlab{font-size:9.5px; letter-spacing:.16em; color:var(--dim); font-weight:600;
   margin-bottom:6px}
-.line{position:relative; height:3px; background:var(--rule); margin:32px 10px 28px}
+.scaleblock{position:relative; height:132px; margin:6px 0 4px}
+.line{position:absolute; left:12px; right:12px; top:50%; height:3px;
+  background:var(--rule)}
 .line .fill{position:absolute; left:0; top:0; bottom:0; width:0; background:var(--gold);
   transition:width .6s ease-out}
 .pin{position:absolute; top:50%; transform:translate(-50%,-50%); text-align:center;
-  width:92px; opacity:0; transition:opacity .45s}
+  width:86px; opacity:0; transition:opacity .45s}
 .pin.show{opacity:1}
 .pin .dot{width:10px; height:10px; margin:0 auto; background:var(--void);
   border:3px solid var(--dim)}
-.pin .v{font-family:var(--mono); font-size:20px; font-weight:700;
-  font-variant-numeric:tabular-nums}
-.pin .w{font-size:9.5px; color:var(--dim); letter-spacing:.04em}
+.pin .v{position:absolute; left:50%; transform:translateX(-50%);
+  font-family:var(--mono); font-size:19px; font-weight:700;
+  font-variant-numeric:tabular-nums; line-height:1; white-space:nowrap}
+.pin .w{position:absolute; left:50%; transform:translateX(-50%);
+  font-size:10px; color:var(--dim); letter-spacing:.04em; line-height:1;
+  white-space:nowrap}
+/* 위/아래로 갈라 세워 서로 겹치지 않게 합니다. 컨테이너가 132px 를 잡고
+   있으므로 라벨이 바깥 문단을 침범하지 않습니다. */
+.pin.hi .v{bottom:26px} .pin.hi .w{bottom:14px}
+.pin.lo .v{top:26px}    .pin.lo .w{top:14px}
 .pin.up .dot{border-color:var(--sang)} .pin.up .v{color:var(--sang)}
 .pin.down .dot{border-color:var(--ha)} .pin.down .v{color:var(--ha)}
 .pin.fin .dot{border-color:var(--gold); width:14px; height:14px}
-.pin.fin .v{color:var(--gold); font-size:22px}
-.pin.hi .v,.pin.hi .w{position:relative; top:-48px}
-.pin.lo .v,.pin.lo .w{position:relative; top:10px}
+.pin.fin .v{color:var(--gold); font-size:24px}
 .vtext{font-size:13px; margin:0}
 .vtext.muted{color:var(--faint)}
 .split{border-left:3px solid var(--gold); padding-left:12px; margin-top:13px}
@@ -222,6 +233,69 @@ button[aria-pressed="true"]{border-color:var(--gold); color:var(--gold)}
 footer{margin-top:30px; border-top:1px solid var(--rule); padding-top:20px;
   color:var(--faint); font-size:12.5px; display:flex; flex-direction:column; gap:8px}
 footer b{color:var(--dim); font-weight:600}
+
+/* ── 모바일 ─────────────────────────────────────────────────
+   좁은 화면에서는 스프라이트를 줄이고, 세로로 쌓고, 손가락이 닿는
+   크기로 키웁니다. 매수·매도가 있는 화면이라 오터치가 곧 주문입니다. */
+@media (max-width: 760px){
+  .wrap{padding:0 12px 56px}
+  .top{gap:10px; padding:16px 0 12px}
+  .logo{font-size:13px; letter-spacing:0}
+  .quote{margin-left:0; width:100%; justify-content:space-between;
+         border-top:1px solid var(--rule); padding-top:10px}
+  .quote .val{font-size:26px}
+
+  .seat{width:23vw; max-width:86px}
+  .seat canvas{width:38px}
+  .seat .plate{font-size:6.5px; margin-bottom:3px}
+  .seat .role{font-size:8.5px}
+  .seat .desk{width:42px; height:6px}
+  .seat.on::after{width:50px}
+
+  .bubble{width:min(92vw,420px); font-size:13.5px; padding:10px 12px 11px}
+  .bubble .hd .nm{font-size:8px}
+  .bubble .hd .rl{font-size:9.5px}
+
+  .roomlab{font-size:6.5px; padding:8px 2px; letter-spacing:0}
+  .ticker{height:28px}
+  .ticker .run{font-size:10.5px; gap:18px}
+
+  /* 조작부: 버튼이 손가락에 맞아야 합니다 */
+  .bar{gap:8px; padding:10px}
+  button{flex:1; min-height:44px; font-size:8px; padding:10px 8px}
+  .steps{margin-left:0; width:100%; gap:5px}
+  .step{flex:1; text-align:center; font-size:10px; padding:6px 4px}
+
+  .lower{gap:12px; margin-top:14px}
+  /* 발언자와 발언을 나란히 두면 96px 를 뺀 나머지가 너무 좁습니다 */
+  .log .row{grid-template-columns:1fr; gap:5px; padding:12px 14px}
+  .log .row .who{display:flex; align-items:baseline; gap:8px}
+  .log .row .who .nm{margin-bottom:0}
+  .log{max-height:none}
+
+  .vgrid{grid-template-columns:1fr}
+  .vcell.call .v{font-size:30px}
+  .scaleblock{height:124px}
+  .pin{width:70px}
+  .pin .v{font-size:19px}
+  .pin.fin .v{font-size:23px}
+  .pin .w{font-size:9px}
+}
+
+/* 아주 좁은 화면 (아이폰 SE 등) */
+@media (max-width: 380px){
+  .logo{font-size:11px}
+  .seat canvas{width:32px}
+  .seat .role{font-size:7.5px}
+  .pin .w{font-size:8px}
+  .step{font-size:9px}
+}
+
+/* 손가락 입력 기기에서는 hover 가 없습니다 — 누르는 느낌을 대신 줍니다 */
+@media (hover: none){
+  button:active{border-color:var(--gold); color:var(--gold);
+                transform:translateY(1px)}
+}
 </style>
 
 <div class="wrap">
@@ -265,14 +339,16 @@ footer b{color:var(--dim); font-weight:600}
       </div>
 
       <div class="vlab">리스크 배율 협상</div>
-      <div class="line">
-        <div class="fill" id="fill"></div>
-        <div class="pin down lo" id="pWARDEN" style="left:35%">
-          <div class="dot"></div><div class="v num">0.35</div><div class="w">WARDEN</div></div>
-        <div class="pin fin hi" id="pJUDGE" style="left:50%">
-          <div class="v num">0.50</div><div class="w">JUDGE</div><div class="dot"></div></div>
-        <div class="pin up lo" id="pBLAZE" style="left:80%">
-          <div class="dot"></div><div class="v num">0.80</div><div class="w">BLAZE</div></div>
+      <div class="scaleblock">
+        <div class="line">
+          <div class="fill" id="fill"></div>
+          <div class="pin down lo" id="pWARDEN" style="left:35%">
+            <div class="dot"></div><div class="v num">0.35</div><div class="w">WARDEN</div></div>
+          <div class="pin up hi" id="pBLAZE" style="left:80%">
+            <div class="dot"></div><div class="v num">0.80</div><div class="w">BLAZE</div></div>
+          <div class="pin fin hi" id="pJUDGE" style="left:50%">
+            <div class="dot"></div><div class="v num">0.50</div><div class="w">JUDGE</div></div>
+        </div>
       </div>
 
       <p class="vtext muted" id="vsum">CHIEF가 아직 결론을 내지 않았습니다.</p>
@@ -372,17 +448,34 @@ const FACTS=[
 /* ── 무대 ───────────────────────────────────────────────── */
 const stage=document.getElementById("stage");
 const ZONE_H=34, TICK_H=32;
+/* 좁은 화면에서는 16석을 6·6·4 로 늘어놓을 수 없습니다. 폭에 따라 배치
+   자체를 바꿉니다 — 넓으면 3행(분석 8 / 토론·리스크 / 결정), 좁으면 4행 × 4열. */
+const NARROW=760;
+function isNarrow(){ return stage.clientWidth < NARROW; }
 function sizeStage(){
   const w=stage.clientWidth;
-  stage.style.height=Math.max(430,Math.min(560,w*0.50))+"px";
+  stage.style.height=(isNarrow()
+    ? Math.max(400,Math.min(560,w*1.25))
+    : Math.max(430,Math.min(560,w*0.50)))+"px";
 }
 /* 행 위치를 퍼센트로 박아두면 무대가 짧아질 때 좌석끼리 겹칩니다.
    구역 띠와 티커를 뺀 남는 높이를 3등분해 각 행의 발밑에 맞춥니다. */
 function layout(){
-  const H=stage.clientHeight;
-  const top=ZONE_H+10, bot=H-TICK_H-6, rowH=(bot-top)/3;
+  const H=stage.clientHeight, narrow=isNarrow();
+  const rows=narrow?4:3;
+  const top=ZONE_H+10, bot=H-TICK_H-6, rowH=(bot-top)/rows;
   nodes.forEach((n,k)=>{
-    const y=SEATS[k][7], row=y===42?0:y===66?1:2;
+    let row, x;
+    if(narrow){
+      row=Math.floor(k/4);          // SEATS 순서가 곧 심의 순서입니다
+      x=12.5+(k%4)*25;
+    }else{
+      const y=SEATS[k][7];
+      row=y===42?0:y===66?1:2;
+      x=SEATS[k][6];
+    }
+    n.dataset.x=x;
+    n.style.left=x+"%";
     n.style.top=(top+rowH*(row+1))+"px";
   });
 }
@@ -416,7 +509,7 @@ const labs=["1 · ANALYSTS","2 · DEBATE","3 · RISK","4 · DECIDE"].map(t=>{
 const runEl=document.getElementById("run");
 const strip=FACTS.map(([k,v,c])=>
   `<span><b>${k}</b>&nbsp;&nbsp;<span class="${c}">${v}</span></span>`
-  ).join('<span style="color:var(--rule)">◆</span>');
+  ).join('<span class="sep" aria-hidden="true">◆</span>');
 runEl.innerHTML=strip+strip;
 
 const stepEls=STAGES.map(t=>{const e=document.createElement("span");
@@ -461,13 +554,17 @@ function showBubble(idx,text,stance){
 function placeBubble(){
   if(!bubble) return;
   const idx=+bubble.dataset.seat, node=nodes[idx], s=SEATS[idx];
-  const PAD=10, sw=stage.clientWidth, bw=bubble.offsetWidth, bh=bubble.offsetHeight;
+  const PAD=10, sw=stage.clientWidth;
+  // CSS 의 min(92vw,420px) 는 무대가 아니라 화면 기준이라, 좁은 화면에서는
+  // 말풍선이 무대보다 넓어집니다. 놓기 직전에 무대에 맞춰 줄입니다.
+  bubble.style.maxWidth=(sw-PAD*2)+"px";
+  const bw=bubble.offsetWidth, bh=bubble.offsetHeight;
   const seatTop=node.offsetTop-node.offsetHeight, seatBot=node.offsetTop;
   const below=seatTop-bh-12 < ZONE_H+4;      // 위가 좁으면 아래로 붙인다
   bubble.classList.toggle("below",below);
   bubble.style.top=(below?seatBot+12:seatTop-12)+"px";
   bubble.style.transform=below?"translateY(0)":"translateY(-100%)";
-  const sx=s[6]/100*sw;
+  const sx=(+node.dataset.x||s[6])/100*sw;
   const left=Math.max(PAD,Math.min(sw-bw-PAD,sx-bw/2));
   bubble.style.left=left+"px";
   bubble.style.setProperty("--tail",Math.max(14,Math.min(bw-14,sx-left))+"px");
