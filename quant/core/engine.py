@@ -142,6 +142,10 @@ class Engine:
                 await self.bus.publish(EventType.INSIGHT, _insight_dict(ins))
         self.insights.expire(ctx.now)
 
+        # 4.5 — refresh projected holdings so execution diffs against the
+        # position we will have, not the one we have now
+        await self._refresh_pending()
+
         # 5 — portfolio construction
         try:
             targets = self.portfolio_model.create_targets(ctx, self.insights.active(ctx.now))
@@ -150,7 +154,33 @@ class Engine:
             return
 
         # 6 — risk
+        proposed = {t.symbol.key: t.quantity for t in targets}
         targets = self.risk.manage(ctx, targets)
+
+        # A risk model that flattens a position must also cancel the insight
+        # that asked for it. Otherwise the insight is still active next bar,
+        # the portfolio model rebuilds the same target, and the strategy
+        # oscillates in and out paying the spread each way — the stop appears
+        # to "not work" when in fact it works every single bar.
+        for t in targets:
+            held = ctx.portfolio.quantity(t.symbol)
+            # A symbol the portfolio model left out of the batch is one it was
+            # content to hold as-is — so the baseline is the current position,
+            # not "nothing". Reading a missing target as zero would make every
+            # deadbanded hold look like a liquidation.
+            was = proposed.get(t.symbol.key, held)
+            if was == 0:
+                continue
+            if t.quantity == 0 or abs(t.quantity) < abs(was):
+                self.insights.clear(t.symbol)
+                await self.bus.publish(EventType.RISK_ACTION, {
+                    "symbol": t.symbol.ticker,
+                    "proposed": float(was),
+                    "allowed": float(t.quantity),
+                    "reason": t.tag,
+                    "insights_cancelled": True,
+                })
+
         for t in targets:
             await self.bus.publish(EventType.TARGET, _target_dict(t))
 
@@ -169,6 +199,20 @@ class Engine:
                 await self.bus.publish(EventType.ORDER_SUBMITTED, _order_dict(submitted))
 
         _ = fills  # already published in _settle
+
+    async def _refresh_pending(self) -> None:
+        from decimal import Decimal
+
+        pending: dict[str, Decimal] = {}
+        try:
+            for order in await self.brokerage.open_orders():
+                signed = order.remaining * order.side.sign
+                pending[order.symbol.key] = pending.get(order.symbol.key,
+                                                        Decimal("0")) + signed
+        except Exception:
+            log.exception("could not read resting orders — sizing off filled position")
+            pending = {}
+        self.ctx.set_pending(pending)
 
     def _active(self, bars: dict[str, Bar]) -> dict[str, Bar]:
         """The subset of this batch the models are allowed to act on.

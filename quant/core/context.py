@@ -45,6 +45,7 @@ class Context:
         self._quotes: dict[str, Quote] = {}
         self._state: dict[str, dict[str, Any]] = defaultdict(dict)
         self._locks: dict[str, tuple[datetime, str]] = {}
+        self._pending: dict[str, Any] = {}
         self.benchmark: Symbol | None = None
 
     # ── time ─────────────────────────────────────────────────────────────
@@ -106,6 +107,26 @@ class Context:
 
     def position_qty(self, symbol: Symbol):
         return self.portfolio.quantity(symbol)
+
+    # ── projected holdings ───────────────────────────────────────────────
+    def set_pending(self, pending: dict[str, "Decimal"]) -> None:
+        """Signed quantity currently resting in unfilled orders, per symbol."""
+        self._pending = dict(pending)
+
+    def pending_quantity(self, symbol: Symbol) -> "Decimal":
+        from decimal import Decimal
+
+        return self._pending.get(symbol.key, Decimal("0"))
+
+    def projected_quantity(self, symbol: Symbol) -> "Decimal":
+        """Position you will hold if every resting order fills.
+
+        This — not the filled position — is what a target must be diffed
+        against. Sizing off the filled quantity while an order rests means the
+        same order goes out again every bar, and a limit that sits for three
+        bars becomes three times the intended position.
+        """
+        return self.portfolio.quantity(symbol) + self.pending_quantity(symbol)
 
     def is_invested(self, symbol: Symbol) -> bool:
         return self.portfolio.quantity(symbol) != 0

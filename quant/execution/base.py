@@ -35,7 +35,9 @@ class ExecutionModel(ABC):
             price = ctx.price(t.symbol)
             if price <= 0:
                 continue
-            current = ctx.portfolio.quantity(t.symbol)
+            # Diff against *projected* holdings — filled position plus anything
+            # already resting — or an unfilled order is re-sent every bar.
+            current = ctx.projected_quantity(t.symbol)
             delta = t.symbol.round_qty(t.quantity - current)
             if delta == 0:
                 continue
