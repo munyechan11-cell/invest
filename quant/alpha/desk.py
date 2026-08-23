@@ -48,7 +48,9 @@ from typing import Awaitable, Callable, Sequence
 
 from quant.core.aio import LazySemaphore
 from quant.alpha.base import AlphaModel
-from quant.alpha.llm_client import LLMClient, LLMConfig, LLMError
+from quant.alpha.llm_client import (
+    LLMClient, LLMConfig, LLMError, QuotaExhausted,
+)
 from quant.alpha.seats import (
     ANALYST_SEATS,
     BEAR_SEAT,
@@ -413,6 +415,20 @@ class TradingDesk(AlphaModel):
         )
         log.info("분석 좌석: %s", ", ".join(s.title_ko for s in self.analyst_seats))
 
+    async def _list_models(self) -> list[str]:
+        """Ask the provider what it actually serves.
+
+        A 404 that only says "not found" leaves the operator guessing at a
+        model name; one that lists the real options is a one-line fix.
+        """
+        lister = getattr(self.client, "list_models", None)
+        if lister is None:
+            return []
+        try:
+            return await lister()
+        except Exception:
+            return []
+
     async def _preflight(self) -> str:
         """One cheap call. Returns a reason to stay disabled, or "" when healthy."""
         try:
@@ -431,7 +447,10 @@ class TradingDesk(AlphaModel):
             if " 401:" in message or " 403:" in message:
                 return f"API 키가 거부되었습니다 — 키를 확인하세요. ({message[:160]})"
             if " 404:" in message:
-                return f"모델을 찾을 수 없습니다 — 모델 이름을 확인하세요. ({message[:160]})"
+                available = await self._list_models()
+                hint = f" 사용 가능: {', '.join(available[:8])}" if available else ""
+                return (f"모델을 찾을 수 없습니다 — 모델 이름을 확인하세요."
+                        f"{hint} ({message[:120]})")
             return f"LLM 사전 점검 실패: {message[:200]}"
         except Exception as exc:                      # pragma: no cover - defensive
             return f"LLM 사전 점검 실패: {type(exc).__name__}: {exc}"
@@ -572,6 +591,18 @@ class TradingDesk(AlphaModel):
     async def _safe_ask(self, seat: Seat, user: str, fallback: dict) -> dict:
         try:
             return await self._ask(seat, user)
+        except QuotaExhausted as exc:
+            # Stop the whole desk. Letting the remaining fifteen seats each
+            # retry an exhausted allowance turns a clear failure into ten
+            # minutes of deadline burn and the same answer.
+            self._disabled = (
+                f"LLM 사용량이 소진되었습니다 — 데스크를 중단합니다. "
+                f"16석 한 바퀴는 호출 약 {len(self.seats) + 3}회를 씁니다. "
+                f"무료 티어라면 유료 전환이나 좌석 축소(seats 옵션)를 고려하세요. "
+                f"({str(exc)[:150]})"
+            )
+            log.error(self._disabled)
+            raise
         except LLMError as exc:
             log.warning("%s 좌석 실패: %s", seat.key, exc)
             return {**fallback, "error": str(exc)}
@@ -590,6 +621,10 @@ class TradingDesk(AlphaModel):
             "stance": "neutral", "conviction": 0.0, "data_sufficient": False,
             "key_points": ["좌석 응답 실패"],
         })
+
+    async def _run_stage(self, coro, remaining: float):
+        """Run one stage, letting a quota exhaustion abort the deliberation."""
+        return await asyncio.wait_for(coro, timeout=remaining)
 
     async def _run_debate(self, brief: dict, analysts: dict) -> dict:
         """Bull and bear argue for N rounds, each seeing the other's last turn."""
@@ -728,6 +763,8 @@ class TradingDesk(AlphaModel):
         except asyncio.TimeoutError:
             log.warning("%s: 분석 단계 마감 초과 — 이번 사이클 건너뜀", symbol.ticker)
             return None
+        except QuotaExhausted:
+            return None
         analysts = {s.key: r for s, r in zip(self.analyst_seats, reports)}
 
         debate: dict = {"rounds": [], "transcript": []}
@@ -750,6 +787,9 @@ class TradingDesk(AlphaModel):
                 self._run_head(brief, analysts, debate, risk_debate, risk, plan,
                                trade, lessons),
                 timeout=remaining())
+        except QuotaExhausted:
+            log.error("%s: 사용량 소진으로 심의 중단", symbol.ticker)
+            return None
         except (asyncio.TimeoutError, LLMError) as exc:
             # Degrade to the analyst consensus rather than emit a late or
             # half-formed decision. In real time the deadline is part of the

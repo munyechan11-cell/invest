@@ -1,0 +1,34 @@
+name: readme-desk-verbatim
+mode: backtest
+data:
+  provider: synthetic
+  params: {seed: 7}
+  timeframe: 1d
+  warmup_bars: 260
+universe:
+  symbols:
+    - {ticker: AAA, venue: SIM, tick_size: 0.01}
+# ── verbatim from README "실시간 16인 트레이딩 데스크" ──────────────────
+alpha:
+  - {type: investor_flow}          # 수급은 규칙 기반으로도 따로 본다
+  - type: desk
+    params:
+      llm:          {provider: anthropic, model: claude-opus-5}
+      decision_llm: {provider: anthropic, model: claude-opus-5}  # 판정 좌석용
+      cadence_bars: 1
+      max_symbols_per_run: 3
+      debate_rounds: 2
+      risk_debate_rounds: 1
+      deadline_s: 120
+      min_conviction: 0.6
+      cost_limit_usd: 20
+portfolio:
+  starting_cash: 100000
+  model: {type: vol_target}
+execution:
+  model: {type: immediate}
+costs: {preset: us_equity}
+broker: {type: paper}
+backtest:
+  start: 2024-01-01T00:00:00Z
+  end: 2024-06-01T00:00:00Z

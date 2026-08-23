@@ -1,6 +1,6 @@
 # Runnable with no API keys: synthetic data, paper broker.
 #   python -m quant backtest configs/demo.yaml
-name: panic-loss-limit
+name: readme-limits-probe
 description: >
   Trend + mean-reversion + cross-sectional momentum on synthetic data,
   sized by volatility targeting, with stops, protections and realistic costs.
@@ -91,5 +91,7 @@ backtest:
   risk_free_rate: 0.03
 
 limits:
+  max_daily_notional: 1000
+  max_daily_orders: 1
   max_daily_loss: 1
   timezone_offset_hours: 9

@@ -1,6 +1,6 @@
 # Runnable with no API keys: synthetic data, paper broker.
 #   python -m quant backtest configs/demo.yaml
-name: demo-no-trades
+name: readme-dailyloss-probe
 description: >
   Trend + mean-reversion + cross-sectional momentum on synthetic data,
   sized by volatility targeting, with stops, protections and realistic costs.
@@ -75,7 +75,7 @@ risk:
 
 execution:
   model: {type: immediate}
-  min_order_notional: 5000000
+  min_order_notional: 50
 
 costs:
   preset: us_equity
@@ -89,3 +89,8 @@ backtest:
   end: 2026-01-01T00:00:00Z
   trials: 1
   risk_free_rate: 0.03
+
+limits:
+  max_daily_loss: 1
+  max_daily_loss_pct: 0.0001
+  timezone_offset_hours: 9

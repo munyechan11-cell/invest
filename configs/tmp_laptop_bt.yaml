@@ -1,0 +1,59 @@
+# CSV 합성 데이터 + 페이퍼 브로커. dryrun 시작-중단-재시작 반복 테스트용.
+#   python -m quant dryrun configs/tmp_laptop_csv.yaml --state /tmp/lap2.db
+name: laptop-csv
+description: dryrun start/stop/restart durability check
+
+mode: backtest
+
+data:
+  provider: csv
+  params: {directory: /tmp/laptopdata}
+  timeframe: 1m
+  warmup_bars: 300
+  calendar: always_open
+
+universe:
+  symbols:
+    - {ticker: AAA, venue: SIM, tick_size: 0.01}
+    - {ticker: BBB, venue: SIM, tick_size: 0.01}
+    - {ticker: CCC, venue: SIM, tick_size: 0.01}
+    - {ticker: DDD, venue: SIM, tick_size: 0.01}
+
+alpha:
+  - type: donchian_breakout
+    params: {entry_period: 20, exit_period: 10, hold_bars: 25, allow_short: false,
+             min_atr_pct: 0.0002}
+
+portfolio:
+  starting_cash: 100000
+  base_currency: USD
+  model: {type: equal_weight, params: {}}
+  max_position_weight: 0.30
+  max_gross_leverage: 0.95
+  cash_reserve_pct: 0.02
+  allow_short: false
+
+risk:
+  models:
+    - {type: max_positions, params: {max_positions: 4}}
+  protections: []
+
+execution:
+  model: {type: immediate}
+  min_order_notional: 50
+
+costs:
+  preset: us_equity
+
+broker:
+  type: paper
+  max_order_notional: 40000
+
+limits:
+  max_daily_orders: 2
+  max_daily_notional: 50000
+  halt_until_next_day: true
+
+backtest:
+  start: 2026-08-22T20:00:00Z
+  end: 2026-08-23T10:20:00Z

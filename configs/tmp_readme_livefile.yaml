@@ -1,0 +1,22 @@
+# Probe: file says dry_run, NO `limits:` block at all, broker is paper.
+name: readme-api-live-probe
+mode: live
+data:
+  provider: synthetic
+  params: {seed: 7}
+  timeframe: 1d
+  warmup_bars: 30
+universe:
+  symbols:
+    - {ticker: AAA, venue: SIM, tick_size: 0.01}
+alpha:
+  - {type: ema_cross, params: {fast: 5, slow: 20}}
+portfolio:
+  starting_cash: 100000
+  model: {type: vol_target}
+execution:
+  model: {type: immediate}
+costs: {preset: us_equity}
+broker:
+  type: paper
+  live_trading_confirmed: true

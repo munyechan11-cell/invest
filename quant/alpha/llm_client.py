@@ -13,19 +13,26 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
+from quant.core.aio import LazyLock
+
 log = logging.getLogger("quant.alpha.llm")
 
 # Newest Claude generation. Override per-config if you need a cheaper tier for
 # the high-volume analyst roles.
+# Aliases where the provider offers one. A pinned name that 404s is a worse
+# default than an alias that quietly tracks the current release: the pinned one
+# fails for every user the moment the provider retires it, and the failure
+# reads as a config error rather than a stale default.
 DEFAULT_MODELS = {
     "anthropic": "claude-opus-5",
     "openai": "gpt-5.5",
-    "google": "gemini-3-pro",
+    "google": "gemini-pro-latest",
 }
 
 
@@ -51,6 +58,9 @@ class LLMConfig:
     max_tokens: int = 2048
     timeout: float = 120.0
     max_retries: int = 3
+    #: 분당 요청 상한. 0 이면 제한 없음. 무료 티어는 대개 5~15 RPM 이라,
+    #: 16석 데스크가 한 번에 19번 호출하면 절반이 429 로 떨어진다.
+    requests_per_minute: float = 0.0
     extra: dict[str, Any] = field(default_factory=dict)
 
     def resolved_model(self) -> str:
@@ -69,6 +79,17 @@ class LLMConfig:
 
 class LLMError(RuntimeError):
     pass
+
+
+class QuotaExhausted(LLMError):
+    """A 429 that will not clear in a useful timeframe.
+
+    Distinct from ordinary throttling because the response is different: a
+    per-second burst limit wants a short sleep, an exhausted daily allowance
+    wants the caller to stop entirely. Retrying the latter burns the deadline
+    and then fails anyway — which is exactly what a sixteen-seat desk did for
+    ten minutes before this existed.
+    """
 
 
 def _raise_for_status(response: httpx.Response, provider: str) -> None:
@@ -90,6 +111,32 @@ def _raise_for_status(response: httpx.Response, provider: str) -> None:
     raise LLMError(f"{provider} {response.status_code}: {detail}")
 
 
+_RETRY_HINT = re.compile(r"retry in ([\d.]+)\s*(ms|s)\b|retryDelay[\"':\s]+([\d.]+)s",
+                         re.I)
+
+
+def _retry_after(message: str) -> float | None:
+    """Pull the provider's suggested wait out of a 429 message."""
+    m = _RETRY_HINT.search(message)
+    if not m:
+        return None
+    if m.group(3):
+        return min(float(m.group(3)), 60.0)
+    value = float(m.group(1))
+    return min(value / 1000.0 if m.group(2).lower() == "ms" else value, 60.0)
+
+
+#: a suggested wait beyond this is not throttling, it is an exhausted allowance
+_LONG_WAIT_S = 25.0
+
+
+def _is_long_exhaustion(message: str) -> bool:
+    if any(w in message.lower() for w in ("per day", "perday", "daily", "quota_exceeded")):
+        return True
+    wait = _retry_after(message)
+    return wait is not None and wait >= _LONG_WAIT_S
+
+
 def _extract_json(text: str) -> dict:
     """Last-resort parser for providers/models that ignore the schema."""
     text = text.strip()
@@ -106,12 +153,37 @@ def _extract_json(text: str) -> dict:
         raise LLMError(f"model did not return JSON: {text[:400]}") from exc
 
 
+class _RateLimiter:
+    """Simple pacer. Spreads requests evenly rather than firing a burst.
+
+    A burst is what actually trips a free-tier quota: the limit is per minute,
+    but sixteen concurrent calls arrive in the same second and most of them are
+    rejected. Pacing them costs the same wall-clock minute and loses nothing.
+    """
+
+    def __init__(self, per_minute: float):
+        self._interval = 60.0 / per_minute if per_minute > 0 else 0.0
+        self._next = 0.0
+        self._lock = LazyLock()
+
+    async def wait(self) -> None:
+        if self._interval <= 0:
+            return
+        async with self._lock:
+            now = time.monotonic()
+            delay = self._next - now
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._next = max(now, self._next) + self._interval
+
+
 class LLMClient:
     """One client, three wire protocols."""
 
     def __init__(self, config: LLMConfig):
         self.config = config
         self.usage = LLMUsage()
+        self._limiter = _RateLimiter(config.requests_per_minute)
         self._client = httpx.AsyncClient(timeout=config.timeout)
         if not config.resolved_key():
             raise LLMError(
@@ -122,6 +194,7 @@ class LLMClient:
         """Return parsed JSON when `schema` is given, else raw text."""
         last: Exception | None = None
         for attempt in range(self.config.max_retries):
+            await self._limiter.wait()
             try:
                 if self.config.provider == "anthropic":
                     return await self._anthropic(system, user, schema)
@@ -139,7 +212,12 @@ class LLMClient:
                     raise
                 if attempt == self.config.max_retries - 1:
                     break
-                await asyncio.sleep(1.5 * (2 ** attempt))
+                # A 429 usually carries the provider's own suggested delay.
+                # Guessing a shorter one just burns another rejected request.
+                if " 429:" in text and _is_long_exhaustion(text):
+                    raise QuotaExhausted(text) from exc
+                wait = _retry_after(text) if " 429:" in text else None
+                await asyncio.sleep(wait if wait is not None else 1.5 * (2 ** attempt))
         raise LLMError(f"LLM call failed after {self.config.max_retries} attempts: {last}")
 
     # ── providers ────────────────────────────────────────────────────────
@@ -209,9 +287,21 @@ class LLMClient:
         if schema:
             gen["responseMimeType"] = "application/json"
             gen["responseSchema"] = _to_google_schema(schema)
+        # Auth goes in a header, never the query string: URLs end up in access
+        # logs, proxy caches and error reports, and a key that leaks that way
+        # leaks quietly. Google accepts both forms.
+        #
+        # Two credential shapes exist, and the default matters: AI Studio has
+        # issued both "AIza..." and "AQ...." API keys over time, so keying off
+        # a specific prefix goes stale. Only OAuth access tokens ("ya29....")
+        # are bearer tokens; everything else is an API key. Guessing wrong
+        # produces a 401 that reads like a bad key rather than a wrong scheme.
+        key = self.config.resolved_key()
+        auth_header = ({"Authorization": f"Bearer {key}"} if key.startswith("ya29.")
+                       else {"x-goog-api-key": key})
         r = await self._client.post(
             f"{base}/models/{self.config.resolved_model()}:generateContent",
-            params={"key": self.config.resolved_key()},
+            headers=auth_header,
             json={
                 "systemInstruction": {"parts": [{"text": system}]},
                 "contents": [{"role": "user", "parts": [{"text": user}]}],
@@ -225,6 +315,27 @@ class LLMClient:
         parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
         text = "".join(p.get("text", "") for p in parts)
         return _extract_json(text) if schema else text
+
+    async def list_models(self) -> list[str]:
+        """Model ids this provider will accept for generation. Best effort."""
+        if self.config.provider != "google":
+            return []
+        base = self.config.base_url or "https://generativelanguage.googleapis.com/v1beta"
+        key = self.config.resolved_key()
+        header = ({"Authorization": f"Bearer {key}"} if key.startswith("ya29.")
+                  else {"x-goog-api-key": key})
+        r = await self._client.get(f"{base}/models", headers=header,
+                                   params={"pageSize": 200})
+        if r.status_code != 200:
+            return []
+        return [
+            m["name"].replace("models/", "")
+            for m in r.json().get("models", [])
+            if "generateContent" in (m.get("supportedGenerationMethods") or [])
+            and m["name"].replace("models/", "").startswith("gemini")
+            and not any(x in m["name"] for x in ("image", "tts", "embedding",
+                                                 "vision", "robotics"))
+        ]
 
     async def close(self) -> None:
         await self._client.aclose()

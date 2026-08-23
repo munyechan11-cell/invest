@@ -29,7 +29,7 @@ from quant.live.credentials import load_env_file
 load_env_file()
 
 from quant.alpha.desk import TradingDesk
-from quant.alpha.llm_client import LLMConfig
+from quant.alpha.llm_client import DEFAULT_MODELS, LLMConfig
 from quant.core.account import Portfolio
 from quant.core.clock import SimClock
 from quant.core.context import Context
@@ -45,20 +45,55 @@ BAR = "=" * 72
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="데스크 실전 심의 1회")
     p.add_argument("--ticker", default="005930")
-    p.add_argument("--model", default="claude-opus-5")
+    p.add_argument("--provider", default="auto",
+                   choices=["auto", "anthropic", "google", "openai"],
+                   help="auto = .env 에 있는 키를 보고 고름")
+    p.add_argument("--model", default="", help="비우면 프로바이더 기본 모델")
     p.add_argument("--rounds", type=int, default=1, help="강세/약세 토론 라운드")
     p.add_argument("--risk-rounds", type=int, default=1)
     p.add_argument("--deadline", type=float, default=300.0)
     p.add_argument("--max-tokens", type=int, default=1200)
+    p.add_argument("--rpm", type=float, default=0.0,
+                   help="분당 요청 상한 (무료 티어는 5~15). 0 = 제한 없음")
+    p.add_argument("--seats", default="",
+                   help="분석 좌석 축소, 쉼표 구분 (예: technical,flow,quant)")
     p.add_argument("--verbose", action="store_true")
     return p.parse_args()
 
 
+def pick_provider(requested: str) -> str:
+    """Choose a provider from whatever credentials are actually present.
+
+    Defaulting to one provider and failing when its key is missing sends the
+    operator hunting for a config problem that is really a "you have a
+    different key" problem.
+    """
+    available = [name for name, var in (
+        ("anthropic", "ANTHROPIC_API_KEY"),
+        ("google", "GOOGLE_API_KEY"),
+        ("openai", "OPENAI_API_KEY"),
+    ) if os.environ.get(var, "").strip()]
+    if requested != "auto":
+        if requested not in available:
+            print(f"{requested} 키가 .env 에 없습니다. "
+                  f"사용 가능: {', '.join(available) or '없음'}", file=sys.stderr)
+            return ""
+        return requested
+    if not available:
+        print("LLM 키가 하나도 없습니다 — .env 에 ANTHROPIC_API_KEY / "
+              "GOOGLE_API_KEY / OPENAI_API_KEY 중 하나를 넣으세요.", file=sys.stderr)
+        return ""
+    if len(available) > 1:
+        print(f"사용 가능한 키: {', '.join(available)} → {available[0]} 사용 "
+              f"(--provider 로 지정 가능)")
+    return available[0]
+
+
 async def run(args: argparse.Namespace) -> int:
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not key.startswith("sk-ant-"):
-        print("ANTHROPIC_API_KEY 가 .env 에 없거나 형식이 다릅니다.", file=sys.stderr)
+    provider = pick_provider(args.provider)
+    if not provider:
         return 2
+    model = args.model or DEFAULT_MODELS.get(provider, "")
 
     symbol = Symbol(args.ticker, venue="kis", quote_currency="KRW",
                     tick_size=Decimal("100"), lot_size=Decimal("1"))
@@ -83,14 +118,16 @@ async def run(args: argparse.Namespace) -> int:
     await feed.backfill([symbol], start, end)
 
     desk = TradingDesk(
-        LLMConfig(provider="anthropic", model=args.model,
-                  max_tokens=args.max_tokens, temperature=0.2),
+        LLMConfig(provider=provider, model=model, max_tokens=args.max_tokens,
+                  temperature=0.2, requests_per_minute=args.rpm,
+                  max_retries=5 if args.rpm else 3),
         flow_feed=feed,
         debate_rounds=args.rounds,
         risk_debate_rounds=args.risk_rounds,
         max_symbols_per_run=1,
         deadline_s=args.deadline,
         allow_in_backtest=True,
+        seats=[x.strip() for x in args.seats.split(",") if x.strip()] or None,
     )
     await desk.on_start(ctx)
     if desk.status()["disabled_reason"]:
@@ -100,7 +137,7 @@ async def run(args: argparse.Namespace) -> int:
         return 2
 
     print(f"\n{BAR}\n  실전 심의 · {len(desk.seats)}석 · {symbol.ticker} · "
-          f"종가 {bars[-1].close:,.0f}원 · {args.model}\n{BAR}")
+          f"종가 {bars[-1].close:,.0f}원 · {provider}/{model}\n{BAR}")
 
     decision = await desk.deliberate(ctx, symbol)
     if decision is None:

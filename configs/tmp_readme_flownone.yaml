@@ -1,0 +1,26 @@
+name: readme-flow-none
+mode: backtest
+data:
+  provider: synthetic
+  params: {seed: 11}
+  timeframe: 1d
+  warmup_bars: 260
+universe:
+  symbols:
+    - {ticker: "005930", venue: KRX, tick_size: 1}
+    - {ticker: "000660", venue: KRX, tick_size: 1}
+# ── verbatim from README "수급 — 외국인 · 기관 · 개인" ─────────────────
+flow:
+  provider: none
+  history_sessions: 120
+
+alpha:
+  - {type: investor_flow, params: {min_streak: 3, min_participation: 0.01}}
+  - {type: retail_contrarian, params: {min_zscore: 1.8}}
+portfolio: {starting_cash: 10000000, model: {type: vol_target}}
+execution: {model: {type: immediate}}
+costs: {preset: kr_equity}
+broker: {type: paper}
+backtest:
+  start: 2023-01-01T00:00:00Z
+  end: 2026-01-01T00:00:00Z
