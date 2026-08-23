@@ -118,13 +118,32 @@ class ExecutionConfig(BaseModel):
 
 
 class BrokerConfig(BaseModel):
-    type: Literal["paper", "ccxt", "kis", "alpaca"] = "paper"
+    type: Literal["paper", "ccxt", "kis", "alpaca", "toss"] = "paper"
     params: dict[str, Any] = Field(default_factory=dict)
     #: hard ceiling on a single order's notional; the last line of defence
     #: between a sizing bug and the account
     max_order_notional: float = 10_000.0
     #: refuse to place any live order at all until this is explicitly true
     live_trading_confirmed: bool = False
+
+
+class LimitsConfig(BaseModel):
+    """하루 거래 한도 — the caps that assume the strategy is misbehaving.
+
+    Every other limit here is a strategy limit and assumes it is not. These sit
+    at the brokerage, below everything, and see the actual orders. Zero means
+    "no cap", but leaving all four at zero on a live account is a decision, not
+    a default.
+    """
+
+    max_daily_notional: float = 0.0     # 하루 총 거래대금 한도
+    max_daily_orders: int = 0           # 하루 주문 건수 한도
+    max_daily_loss: float = 0.0         # 하루 실현손실 한도 (통화 단위)
+    max_daily_loss_pct: float = 0.0     # 하루 실현손실 한도 (자산 대비 비율)
+    #: when "today" rolls over. Defaults to KST so the reset does not land in
+    #: the middle of the KRX session it is meant to be bounding.
+    timezone_offset_hours: float = 9.0
+    halt_until_next_day: bool = True
 
 
 class BacktestConfig(BaseModel):
@@ -156,6 +175,7 @@ class StrategyConfig(BaseModel):
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     costs: CostConfig = Field(default_factory=CostConfig)
     broker: BrokerConfig = Field(default_factory=BrokerConfig)
+    limits: LimitsConfig = Field(default_factory=LimitsConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
 
@@ -168,6 +188,15 @@ class StrategyConfig(BaseModel):
             )
         if self.mode is RunMode.LIVE and self.broker.type == "paper":
             raise ValueError("mode: live with broker.type: paper is contradictory")
+        if self.mode is RunMode.LIVE and not (
+            self.limits.max_daily_notional or self.limits.max_daily_orders
+            or self.limits.max_daily_loss or self.limits.max_daily_loss_pct
+        ):
+            raise ValueError(
+                "mode: live requires at least one daily cap under `limits:` "
+                "(max_daily_notional / max_daily_orders / max_daily_loss / "
+                "max_daily_loss_pct). A bug in a signal costs whatever you let it."
+            )
         return self
 
     @property

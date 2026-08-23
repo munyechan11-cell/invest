@@ -56,6 +56,10 @@ class PortfolioConstructionModel(ABC):
         investable = ctx.equity * (1.0 - self.cash_reserve_pct)
         targets: list[PortfolioTarget] = []
         for key, symbol in symbols.items():
+            if ctx.is_pinned(symbol):
+                # The operator owns this one. Emitting no target at all (rather
+                # than a zero) leaves the position untouched instead of closing it.
+                continue
             weight = raw.get(key, 0.0)
             price = ctx.price(symbol)
             if price <= 0:

@@ -164,6 +164,57 @@ tr:last-child td{border-bottom:0}
 .btn{font-family:var(--px);font-size:10px;background:var(--plate);border:2px solid var(--gold-dim);
   color:var(--gold);padding:5px 10px;cursor:pointer}
 .btn:hover{background:#1c2231}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn.buy{border-color:var(--up);color:var(--up)}
+.btn.sell{border-color:var(--down);color:var(--down)}
+.btn.warn{border-color:var(--red);color:var(--red)}
+
+/* ── 수동 개입 ─────────────────────────────────────────────────────── */
+.manual{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;
+  align-items:end}
+.fld{display:flex;flex-direction:column;gap:4px;min-width:0}
+.fld label{font-family:var(--px);font-size:9px;color:var(--muted);letter-spacing:.05em}
+.fld input,.fld select{background:#0a0d14;border:2px solid var(--line);color:var(--ink);
+  font-family:var(--px);font-size:12px;padding:6px 8px;width:100%}
+.fld input:focus,.fld select:focus{outline:none;border-color:var(--gold-dim)}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.pins{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.pin{font-family:var(--px);font-size:9px;border:2px solid var(--gold-dim);color:var(--gold);
+  padding:3px 7px;display:flex;gap:6px;align-items:center}
+.pin b{cursor:pointer;color:var(--muted)}
+.gauge{margin-top:4px}
+.gauge .lab{display:flex;justify-content:space-between;font-family:var(--px);font-size:9px;
+  color:var(--muted)}
+.gauge .track{height:8px;background:#0a0d14;border:1px solid var(--line);margin-top:3px}
+.gauge .track i{display:block;height:100%;background:var(--up)}
+.gauge.hot .track i{background:var(--gold)}
+.gauge.over .track i{background:var(--down)}
+.msg{font-family:var(--px);font-size:10px;margin-top:10px;padding:6px 8px;
+  border-left:3px solid var(--gold-dim);color:var(--muted);word-break:break-all}
+.msg.err{border-color:var(--down);color:var(--down)}
+.msg.ok{border-color:var(--up);color:var(--up)}
+
+/* ── 설정 마법사 ───────────────────────────────────────────────────── */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.86);z-index:100;overflow:auto;
+  padding:24px 12px 60px;display:none}
+.overlay.on{display:block}
+.sheet{max-width:640px;margin:0 auto;background:var(--panel);border:3px solid var(--gold-dim)}
+.sheet header{padding:14px 16px;border-bottom:2px solid var(--line);display:flex;
+  align-items:center;gap:10px}
+.sheet header h2{font-family:var(--px);font-size:13px;color:var(--gold);margin:0}
+.sheet .body{padding:16px}
+.step{border:2px solid var(--line);padding:12px;margin-bottom:12px}
+.step h3{font-family:var(--px);font-size:11px;color:var(--gold);margin:0 0 4px}
+.step p{font-size:11px;color:var(--muted);margin:0 0 10px;line-height:1.6}
+.venue{border:2px solid var(--line);padding:10px;margin-bottom:8px}
+.venue.on{border-color:var(--gold-dim)}
+.venue .head{display:flex;align-items:center;gap:8px;cursor:pointer}
+.venue .head span{font-family:var(--px);font-size:11px}
+.venue .status{margin-left:auto;font-family:var(--px);font-size:9px}
+.venue .note{font-size:10px;color:var(--muted);margin:6px 0 0;line-height:1.6}
+.venue .fields{display:none;margin-top:10px;display:grid;gap:8px}
+.venue:not(.on) .fields{display:none}
+.venue.on .fields{display:grid}
 .demo-tag{font-family:var(--px);font-size:9px;color:#000;background:var(--gold);padding:2px 6px}
 .empty{font-family:var(--px);font-size:10px;color:var(--muted);text-align:center;padding:18px}
 footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-size:11px}
@@ -177,6 +228,7 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
     <span class="brand"><i>◆</i> QUANT TRADING FLOOR <i>◆</i></span>
     <span class="mode backtest px" id="mode">OFFLINE</span>
     <span class="grow"></span>
+    <button class="btn" id="setupBtn">⚙ 설정</button>
     <button class="btn" id="demoBtn">▶ 데모 재생</button>
     <span class="tab on px" id="strategy">—</span>
   </div>
@@ -242,6 +294,37 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
     </div>
   </section>
 
+  <!-- 수동 개입 -->
+  <section class="panel">
+    <span class="plate"><span class="d">◆</span> 수동 매매 · 자동매매 중에도 개입 <span class="d">◆</span></span>
+    <div class="body">
+      <div class="manual">
+        <div class="fld"><label>종목</label>
+          <select id="mSymbol"><option value="">— 실행 중인 봇 없음 —</option></select></div>
+        <div class="fld"><label>수량 (비우면 금액 사용)</label>
+          <input id="mQty" type="number" step="any" placeholder="주"></div>
+        <div class="fld"><label>금액</label>
+          <input id="mNotional" type="number" step="any" placeholder="예: 500000"></div>
+        <div class="fld"><label>지정가 (비우면 시장가)</label>
+          <input id="mLimit" type="number" step="any" placeholder="시장가"></div>
+      </div>
+      <div class="actions">
+        <button class="btn buy"  id="mBuy">매수</button>
+        <button class="btn sell" id="mSell">매도</button>
+        <button class="btn sell" id="mClose">이 종목 청산</button>
+        <span style="flex:1"></span>
+        <button class="btn" id="mPause">⏸ 자동매매 일시정지</button>
+        <button class="btn warn" id="mCloseAll">⚠ 전체 청산</button>
+      </div>
+      <div class="pins" id="mPins"></div>
+      <div class="msg" id="mMsg">수동 주문은 알파·포트폴리오 계층을 건너뛰지만,
+        주문 한도와 하루 한도 같은 브로커 안전장치는 그대로 적용됩니다.
+        수동 매수한 종목은 전략이 되팔지 않도록 자동으로 고정(pin)됩니다.</div>
+
+      <div style="margin-top:14px" id="mBudget"></div>
+    </div>
+  </section>
+
   <!-- flow -->
   <section class="panel">
     <span class="plate"><span class="d">◆</span> 수급 · 외국인 / 기관 / 개인 <span class="d">◆</span></span>
@@ -260,6 +343,56 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
   읽기 전용 화면입니다. 시작·정지는 CLI 전용.
   과거 성과는 예측이 아니며, 매매에는 원금 손실 위험이 있습니다.
 </footer>
+
+<div class="overlay" id="setup">
+  <div class="sheet">
+    <header>
+      <h2>◆ 초기 설정 ◆</h2>
+      <span style="flex:1"></span>
+      <button class="btn" id="setupClose">닫기</button>
+    </header>
+    <div class="body">
+      <div class="step">
+        <h3>1 · 운영자</h3>
+        <p>계정 시스템은 없습니다. 이 봇은 본인 컴퓨터에서 본인 키로만 돕니다.
+           입력값은 <code>.env</code>(권한 0600, git 제외)에만 저장되며,
+           저장된 비밀값은 다시 조회할 수 없습니다.</p>
+        <div id="setupOperator" style="display:grid;gap:8px"></div>
+      </div>
+
+      <div class="step">
+        <h3>2 · 증권사 · 거래소</h3>
+        <p>쓰실 곳만 켜서 입력하세요. 저장 후 <b>검증</b>을 누르면 실제로
+           읽기 전용 호출을 한 번 해서 키가 진짜 동작하는지 확인합니다.</p>
+        <div id="setupVenues"></div>
+      </div>
+
+      <div class="step">
+        <h3>3 · 하루 거래 한도</h3>
+        <p>다른 한도들은 전략이 정상일 때를 가정합니다. 이건 <b>고장났을 때</b>를
+           가정하는 한도라, 브로커 바로 앞에서 실제 주문을 보고 막습니다.
+           하나만 걸려도 <b>신규 진입</b>이 멈추고, <b>청산은 절대 막지 않습니다.</b>
+           0 은 "제한 없음"입니다.</p>
+        <div class="manual">
+          <div class="fld"><label>하루 거래대금 한도</label>
+            <input id="lNotional" type="number" step="any" placeholder="예: 5000000"></div>
+          <div class="fld"><label>하루 주문 건수</label>
+            <input id="lOrders" type="number" step="1" placeholder="예: 20"></div>
+          <div class="fld"><label>하루 손실 한도 (금액)</label>
+            <input id="lLoss" type="number" step="any" placeholder="예: 200000"></div>
+          <div class="fld"><label>하루 손실 한도 (자산 %)</label>
+            <input id="lLossPct" type="number" step="any" placeholder="예: 2"></div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="setupSave">저장</button>
+        <span style="flex:1"></span>
+      </div>
+      <div class="msg" id="setupMsg"></div>
+    </div>
+  </div>
+</div>
 
 <div class="tape"><div class="tape-in" id="tape"></div></div>
 
@@ -733,6 +866,247 @@ const DEMO = {
   vetoed: false, degraded: "",
 };
 $("#demoBtn").addEventListener("click", () => playDeliberation(DEMO, {demo: true, speed: 1}));
+
+
+/* ── 수동 개입 ───────────────────────────────────────────────────────── */
+async function post(path, body) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: {...auth, "Content-Type": "application/json"},
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || data.error || `${r.status} ${path}`);
+  return data;
+}
+
+function note(el, text, kind) {
+  const box = $(el);
+  box.className = "msg" + (kind ? " " + kind : "");
+  box.textContent = text;
+}
+
+function manualPayload() {
+  const qty = parseFloat($("#mQty").value);
+  const notional = parseFloat($("#mNotional").value);
+  const limit = parseFloat($("#mLimit").value);
+  const ticker = $("#mSymbol").value;
+  if (!ticker) throw new Error("종목을 선택하세요");
+  return {
+    ticker,
+    quantity: isFinite(qty) ? qty : null,
+    notional: isFinite(notional) ? notional : null,
+    limit_price: isFinite(limit) ? limit : null,
+    note: "대시보드",
+  };
+}
+
+async function manualAction(path, needsAmount, confirmText) {
+  try {
+    const payload = manualPayload();
+    if (needsAmount && payload.quantity == null && payload.notional == null) {
+      throw new Error("수량 또는 금액 중 하나는 입력하세요");
+    }
+    if (confirmText && !confirm(confirmText)) return;
+    const res = await post(path, payload);
+    note("#mMsg", `접수됨: ${JSON.stringify(res.queued || res)}`.slice(0, 400), "ok");
+    refreshManual();
+  } catch (e) {
+    note("#mMsg", "실패: " + e.message, "err");
+  }
+}
+
+$("#mBuy").onclick = () => manualAction("/api/manual/buy", true);
+$("#mSell").onclick = () => manualAction("/api/manual/sell", true);
+$("#mClose").onclick = () => manualAction("/api/manual/close", false,
+  "이 종목을 전량 청산합니다. 계속할까요?");
+$("#mCloseAll").onclick = async () => {
+  if (!confirm("보유 중인 모든 포지션을 시장가로 청산합니다.\n되돌릴 수 없습니다. 계속할까요?")) return;
+  try {
+    await post("/api/manual/close_all");
+    note("#mMsg", "전체 청산 접수됨 — 다음 사이클에 처리됩니다", "ok");
+    refreshManual();
+  } catch (e) { note("#mMsg", "실패: " + e.message, "err"); }
+};
+
+let paused = false;
+$("#mPause").onclick = async () => {
+  try {
+    await post(paused ? "/api/manual/resume" : "/api/manual/pause");
+    refreshManual();
+  } catch (e) { note("#mMsg", "실패: " + e.message, "err"); }
+};
+
+function gauge(label, used, limit, unit) {
+  if (!limit) return `<div class="gauge"><div class="lab"><span>${esc(label)}</span>
+    <span>제한 없음</span></div></div>`;
+  const pctUsed = Math.min(used / limit * 100, 100);
+  const cls = pctUsed >= 100 ? "over" : pctUsed >= 70 ? "hot" : "";
+  return `<div class="gauge ${cls}">
+    <div class="lab"><span>${esc(label)}</span>
+      <span>${num(used, 0)}${unit} / ${num(limit, 0)}${unit} (${pctUsed.toFixed(0)}%)</span></div>
+    <div class="track"><i style="width:${pctUsed}%"></i></div></div>`;
+}
+
+async function refreshManual() {
+  let data;
+  try { data = await api("/api/manual"); } catch { return; }
+  paused = !!data.paused;
+  $("#mPause").textContent = paused ? "▶ 자동매매 재개" : "⏸ 자동매매 일시정지";
+  $("#mPause").className = "btn" + (paused ? " warn" : "");
+
+  const pins = Object.entries(data.pinned || {});
+  $("#mPins").innerHTML = pins.length
+    ? pins.map(([key, reason]) => {
+        const ticker = key.split(":").pop();
+        return `<span class="pin">📌 ${esc(ticker)} · ${esc(reason)}
+          <b data-unpin="${esc(ticker)}" title="전략에 반환">✕</b></span>`;
+      }).join("")
+    : "";
+  $("#mPins").querySelectorAll("[data-unpin]").forEach(el => {
+    el.onclick = async () => {
+      try {
+        await post("/api/manual/unpin/" + encodeURIComponent(el.dataset.unpin));
+        refreshManual();
+      } catch (e) { note("#mMsg", "실패: " + e.message, "err"); }
+    };
+  });
+
+  const b = data.budget;
+  $("#mBudget").innerHTML = b
+    ? (b.halted ? `<div class="msg err">일일 한도 중단: ${esc(b.halt_reason)}</div>` : "")
+      + gauge("하루 거래대금", b.notional.used, b.notional.limit, "")
+      + gauge("하루 주문 건수", b.orders.used, b.orders.limit, "건")
+      + (b.loss.limit
+          ? gauge("하루 손실", Math.max(-b.loss.realized_pnl, 0), b.loss.limit, "")
+          : "")
+    : `<div class="msg">하루 거래 한도가 설정되지 않았습니다 — ⚙ 설정에서 지정하세요.</div>`;
+}
+
+async function refreshSymbols() {
+  try {
+    const data = await api("/api/universe");
+    const sel = $("#mSymbol");
+    const keep = sel.value;
+    const syms = data.symbols || [];
+    sel.innerHTML = syms.length
+      ? syms.map(x => `<option value="${esc(x.ticker)}">${esc(x.ticker)}` +
+          `${x.invested ? " (보유)" : ""} — ${num(x.price, 2)}</option>`).join("")
+      : `<option value="">— 실행 중인 봇 없음 —</option>`;
+    if (keep) sel.value = keep;
+  } catch {}
+}
+
+/* ── 초기 설정 ───────────────────────────────────────────────────────── */
+let setupCatalog = null;
+
+function fieldRow(env, label, value) {
+  const isSecret = /key|secret|token|password/i.test(env);
+  return `<div class="fld"><label>${esc(label)}${value ? " · " + esc(value) : ""}</label>
+    <input data-env="${esc(env)}" type="${isSecret ? "password" : "text"}"
+      autocomplete="off" placeholder="${value ? "변경할 때만 입력" : ""}"></div>`;
+}
+
+async function openSetup() {
+  $("#setup").classList.add("on");
+  try {
+    setupCatalog = await api("/api/setup");
+  } catch (e) {
+    note("#setupMsg", "설정을 불러오지 못했습니다: " + e.message, "err");
+    return;
+  }
+  const configured = setupCatalog.configured_keys || {};
+
+  $("#setupOperator").innerHTML = (setupCatalog.operator_fields || [])
+    .map(f => fieldRow(f.env, f.label, configured[f.env])).join("");
+
+  $("#setupVenues").innerHTML = (setupCatalog.venues || []).map(v => {
+    const on = (setupCatalog.state.venues || []).includes(v.id);
+    return `<div class="venue ${on ? "on" : ""}" data-venue="${esc(v.id)}">
+      <div class="head"><span>${on ? "☑" : "☐"} ${esc(v.label)}</span>
+        <span class="status ${on ? "up" : "dim"}">${on ? "설정됨" : "미설정"}</span></div>
+      ${v.note ? `<p class="note">${esc(v.note)}</p>` : ""}
+      <div class="fields">
+        ${v.fields.map(f => fieldRow(f.env, f.label + (f.required ? " *" : ""),
+                                     configured[f.env])).join("")}
+        <div><button class="btn" data-verify="${esc(v.id)}">키 검증</button>
+          <span class="status" data-vres="${esc(v.id)}"></span></div>
+      </div></div>`;
+  }).join("");
+
+  $("#setupVenues").querySelectorAll(".venue .head").forEach(head => {
+    head.onclick = () => head.parentElement.classList.toggle("on");
+  });
+  $("#setupVenues").querySelectorAll("[data-verify]").forEach(btn => {
+    btn.onclick = async (ev) => {
+      ev.stopPropagation();
+      const id = btn.dataset.verify;
+      const out = $(`[data-vres="${id}"]`);
+      out.textContent = "확인 중…";
+      out.className = "status dim";
+      try {
+        const res = await post("/api/setup/verify/" + id);
+        out.textContent = res.ok ? "✅ " + (res.detail || "정상") : "❌ " + res.error;
+        out.className = "status " + (res.ok ? "up" : "down");
+      } catch (e) {
+        out.textContent = "❌ " + e.message;
+        out.className = "status down";
+      }
+    };
+  });
+
+  try {
+    const lim = await api("/api/limits");
+    const cfg = lim.configured || {
+      max_daily_notional: lim.notional?.limit, max_daily_orders: lim.orders?.limit,
+      max_daily_loss: lim.loss?.limit, max_daily_loss_pct: lim.loss?.limit_pct,
+    };
+    $("#lNotional").value = cfg.max_daily_notional || "";
+    $("#lOrders").value = cfg.max_daily_orders || "";
+    $("#lLoss").value = cfg.max_daily_loss || "";
+    $("#lLossPct").value = cfg.max_daily_loss_pct ? cfg.max_daily_loss_pct * 100 : "";
+  } catch {}
+}
+
+$("#setupBtn").onclick = openSetup;
+$("#setupClose").onclick = () => $("#setup").classList.remove("on");
+
+$("#setupSave").onclick = async () => {
+  const values = {};
+  $("#setup").querySelectorAll("input[data-env]").forEach(el => {
+    if (el.value.trim()) values[el.dataset.env] = el.value.trim();
+  });
+  try {
+    const saved = await post("/api/setup", {values});
+    const pct = parseFloat($("#lLossPct").value);
+    await post("/api/limits", {
+      max_daily_notional: parseFloat($("#lNotional").value) || 0,
+      max_daily_orders: parseInt($("#lOrders").value, 10) || 0,
+      max_daily_loss: parseFloat($("#lLoss").value) || 0,
+      max_daily_loss_pct: isFinite(pct) ? pct / 100 : 0,
+    });
+    // Clear the inputs: the values are stored and can never be read back,
+    // so leaving them on screen only creates a second copy to leak.
+    $("#setup").querySelectorAll("input[data-env]").forEach(el => (el.value = ""));
+    note("#setupMsg",
+      `저장 완료 — 자격증명 ${saved.written.length}건, 하루 한도 적용됨. ` +
+      `저장된 비밀값은 다시 조회할 수 없습니다.`, "ok");
+    refreshManual();
+  } catch (e) {
+    note("#setupMsg", "저장 실패: " + e.message, "err");
+  }
+};
+
+/* 처음 실행이고 아직 아무것도 설정되지 않았으면 설정 화면을 먼저 띄운다 */
+(async () => {
+  try {
+    const st = await api("/api/setup");
+    if (!st.state.configured) openSetup();
+  } catch {}
+})();
+
+setInterval(() => { refreshManual(); refreshSymbols(); }, 8000);
+refreshManual(); refreshSymbols();
 
 refresh(); connect();
 setInterval(refresh, 15000);

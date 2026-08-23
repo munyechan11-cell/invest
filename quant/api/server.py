@@ -28,6 +28,9 @@ from quant.config.loader import load_config
 from quant.config.schema import StrategyConfig
 from quant.core.events import Event, EventType
 from quant.core.types import UTC, RunMode
+from quant.live.credentials import (
+    CredentialStore, OPERATOR_FIELDS, VENUES_BY_ID, venue_catalog,
+)
 from quant.live.state import StateStore
 
 log = logging.getLogger("quant.api")
@@ -83,6 +86,29 @@ class BacktestRequest(BaseModel):
     start: Optional[str] = None
     end: Optional[str] = None
     starting_cash: Optional[float] = None
+
+
+class ManualOrderRequest(BaseModel):
+    ticker: str
+    quantity: Optional[float] = None
+    notional: Optional[float] = None
+    limit_price: Optional[float] = None
+    #: hand the resulting position back to the strategy instead of pinning it
+    manage: bool = False
+    note: str = ""
+
+
+class SetupRequest(BaseModel):
+    """Values from the setup form. Blank fields leave existing ones alone."""
+
+    values: dict[str, str] = Field(default_factory=dict)
+
+
+class LimitsRequest(BaseModel):
+    max_daily_notional: float = 0.0
+    max_daily_orders: int = 0
+    max_daily_loss: float = 0.0
+    max_daily_loss_pct: float = 0.0
 
 
 class StartRequest(BaseModel):
@@ -253,6 +279,172 @@ def create_app(config: StrategyConfig | None = None,
                 "invested": ctx.is_invested(sym),
             })
         return {"symbols": out}
+
+    # ── 수동 개입 ────────────────────────────────────────────────────────
+    def _require_trader():
+        if state.trader is None:
+            raise HTTPException(404, "실행 중인 트레이더가 없습니다")
+        return state.trader
+
+    def _resolve(trader, ticker: str):
+        ctx = trader.engine.ctx
+        wanted = ticker.strip().upper()
+        for sym in ctx.universe:
+            if sym.ticker.upper() == wanted:
+                return sym
+        for pos in ctx.portfolio.open_positions:
+            if pos.symbol.ticker.upper() == wanted:
+                return pos.symbol
+        raise HTTPException(404, f"유니버스에도 보유에도 없는 종목: {ticker}")
+
+    @app.get("/api/manual")
+    async def manual_status(_=Depends(require_token)):
+        trader = state.trader
+        if trader is None:
+            return {"running": False, "paused": False, "pending": [], "recent": []}
+        engine = trader.engine
+        return {
+            "running": True,
+            **engine.manual.status(),
+            "pinned": engine.ctx.pinned,
+            "budget": engine.budget.status() if engine.budget.configured else None,
+        }
+
+    @app.post("/api/manual/buy")
+    async def manual_buy(req: ManualOrderRequest, _=Depends(require_token)):
+        trader = _require_trader()
+        symbol = _resolve(trader, req.ticker)
+        if req.quantity is None and req.notional is None:
+            raise HTTPException(400, "수량 또는 금액 중 하나는 지정해야 합니다")
+        from decimal import Decimal
+
+        request = trader.engine.manual.buy(
+            symbol,
+            quantity=Decimal(str(req.quantity)) if req.quantity is not None else None,
+            notional=req.notional, limit_price=req.limit_price,
+            manage=req.manage, note=req.note or "대시보드 수동 매수",
+        )
+        return {"queued": request.to_dict(),
+                "note": "다음 봉 처리 시 브로커 안전장치(주문 한도·일일 한도)를 거쳐 발주됩니다"}
+
+    @app.post("/api/manual/sell")
+    async def manual_sell(req: ManualOrderRequest, _=Depends(require_token)):
+        trader = _require_trader()
+        symbol = _resolve(trader, req.ticker)
+        from decimal import Decimal
+
+        request = trader.engine.manual.sell(
+            symbol,
+            quantity=Decimal(str(req.quantity)) if req.quantity is not None else None,
+            notional=req.notional, limit_price=req.limit_price,
+            note=req.note or "대시보드 수동 매도",
+        )
+        return {"queued": request.to_dict()}
+
+    @app.post("/api/manual/close")
+    async def manual_close(req: ManualOrderRequest, _=Depends(require_token)):
+        trader = _require_trader()
+        symbol = _resolve(trader, req.ticker)
+        return {"queued": trader.engine.manual.close(
+            symbol, note=req.note or "대시보드 수동 청산").to_dict()}
+
+    @app.post("/api/manual/close_all")
+    async def manual_close_all(_=Depends(require_token)):
+        trader = _require_trader()
+        return {"queued": trader.engine.manual.close_all(
+            note="대시보드 전체 청산").to_dict()}
+
+    @app.post("/api/manual/pause")
+    async def manual_pause(_=Depends(require_token)):
+        trader = _require_trader()
+        trader.engine.manual.pause("대시보드에서 일시정지")
+        return {"paused": True,
+                "note": "신규 진입만 중단됩니다. 손절·청산·수동주문은 계속 동작합니다."}
+
+    @app.post("/api/manual/resume")
+    async def manual_resume(_=Depends(require_token)):
+        trader = _require_trader()
+        trader.engine.manual.resume()
+        return {"paused": False}
+
+    @app.post("/api/manual/unpin/{ticker}")
+    async def manual_unpin(ticker: str, _=Depends(require_token)):
+        trader = _require_trader()
+        trader.engine.ctx.unpin(_resolve(trader, ticker))
+        return {"unpinned": ticker, "note": "이 종목을 다시 전략이 관리합니다"}
+
+    @app.post("/api/limits")
+    async def limits_save(req: LimitsRequest, _=Depends(require_token)):
+        """Apply daily caps now, and persist them for the next restart.
+
+        Written to `.env` rather than back into the strategy YAML, so the
+        operator's file — comments and all — is never reformatted by a UI.
+        """
+        store = CredentialStore(os.environ.get("QUANT_ENV_FILE", ".env"))
+        store.update({
+            "QUANT_LIMIT_DAILY_NOTIONAL": str(req.max_daily_notional or ""),
+            "QUANT_LIMIT_DAILY_ORDERS": str(req.max_daily_orders or ""),
+            "QUANT_LIMIT_DAILY_LOSS": str(req.max_daily_loss or ""),
+            "QUANT_LIMIT_DAILY_LOSS_PCT": str(req.max_daily_loss_pct or ""),
+        })
+        applied = None
+        if state.trader is not None:
+            budget = state.trader.engine.budget
+            budget.max_notional = req.max_daily_notional
+            budget.max_orders = req.max_daily_orders
+            budget.max_loss = abs(req.max_daily_loss)
+            budget.max_loss_pct = abs(req.max_daily_loss_pct)
+            applied = budget.status()
+        return {"saved": True, "applied_now": applied,
+                "note": "실행 중인 봇에는 즉시 적용됩니다" if applied
+                        else "다음 실행부터 적용됩니다"}
+
+    @app.get("/api/limits")
+    async def limits_get(_=Depends(require_token)):
+        if state.trader is not None:
+            return state.trader.engine.budget.status()
+        return {
+            "running": False,
+            "configured": {
+                "max_daily_notional": float(os.environ.get("QUANT_LIMIT_DAILY_NOTIONAL", 0) or 0),
+                "max_daily_orders": int(float(os.environ.get("QUANT_LIMIT_DAILY_ORDERS", 0) or 0)),
+                "max_daily_loss": float(os.environ.get("QUANT_LIMIT_DAILY_LOSS", 0) or 0),
+                "max_daily_loss_pct": float(os.environ.get("QUANT_LIMIT_DAILY_LOSS_PCT", 0) or 0),
+            },
+        }
+
+    @app.post("/api/limits/release")
+    async def limits_release(_=Depends(require_token)):
+        """Clear a daily-cap halt for the rest of today. Deliberately explicit."""
+        trader = _require_trader()
+        trader.engine.budget.release()
+        return trader.engine.budget.status()
+
+    # ── 초기 설정 ────────────────────────────────────────────────────────
+    @app.get("/api/setup")
+    async def setup_status(_=Depends(require_token)):
+        store = CredentialStore(os.environ.get("QUANT_ENV_FILE", ".env"))
+        return {
+            "state": store.state().to_dict(),
+            "venues": venue_catalog(),
+            "operator_fields": [{"env": e, "label": l, "required": r}
+                                for e, l, r in OPERATOR_FIELDS],
+            "configured_keys": {k: v for k, v in store.redacted().items()},
+        }
+
+    @app.post("/api/setup")
+    async def setup_save(req: SetupRequest, _=Depends(require_token)):
+        store = CredentialStore(os.environ.get("QUANT_ENV_FILE", ".env"))
+        written = store.update(req.values)
+        return {"written": written, "state": store.state().to_dict(),
+                "note": "저장된 값은 다시 조회할 수 없습니다 (재발급만 가능)"}
+
+    @app.post("/api/setup/verify/{venue_id}")
+    async def setup_verify(venue_id: str, _=Depends(require_token)):
+        if venue_id not in VENUES_BY_ID:
+            raise HTTPException(404, f"알 수 없는 거래소: {venue_id}")
+        store = CredentialStore(os.environ.get("QUANT_ENV_FILE", ".env"))
+        return await store.verify(venue_id)
 
     @app.get("/api/models")
     async def models(_=Depends(require_token)):

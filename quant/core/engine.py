@@ -37,6 +37,8 @@ from quant.core.types import (
     Symbol,
 )
 from quant.execution.base import ExecutionModel
+from quant.live.limits import TradingBudget
+from quant.live.manual import ManualControl
 from quant.portfolio.base import PortfolioConstructionModel
 from quant.risk.base import CompositeRiskModel, RiskManagementModel
 from quant.risk.protections import ProtectionManager
@@ -55,6 +57,8 @@ class Engine:
         risk_models: Sequence[RiskManagementModel] = (),
         protections: ProtectionManager | None = None,
         insight_decay: float = 0.5,
+        budget: TradingBudget | None = None,
+        manual: ManualControl | None = None,
     ):
         self.ctx = ctx
         self.alpha = alpha
@@ -65,6 +69,10 @@ class Engine:
         self.protections = protections or ProtectionManager()
         self.insights = InsightCollection(insight_decay)
         self.ledger = InsightLedger(benchmark=ctx.benchmark)
+        self.budget = budget or TradingBudget()
+        self.manual = manual or ManualControl()
+        brokerage.budget = self.budget
+        brokerage.portfolio = ctx.portfolio
         self.bars_processed = 0
         self.orders: list[Order] = []
         self.protection_events: list[dict] = []
@@ -131,6 +139,18 @@ class Engine:
             for e in events:
                 await self.bus.publish(EventType.PROTECTION, e)
 
+        self.budget.roll(bar_ts, ctx.equity)
+
+        if self.manual.paused:
+            # Paused means "open nothing new". Risk-driven exits and the
+            # operator's own orders keep flowing — a pause that traps the book
+            # is a worse tool than no pause at all.
+            await self._refresh_pending()
+            exits = self.risk.manage(ctx, [])
+            await self._submit(self.execution_model.execute(ctx, exits)
+                               + self.manual.build_orders(ctx))
+            return
+
         # 4 — alpha, over the active universe only
         active = self._active(bars)
         try:
@@ -196,6 +216,13 @@ class Engine:
         except Exception:
             log.exception("execution model failed on %s", bar_ts)
             return
+        # Manual orders bypass alpha, portfolio and universe — that is the point
+        # — but not the brokerage guard rails below.
+        await self._submit(orders + self.manual.build_orders(ctx))
+
+        _ = fills  # already published in _settle
+
+    async def _submit(self, orders: list[Order]) -> None:
         for order in orders:
             submitted = await self.brokerage.submit(order)
             self.orders.append(submitted)
@@ -203,8 +230,6 @@ class Engine:
                 await self.bus.publish(EventType.ORDER_REJECTED, _order_dict(submitted))
             else:
                 await self.bus.publish(EventType.ORDER_SUBMITTED, _order_dict(submitted))
-
-        _ = fills  # already published in _settle
 
     async def _refresh_pending(self) -> None:
         from decimal import Decimal
@@ -248,7 +273,9 @@ class Engine:
         for fill in fills:
             closed = self.ctx.portfolio.apply_fill(fill)
             await self.bus.publish(EventType.ORDER_FILLED, _fill_dict(fill))
+            self.budget.record_fill(fill)
             if closed is not None:
+                self.budget.record_trade(closed.pnl)
                 self.risk.on_trade_closed(self.ctx, closed)
                 await self.bus.publish(EventType.TRADE_CLOSED, _trade_dict(closed))
         return fills
@@ -263,6 +290,9 @@ class Engine:
             "attribution": self.ledger.report(),
             "protection_events": len(self.protection_events),
             "locks": self.ctx.active_locks(),
+            "pinned": self.ctx.pinned,
+            "budget": self.budget.status() if self.budget.configured else None,
+            "manual": self.manual.status(),
             "portfolio": self.ctx.portfolio.snapshot(),
         }
 

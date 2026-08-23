@@ -46,6 +46,7 @@ class Context:
         self._state: dict[str, dict[str, Any]] = defaultdict(dict)
         self._locks: dict[str, tuple[datetime, str]] = {}
         self._pending: dict[str, Any] = {}
+        self._pinned: dict[str, str] = {}
         self.benchmark: Symbol | None = None
 
     # ── time ─────────────────────────────────────────────────────────────
@@ -144,6 +145,30 @@ class Context:
     # ── per-symbol scratch state for models ──────────────────────────────
     def state(self, owner: str) -> dict[str, Any]:
         return self._state[owner]
+
+    # ── operator pins ────────────────────────────────────────────────────
+    def pin(self, symbol: Symbol, reason: str = "") -> None:
+        """Take a symbol out of the strategy's hands.
+
+        A manually opened position has no insight behind it, so the portfolio
+        model would compute a target of zero and sell it straight back on the
+        next bar — the operator's trade undone within a minute. Pinning tells
+        the portfolio layer to leave it alone. Risk models still apply: a pin
+        overrides the strategy's opinion, not the stop-loss.
+        """
+        self._pinned[symbol.key] = reason or "operator pinned"
+        log.info("pinned %s — %s", symbol.ticker, self._pinned[symbol.key])
+
+    def unpin(self, symbol: Symbol) -> None:
+        if self._pinned.pop(symbol.key, None) is not None:
+            log.info("unpinned %s — back under strategy control", symbol.ticker)
+
+    def is_pinned(self, symbol: Symbol) -> bool:
+        return symbol.key in self._pinned
+
+    @property
+    def pinned(self) -> dict[str, str]:
+        return dict(self._pinned)
 
     # ── trading locks (freqtrade's pair locks) ───────────────────────────
     def lock(self, symbol: Symbol, until: datetime, reason: str) -> None:

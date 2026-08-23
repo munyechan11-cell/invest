@@ -60,6 +60,9 @@ class LiveBrokerage(Brokerage):
 
     # ── guard rails ──────────────────────────────────────────────────────
     def _guard(self, order: Order) -> None:
+        allowed, reason = self._budget_check(order)
+        if not allowed:
+            raise BrokerageError(reason)
         self.validate(order)
         price = order.limit_price or self.portfolio.position(order.symbol).last_price
         notional = abs(float(order.quantity)) * (price or 0) * float(order.symbol.multiplier)
@@ -116,6 +119,7 @@ class LiveBrokerage(Brokerage):
             order.updated_at = utcnow()
             self._orders[order.id] = order
             self._recent_submits.append(time.monotonic())
+            self._budget_record(order)
             self._dedupe[(order.symbol.key, order.side.value, str(order.quantity))] = \
                 time.monotonic()
             log.info("sent %s %s %s (broker id %s)", order.side.value, order.quantity,

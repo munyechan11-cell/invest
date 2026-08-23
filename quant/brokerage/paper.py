@@ -69,6 +69,13 @@ class PaperBrokerage(Brokerage):
 
     # ── order lifecycle ──────────────────────────────────────────────────
     async def submit(self, order: Order) -> Order:
+        allowed, reason = self._budget_check(order)
+        if not allowed:
+            order.status = OrderStatus.REJECTED
+            order.reject_reason = reason
+            self.rejections.append({"order": order.id, "symbol": order.symbol.ticker,
+                                    "reason": reason})
+            return order
         try:
             self.validate(order)
             self._check_affordable(order)
@@ -83,6 +90,7 @@ class PaperBrokerage(Brokerage):
         order.broker_id = f"paper-{order.id}"
         self._open[order.id] = order
         self._age[order.id] = 0
+        self._budget_record(order)
         return order
 
     async def cancel(self, order: Order) -> bool:

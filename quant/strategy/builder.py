@@ -7,6 +7,7 @@ lookup, so adding a model means registering it here and nowhere else.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -39,6 +40,8 @@ from quant.data.universe import (
 from quant.data.provider import CachingProvider, DataProvider, create_provider
 from quant.execution.costs import PRESETS, FeeModel, FillModel, SlippageModel
 from quant.execution.models import BUILTIN_EXECUTION_MODELS
+from quant.live.limits import TradingBudget
+from quant.live.manual import ManualControl
 from quant.portfolio.base import PortfolioConstructionModel
 from quant.portfolio.models import BUILTIN_PORTFOLIO_MODELS
 from quant.risk.base import RiskManagementModel
@@ -97,6 +100,8 @@ def build_data_provider(config: StrategyConfig) -> DataProvider:
         from quant.data.providers import yahoo as _y  # noqa: F401
     elif config.data.provider in ("kis",):
         from quant.data.providers import kis as _k  # noqa: F401
+    elif config.data.provider in ("toss",):
+        from quant.brokerage import toss_broker as _t  # noqa: F401
     provider = create_provider(config.data.provider, **config.data.params)
     return CachingProvider(provider) if config.data.cache else provider
 
@@ -303,6 +308,13 @@ def build_brokerage(config: StrategyConfig, portfolio: Portfolio,
             portfolio, max_order_notional=config.broker.max_order_notional,
             live=config.mode is RunMode.LIVE, **config.broker.params,
         )
+    if config.broker.type == "toss":
+        from quant.brokerage.toss_broker import TossBrokerage
+
+        return TossBrokerage(
+            portfolio, max_order_notional=config.broker.max_order_notional,
+            live=config.mode is RunMode.LIVE, **config.broker.params,
+        )
     if config.broker.type == "alpaca":
         from quant.brokerage.alpaca_broker import AlpacaBrokerage
 
@@ -347,6 +359,29 @@ def build_engine(
                           **config.execution.model.params}),
         "execution",
     )
+    # The config file is the source of truth; the setup screen writes these
+    # env fallbacks so a cap entered in the UI survives a restart without
+    # rewriting (and reformatting) the operator's commented YAML.
+    def _cap(configured: float, env_var: str) -> float:
+        if configured:
+            return configured
+        try:
+            return float(os.environ.get(env_var, "") or 0)
+        except ValueError:
+            log.warning("%s 값이 숫자가 아닙니다 — 무시합니다", env_var)
+            return 0.0
+
+    budget = TradingBudget(
+        max_daily_notional=_cap(config.limits.max_daily_notional,
+                                "QUANT_LIMIT_DAILY_NOTIONAL"),
+        max_daily_orders=int(_cap(config.limits.max_daily_orders,
+                                  "QUANT_LIMIT_DAILY_ORDERS")),
+        max_daily_loss=_cap(config.limits.max_daily_loss, "QUANT_LIMIT_DAILY_LOSS"),
+        max_daily_loss_pct=_cap(config.limits.max_daily_loss_pct,
+                                "QUANT_LIMIT_DAILY_LOSS_PCT"),
+        timezone_offset_hours=config.limits.timezone_offset_hours,
+        halt_until_next_day=config.limits.halt_until_next_day,
+    )
     engine = Engine(
         ctx=ctx,
         alpha=build_alpha(config, flow_feed),
@@ -355,6 +390,8 @@ def build_engine(
         brokerage=build_brokerage(config, portfolio, fee, slippage, fill),
         risk_models=build_risk_models(config),
         protections=build_protections(config),
+        budget=budget,
+        manual=ManualControl(),
     )
     # Carried on the engine so the backtest runner and the live loop can
     # backfill it without threading another return value through everything.

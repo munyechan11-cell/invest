@@ -14,7 +14,7 @@ import logging
 from abc import ABC, abstractmethod
 from decimal import Decimal
 
-from quant.core.types import Fill, Order, RunMode, Symbol
+from quant.core.types import Fill, Order, OrderSide, RunMode, Symbol
 
 log = logging.getLogger("quant.brokerage")
 
@@ -30,6 +30,37 @@ class InsufficientFunds(BrokerageError):
 class Brokerage(ABC):
     name = "brokerage"
     run_mode = RunMode.BACKTEST
+    #: daily turnover / order-count / loss caps. Deliberately enforced here,
+    #: at the last layer before the venue, where the actual orders are visible
+    #: rather than the strategy's intentions.
+    budget = None
+    portfolio = None
+
+    def _reduces_position(self, order: "Order") -> bool:
+        if self.portfolio is None:
+            return False
+        held = self.portfolio.quantity(order.symbol)
+        if held == 0:
+            return False
+        return (held > 0) == (order.side is OrderSide.SELL)
+
+    def _budget_check(self, order: "Order") -> tuple[bool, str]:
+        if self.budget is None or not self.budget.configured:
+            return True, ""
+        price = order.limit_price or 0.0
+        if price <= 0 and self.portfolio is not None:
+            price = self.portfolio.position(order.symbol).last_price
+        equity = self.portfolio.equity if self.portfolio is not None else 0.0
+        return self.budget.check(order, price, self._reduces_position(order),
+                                 equity=equity)
+
+    def _budget_record(self, order: "Order") -> None:
+        if self.budget is None or not self.budget.configured:
+            return
+        price = order.limit_price or 0.0
+        if price <= 0 and self.portfolio is not None:
+            price = self.portfolio.position(order.symbol).last_price
+        self.budget.record_order(order, price)
 
     @abstractmethod
     async def submit(self, order: Order) -> Order:
