@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: Lint
+        run: ruff check quant tests
+      - name: Tests
+        run: pytest -q
+      - name: Configs assemble
+        run: |
+          python -m quant validate configs/demo.yaml
+          python -m quant validate configs/us_equity.yaml
+      - name: Backtest smoke test
+        # Synthetic data, no network — must stay deterministic and green.
+        run: python -m quant backtest configs/demo.yaml --quiet --out /tmp/result.json
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t quant-engine:ci .
+      - name: Container runs the CLI
+        run: docker run --rm quant-engine:ci python -m quant validate configs/demo.yaml

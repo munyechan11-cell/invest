@@ -1,0 +1,23 @@
+# Dashboard + a dry-run worker sharing one state volume.
+#   cp .env.example .env && docker compose up --build
+#
+# The worker runs `dryrun` on purpose. Promoting to live means editing the
+# strategy config and the command below — never a default, never an env flip.
+services:
+  dashboard:
+    build: .
+    ports: ["8000:8000"]
+    env_file: [.env]
+    volumes: ["quant-data:/data"]
+    restart: unless-stopped
+
+  trader:
+    build: .
+    command: sh -c "python -m quant dryrun ${STRATEGY_CONFIG:-configs/demo.yaml} --state $$DB_PATH"
+    env_file: [.env]
+    volumes: ["quant-data:/data"]
+    restart: unless-stopped
+    depends_on: [dashboard]
+
+volumes:
+  quant-data:
