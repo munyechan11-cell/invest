@@ -396,12 +396,46 @@ class TradingDesk(AlphaModel):
             return
         if ctx.run_mode is RunMode.BACKTEST:
             log.warning("데스크가 백테스트에서 활성화됨 — 결과는 낙관 편향이며 엣지의 증거가 아닙니다.")
+        # Preflight. Without it an unusable key or an empty credit balance fails
+        # all nineteen calls on every single bar — the desk looks like it is
+        # "degrading" when in fact it can never work, and each bar pays the full
+        # deadline in latency before saying so.
+        probe = await self._preflight()
+        if probe:
+            self._disabled = probe
+            log.error("데스크 비활성화: %s", probe)
+            return
+
         log.info(
             "트레이딩 데스크 가동 · 총 %d석 (분석 %d + 토론 2 + 리스크 3 + 결정 3) · "
             "토론 %d라운드 · 마감 %.0fs",
             len(self.seats), len(self.analyst_seats), self.debate_rounds, self.deadline_s,
         )
         log.info("분석 좌석: %s", ", ".join(s.title_ko for s in self.analyst_seats))
+
+    async def _preflight(self) -> str:
+        """One cheap call. Returns a reason to stay disabled, or "" when healthy."""
+        try:
+            await asyncio.wait_for(
+                self.client.complete("Reply with the single word OK.", "ping", None),
+                timeout=min(self.deadline_s, 45.0),
+            )
+        except asyncio.TimeoutError:
+            return "LLM 응답이 없습니다 (사전 점검 시간 초과) — 네트워크나 모델 설정을 확인하세요"
+        except LLMError as exc:
+            message = str(exc)
+            if "credit balance" in message or "quota" in message.lower():
+                return (f"Anthropic 계정 크레딧이 부족합니다. "
+                        f"console.anthropic.com 의 Plans & Billing 에서 충전한 뒤 "
+                        f"다시 시작하세요. (원문: {message[:160]})")
+            if " 401:" in message or " 403:" in message:
+                return f"API 키가 거부되었습니다 — 키를 확인하세요. ({message[:160]})"
+            if " 404:" in message:
+                return f"모델을 찾을 수 없습니다 — 모델 이름을 확인하세요. ({message[:160]})"
+            return f"LLM 사전 점검 실패: {message[:200]}"
+        except Exception as exc:                      # pragma: no cover - defensive
+            return f"LLM 사전 점검 실패: {type(exc).__name__}: {exc}"
+        return ""
 
     # ── the shared brief ─────────────────────────────────────────────────
     def _indicators(self, ctx: Context, symbol: Symbol) -> IndicatorSet:

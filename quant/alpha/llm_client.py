@@ -71,6 +71,25 @@ class LLMError(RuntimeError):
     pass
 
 
+def _raise_for_status(response: httpx.Response, provider: str) -> None:
+    """Surface the provider's own explanation.
+
+    `raise_for_status()` alone gives "400 Bad Request" and throws away the body,
+    which is the only part that says *what* was wrong. Debugging a desk where
+    all sixteen seats fail identically is impossible without it.
+    """
+    if response.status_code < 400:
+        return
+    detail = ""
+    try:
+        payload = response.json()
+        err = payload.get("error") or payload
+        detail = err.get("message") or json.dumps(err, ensure_ascii=False)[:400]
+    except Exception:
+        detail = response.text[:400]
+    raise LLMError(f"{provider} {response.status_code}: {detail}")
+
+
 def _extract_json(text: str) -> dict:
     """Last-resort parser for providers/models that ignore the schema."""
     text = text.strip()
@@ -113,6 +132,11 @@ class LLMClient:
                 raise LLMError(f"unsupported provider {self.config.provider!r}")
             except (httpx.HTTPError, LLMError) as exc:
                 last = exc
+                # A 4xx is a bad request, not a blip. Retrying it three times
+                # just triples the latency before the same failure.
+                text = str(exc)
+                if any(f" {code}:" in text for code in (400, 401, 403, 404, 422)):
+                    raise
                 if attempt == self.config.max_retries - 1:
                     break
                 await asyncio.sleep(1.5 * (2 ** attempt))
@@ -139,7 +163,7 @@ class LLMClient:
                      "content-type": "application/json"},
             json=body,
         )
-        r.raise_for_status()
+        _raise_for_status(r, "anthropic")
         data = r.json()
         u = data.get("usage") or {}
         self.usage.add(u.get("input_tokens", 0), u.get("output_tokens", 0))
@@ -169,7 +193,7 @@ class LLMClient:
             headers={"Authorization": f"Bearer {self.config.resolved_key()}"},
             json=body,
         )
-        r.raise_for_status()
+        _raise_for_status(r, "openai")
         data = r.json()
         u = data.get("usage") or {}
         self.usage.add(u.get("prompt_tokens", 0), u.get("completion_tokens", 0))
@@ -194,7 +218,7 @@ class LLMClient:
                 "generationConfig": gen,
             },
         )
-        r.raise_for_status()
+        _raise_for_status(r, "google")
         data = r.json()
         u = data.get("usageMetadata") or {}
         self.usage.add(u.get("promptTokenCount", 0), u.get("candidatesTokenCount", 0))

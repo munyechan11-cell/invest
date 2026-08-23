@@ -1,0 +1,53 @@
+# 오늘 크게 잃는 상황 재현용
+name: panic-dayloss
+mode: backtest
+
+data:
+  provider: synthetic
+  params: {seed: 11, annual_drift: -0.60, annual_vol: 0.90}
+  timeframe: 1h
+  warmup_bars: 260
+
+universe:
+  symbols:
+    - {ticker: AAA, venue: SIM, tick_size: 0.01}
+    - {ticker: BBB, venue: SIM, tick_size: 0.01}
+    - {ticker: CCC, venue: SIM, tick_size: 0.01}
+
+alpha:
+  - type: ema_cross
+    params: {fast: 5, slow: 12, adx_min: 0, hold_bars: 3}
+  - type: rsi_reversion
+    params: {period: 7, oversold: 45, require_trend: false, allow_short: false}
+
+portfolio:
+  starting_cash: 10000000
+  base_currency: KRW
+  model: {type: equal_weight}
+  max_position_weight: 0.30
+  max_gross_leverage: 0.9
+  cash_reserve_pct: 0.02
+  allow_short: false
+
+risk:
+  models:
+    - {type: max_dd_per_security, params: {max_drawdown_pct: 0.03, lock_bars: 0}}
+
+execution:
+  model: {type: immediate}
+  min_order_notional: 50
+
+costs:
+  preset: kr_equity
+
+broker:
+  type: paper
+  max_order_notional: 4000000
+
+limits:
+  max_daily_loss: 100000          # 하루 10만원 잃으면 멈춰라
+  timezone_offset_hours: 9
+
+backtest:
+  start: 2024-01-01T00:00:00Z
+  end: 2024-03-01T00:00:00Z

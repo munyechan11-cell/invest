@@ -39,6 +39,7 @@ class ScriptedLLM:
     async def complete(self, system, user, schema=None):
         props = set((schema or {}).get("properties", {}))
         kind = (
+            "preflight" if schema is None else
             "analyst" if "data_sufficient" in props else
             "risk_debate" if "proposed_scale" in props else
             "risk_verdict" if "position_scale" in props else
@@ -51,6 +52,8 @@ class ScriptedLLM:
         self.usage.add(400, 200)
         if kind in self.fail_seats:
             raise LLMError(f"simulated failure for {kind}")
+        if kind == "preflight":
+            return "OK"
         return {
             "analyst": {"stance": self.stance, "conviction": self.conviction,
                         "key_points": ["scripted"], "data_sufficient": True},
@@ -126,6 +129,9 @@ def test_a_full_deliberation_consults_every_stage():
     insights = run_desk(desk, make_ctx())
 
     kinds = llm.calls
+    # One cheap probe at startup, so an unusable key fails once instead of
+    # nineteen times on every bar.
+    assert kinds.count("preflight") == 1
     assert kinds.count("analyst") == 8
     assert kinds.count("debate") == 4          # 2 rounds x bull/bear
     assert kinds.count("risk_debate") == 2     # aggressive + conservative
@@ -133,7 +139,7 @@ def test_a_full_deliberation_consults_every_stage():
     assert kinds.count("plan") == 1
     assert kinds.count("trade") == 1
     assert kinds.count("head") == 1
-    assert len(kinds) == 18
+    assert len(kinds) == 19
 
     assert len(insights) == 1
     assert insights[0].direction is Direction.UP
@@ -199,6 +205,36 @@ def test_a_failed_analyst_does_not_vote():
 
 
 # ── honesty guards ───────────────────────────────────────────────────────
+def test_an_unusable_key_disables_the_desk_instead_of_failing_every_bar():
+    """Without the probe an empty credit balance fails all nineteen calls on
+    every single bar — it looks like graceful degradation when in fact the desk
+    can never work, and each bar pays the full deadline before saying so."""
+    llm = ScriptedLLM(fail_seats={"preflight"})
+    desk = TradingDesk(llm, memory=False)
+    ctx = make_ctx()
+    asyncio.run(desk.on_start(ctx))
+
+    status = desk.status()
+    assert not status["enabled"]
+    assert "사전 점검" in status["disabled_reason"] or "실패" in status["disabled_reason"]
+    before = len(llm.calls)
+    assert asyncio.run(desk.update(ctx, {SYM.key: ctx.history(SYM, 1)[0]})) == []
+    assert len(llm.calls) == before, "비활성화된 데스크가 호출을 계속했습니다"
+
+
+def test_a_credit_balance_error_says_what_to_do():
+    class Broke:
+        usage = LLMUsage()
+
+        async def complete(self, system, user, schema=None):
+            raise LLMError("anthropic 400: Your credit balance is too low")
+
+    desk = TradingDesk(Broke(), memory=False)
+    asyncio.run(desk.on_start(make_ctx()))
+    reason = desk.status()["disabled_reason"]
+    assert "크레딧" in reason and "Plans & Billing" in reason
+
+
 def test_the_desk_refuses_to_run_in_a_backtest_by_default():
     desk = TradingDesk(ScriptedLLM(), memory=False)
     ctx = make_ctx(mode=RunMode.BACKTEST)

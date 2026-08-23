@@ -1,0 +1,11 @@
+name: tmp-ux-typo
+mode: backtest
+data: {provider: synthetic, timeframe: 1d, warmup_bars: 60}
+universe:
+  symbols: [{ticker: AAA, venue: SIM, tick_size: 0.01}]
+alpha:
+  - {type: investorflow}
+portfolio: {starting_cash: 100000, model: {type: equal_weight}}
+execution: {model: {type: immediate}}
+broker: {type: paper}
+backtest: {start: 2023-01-01T00:00:00Z, end: 2023-06-01T00:00:00Z}

@@ -1,0 +1,45 @@
+# 패닉 시나리오: 하루 손실/주문 한도가 실제로 걸리는지 dry_run 으로 확인
+name: panicdesk
+mode: dry_run
+
+data:
+  provider: synthetic
+  params: {seed: 3, annual_drift: -0.80, annual_vol: 1.2}
+  timeframe: 1m
+  warmup_bars: 120
+
+universe:
+  symbols:
+    - {ticker: AAA, venue: SIM, tick_size: 0.01}
+    - {ticker: BBB, venue: SIM, tick_size: 0.01}
+
+alpha:
+  - type: rsi_reversion
+    params: {period: 5, oversold: 55, require_trend: false, allow_short: false}
+
+portfolio:
+  starting_cash: 1000000
+  base_currency: USD
+  model: {type: equal_weight}
+  max_position_weight: 0.45
+  max_gross_leverage: 0.9
+
+risk:
+  models:
+    - {type: max_dd_per_security, params: {atr_multiple: 1.0, max_drawdown_pct: 0.005, lock_bars: 0}}
+
+execution:
+  model: {type: immediate}
+  min_order_notional: 10
+
+costs:
+  preset: us_equity
+
+broker:
+  type: paper
+  max_order_notional: 500000
+
+limits:
+  max_daily_orders: 3               # 하루 3건이면 멈춰야 한다
+  max_daily_loss: 1000              # 하루 1000 잃으면 멈춰야 한다
+  timezone_offset_hours: 9

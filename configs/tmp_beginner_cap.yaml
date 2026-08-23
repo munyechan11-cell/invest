@@ -1,0 +1,50 @@
+# 초보자 테스트: "하루 주문 1건" 한도가 5분봉 백테스트에서 지켜지는지 본다.
+# 10 거래일이므로, 한도가 지켜지면 주문은 최대 10건이어야 한다.
+name: cap-test-5m
+mode: backtest
+
+data:
+  provider: synthetic
+  params: {seed: 42, annual_drift: 0.10, annual_vol: 0.32}
+  timeframe: 5m
+  warmup_bars: 60
+
+universe:
+  symbols:
+    - {ticker: AAA, venue: SIM, tick_size: 0.01}
+    - {ticker: BBB, venue: SIM, tick_size: 0.01}
+    - {ticker: CCC, venue: SIM, tick_size: 0.01}
+
+alpha:
+  - {type: ema_cross, params: {fast: 2, slow: 5, adx_min: 0, hold_bars: 2}}
+
+portfolio:
+  starting_cash: 100000
+  base_currency: USD
+  model: {type: equal_weight}
+  max_position_weight: 0.30
+  max_gross_leverage: 0.90
+  allow_short: false
+
+risk:
+  models: []
+
+execution:
+  model: {type: immediate}
+  min_order_notional: 10
+
+costs:
+  preset: us_equity
+
+broker:
+  type: paper
+  max_order_notional: 40000
+
+limits:
+  max_daily_orders: 1
+  timezone_offset_hours: 9
+
+backtest:
+  start: 2025-01-02T00:00:00Z
+  end: 2025-01-12T00:00:00Z
+  trials: 1

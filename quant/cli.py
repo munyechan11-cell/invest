@@ -338,6 +338,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _setup_logging(args.log_level, args.json_logs)
+    # Credentials live in .env; nothing else loads it, so every entry point must.
+    from quant.live.credentials import load_env_file
+
+    load_env_file(os.environ.get("QUANT_ENV_FILE", ".env"))
     try:
         if getattr(args, "sync", False):
             return args.fn(args)

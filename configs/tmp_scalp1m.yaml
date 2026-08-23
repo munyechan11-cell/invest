@@ -1,0 +1,54 @@
+# 1분봉 데이트레이딩 — dryrun + 대시보드 수동개입 테스트용
+name: scalp-1m
+description: 1분봉 단타. 자동매매 돌리면서 대시보드로 수동 개입.
+mode: dry_run
+
+data:
+  provider: synthetic
+  params: {seed: 11, annual_drift: 0.05, annual_vol: 0.45}
+  timeframe: 1m
+  warmup_bars: 120
+
+universe:
+  symbols:
+    - {ticker: AAA, venue: SIM, tick_size: 0.01}
+    - {ticker: BBB, venue: SIM, tick_size: 0.01}
+    - {ticker: CCC, venue: SIM, tick_size: 0.01}
+
+alpha:
+  - {type: ema_cross, params: {fast: 5, slow: 20, adx_min: 10, hold_bars: 10}}
+  - {type: rsi_reversion, params: {period: 14, oversold: 35, require_trend: false, allow_short: false}}
+
+portfolio:
+  starting_cash: 10000000
+  base_currency: KRW
+  model: {type: vol_target, params: {target_annual_vol: 0.30, lookback: 60}}
+  max_position_weight: 0.35
+  max_gross_leverage: 0.9
+  cash_reserve_pct: 0.02
+  allow_short: false
+
+risk:
+  models:
+    - {type: max_dd_per_security, params: {max_drawdown_pct: 0.02, lock_bars: 3}}
+    - {type: trailing_stop, params: {trail_pct: 0.01, activate_at_pct: 0.005}}
+    - {type: max_positions, params: {max_positions: 3}}
+  protections:
+    - {type: cooldown, params: {stop_bars: 1}}
+
+execution:
+  model: {type: immediate}
+  min_order_notional: 1000
+
+costs:
+  preset: kr_equity
+
+broker:
+  type: paper
+  max_order_notional: 3000000
+
+limits:
+  max_daily_notional: 20000000
+  max_daily_orders: 50
+  max_daily_loss_pct: 0.03
+  timezone_offset_hours: 9

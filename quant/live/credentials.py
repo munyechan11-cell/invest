@@ -350,5 +350,34 @@ class CredentialStore:
             return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
 
 
+def load_env_file(path: str | Path = ".env", override: bool = False) -> list[str]:
+    """`.env` 를 프로세스 환경으로 올린다. 적용된 키 목록을 돌려준다.
+
+    설정 화면이 `.env` 에 쓰는데 시작할 때 아무도 읽지 않으면, 사용자는 키를 다
+    입력하고도 "환경변수가 필요합니다" 를 보게 됩니다. 조용하고 비싼 실패라
+    엔트리포인트마다 이 함수를 호출합니다.
+
+    같은 파서(`_parse_value`)를 쓰는 것이 중요합니다. 쓰는 쪽과 읽는 쪽이 서로
+    다른 규칙을 가지면 인라인 주석 하나로 계좌번호가 주석 문자열이 됩니다.
+
+    기본적으로 **이미 설정된 환경변수가 우선**입니다. 배포 환경에서 진짜 환경변수로
+    주입한 값을 저장소에 남아 있던 오래된 파일이 덮어쓰면 안 되기 때문입니다.
+    """
+    store = CredentialStore(path)
+    if not store.path.exists():
+        return []
+    applied: list[str] = []
+    for key, value in store._raw().items():
+        if not value:
+            continue
+        if not override and os.environ.get(key):
+            continue
+        os.environ[key] = value
+        applied.append(key)
+    if applied:
+        log.info("%s 에서 설정 %d건 로드", store.path, len(applied))
+    return applied
+
+
 def venue_catalog() -> list[dict]:
     return [v.to_dict() for v in VENUES]

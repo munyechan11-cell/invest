@@ -29,7 +29,8 @@ from quant.config.schema import StrategyConfig
 from quant.core.events import Event, EventType
 from quant.core.types import UTC, RunMode
 from quant.live.credentials import (
-    CredentialStore, OPERATOR_FIELDS, VENUES_BY_ID, venue_catalog,
+    CredentialStore, OPERATOR_FIELDS, VENUES_BY_ID, load_env_file,
+    venue_catalog,
 )
 from quant.live.profile import ProfileStore, questionnaire, score_answers
 from quant.live.state import StateStore
@@ -131,6 +132,10 @@ class StartRequest(BaseModel):
 
 def create_app(config: StrategyConfig | None = None,
                state_path: str = "quant_state.db") -> FastAPI:
+    # The setup screen writes credentials to .env; load them before anything
+    # reads os.environ, or a fully configured operator still sees "key required".
+    load_env_file(os.environ.get("QUANT_ENV_FILE", ".env"))
+
     state = AppState(config, state_path)
     token = os.environ.get("QUANT_API_TOKEN", "").strip()
 

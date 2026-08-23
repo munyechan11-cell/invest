@@ -24,9 +24,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from dotenv import load_dotenv
+from quant.live.credentials import load_env_file
 
-load_dotenv()
+load_env_file()
 
 from quant.alpha.desk import TradingDesk
 from quant.alpha.llm_client import LLMConfig
@@ -93,6 +93,11 @@ async def run(args: argparse.Namespace) -> int:
         allow_in_backtest=True,
     )
     await desk.on_start(ctx)
+    if desk.status()["disabled_reason"]:
+        print(f"\n{BAR}\n  데스크를 시작할 수 없습니다\n{BAR}")
+        print(f"  {desk.status()['disabled_reason']}")
+        print(BAR)
+        return 2
 
     print(f"\n{BAR}\n  실전 심의 · {len(desk.seats)}석 · {symbol.ticker} · "
           f"종가 {bars[-1].close:,.0f}원 · {args.model}\n{BAR}")

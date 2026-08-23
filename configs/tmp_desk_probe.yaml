@@ -1,0 +1,35 @@
+name: desk-probe
+mode: dry_run
+
+data:
+  provider: yahoo
+  timeframe: 1d
+  warmup_bars: 300
+
+universe:
+  symbols:
+    - {ticker: "005930.KS", venue: krx, asset_class: equity, quote_currency: KRW,
+       lot_size: 1, tick_size: 100, min_notional: 0}
+
+flow:
+  provider: synthetic
+  history_sessions: 120
+
+alpha:
+  - type: desk
+    params:
+      llm:          {provider: anthropic, model: claude-opus-5}
+      decision_llm: {provider: anthropic, model: claude-opus-5}
+      cadence_bars: 1
+      max_symbols_per_run: 1
+      debate_rounds: 1
+      risk_debate_rounds: 1
+      deadline_s: 300
+      min_conviction: 0.6
+      cost_limit_usd: 20
+
+portfolio: {model: {type: vol_target}}
+risk:
+  models: [{type: trailing_stop}]
+execution: {model: {type: limit}}
+broker: {type: paper}
