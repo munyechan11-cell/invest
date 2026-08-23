@@ -4,6 +4,12 @@ name: demo-multi-alpha
 description: >
   Trend + mean-reversion + cross-sectional momentum on synthetic data,
   sized by volatility targeting, with stops, protections and realistic costs.
+
+# 이 설정의 목적은 엔진이 동작하는 모습을 보여주는 것입니다. 합성 데이터에 맞춰
+# 튜닝하지 않았고, 앞으로도 하지 않을 것입니다 — 그것이 바로 README 가 경고하는
+# 과최적화입니다. 따라서 아래 수익률 숫자 자체에는 의미가 없습니다.
+# 실제 평가는 실데이터 + walkforward 로 하세요:
+#   python -m quant walkforward configs/demo.yaml --space configs/space.yaml --folds 5
 mode: backtest
 
 data:
@@ -54,8 +60,11 @@ portfolio:
 
 risk:
   models:
-    - {type: max_dd_per_security, params: {max_drawdown_pct: 0.10, lock_bars: 5}}
-    - {type: trailing_stop, params: {trail_pct: 0.08, atr_multiple: 3.0, activate_at_pct: 0.03}}
+    # 손절폭은 신호의 보유기간이 만들어내는 소음보다 넓어야 한다.
+    # 일변동 ~2% 자산을 20~25봉 보유하면 우연만으로 ±9% 정도 움직이므로,
+    # 고정 10% 손절은 1.1σ에 불과해 방향이 맞아도 잘려나간다. 2*sqrt(20)≈9 ATR.
+    - {type: max_dd_per_security, params: {atr_multiple: 8.0, max_drawdown_pct: 0.25, lock_bars: 5}}
+    - {type: trailing_stop, params: {atr_multiple: 5.0, activate_at_pct: 0.08}}
     - {type: time_stop, params: {max_bars_held: 45, min_progress_pct: 0.015}}
     - {type: max_positions, params: {max_positions: 4}}
     - {type: max_dd_portfolio, params: {max_drawdown_pct: 0.22, halt_bars: 15}}

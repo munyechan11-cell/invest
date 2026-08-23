@@ -39,6 +39,7 @@ class BacktestResult:
     bars: int = 0
     elapsed_s: float = 0.0
     warnings: list[str] = field(default_factory=list)
+    attribution_lines: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -57,6 +58,10 @@ class BacktestResult:
         print(f"\n{'=' * 68}\n  {self.config_name}\n{'=' * 68}")
         for line in self.report.summary_lines():
             print(f"  {line}")
+        if self.attribution_lines:
+            print("\n  알파별 기여도")
+            for line in self.attribution_lines:
+                print(line)
         if self.warnings:
             print("\n  Warnings:")
             for w in self.warnings:
@@ -189,6 +194,13 @@ async def run_backtest(
         warnings.append("zero-cost preset in use — this result is not achievable")
 
     engine_summary = engine.summary()
+    attribution_lines = engine.ledger.summary_lines()
+    worst = engine.ledger.worst_source
+    if worst:
+        warnings.append(
+            f"alpha '{worst}' has a negative benchmark-excess expectancy — "
+            f"the composite may be better off without it"
+        )
     if selector is not None and selector.last_report is not None:
         engine_summary["universe"] = selector.last_report.to_dict()
         if not selector.last_report.selected:
@@ -206,4 +218,5 @@ async def run_backtest(
         bars=total,
         elapsed_s=time.monotonic() - started,
         warnings=warnings,
+        attribution_lines=attribution_lines,
     )

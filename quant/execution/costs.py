@@ -109,36 +109,67 @@ class SlippageModel(ABC):
 
 
 class SpreadPlusImpactSlippage(SlippageModel):
-    """Half-spread + square-root market impact + a volatility term.
+    """Half-spread plus square-root market impact.
 
-    Square-root impact (∝ √(size/ADV)) is the empirically supported functional
-    form; linear impact under-penalises large orders and quadratic over-
-    penalises small ones.
+        slippage = spread/2 + eta * sigma * sqrt(Q / V)
+
+    This is the Almgren-style law, and the two terms it *does not* have matter
+    as much as the two it does.
+
+    `sigma` is the bar's own volatility, estimated from its range with the
+    Parkinson estimator (sigma = ln(H/L) / (2*sqrt(ln 2))). Impact has to scale
+    with volatility: moving 1% of the daily volume in a placid large cap costs a
+    fraction of what it costs in something that swings 8% a day. An impact term
+    that ignores sigma is not conservative, it is simply wrong — and it is wrong
+    in the direction that makes every strategy look unprofitable, which is just
+    as misleading as a backtest that fills for free.
+
+    `eta` defaults to 1.0, at the pessimistic end of the 0.3–1.0 range the
+    empirical literature reports, so the default still errs toward caution.
+
+    There is deliberately no separate "volatility charge" on top: that would
+    double-count sigma, which already scales the impact term.
     """
 
-    def __init__(self, base_spread_bps: float = 5.0, impact_coefficient: float = 0.1,
-                 volatility_coefficient: float = 0.15, random_component: bool = False,
-                 seed: int = 0):
+    def __init__(self, base_spread_bps: float = 5.0, impact_coefficient: float = 1.0,
+                 volatility_coefficient: float = 0.0, random_component: bool = False,
+                 seed: int = 0, min_bps: float = 0.0):
         self.base_spread = base_spread_bps / 10_000.0
         self.impact = impact_coefficient
+        #: retained so older configs still load; adds a flat charge proportional
+        #: to the bar range. Leave at 0 — sigma is already in the impact term.
         self.vol_coef = volatility_coefficient
         self.random = random_component
+        self.min_bps = min_bps / 10_000.0
         self._rng = random.Random(seed)
+
+    @staticmethod
+    def _parkinson_sigma(bar: Bar) -> float:
+        """Per-bar volatility from the high-low range.
+
+        Uses the range rather than close-to-close because a single bar gives
+        only one close-to-close observation, and that estimator is far noisier.
+        """
+        if bar.high <= 0 or bar.low <= 0 or bar.high <= bar.low:
+            return 0.0
+        return math.log(bar.high / bar.low) / (2.0 * math.sqrt(math.log(2.0)))
 
     def slippage(self, order, bar, quote):
         half_spread = (
             quote.spread_pct / 2.0 if quote and math.isfinite(quote.spread_pct)
             else self.base_spread / 2.0
         )
+        sigma = self._parkinson_sigma(bar)
         adv = max(bar.volume, 1.0)
         participation = min(abs(float(order.quantity)) / adv, 1.0)
-        impact = self.impact * math.sqrt(participation)
-        intrabar_vol = (bar.range / bar.close) if bar.close > 0 else 0.0
-        vol_term = self.vol_coef * intrabar_vol
-        total = half_spread + impact + vol_term
+        impact = self.impact * sigma * math.sqrt(participation)
+
+        total = half_spread + impact
+        if self.vol_coef:
+            total += self.vol_coef * ((bar.range / bar.close) if bar.close > 0 else 0.0)
         if self.random:
             total *= max(0.0, self._rng.gauss(1.0, 0.3))
-        return max(total, 0.0)
+        return max(total, self.min_bps)
 
 
 class FixedSlippage(SlippageModel):

@@ -20,6 +20,7 @@ import logging
 from datetime import datetime
 from typing import Sequence
 
+from quant.alpha.attribution import InsightLedger
 from quant.alpha.base import AlphaModel, InsightCollection
 from quant.brokerage.base import Brokerage
 from quant.brokerage.paper import PaperBrokerage
@@ -63,6 +64,7 @@ class Engine:
         self.risk = CompositeRiskModel(*risk_models)
         self.protections = protections or ProtectionManager()
         self.insights = InsightCollection(insight_decay)
+        self.ledger = InsightLedger(benchmark=ctx.benchmark)
         self.bars_processed = 0
         self.orders: list[Order] = []
         self.protection_events: list[dict] = []
@@ -138,9 +140,13 @@ class Engine:
             fresh = []
         if fresh:
             self.insights.add(fresh)
+            self.ledger.record(ctx, fresh)
             for ins in fresh:
                 await self.bus.publish(EventType.INSIGHT, _insight_dict(ins))
         self.insights.expire(ctx.now)
+        # Settle anything whose horizon has now fully elapsed. Scoring happens
+        # strictly after the fact — the ledger never sees an insight's future.
+        self.ledger.settle(ctx)
 
         # 4.5 — refresh projected holdings so execution diffs against the
         # position we will have, not the one we have now
@@ -254,6 +260,7 @@ class Engine:
             "orders": len(self.orders),
             "rejected": sum(1 for o in self.orders if o.status is OrderStatus.REJECTED),
             "active_insights": len(self.insights),
+            "attribution": self.ledger.report(),
             "protection_events": len(self.protection_events),
             "locks": self.ctx.active_locks(),
             "portfolio": self.ctx.portfolio.snapshot(),

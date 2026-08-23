@@ -14,20 +14,55 @@ log = logging.getLogger("quant.risk.models")
 
 
 class MaximumDrawdownPerSecurity(RiskManagementModel):
-    """Hard stop-loss per position, measured from average entry price."""
+    """Stop-loss per position, measured from average entry price.
+
+    A fixed percentage stop is the most common way a sound signal is turned
+    into a losing strategy. The stop has to clear the noise the signal's own
+    horizon generates: an instrument with 2% daily volatility moves roughly
+    2%*sqrt(20) ~ 9% over a 20-bar hold *by chance*, so a 10% stop sits about
+    one standard deviation away and will be hit perhaps a quarter of the time
+    even when the direction is right.
+
+    Set `atr_multiple` to scale the stop to the instrument instead, and treat
+    `max_drawdown_pct` as the absolute ceiling. As a rule of thumb the multiple
+    wants to be near `2 * sqrt(holding_bars)` — about 8-9 ATR for a 20-bar
+    signal, not 5.
+    """
 
     name = "max_dd_per_security"
 
-    def __init__(self, max_drawdown_pct: float = 0.08, lock_bars: int = 5):
+    def __init__(self, max_drawdown_pct: float = 0.08, lock_bars: int = 5,
+                 atr_multiple: float | None = None, atr_period: int = 14,
+                 min_pct: float = 0.02):
         self.limit = abs(max_drawdown_pct)
         self.lock_bars = lock_bars
+        self.atr_multiple = atr_multiple
+        self.atr_period = atr_period
+        self.min_pct = min_pct
+
+    def _limit_for(self, ctx: Context, symbol) -> float:
+        if not self.atr_multiple:
+            return self.limit
+        bars = ctx.history(symbol, self.atr_period + 1)
+        if len(bars) < 3:
+            return self.limit
+        trs = [max(b.high - b.low, abs(b.high - p.close), abs(b.low - p.close))
+               for p, b in zip(bars, bars[1:])]
+        atr = statistics.fmean(trs[-self.atr_period:])
+        price = bars[-1].close
+        if price <= 0:
+            return self.limit
+        scaled = atr / price * self.atr_multiple
+        # the configured percentage becomes the ceiling, not the target
+        return min(max(scaled, self.min_pct), self.limit)
 
     def manage(self, ctx, targets):
         by_key = {t.symbol.key: t for t in targets}
         for pos in ctx.portfolio.open_positions:
-            if pos.unrealized_pct >= -self.limit:
+            limit = self._limit_for(ctx, pos.symbol)
+            if pos.unrealized_pct >= -limit:
                 continue
-            reason = f"stop_loss: {pos.unrealized_pct:+.2%} < -{self.limit:.2%}"
+            reason = f"stop_loss: {pos.unrealized_pct:+.2%} < -{limit:.2%}"
             by_key[pos.symbol.key] = self._flatten(
                 by_key.get(pos.symbol.key, PortfolioTarget(pos.symbol, Decimal("0"))), reason
             )
