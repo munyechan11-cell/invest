@@ -1,0 +1,50 @@
+# kr_toss.yaml 과 동일하지만 네트워크 없이 돌려보려고 데이터만 synthetic 으로 바꿈.
+# 브로커/모드/한도는 kr_toss.yaml 그대로.
+name: kr-toss-flow-sim
+mode: dry_run
+
+data:
+  provider: synthetic
+  params: {seed: 7, start_price: 80000, annual_drift: 0.15, annual_vol: 0.5}
+  timeframe: 1m
+  warmup_bars: 300
+  calendar: always_open
+
+universe:
+  symbols:
+    - {ticker: "005930", venue: toss, quote_currency: KRW, tick_size: 100, lot_size: 1}
+
+alpha:
+  - {type: ema_cross, params: {fast: 5, slow: 20, adx_min: 0, hold_bars: 5}}
+
+portfolio:
+  starting_cash: 10000000
+  base_currency: KRW
+  model: {type: fixed_stake, params: {stake_amount: 300000}}
+  max_position_weight: 0.35
+  max_gross_leverage: 0.9
+  cash_reserve_pct: 0.05
+  allow_short: false
+
+risk: {models: [], protections: []}
+
+execution:
+  model: {type: immediate}
+  min_order_notional: 10000
+
+costs: {preset: kr_equity}
+
+broker:
+  type: toss
+  params: {client_id: "${TOSS_CLIENT_ID}", client_secret: "${TOSS_CLIENT_SECRET}",
+           account_no: "${TOSS_ACCOUNT_NO}"}
+  max_order_notional: 2000000
+  live_trading_confirmed: false
+
+limits:
+  max_daily_notional: 500000
+  max_daily_orders: 20
+  max_daily_loss: 200000
+  max_daily_loss_pct: 0.02
+  timezone_offset_hours: 9
+  halt_until_next_day: true

@@ -31,6 +31,7 @@ from quant.core.types import UTC, RunMode
 from quant.live.credentials import (
     CredentialStore, OPERATOR_FIELDS, VENUES_BY_ID, venue_catalog,
 )
+from quant.live.profile import ProfileStore, questionnaire, score_answers
 from quant.live.state import StateStore
 
 log = logging.getLogger("quant.api")
@@ -96,6 +97,18 @@ class ManualOrderRequest(BaseModel):
     #: hand the resulting position back to the strategy instead of pinning it
     manage: bool = False
     note: str = ""
+
+
+class ProfileRequest(BaseModel):
+    """진단 답안 {question_id: option_id}"""
+
+    answers: dict[str, str] = Field(default_factory=dict)
+
+
+class ProfileOverrideRequest(BaseModel):
+    """마이페이지에서 축을 직접 조정할 때. -1.0 ~ +1.0"""
+
+    overrides: dict[str, float] = Field(default_factory=dict)
 
 
 class SetupRequest(BaseModel):
@@ -419,6 +432,89 @@ def create_app(config: StrategyConfig | None = None,
         trader = _require_trader()
         trader.engine.budget.release()
         return trader.engine.budget.status()
+
+    # ── 투자 성향 ────────────────────────────────────────────────────────
+    def _profile_store() -> ProfileStore:
+        return ProfileStore(os.environ.get("QUANT_PROFILE_FILE",
+                                           "investor_profile.json"))
+
+    @app.get("/api/profile/questions")
+    async def profile_questions(_=Depends(require_token)):
+        return {
+            "questions": questionnaire(),
+            "note": "여덟 문항으로 위험 감내도를 정확히 잴 수는 없습니다. "
+                    "이건 진단이 아니라 출발점이고, 언제든 마이페이지에서 바꿀 수 "
+                    "있습니다. 마지막 문항만은 성향이 아니라 사실을 묻는 것입니다.",
+        }
+
+    @app.get("/api/profile")
+    async def profile_get(_=Depends(require_token)):
+        return _profile_store().load().to_dict()
+
+    @app.post("/api/profile")
+    async def profile_save(req: ProfileRequest, _=Depends(require_token)):
+        profile = score_answers(req.answers)
+        if not profile.answers:
+            raise HTTPException(400, "인식된 답안이 없습니다")
+        store = _profile_store()
+        store.save(profile)
+        applied = _apply_profile_live(profile)
+        return {**profile.to_dict(), "applied_now": applied}
+
+    @app.patch("/api/profile")
+    async def profile_override(req: ProfileOverrideRequest, _=Depends(require_token)):
+        """마이페이지에서 축을 직접 밀어 올리거나 내린다."""
+        store = _profile_store()
+        profile = store.load()
+        for axis, value in req.overrides.items():
+            axis = axis.upper()
+            if axis not in ("R", "H", "E", "C"):
+                raise HTTPException(400, f"알 수 없는 축: {axis}")
+            profile.overrides[axis] = max(-1.0, min(1.0, float(value)))
+        store.save(profile)
+        applied = _apply_profile_live(profile)
+        return {**profile.to_dict(), "applied_now": applied}
+
+    @app.delete("/api/profile/override/{axis}")
+    async def profile_clear_override(axis: str, _=Depends(require_token)):
+        store = _profile_store()
+        profile = store.load()
+        profile.overrides.pop(axis.upper(), None)
+        store.save(profile)
+        return profile.to_dict()
+
+    def _apply_profile_live(profile) -> dict | None:
+        """실행 중인 봇에 즉시 반영할 수 있는 것만 반영한다.
+
+        사이즈·손절·한도는 바로 바뀌지만 봉 주기나 알파 구성은 바뀌지 않습니다 —
+        그건 엔진을 다시 세워야 하는 일이라, 반쯤 바뀐 상태로 돌리는 것보다
+        재시작이 필요하다고 말하는 편이 정직합니다.
+        """
+        if state.trader is None:
+            return None
+        settings = profile.settings()
+        engine = state.trader.engine
+        pm = engine.portfolio_model
+        pm.max_position_weight = settings["max_position_weight"]
+        pm.max_gross_leverage = settings["max_gross_leverage"]
+        pm.cash_reserve_pct = settings["cash_reserve_pct"]
+        if hasattr(pm, "target_vol"):
+            pm.target_vol = settings["target_annual_vol"]
+        budget = engine.budget
+        budget.max_loss_pct = settings["max_daily_loss_pct"]
+        budget.max_orders = settings["max_daily_orders"]
+        for model in engine.risk.models:
+            if model.name == "max_dd_per_security":
+                model.atr_multiple = settings["stop_atr_multiple"]
+                model.limit = settings["stop_ceiling_pct"]
+            elif model.name == "trailing_stop":
+                model.atr_multiple = settings["trailing_atr_multiple"]
+            elif model.name == "max_positions":
+                model.max_positions = settings["max_positions"]
+        return {
+            "sizing_and_risk": "즉시 적용됨",
+            "needs_restart": ["봉 주기", "알파 모델 구성", "AI 데스크 사용 여부"],
+        }
 
     # ── 초기 설정 ────────────────────────────────────────────────────────
     @app.get("/api/setup")

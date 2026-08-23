@@ -1,0 +1,94 @@
+# 토스증권 국내주식 — 수급 + 추세 결합, AI 데스크 옵션.
+#
+#   python -m quant validate configs/kr_toss.yaml
+#   python -m quant dryrun   configs/kr_toss.yaml     ← 반드시 여기서 충분히 검증
+#
+# ⚠️ 토스 Open API 에는 모의투자 환경이 없습니다. KIS 와 달리 "실계좌와 분리된
+#    연습 계좌"가 존재하지 않으므로, dry_run(실시간 시세 + 가상 체결)이 유일한
+#    안전망입니다. 실거래 전환은 mode: live 와 broker.live_trading_confirmed
+#    두 곳을 모두 바꿔야 하며, limits 의 하루 한도도 반드시 채워야 합니다.
+name: kr-toss-flow
+description: 외국인·기관 수급 추종 + 추세 확인, 변동성 타겟 사이징.
+mode: live
+
+data:
+  provider: toss
+  params: {client_id: "${TOSS_CLIENT_ID}", client_secret: "${TOSS_CLIENT_SECRET}"}
+  timeframe: 1d
+  warmup_bars: 260
+  calendar: krx
+
+flow:
+  provider: kis        # 수급 데이터는 KIS 가 제공합니다 (토스는 미제공)
+  params: {app_key: "${KIS_APP_KEY}", app_secret: "${KIS_APP_SECRET}", paper: true}
+  history_sessions: 120
+
+universe:
+  symbols:
+    - {ticker: "005930", venue: toss, quote_currency: KRW, tick_size: 100, lot_size: 1}
+    - {ticker: "000660", venue: toss, quote_currency: KRW, tick_size: 500, lot_size: 1}
+    - {ticker: "035420", venue: toss, quote_currency: KRW, tick_size: 100, lot_size: 1}
+    - {ticker: "005380", venue: toss, quote_currency: KRW, tick_size: 500, lot_size: 1}
+  refresh_every_bars: 21
+  filters:
+    - {type: age, params: {min_bars: 200}}
+    - {type: volatility, params: {lookback_bars: 60, min_annual_vol: 0.12, max_annual_vol: 0.9}}
+    - {type: limit, params: {max_symbols: 3}}
+
+alpha:
+  - {type: investor_flow, params: {window: 20, min_streak: 3, min_participation: 0.01, hold_bars: 12}}
+  - {type: ema_cross, params: {fast: 20, slow: 60, adx_min: 22, hold_bars: 20}}
+  - {type: regime_filter, params: {period: 200, max_annual_vol: 0.8}}
+  # AI 데스크를 쓰려면 아래 주석을 해제하세요 (ANTHROPIC_API_KEY 필요).
+  # - type: desk
+  #   params:
+  #     llm: {provider: anthropic, model: claude-opus-5}
+  #     cadence_bars: 1
+  #     max_symbols_per_run: 2
+  #     debate_rounds: 2
+  #     deadline_s: 120
+  #     min_conviction: 0.62
+  #     cost_limit_usd: 15
+
+portfolio:
+  starting_cash: 10000000
+  base_currency: KRW
+  model: {type: vol_target, params: {target_annual_vol: 0.16, lookback: 60}}
+  max_position_weight: 0.35
+  max_gross_leverage: 0.9
+  cash_reserve_pct: 0.05
+  allow_short: false
+
+risk:
+  models:
+    # 손절폭은 신호 보유기간(12~20봉)이 만드는 소음보다 넓어야 한다 — 2*sqrt(16)≈8 ATR
+    - {type: max_dd_per_security, params: {atr_multiple: 8.0, max_drawdown_pct: 0.20, lock_bars: 4}}
+    - {type: trailing_stop, params: {atr_multiple: 5.0, activate_at_pct: 0.06}}
+    - {type: max_positions, params: {max_positions: 3}}
+    - {type: max_dd_portfolio, params: {max_drawdown_pct: 0.18, halt_bars: 10}}
+  protections:
+    - {type: cooldown, params: {stop_bars: 2}}
+    - {type: stoploss_guard, params: {lookback_bars: 60, trade_limit: 3, stop_bars: 15}}
+
+execution:
+  model: {type: limit, params: {offset_bps: 10, urgent_after_bars: 2}}
+  min_order_notional: 100000
+
+costs:
+  preset: kr_equity        # 수수료 + 매도 시 증권거래세
+
+broker:
+  type: toss
+  params: {client_id: "${TOSS_CLIENT_ID}", client_secret: "${TOSS_CLIENT_SECRET}",
+           account_no: "${TOSS_ACCOUNT_NO}"}
+  max_order_notional: 2000000
+  live_trading_confirmed: true
+
+# ── 하루 거래 한도 ────────────────────────────────────────────────────────
+# 전략이 정상일 때를 가정하는 다른 한도들과 달리, 이건 전략이 고장났을 때를
+# 가정합니다. 셋 중 하나만 걸려도 신규 진입이 멈추고, 청산은 절대 막지 않습니다.
+
+notify:
+  telegram_bot_token: "${TELEGRAM_BOT_TOKEN}"
+  telegram_chat_id: "${TELEGRAM_CHAT_ID}"
+  on_events: [order_filled, trade_closed, protection, order_rejected, error, state]

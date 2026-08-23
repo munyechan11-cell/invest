@@ -1,0 +1,27 @@
+name: tmp-beginner-loss
+mode: backtest
+data:
+  provider: synthetic
+  params: {seed: 42, annual_drift: 0.10, annual_vol: 0.32}
+  timeframe: 1d
+  warmup_bars: 260
+universe:
+  symbols:
+    - {ticker: AAA, venue: SIM, tick_size: 0.01}
+    - {ticker: BBB, venue: SIM, tick_size: 0.01}
+    - {ticker: CCC, venue: SIM, tick_size: 0.01}
+alpha:
+  - type: donchian_breakout
+    params: {entry_period: 20, exit_period: 10, hold_bars: 25, allow_short: false}
+portfolio:
+  starting_cash: 100000
+  model: {type: vol_target, params: {target_annual_vol: 0.15, lookback: 60}}
+execution:
+  model: {type: immediate}
+costs: {preset: us_equity}
+broker: {type: paper, max_order_notional: 40000}
+limits:
+  max_daily_loss: 1
+backtest:
+  start: 2021-01-01T00:00:00Z
+  end: 2026-01-01T00:00:00Z

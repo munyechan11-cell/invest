@@ -38,6 +38,11 @@ class LiveTrader:
     ):
         if config.mode is RunMode.BACKTEST:
             raise ValueError("LiveTrader needs mode: dry_run or live")
+        from quant.strategy.builder import apply_investor_profile
+
+        # The saved investor profile fills in anything the config left at its
+        # defaults — sizing, stops, daily caps — before the engine is built.
+        config = apply_investor_profile(config)
         self.config = config
         self.engine: Engine
         self.provider: DataProvider

@@ -5,6 +5,7 @@
 
 # state & results — never commit a live trading database
 *.db
+investor_profile.json
 *.db-journal
 *.db-wal
 *.db-shm

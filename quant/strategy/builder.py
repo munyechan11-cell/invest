@@ -325,6 +325,25 @@ def build_brokerage(config: StrategyConfig, portfolio: Portfolio,
     raise KeyError(f"unknown brokerage {config.broker.type!r}")
 
 
+def apply_investor_profile(config: StrategyConfig,
+                           path: str = "investor_profile.json") -> StrategyConfig:
+    """Fill in whatever the config left at its defaults from the saved profile.
+
+    Explicit config always wins. A questionnaire quietly overwriting a value the
+    operator chose deliberately is not help, it is a bug with a friendly face.
+    """
+    from quant.live.profile import ProfileStore, apply_profile
+
+    store = ProfileStore(os.environ.get("QUANT_PROFILE_FILE", path))
+    profile = store.load()
+    if not profile.completed:
+        return config
+    tuned, touched = apply_profile(config, profile)
+    if touched:
+        log.info("투자 성향 '%s' 적용: %s", profile.name, ", ".join(touched))
+    return tuned
+
+
 def build_engine(
     config: StrategyConfig,
     clock: Clock | None = None,

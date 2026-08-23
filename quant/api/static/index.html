@@ -215,6 +215,38 @@ tr:last-child td{border-bottom:0}
 .venue .fields{display:none;margin-top:10px;display:grid;gap:8px}
 .venue:not(.on) .fields{display:none}
 .venue.on .fields{display:grid}
+
+/* ── 투자 성향 ─────────────────────────────────────────────────────── */
+.quiz{display:grid;gap:14px}
+.q{border:2px solid var(--line);padding:10px}
+.q .qt{font-size:12px;line-height:1.6;margin-bottom:8px}
+.q .qh{font-size:10px;color:var(--muted);margin-bottom:8px;line-height:1.5}
+.q .opts{display:grid;gap:5px}
+.opt{display:flex;gap:8px;align-items:flex-start;padding:6px 8px;border:2px solid var(--line);
+  cursor:pointer;font-size:11px;line-height:1.5;background:#0a0d14}
+.opt:hover{border-color:var(--gold-dim)}
+.opt.on{border-color:var(--gold);background:#171b26}
+.opt i{font-family:var(--px);font-size:10px;color:var(--gold);font-style:normal;flex:0 0 auto}
+.qprog{font-family:var(--px);font-size:10px;color:var(--muted)}
+
+.type{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.typebadge{font-family:var(--px);font-size:20px;color:var(--gold);border:3px solid var(--gold-dim);
+  padding:10px 16px;text-align:center;line-height:1.3}
+.typebadge small{display:block;font-size:9px;color:var(--muted);margin-top:4px}
+.axes{flex:1;min-width:260px;display:grid;gap:9px}
+.ax .axl{display:flex;justify-content:space-between;font-family:var(--px);font-size:9px;
+  color:var(--muted)}
+.ax .axl b{color:var(--gold);font-weight:400}
+.ax .bar{position:relative;height:10px;background:#0a0d14;border:1px solid var(--line);
+  margin-top:3px}
+.ax .bar span{position:absolute;top:0;bottom:0;left:50%;width:2px;background:var(--line)}
+.ax .bar i{position:absolute;top:1px;bottom:1px;background:var(--gold);min-width:3px}
+.ax input[type=range]{width:100%;margin-top:4px;accent-color:var(--gold)}
+.derived{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;
+  margin-top:12px}
+.derived div{border:2px solid var(--line);padding:6px 8px}
+.derived .k{font-family:var(--px);font-size:9px;color:var(--muted)}
+.derived .v{font-family:var(--px);font-size:13px;margin-top:2px}
 .demo-tag{font-family:var(--px);font-size:9px;color:#000;background:var(--gold);padding:2px 6px}
 .empty{font-family:var(--px);font-size:10px;color:var(--muted);text-align:center;padding:18px}
 footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-size:11px}
@@ -294,6 +326,25 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
     </div>
   </section>
 
+  <!-- 마이페이지 · 투자 성향 -->
+  <section class="panel">
+    <span class="plate"><span class="d">◆</span> 마이페이지 · 투자 성향 <span class="d">◆</span></span>
+    <div class="body">
+      <div class="type">
+        <div class="typebadge" id="pType">—<small>미진단</small></div>
+        <div class="axes" id="pAxes"></div>
+      </div>
+      <div class="derived" id="pDerived"></div>
+      <div class="actions">
+        <button class="btn" id="pRetake">성향 다시 진단</button>
+        <button class="btn" id="pApply">조정값 적용</button>
+        <span style="flex:1"></span>
+      </div>
+      <div class="msg" id="pMsg">축을 직접 밀어서 조정할 수 있습니다.
+        조정한 축은 다음 진단에서도 유지됩니다 — 되돌리려면 다시 진단하세요.</div>
+    </div>
+  </section>
+
   <!-- 수동 개입 -->
   <section class="panel">
     <span class="plate"><span class="d">◆</span> 수동 매매 · 자동매매 중에도 개입 <span class="d">◆</span></span>
@@ -352,6 +403,17 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
       <button class="btn" id="setupClose">닫기</button>
     </header>
     <div class="body">
+      <div class="step">
+        <h3>0 · 투자 성향</h3>
+        <p>여덟 문항으로 <b>시작 설정</b>을 잡습니다. 과학적 진단이 아니라 출발점이고,
+           언제든 마이페이지에서 바꿀 수 있습니다.
+           <b>공격형으로 나와도 손절이 사라지거나 하루 손실 한도가 0이 되지는 않습니다</b> —
+           성향은 "같은 규칙 안에서 더 크게"까지만 바꿉니다.</p>
+        <div class="qprog" id="quizProg"></div>
+        <div class="quiz" id="quiz"></div>
+        <div id="quizResult" style="margin-top:12px"></div>
+      </div>
+
       <div class="step">
         <h3>1 · 운영자</h3>
         <p>계정 시스템은 없습니다. 이 봇은 본인 컴퓨터에서 본인 키로만 돕니다.
@@ -997,6 +1059,150 @@ async function refreshSymbols() {
   } catch {}
 }
 
+
+/* ── 투자 성향 ───────────────────────────────────────────────────────── */
+let quizQuestions = [];
+let quizAnswers = {};
+
+function renderQuiz() {
+  $("#quiz").innerHTML = quizQuestions.map((q, i) => `
+    <div class="q" data-q="${esc(q.id)}">
+      <div class="qt">${i + 1}. ${esc(q.text).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")}</div>
+      ${q.hint ? `<div class="qh">${esc(q.hint)}</div>` : ""}
+      <div class="opts">
+        ${q.options.map(o => `<div class="opt" data-opt="${esc(o.id)}">
+          <i>${esc(o.id.toUpperCase())}</i><span>${esc(o.text)}</span></div>`).join("")}
+      </div></div>`).join("");
+
+  $("#quiz").querySelectorAll(".opt").forEach(el => {
+    el.onclick = () => {
+      const qid = el.closest("[data-q]").dataset.q;
+      quizInteractive = true;
+      quizAnswers[qid] = el.dataset.opt;
+      el.parentElement.querySelectorAll(".opt").forEach(o => o.classList.remove("on"));
+      el.classList.add("on");
+      updateQuizProgress();
+    };
+  });
+  updateQuizProgress();
+}
+
+// Auto-submit only when the *user* completed the last answer. Restoring saved
+// answers also reaches 8/8, and submitting then would overwrite any manual axis
+// adjustment the user had made — a settings page silently discarding your
+// changes the moment you open it.
+let quizInteractive = false;
+
+function updateQuizProgress() {
+  const done = Object.keys(quizAnswers).length;
+  const total = quizQuestions.length;
+  $("#quizProg").textContent = `${done} / ${total} 응답`;
+  if (quizInteractive && done === total && total > 0) submitQuiz();
+}
+
+async function submitQuiz() {
+  try {
+    const res = await post("/api/profile", {answers: quizAnswers});
+    $("#quizResult").innerHTML =
+      `<div class="msg ok">진단 완료: <b>${esc(res.name)}</b> (${esc(res.code)}) — ${esc(res.description)}<br>
+       목표 변동성 ${(res.settings.target_annual_vol * 100).toFixed(0)}% ·
+       종목당 최대 ${(res.settings.max_position_weight * 100).toFixed(0)}% ·
+       최대 ${res.settings.max_positions}종목 ·
+       하루 손실 한도 ${(res.settings.max_daily_loss_pct * 100).toFixed(2)}%</div>`;
+    renderProfile(res);
+  } catch (e) {
+    $("#quizResult").innerHTML = `<div class="msg err">저장 실패: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderProfile(p) {
+  if (!p) return;
+  $("#pType").innerHTML = p.completed
+    ? `${esc(p.name)}<small>${esc(p.code)} · ${esc(p.description)}</small>`
+    : `—<small>미진단 · 중립 기본값으로 동작 중</small>`;
+
+  $("#pAxes").innerHTML = (p.axes || []).map(a => {
+    const pos = (a.value + 1) / 2 * 100;
+    const from = a.value >= 0 ? 50 : pos;
+    const width = Math.max(Math.abs(a.value) * 50, 2);
+    return `<div class="ax" data-axis="${esc(a.axis)}">
+      <div class="axl"><span>${esc(a.low)}</span>
+        <b>${esc(a.name)}: ${esc(a.label)}${a.overridden ? " (직접 조정)" : ""}</b>
+        <span>${esc(a.high)}</span></div>
+      <div class="bar"><span></span><i style="left:${from}%;width:${width}%"></i></div>
+      <input type="range" min="-1" max="1" step="0.1" value="${a.value}"
+        data-range="${esc(a.axis)}" title="${esc(a.affects)}">
+    </div>`;
+  }).join("");
+
+  const s = p.settings || {};
+  const rows = [
+    ["목표 변동성", (s.target_annual_vol * 100).toFixed(0) + "%"],
+    ["종목당 최대", (s.max_position_weight * 100).toFixed(0) + "%"],
+    ["총 노출", (s.max_gross_leverage * 100).toFixed(0) + "%"],
+    ["최대 종목수", s.max_positions],
+    ["손절", s.stop_atr_multiple + " ATR"],
+    ["봉 주기", s.timeframe],
+    ["보유 기간", s.hold_bars + "봉"],
+    ["AI 데스크", s.use_desk ? "사용" : "미사용"],
+    ["하루 손실 한도", (s.max_daily_loss_pct * 100).toFixed(2) + "%"],
+    ["하루 주문", s.max_daily_orders + "건"],
+  ];
+  $("#pDerived").innerHTML = rows.map(([k, v]) =>
+    `<div><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
+}
+
+$("#pApply").onclick = async () => {
+  const overrides = {};
+  $("#pAxes").querySelectorAll("[data-range]").forEach(el => {
+    overrides[el.dataset.range] = parseFloat(el.value);
+  });
+  try {
+    const res = await fetch("/api/profile", {
+      method: "PATCH",
+      headers: {...auth, "Content-Type": "application/json"},
+      body: JSON.stringify({overrides}),
+    }).then(r => r.json());
+    renderProfile(res);
+    note("#pMsg", res.applied_now
+      ? "적용 완료 — 사이즈·손절·한도는 즉시 반영, 봉 주기와 알파 구성은 재시작 필요"
+      : "저장 완료 — 다음 실행부터 적용됩니다", "ok");
+  } catch (e) {
+    note("#pMsg", "실패: " + e.message, "err");
+  }
+};
+
+$("#pRetake").onclick = async () => {
+  quizAnswers = {};
+  quizInteractive = false;
+  $("#setup").classList.add("on");
+  await loadQuiz();
+  $("#quiz").scrollIntoView({behavior: "smooth", block: "start"});
+};
+
+async function loadQuiz() {
+  try {
+    const data = await api("/api/profile/questions");
+    quizQuestions = data.questions || [];
+    renderQuiz();
+  } catch {}
+}
+
+async function loadProfile() {
+  try {
+    const p = await api("/api/profile");
+    renderProfile(p);
+    if (p.completed && quizQuestions.length) {
+      quizAnswers = {...p.answers};
+      Object.entries(p.answers || {}).forEach(([qid, oid]) => {
+        const el = $(`[data-q="${qid}"] [data-opt="${oid}"]`);
+        if (el) el.classList.add("on");
+      });
+      updateQuizProgress();
+    }
+  } catch {}
+}
+
 /* ── 초기 설정 ───────────────────────────────────────────────────────── */
 let setupCatalog = null;
 
@@ -1009,6 +1215,8 @@ function fieldRow(env, label, value) {
 
 async function openSetup() {
   $("#setup").classList.add("on");
+  await loadQuiz();
+  await loadProfile();
   try {
     setupCatalog = await api("/api/setup");
   } catch (e) {
@@ -1107,6 +1315,7 @@ $("#setupSave").onclick = async () => {
 
 setInterval(() => { refreshManual(); refreshSymbols(); }, 8000);
 refreshManual(); refreshSymbols();
+loadQuiz().then(loadProfile);
 
 refresh(); connect();
 setInterval(refresh, 15000);
