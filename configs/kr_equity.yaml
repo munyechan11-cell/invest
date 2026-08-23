@@ -8,6 +8,7 @@ data:
   params: {app_key: "${KIS_APP_KEY}", app_secret: "${KIS_APP_SECRET}", paper: true}
   timeframe: 1d
   warmup_bars: 260
+  calendar: krx        # 장중에만 동작, 주말·공휴일 자동 휴장
 
 universe:
   symbols:

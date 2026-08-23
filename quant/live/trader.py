@@ -42,6 +42,7 @@ class LiveTrader:
         self.engine: Engine
         self.provider: DataProvider
         self.engine, self.provider = build_engine(config, clock=RealClock())
+        self.calendar = getattr(self.engine, "calendar", None)
         self.state = StateStore(state_path)
         self.resume = resume
         self.max_errors = max_consecutive_errors
@@ -54,6 +55,7 @@ class LiveTrader:
         self.last_bar_ts: datetime | None = None
         self.started_at: datetime | None = None
         self._seen: dict[str, datetime] = {}
+        self._announced_closed = False
 
     # ── wiring ───────────────────────────────────────────────────────────
     def _attach_observers(self) -> None:
@@ -134,9 +136,15 @@ class LiveTrader:
         self.started_at = datetime.now(UTC)
         self.running = True
 
+        if self.calendar is not None:
+            stale = self.calendar.check_freshness()
+            if stale:
+                log.warning(stale)
+                await self.notifier.send("⚠️ " + stale)
+
         banner = (f"{'🔴 LIVE' if cfg.mode is RunMode.LIVE else '🧪 DRY RUN'} "
                   f"{cfg.name} · {len(self.engine.ctx.universe)} symbols · "
-                  f"{cfg.data.timeframe}")
+                  f"{cfg.data.timeframe} · {getattr(self.calendar, 'name', 'no calendar')}")
         log.warning(banner)
         await self.notifier.send(banner)
 
@@ -146,6 +154,8 @@ class LiveTrader:
         tf = self.config.data.timeframe
         try:
             while self.running:
+                if await self._wait_for_market():
+                    continue
                 wake = next_candle_close(datetime.now(UTC), tf, lag=3.0)
                 sleep_for = (wake - datetime.now(UTC)).total_seconds()
                 if sleep_for > 0:
@@ -156,6 +166,34 @@ class LiveTrader:
                 await self._tick()
         finally:
             await self.shutdown()
+
+    async def _wait_for_market(self) -> bool:
+        """Sleep until the venue opens. Returns True if we slept.
+
+        Polling a closed book is not harmless: every fetch returns the same
+        stale candle, the strategy recomputes the same signal, and every order
+        comes back rejected for a reason that looks like an API fault.
+        """
+        if self.calendar is None or self.calendar.is_open(datetime.now(UTC)):
+            return False
+        nxt = self.calendar.next_open(datetime.now(UTC))
+        if nxt is None:
+            log.error("%s: no upcoming session found — check the holiday table",
+                      self.calendar.name)
+            await asyncio.sleep(3600)
+            return True
+        wait_s = max((nxt - datetime.now(UTC)).total_seconds(), 0)
+        if not self._announced_closed:
+            log.info("%s 휴장 — %s 개장까지 %.1f시간 대기",
+                     self.calendar.name, nxt.isoformat(), wait_s / 3600)
+            self._announced_closed = True
+        # Wake periodically rather than sleeping for hours in one go, so a stop
+        # signal is honoured promptly and a clock jump cannot strand the loop.
+        await asyncio.sleep(min(wait_s + 2, 300))
+        if self.calendar.is_open(datetime.now(UTC)):
+            self._announced_closed = False
+            log.info("%s 개장", self.calendar.name)
+        return True
 
     async def _tick(self) -> None:
         try:
@@ -261,6 +299,14 @@ class LiveTrader:
             "last_bar": self.last_bar_ts.isoformat() if self.last_bar_ts else None,
             "consecutive_errors": self.errors,
             "universe": [s.ticker for s in self.engine.ctx.universe],
+            "market": {
+                "calendar": getattr(self.calendar, "name", None),
+                "open": self.calendar.is_open(datetime.now(UTC)) if self.calendar else None,
+                "minutes_to_open": round(
+                    self.calendar.minutes_until_open(datetime.now(UTC)), 1
+                ) if self.calendar else None,
+                "stale_warning": self.calendar.check_freshness() if self.calendar else "",
+            },
             "engine": self.engine.summary(),
             "portfolio": pf.snapshot(),
             "desk": desk.status() if desk is not None else None,

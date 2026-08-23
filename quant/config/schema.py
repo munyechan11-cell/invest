@@ -39,6 +39,10 @@ class DataConfig(BaseModel):
     timeframe: str = "1d"
     warmup_bars: int = 250
     cache: bool = True
+    #: trading calendar: always_open (crypto) | krx | us_equity, or "auto" to
+    #: infer from the universe's venue. A live bot without one polls a closed
+    #: book all night and reports every rejection as an API error.
+    calendar: str = "auto"
 
     @field_validator("timeframe")
     @classmethod

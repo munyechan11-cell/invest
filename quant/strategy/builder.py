@@ -30,6 +30,7 @@ from quant.core.context import Context
 from quant.core.engine import Engine
 from quant.core.events import EventBus
 from quant.core.types import UTC, AssetClass, RunMode, Symbol
+from quant.data.calendar import calendar_for_venue, create_calendar
 from quant.data.flow import FlowFeed, NullFlowProvider, create_flow_provider
 from quant.data.provider import CachingProvider, DataProvider, create_provider
 from quant.execution.costs import PRESETS, FeeModel, FillModel, SlippageModel
@@ -119,6 +120,24 @@ def build_flow_feed(config: StrategyConfig) -> FlowFeed:
         refresh_every_bars=config.flow.refresh_every_bars,
         live=config.mode is not RunMode.BACKTEST,
     )
+
+
+def build_calendar(config: StrategyConfig, universe: list[Symbol]):
+    """Resolve the trading calendar, inferring from the venue when set to auto."""
+    if config.data.calendar != "auto":
+        return create_calendar(config.data.calendar)
+    if not universe:
+        return create_calendar("always_open")
+    first = universe[0]
+    calendar = calendar_for_venue(first.venue, first.asset_class.value)
+    venues = {s.venue for s in universe}
+    if len(venues) > 1:
+        log.warning(
+            "universe spans %s but one calendar applies to all of it (%s). "
+            "Set data.calendar explicitly, or split into one strategy per venue.",
+            sorted(venues), calendar.name,
+        )
+    return calendar
 
 
 def build_costs(config: StrategyConfig) -> tuple[FeeModel, SlippageModel, FillModel | None]:
@@ -290,6 +309,7 @@ def build_engine(
         ctx.benchmark = Symbol(config.universe.benchmark, venue=config.data.provider)
 
     flow_feed = build_flow_feed(config)
+    calendar = build_calendar(config, ctx.universe)
     fee, slippage, fill = build_costs(config)
     execution = _resolve(
         BUILTIN_EXECUTION_MODELS,
@@ -310,4 +330,5 @@ def build_engine(
     # Carried on the engine so the backtest runner and the live loop can
     # backfill it without threading another return value through everything.
     engine.flow_feed = flow_feed
+    engine.calendar = calendar
     return engine, build_data_provider(config)

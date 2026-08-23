@@ -15,6 +15,7 @@ data:
   params: {exchange: binance, sandbox: true}
   timeframe: 4h
   warmup_bars: 400
+  calendar: always_open   # 크립토는 24/7
 
 universe:
   symbols:
