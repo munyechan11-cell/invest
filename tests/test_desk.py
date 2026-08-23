@@ -7,6 +7,7 @@ missing seat degrades safely rather than silently, and that the desk cannot
 escape the rules the rest of the engine imposes on it.
 """
 import asyncio
+import json
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -312,3 +313,74 @@ def test_lessons_surface_a_miscalibrated_desk():
     text = memory.lessons_for(SYM)
     assert "캘리브레이션" in text
     assert "낮춰" in text
+
+
+# ── 출력 잘림 ────────────────────────────────────────────────────────────
+def test_a_truncated_response_retries_with_a_bigger_budget():
+    """잘린 응답을 같은 예산으로 재시도하면 똑같이 잘립니다.
+
+    실제로 겪은 실패입니다. microstructure 좌석이 max_tokens 에서 잘려 JSON 이
+    깨졌고, 클라이언트는 "model did not return JSON" 으로만 보고한 뒤 동일한
+    요청을 세 번 반복했습니다 — 비용은 3배, 좌석은 그대로 실패.
+    """
+    import httpx
+    from quant.alpha.llm_client import LLMClient, LLMConfig
+
+    budgets: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        budget = json.loads(request.content)["generationConfig"]["maxOutputTokens"]
+        budgets.append(budget)
+        if budget < 400:                      # 예산이 작으면 잘린 채로 돌려준다
+            return httpx.Response(200, json={
+                "candidates": [{"finishReason": "MAX_TOKENS",
+                                "content": {"parts": [{"text": '{"stance": "bul'}]}}],
+                "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5}})
+        return httpx.Response(200, json={
+            "candidates": [{"finishReason": "STOP",
+                            "content": {"parts": [{"text": '{"stance": "bullish"}'}]}}],
+            "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 20}})
+
+    client = LLMClient(LLMConfig(provider="google", model="gemini-3.7-flash",
+                                 api_key="test-key", max_tokens=200))
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    assert asyncio.run(client.complete("sys", "user", {"type": "object"})) == {
+        "stance": "bullish"}
+    # 같은 예산으로 반복하지 않고 키워서 재시도했는가
+    assert budgets == [200, 400], budgets
+
+
+def test_truncation_gives_up_rather_than_growing_without_bound():
+    """4배까지 키워도 안 끝나면 포기합니다. 8배도 안 끝날 테니까요."""
+    import httpx
+    from quant.alpha.llm_client import LLMConfig, LLMClient, Truncated
+
+    seen: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content)["generationConfig"]["maxOutputTokens"])
+        return httpx.Response(200, json={
+            "candidates": [{"finishReason": "MAX_TOKENS",
+                            "content": {"parts": [{"text": "{"}]}}],
+            "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5}})
+
+    client = LLMClient(LLMConfig(provider="google", model="gemini-3.7-flash",
+                                 api_key="test-key", max_tokens=100, max_retries=9))
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(Truncated):
+        asyncio.run(client.complete("sys", "user", {"type": "object"}))
+    assert seen == [100, 200, 400], seen
+
+
+def test_cost_is_priced_per_model_not_at_a_blended_rate():
+    """싼 모델을 비싼 요율로 매기면 cost_limit_usd 가 6배 일찍 멈춥니다."""
+    from quant.alpha.llm_client import LLMUsage
+
+    flash = LLMUsage(53_289, 6_571, 19, "gemini-3.7-flash")
+    opus = LLMUsage(53_289, 6_571, 19, "claude-opus-5")
+    assert round(flash.cost_usd, 4) == 0.0646
+    assert round(opus.cost_usd, 4) == 0.4307
+    # 모르는 모델은 가장 비싼 요율로 — 한도가 과소계상되는 쪽이 더 나쁩니다.
+    assert LLMUsage(53_289, 6_571, 19, "some-new-model").cost_usd == opus.cost_usd

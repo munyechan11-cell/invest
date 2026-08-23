@@ -979,17 +979,17 @@ class TradingDesk(AlphaModel):
     # ── operations ───────────────────────────────────────────────────────
     @property
     def estimated_cost_usd(self) -> float:
-        """Rough spend estimate — a tripwire, not a bill.
+        """Spend estimate, priced per model.
 
-        Priced at a deliberately pessimistic blended rate so the limit trips
-        early rather than late.
+        This drives `cost_limit_usd`, so a single blended rate was wrong in
+        both directions: it over-charged a cheap analyst model by ~6x (halting
+        a run that had barely spent anything) and would under-charge a mixed
+        setup whose decision seats run on a larger model. Unknown models fall
+        back to the most expensive rate we know — see `price_for`.
         """
-        tin = self.client.usage.input_tokens
-        tout = self.client.usage.output_tokens
-        if self.decision_client is not self.client:
-            tin += self.decision_client.usage.input_tokens
-            tout += self.decision_client.usage.output_tokens
-        return tin / 1e6 * 5.0 + tout / 1e6 * 25.0
+        counters = {id(self.client.usage): self.client.usage,
+                    id(self.decision_client.usage): self.decision_client.usage}
+        return sum(u.cost_usd for u in counters.values())
 
     def status(self) -> dict:
         return {

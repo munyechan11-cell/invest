@@ -36,16 +36,54 @@ DEFAULT_MODELS = {
 }
 
 
+#: USD per 1M tokens (input, output), matched by name prefix. 2026-08.
+#: Longest prefix wins, so a family entry can carry a whole generation.
+MODEL_PRICES: dict[str, tuple[float, float]] = {
+    "claude-opus": (5.00, 25.00),
+    "claude-sonnet": (3.00, 15.00),
+    "claude-haiku": (1.00, 5.00),
+    "gemini-3.1-pro": (2.00, 12.00),
+    "gemini-3.5-flash-lite": (0.30, 2.50),
+    "gemini-3.5-flash": (1.50, 9.00),
+    "gemini-3.7-flash": (0.75, 3.75),
+    "gpt-5": (1.25, 10.00),
+}
+
+#: An unknown model is priced at the most expensive thing we know about. The
+#: estimate drives `cost_limit_usd`, and a limit that under-counts spend is
+#: worse than one that stops you early.
+_FALLBACK_PRICE = (5.00, 25.00)
+
+
+def price_for(model: str) -> tuple[float, float]:
+    """(input, output) USD per 1M tokens."""
+    name = (model or "").lower()
+    best = ""
+    for prefix in MODEL_PRICES:
+        if name.startswith(prefix) and len(prefix) > len(best):
+            best = prefix
+    return MODEL_PRICES[best] if best else _FALLBACK_PRICE
+
+
 @dataclass
 class LLMUsage:
     input_tokens: int = 0
     output_tokens: int = 0
     calls: int = 0
+    #: which model these tokens were spent on — set by the client that owns
+    #: this counter. Cost lives here rather than in the desk because this is
+    #: the only object that knows both halves of the multiplication.
+    model: str = ""
 
     def add(self, i: int, o: int) -> None:
         self.input_tokens += i
         self.output_tokens += o
         self.calls += 1
+
+    @property
+    def cost_usd(self) -> float:
+        pin, pout = price_for(self.model)
+        return self.input_tokens / 1e6 * pin + self.output_tokens / 1e6 * pout
 
 
 @dataclass
@@ -137,6 +175,25 @@ def _is_long_exhaustion(message: str) -> bool:
     return wait is not None and wait >= _LONG_WAIT_S
 
 
+class Truncated(LLMError):
+    """The model hit the output cap mid-answer.
+
+    Worth its own type because the response is *correct so far* — retrying the
+    identical request reproduces the identical truncation, so the generic retry
+    path burns the call three times and fails anyway. The fix is a bigger
+    budget, which only the caller can grant.
+    """
+
+
+#: what each provider calls "I ran out of room".
+_TRUNCATION_MARKERS = {"max_tokens", "length", "MAX_TOKENS"}
+
+
+def _check_truncated(reason: str | None, text: str) -> None:
+    if reason and reason in _TRUNCATION_MARKERS:
+        raise Truncated(f"출력 토큰 한도에서 잘렸습니다 ({reason}): …{text[-80:]!r}")
+
+
 def _extract_json(text: str) -> dict:
     """Last-resort parser for providers/models that ignore the schema."""
     text = text.strip()
@@ -184,6 +241,7 @@ class LLMClient:
         self.config = config
         self.usage = LLMUsage()
         self._limiter = _RateLimiter(config.requests_per_minute)
+        self.usage.model = config.resolved_model()
         self._client = httpx.AsyncClient(timeout=config.timeout)
         if not config.resolved_key():
             raise LLMError(
@@ -193,16 +251,28 @@ class LLMClient:
     async def complete(self, system: str, user: str, schema: dict | None = None) -> Any:
         """Return parsed JSON when `schema` is given, else raw text."""
         last: Exception | None = None
+        budget = self.config.max_tokens
         for attempt in range(self.config.max_retries):
             await self._limiter.wait()
             try:
                 if self.config.provider == "anthropic":
-                    return await self._anthropic(system, user, schema)
+                    return await self._anthropic(system, user, schema, budget)
                 if self.config.provider in ("openai", "openai_compatible"):
-                    return await self._openai(system, user, schema)
+                    return await self._openai(system, user, schema, budget)
                 if self.config.provider == "google":
-                    return await self._google(system, user, schema)
+                    return await self._google(system, user, schema, budget)
                 raise LLMError(f"unsupported provider {self.config.provider!r}")
+            except Truncated as exc:
+                last = exc
+                # Retrying the same budget reproduces the same cut. Give it
+                # room instead — but cap the growth, because a model that
+                # rambles past 4x the budget is not going to stop at 8x.
+                if budget >= self.config.max_tokens * 4:
+                    raise
+                budget *= 2
+                log.info("%s 응답이 잘려 출력 한도를 %d 토큰으로 올려 재시도합니다",
+                         self.config.resolved_model(), budget)
+                continue
             except (httpx.HTTPError, LLMError) as exc:
                 last = exc
                 # A 4xx is a bad request, not a blip. Retrying it three times
@@ -221,10 +291,11 @@ class LLMClient:
         raise LLMError(f"LLM call failed after {self.config.max_retries} attempts: {last}")
 
     # ── providers ────────────────────────────────────────────────────────
-    async def _anthropic(self, system: str, user: str, schema: dict | None):
+    async def _anthropic(self, system: str, user: str, schema: dict | None,
+                         budget: int = 0):
         body: dict[str, Any] = {
             "model": self.config.resolved_model(),
-            "max_tokens": self.config.max_tokens,
+            "max_tokens": budget or self.config.max_tokens,
             "temperature": self.config.temperature,
             "system": system,
             "messages": [{"role": "user", "content": user}],
@@ -246,6 +317,8 @@ class LLMClient:
         u = data.get("usage") or {}
         self.usage.add(u.get("input_tokens", 0), u.get("output_tokens", 0))
         blocks = data.get("content") or []
+        _check_truncated(data.get("stop_reason"),
+                         "".join(b.get("text", "") for b in blocks))
         if schema:
             for b in blocks:
                 if b.get("type") == "tool_use":
@@ -253,11 +326,12 @@ class LLMClient:
             return _extract_json("".join(b.get("text", "") for b in blocks))
         return "".join(b.get("text", "") for b in blocks)
 
-    async def _openai(self, system: str, user: str, schema: dict | None):
+    async def _openai(self, system: str, user: str, schema: dict | None,
+                      budget: int = 0):
         body: dict[str, Any] = {
             "model": self.config.resolved_model(),
             "temperature": self.config.temperature,
-            "max_completion_tokens": self.config.max_tokens,
+            "max_completion_tokens": budget or self.config.max_tokens,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}],
         }
@@ -275,14 +349,17 @@ class LLMClient:
         data = r.json()
         u = data.get("usage") or {}
         self.usage.add(u.get("prompt_tokens", 0), u.get("completion_tokens", 0))
-        text = (data["choices"][0]["message"].get("content") or "").strip()
+        choice = data["choices"][0]
+        text = (choice["message"].get("content") or "").strip()
+        _check_truncated(choice.get("finish_reason"), text)
         return _extract_json(text) if schema else text
 
-    async def _google(self, system: str, user: str, schema: dict | None):
+    async def _google(self, system: str, user: str, schema: dict | None,
+                      budget: int = 0):
         base = self.config.base_url or "https://generativelanguage.googleapis.com/v1beta"
         gen: dict[str, Any] = {
             "temperature": self.config.temperature,
-            "maxOutputTokens": self.config.max_tokens,
+            "maxOutputTokens": budget or self.config.max_tokens,
         }
         if schema:
             gen["responseMimeType"] = "application/json"
@@ -312,8 +389,10 @@ class LLMClient:
         data = r.json()
         u = data.get("usageMetadata") or {}
         self.usage.add(u.get("promptTokenCount", 0), u.get("candidatesTokenCount", 0))
-        parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
+        candidate = (data.get("candidates") or [{}])[0]
+        parts = candidate.get("content", {}).get("parts", [])
         text = "".join(p.get("text", "") for p in parts)
+        _check_truncated(candidate.get("finishReason"), text)
         return _extract_json(text) if schema else text
 
     async def list_models(self) -> list[str]:

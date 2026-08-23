@@ -1,0 +1,570 @@
+<meta charset="utf-8">
+<title>픽셀 트레이딩 플로어</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+KR:wght@300;400;500;600;700&family=Press+Start+2P&display=swap">
+
+<style>
+/* ─────────────────────────────────────────────────────────────────
+   단일 비주얼 월드: 심야 CRT 트레이딩 터미널.
+   테마 전환 없이 한 세계에 고정하되, 바탕과 모든 색을 명시적으로
+   칠해서 뷰어의 테마가 무엇이든 그대로 유지되게 합니다.
+   색 논리는 한국 시장을 따릅니다 — 상승 빨강, 하락 파랑.
+   ───────────────────────────────────────────────────────────────── */
+:root {
+  --void:   #0B0E17;   /* 파랑 쪽으로 기운 심야 바탕 */
+  --panel:  #151A2B;
+  --panel2: #1B2136;
+  --rule:   #262E4A;
+  --bone:   #E4E0D3;   /* 인광 흰색 — 순백 아님 */
+  --dim:    #99A3C0;   /* 패널 위 AA 통과 */
+  --faint:  #838EAE;   /* 가장 작은 라벨까지 AA 통과 */
+  --sang:   #FF4757;   /* 상승 */
+  --ha:     #4D8DF0;   /* 하락 */
+  --gold:   #FFC247;   /* 최종 판정 전용 */
+  --px: 'Press Start 2P', 'IBM Plex Mono', monospace;
+  --kr: 'IBM Plex Sans KR', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--void);
+  color: var(--bone);
+  font-family: var(--kr);
+  font-weight: 300;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+/* CRT 주사선 — 아주 옅게, 분위기만 */
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: 99; pointer-events: none;
+  background: repeating-linear-gradient(
+    180deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px);
+  mix-blend-mode: multiply;
+}
+.wrap { max-width: 1000px; margin: 0 auto; padding: 0 20px 96px; }
+
+/* 라틴·숫자 전용 픽셀 라벨. 한글은 절대 넣지 않습니다 —
+   Press Start 2P 에 한글 글리프가 없어 조용히 폴백됩니다. */
+.px { font-family: var(--px); font-weight: 400; line-height: 1.7;
+      letter-spacing: .04em; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.eyebrow {
+  font-family: var(--kr); font-weight: 600; font-size: 11px;
+  letter-spacing: .22em; color: var(--faint);
+  display: flex; align-items: center; gap: 12px; margin: 0 0 18px;
+}
+.eyebrow::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+
+/* ── 상단 판정 보드 ─────────────────────────────────────────── */
+header { border-bottom: 1px solid var(--rule); margin-bottom: 44px;
+         padding: 52px 0 0; }
+.brand { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+         margin-bottom: 34px; }
+.brand .mark { font-family: var(--px); font-size: clamp(15px, 3.4vw, 26px);
+               color: var(--bone); letter-spacing: .02em; }
+.brand .kr { font-size: 13px; color: var(--faint); letter-spacing: .18em;
+             font-weight: 500; }
+
+.board {
+  display: grid; gap: 1px; background: var(--rule);
+  border: 1px solid var(--rule); margin-bottom: 26px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.cell { background: var(--panel); padding: 18px 20px 20px; }
+.cell .k { font-size: 10px; letter-spacing: .18em; color: var(--dim);
+           font-weight: 600; margin-bottom: 9px; }
+.cell .v { font-family: var(--mono); font-variant-numeric: tabular-nums;
+           font-size: 25px; font-weight: 600; color: var(--bone);
+           line-height: 1.15; }
+.cell .v small { font-size: 12px; color: var(--dim); font-weight: 400;
+                 margin-left: 5px; }
+.cell.verdict { background: var(--panel2); }
+.cell.verdict .v { color: var(--gold); font-family: var(--px);
+                   font-size: clamp(19px, 4vw, 27px); }
+
+/* 합성 데이터 고지 — 놓칠 수 없는 자리에 */
+.notice {
+  display: flex; gap: 13px; align-items: flex-start;
+  border: 1px solid var(--sang); border-left-width: 4px;
+  background: rgba(255,71,87,.07); padding: 15px 18px;
+  font-size: 13.5px; margin-bottom: 46px; color: var(--bone);
+}
+.notice b { color: var(--sang); font-weight: 700; }
+.notice .ico { font-family: var(--px); font-size: 11px; color: var(--sang);
+               padding-top: 4px; }
+
+/* ── 플로어 ─────────────────────────────────────────────────── */
+.rooms { display: grid; gap: 16px;
+         grid-template-columns: repeat(auto-fit, minmax(232px, 1fr)); }
+.room { border: 1px solid var(--rule); background: var(--panel);
+        padding: 16px 15px 19px; }
+.room h3 { margin: 0 0 3px; font-size: 13px; font-weight: 700;
+           letter-spacing: .1em; color: var(--bone); }
+.room .stage { font-family: var(--px); font-size: 8px; color: var(--faint);
+               margin-bottom: 15px; }
+.seats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; }
+.room.wide .seats { grid-template-columns: repeat(2, 1fr); }
+.seat { text-align: center; }
+.seat canvas { width: 100%; max-width: 52px; height: auto;
+               image-rendering: pixelated; display: block; margin: 0 auto 6px; }
+.seat .nm { font-size: 10.5px; color: var(--dim); line-height: 1.35;
+            font-weight: 500; }
+.seat .cv { font-family: var(--mono); font-size: 10px; color: var(--faint);
+            font-variant-numeric: tabular-nums; }
+.seat.up .cv { color: var(--sang); }
+.seat.down .cv { color: var(--ha); }
+
+/* ── 섹션 ───────────────────────────────────────────────────── */
+section { margin-top: 62px; }
+h2 { font-size: 21px; font-weight: 700; letter-spacing: .01em;
+     margin: 0 0 6px; text-wrap: balance; }
+.sub { color: var(--dim); font-size: 14px; margin: 0 0 26px; max-width: 62ch; }
+
+/* 분석 8석 */
+.analysts { display: grid; gap: 14px;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.card { border: 1px solid var(--rule); background: var(--panel);
+        padding: 17px 19px 19px; display: flex; flex-direction: column; gap: 11px; }
+.card.thin { opacity: .62; }
+.card .top { display: flex; align-items: center; gap: 10px; }
+.card .title { font-weight: 600; font-size: 14.5px; flex: 1; }
+.chip { font-family: var(--px); font-size: 8px; padding: 5px 7px;
+        border: 1px solid currentColor; white-space: nowrap; }
+.chip.up { color: var(--sang); } .chip.down { color: var(--ha); }
+.chip.flat { color: var(--faint); }
+.meter { height: 5px; background: var(--rule); position: relative; }
+.meter i { position: absolute; inset: 0 auto 0 0; background: var(--dim);
+           display: block; }
+.meter.up i { background: var(--sang); } .meter.down i { background: var(--ha); }
+.card ul { margin: 0; padding-left: 17px; font-size: 13.5px; color: var(--bone);
+           display: flex; flex-direction: column; gap: 8px; }
+.card ul li::marker { color: var(--faint); }
+.card .lack { font-size: 11.5px; color: var(--faint); letter-spacing: .04em;
+              border-top: 1px dashed var(--rule); padding-top: 10px; }
+
+/* 강세 vs 약세 */
+.duel { display: grid; gap: 1px; background: var(--rule);
+        border: 1px solid var(--rule);
+        grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); }
+.side { background: var(--panel); padding: 21px 22px 24px;
+        display: flex; flex-direction: column; gap: 15px; }
+.side .who { display: flex; align-items: baseline; gap: 10px; }
+.side .who b { font-size: 15px; font-weight: 700; }
+.side .who .c { font-family: var(--mono); font-size: 12px; margin-left: auto;
+                font-variant-numeric: tabular-nums; }
+.side.bull .who b, .side.bull .who .c { color: var(--sang); }
+.side.bear .who b, .side.bear .who .c { color: var(--ha); }
+.side p { margin: 0; font-size: 13.5px; }
+.side .lbl { font-size: 10px; letter-spacing: .18em; color: var(--faint);
+             font-weight: 600; margin-bottom: 5px; }
+.side .aside { border-left: 2px solid var(--rule); padding-left: 13px; }
+
+/* 리스크 배율 협상 — 이 페이지의 핵심 도표 */
+.scale { border: 1px solid var(--rule); background: var(--panel);
+         padding: 30px 26px 22px; }
+.track { position: relative; height: 3px; background: var(--rule);
+         margin: 58px 0 42px; }
+.track .fill { position: absolute; left: 0; top: 0; bottom: 0;
+               background: var(--gold); }
+.mk { position: absolute; top: 50%; transform: translate(-50%, -50%);
+      text-align: center; width: 130px; }
+.mk .dot { width: 11px; height: 11px; margin: 0 auto; background: var(--void);
+           border: 3px solid var(--dim); }
+.mk .val { font-family: var(--mono); font-size: 20px; font-weight: 700;
+           font-variant-numeric: tabular-nums; }
+.mk .who { font-size: 10.5px; color: var(--dim); letter-spacing: .05em; }
+.mk.above { padding-bottom: 0; }
+.mk.above .val, .mk.above .who { position: relative; top: -52px; }
+.mk.below .val, .mk.below .who { position: relative; top: 12px; }
+.mk.agg .dot { border-color: var(--sang); } .mk.agg .val { color: var(--sang); }
+.mk.con .dot { border-color: var(--ha); }   .mk.con .val { color: var(--ha); }
+.mk.fin .dot { border-color: var(--gold); width: 15px; height: 15px; }
+.mk.fin .val { color: var(--gold); font-size: 26px; }
+.track .end { position: absolute; top: 14px; font-family: var(--px);
+              font-size: 8px; color: var(--dim); }
+.why { font-size: 13.5px; color: var(--bone); border-top: 1px solid var(--rule);
+       padding-top: 17px; margin: 0; }
+
+/* 결정 3석 체인 */
+.chain { display: flex; flex-direction: column; gap: 0; }
+.link { border: 1px solid var(--rule); background: var(--panel);
+        padding: 19px 22px; display: grid; gap: 12px;
+        grid-template-columns: 132px 1fr; align-items: start; }
+.link + .link { border-top: 0; }
+.link .role { display: flex; flex-direction: column; gap: 3px; }
+.link .role b { font-size: 14px; font-weight: 700; }
+.link .role span { font-family: var(--px); font-size: 7.5px; color: var(--faint); }
+.link p { margin: 0; font-size: 13.5px; }
+.link.head { border-color: var(--gold); background: var(--panel2); }
+.link.head .role b { color: var(--gold); }
+.link .tags { display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+              margin-bottom: 10px; }
+.link .tag { font-family: var(--px); font-size: 8px; padding: 4px 7px;
+             border: 1px solid currentColor; color: var(--sang); }
+/* 한글은 픽셀 폰트에 글리프가 없어 조용히 폴백됩니다 — 따로 세웁니다. */
+.link .tagkr { font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+               font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+.link.head .tag { color: var(--gold); }
+
+/* 마무리 */
+.close { display: grid; gap: 14px; margin-top: 20px;
+         grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.close div { border: 1px solid var(--rule); padding: 18px 20px;
+             background: var(--panel); }
+.close .lbl { font-size: 10px; letter-spacing: .18em; color: var(--faint);
+              font-weight: 600; margin-bottom: 9px; }
+.close p { margin: 0; font-size: 13.5px; }
+.close .inv { border-left: 3px solid var(--gold); }
+.close .dis { border-left: 3px solid var(--ha); }
+
+footer { margin-top: 74px; border-top: 1px solid var(--rule); padding-top: 26px;
+         color: var(--faint); font-size: 12.5px; display: flex;
+         flex-direction: column; gap: 9px; }
+footer b { color: var(--dim); font-weight: 600; }
+
+/* 부팅 시퀀스 — 심의 순서대로 한 번만 */
+@media (prefers-reduced-motion: no-preference) {
+  .boot { opacity: 0; transform: translateY(9px);
+          animation: rise .5s ease-out forwards; }
+}
+@keyframes rise { to { opacity: 1; transform: none; } }
+
+@media (max-width: 560px) {
+  .link { grid-template-columns: 1fr; }
+  .mk { width: 92px; }
+  .track { margin: 66px 0 46px; }
+}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="brand">
+    <span class="mark">PIXEL TRADING FLOOR</span>
+    <span class="kr">16석 심의 기록 · 2026-08-23</span>
+  </div>
+
+  <div class="board">
+    <div class="cell verdict">
+      <div class="k">FINAL CALL</div>
+      <div class="v">BUY</div>
+    </div>
+    <div class="cell">
+      <div class="k">종목 · 종가</div>
+      <div class="v num">39,517<small>원</small></div>
+    </div>
+    <div class="cell">
+      <div class="k">확신도</div>
+      <div class="v num">0.65</div>
+    </div>
+    <div class="cell">
+      <div class="k">진입 배율</div>
+      <div class="v num">0.50</div>
+    </div>
+    <div class="cell">
+      <div class="k">분석가 합의</div>
+      <div class="v num">+0.69<small>5/8석</small></div>
+    </div>
+  </div>
+
+  <div class="board" style="margin-bottom:26px">
+    <div class="cell"><div class="k">심의 시간</div>
+      <div class="v num" style="font-size:19px">41.6<small>초</small></div></div>
+    <div class="cell"><div class="k">LLM 호출</div>
+      <div class="v num" style="font-size:19px">16<small>회</small></div></div>
+    <div class="cell"><div class="k">비용</div>
+      <div class="v num" style="font-size:19px">$0.057</div></div>
+    <div class="cell"><div class="k">모델</div>
+      <div class="v" style="font-size:13px;font-family:var(--mono);font-weight:400">gemini-3.7-flash</div></div>
+    <div class="cell"><div class="k">축약 여부</div>
+      <div class="v" style="font-size:13px;font-family:var(--kr);font-weight:400">없음 · 전 좌석 응답</div></div>
+  </div>
+
+  <div class="notice">
+    <span class="ico">!</span>
+    <div><b>합성 시세로 돌린 기계 검증입니다.</b> 종목 코드는 005930이지만 가격·거래량·수급
+    수치는 모두 합성 데이터이며 실제 삼성전자 시세가 아닙니다. 심의 절차가 실제로 작동하는지를
+    보이는 기록이고, <b>투자 권유가 아닙니다.</b></div>
+  </div>
+</header>
+
+<section style="margin-top:0">
+  <div class="eyebrow">플로어</div>
+  <h2>16석이 네 방을 순서대로 지납니다</h2>
+  <p class="sub">각 좌석은 자기 담당 구획만 봅니다. 수급 좌석에게는 기술지표가,
+  기술 좌석에게는 수급이 보이지 않습니다 — 같은 근거로 같은 결론에 몰리는 것을 막기 위해서입니다.</p>
+  <div class="rooms" id="rooms"></div>
+</section>
+
+<section>
+  <div class="eyebrow">1단계 · 분석 8석</div>
+  <h2>여덟 명이 각자 다른 것을 봤습니다</h2>
+  <p class="sub">셋은 데이터가 없다고 답했습니다. 없는 데이터를 지어내는 대신
+  “판단 불가”를 반환하고 투표에서 빠지는 쪽이 정확합니다.</p>
+  <div class="analysts" id="analysts"></div>
+</section>
+
+<section>
+  <div class="eyebrow">2단계 · 맞토론</div>
+  <h2>강세와 약세가 서로의 가장 강한 반례를 인정합니다</h2>
+  <p class="sub">각자 자기 논거만 늘어놓는 대신, 상대 주장 중 사실인 부분을 먼저 인정하고
+  그 다음에 왜 그것으로 충분하지 않은지를 말하도록 강제됩니다.</p>
+  <div class="duel">
+    <div class="side bull">
+      <div class="who"><b>강세론자</b><span class="c">확신 0.70</span></div>
+      <p>SMA20(38,850) &gt; SMA50(34,922) &gt; SMA200(27,330) 완전 정배열 위에 있고 ADX14가 38.5입니다.
+      20일 누적 스마트머니가 외국인 275.5억·기관 397.2억으로 <b>672.7억 순유입</b>, 같은 기간 개인은
+      239만 주를 팔았습니다. 왕복 체결비용 0.25% 수준의 낮은 마찰로 상단 돌파를 노릴 자리입니다.</p>
+      <div class="aside">
+        <div class="lbl">인정</div>
+        <p>8월 21일 하루 외국인(-80,325주)과 기관(-49,733주)이 동반 매도하고 개인이 순매수로 돌아섰습니다.
+        MACD 히스토그램도 -138.10으로 음전환했습니다.</p>
+      </div>
+      <div class="aside">
+        <div class="lbl">반박</div>
+        <p>단 하루의 차익 실현을 추세 전환으로 읽는 것은 약한 논거입니다. 직전 4거래일 연속
+        대규모 순매수가 확인됐고, ADX 38.5 강추세에서 1일 숨고르기는 고점 돌파 전 매물 소화입니다.</p>
+      </div>
+    </div>
+    <div class="side bear">
+      <div class="who"><b>약세론자</b><span class="c">확신 0.40</span></div>
+      <p>52주 저점 대비 90.78%, 60봉 40.10% 오른 고점권(52주 고점 -2.69%)입니다.
+      당일 거래량이 <b>20일 평균의 0.69배</b>로 급감해 돌파를 받쳐줄 거래가 없고, 8월 21일
+      외국인·기관이 동반 순매도(-60.4억)한 물량을 개인이 57.2억 받아낸 전형적 고점 분산 패턴입니다.</p>
+      <div class="aside">
+        <div class="lbl">인정</div>
+        <p>이평선 완전 정배열과 ADX 38.5가 보여주듯 중기 상승 추세는 매우 견고하며,
+        20일 누적 순유입 672.7억은 추세 추종 관점에서 강한 상방 압력입니다.</p>
+      </div>
+      <div class="aside">
+        <div class="lbl">반박</div>
+        <p>강세론은 20일 누적과 과거 모멘텀만 강조합니다. 스마트머니가 이탈하고 거래량이 0.69배로
+        줄어든 상태에서는 고점 저항 돌파보다 쌍고점 후 차익 매물 쪽 확률이 높습니다.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="eyebrow">3단계 · 리스크 3석</div>
+  <h2>얼마나 크게 살지를 두고 협상합니다</h2>
+  <p class="sub">공격형과 보수형이 각자 배율을 제시하고, 중립 좌석이 하나로 정합니다.
+  리스크 좌석은 크기를 <b>줄이거나 거부</b>할 수만 있고 키울 수는 없습니다.</p>
+  <div class="scale">
+    <div class="track">
+      <div class="fill" style="width:50%"></div>
+      <span class="end" style="left:0">0.0</span>
+      <span class="end" style="right:0">1.0</span>
+      <div class="mk con below" style="left:35%">
+        <div class="dot"></div><div class="val num">0.35</div><div class="who">보수형 제안</div>
+      </div>
+      <div class="mk fin above" style="left:50%">
+        <div class="val num">0.50</div><div class="who">중립 확정</div><div class="dot"></div>
+      </div>
+      <div class="mk agg below" style="left:80%">
+        <div class="dot"></div><div class="val num">0.80</div><div class="who">공격형 제안</div>
+      </div>
+    </div>
+    <p class="why"><b style="color:var(--gold)">중립 좌석의 근거</b> — 이평선 정배열(ADX 38.5)과
+    20일 스마트머니 672.7억 순유입은 탄탄한 추세를 지지하고, SMA20(38,850원) 기준 손절폭이
+    -1.7% 내외로 명확해 손익비가 우수합니다. 다만 52주 고점 직전 거래량 감소(0.69배), MACD 음전환,
+    직전 거래일 외인·기관 동반 차익 실현이 <b>구체적으로 관측</b>되었으므로 공격형의 0.80을
+    0.50으로 축소합니다. 거부권은 행사하지 않았고, 손실 한도는 2.5%로 설정됐습니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="eyebrow">4단계 · 결정 3석</div>
+  <h2>트레이더가 헤드의 시장가를 분할 지정가로 뒤집었습니다</h2>
+  <p class="sub">방향을 정하는 자리와 체결 방식을 정하는 자리가 분리되어 있습니다.
+  이 심의에서 실제로 갈렸습니다.</p>
+  <div class="chain">
+    <div class="link">
+      <div class="role"><b>리서치 매니저</b><span>RESEARCH</span></div>
+      <div><div class="tags"><span class="tag">BUY</span></div>
+      <p>강세론의 논거를 채택합니다. ADX 38.5 강추세와 완전 정배열, 20일 누적 672.7억 순매수 기반의
+      확정된 상승추세가 지배적입니다. 8월 21일 1거래일 차익 실현과 MACD 음전환은 52주 고점 도달 직전의
+      전형적 매물 소화로 판단하되, 무리한 추격 대신 <b>눌림목 분할 매수</b>로 편입합니다.</p></div>
+    </div>
+    <div class="link">
+      <div class="role"><b>트레이더</b><span>EXECUTION</span></div>
+      <div><div class="tags"><span class="tag">WAIT FOR PULLBACK</span><span class="tagkr">2분할 지정가</span></div>
+      <p>52주 고점 부근 저항과 단기 외인·기관 차익실현을 감안해 <b>추격 매수를 배제</b>합니다.
+      SMA20 지지선(38,850원)과 현재가 하단 눌림목 구간에서 2회 분할 지정가로 체결 비용을 최소화합니다.</p></div>
+    </div>
+    <div class="link head">
+      <div class="role"><b>데스크 헤드</b><span>FINAL</span></div>
+      <div><div class="tags"><span class="tag">BUY</span><span class="tagkr">확신 0.65 · 배율 0.50</span></div>
+      <p>완전 정배열과 ADX 38.5 강추세가 확인되고 20일 누적 스마트머니 순유입이 672.7억으로
+      중기 추세 추종 매력이 높습니다. 거래량 둔화·MACD 음전환·직전일 차익 매도는 고점 매물 소화로
+      판단합니다. 손절선 SMA20까지 손실폭이 -1.7%로 제한되어 <b>손익비 3.5:1 이상</b>을 확보합니다.</p></div>
+    </div>
+  </div>
+
+  <div class="close">
+    <div class="inv">
+      <div class="lbl">무효화 조건</div>
+      <p>일봉 종가가 SMA20(38,850원) 아래로 이탈 마감하거나, 외국인과 기관의 동반 순매도가
+      3거래일 연속 지속되는 경우.</p>
+    </div>
+    <div class="dis">
+      <div class="lbl">기록된 반대 의견</div>
+      <p>약세론과 보수적 리스크 좌석은 52주 고점 직전 거래량 급감, MACD 음전환, 직전 1거래일
+      스마트머니 순매도(-60.4억)를 근거로 쌍고점·이격 조정 위험을 제기했습니다.
+      거래량이 20일 평균을 20% 이상 하회한 채 고점 돌파에 실패하고 38,850원을 하회하면
+      약세론이 현실화됩니다.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div><b>이 기록에 대하여</b> — 16석이 실제 LLM API로 한 바퀴 돈 단일 심의입니다.
+  16회 호출, 41.6초, $0.057. 좌석별 시스템 프롬프트·토론 규칙·리스크 거부권은 모두 엔진에
+  구현된 것이고, 위 문장은 각 좌석이 실제로 반환한 텍스트입니다.</div>
+  <div><b>다시 강조합니다</b> — 시세와 수급 수치는 합성 데이터입니다. 실제 종목에 대한
+  분석이 아니며 투자 권유가 아닙니다. 무효화 조건과 반대 의견을 함께 남기는 것은
+  나중에 이 판단이 틀렸는지 확인할 수 있게 하기 위해서입니다.</div>
+</footer>
+
+</div>
+
+<script>
+/* ── 좌석 스프라이트 ────────────────────────────────────────────
+   11×12 비트맵 하나를 좌석마다 다른 팔레트로 칠해 16명을 만듭니다.
+   긴 SVG path 를 손으로 쓰는 대신 캔버스에 그립니다.        */
+const SPRITE = [
+  "...hhhhh...",
+  "..hhhhhhh..",
+  ".hhhhhhhhh.",
+  ".hsssssssh.",
+  ".ssesssess.",
+  ".sssssssss.",
+  "..sssmsss..",
+  "...sssss...",
+  "..ooooooo..",
+  ".ooooaoooo.",
+  ".ooo.a.ooo.",
+  "..oo...oo.."
+];
+
+/* 좌석: [키, 한글명, 머리색, 옷색, 피부, 태도, 확신] */
+const SEATS = [
+  ["technical",     "기술",     "#3E4A78", "#2C6E63", "#E8B893", "up",   0.75],
+  ["flow",          "수급",     "#7A4A2E", "#8C3B4A", "#D9A47C", "up",   0.60],
+  ["fundamental",   "펀더멘털", "#4A4256", "#3A4560", "#E8C6A6", "flat", 0.10],
+  ["news",          "뉴스",     "#2E3A5C", "#55506B", "#D5A182", "flat", 0.00],
+  ["sentiment",     "심리",     "#6B3A5E", "#3F5F7A", "#EFC9A8", "flat", 0.55],
+  ["macro",         "매크로",   "#54432C", "#37605A", "#DBA87E", "flat", 0.25],
+  ["microstructure","미시구조", "#2F5566", "#7A5230", "#E3B491", "up",   0.85],
+  ["quant",         "퀀트",     "#3B3F52", "#4B4270", "#D9AE8A", "flat", 0.45],
+  ["bull",          "강세론자", "#8A2B33", "#B03A44", "#E8B893", "up",   0.70],
+  ["bear",          "약세론자", "#26456E", "#33598C", "#D5A182", "down", 0.40],
+  ["aggressive",    "공격형",   "#96323C", "#6E2F38", "#EFC9A8", "up",   0.80],
+  ["conservative",  "보수형",   "#2B4A72", "#2F4257", "#DBA87E", "down", 0.65],
+  ["neutral",       "중립 판정","#4E4630", "#5C5238", "#E3B491", "flat", 0.55],
+  ["research",      "리서치",   "#33544A", "#2E4A52", "#E8C6A6", "up",   0.68],
+  ["trader",        "트레이더", "#4A3350", "#5A3C4E", "#D9A47C", "up",   0.68],
+  ["head",          "데스크헤드","#8A6A1E","#3A3F5E", "#E8B893", "up",   0.65]
+];
+
+const STANCE = { up: "#FF4757", down: "#4D8DF0", flat: "#8892AE" };
+
+function drawSeat(cv, s) {
+  const P = 4, W = 11, H = 12;
+  cv.width = W * P; cv.height = H * P;
+  const g = cv.getContext("2d");
+  const map = { h: s[2], o: s[3], s: s[4], e: "#171B2B", m: "#B4695E",
+                a: STANCE[s[5]] };
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const c = map[SPRITE[y][x]];
+      if (!c) continue;
+      g.fillStyle = c;
+      g.fillRect(x * P, y * P, P, P);
+    }
+  }
+}
+
+const ROOMS = [
+  { title: "분석실",   stage: "STAGE 1 · ANALYSTS", from: 0,  to: 8,  wide: false },
+  { title: "토론장",   stage: "STAGE 2 · DEBATE",   from: 8,  to: 10, wide: true  },
+  { title: "리스크실", stage: "STAGE 3 · RISK",     from: 10, to: 13, wide: true  },
+  { title: "결정실",   stage: "STAGE 4 · DECIDE",   from: 13, to: 16, wide: true  }
+];
+
+const roomsEl = document.getElementById("rooms");
+ROOMS.forEach((r, ri) => {
+  const box = document.createElement("div");
+  box.className = "room boot" + (r.wide ? " wide" : "");
+  box.style.animationDelay = (ri * 0.11) + "s";
+  box.innerHTML = `<h3>${r.title}</h3><div class="stage">${r.stage}</div>`;
+  const grid = document.createElement("div");
+  grid.className = "seats";
+  SEATS.slice(r.from, r.to).forEach(s => {
+    const d = document.createElement("div");
+    d.className = "seat " + s[5];
+    const cv = document.createElement("canvas");
+    cv.setAttribute("aria-label", s[1] + " 좌석");
+    d.appendChild(cv);
+    d.insertAdjacentHTML("beforeend",
+      `<div class="nm">${s[1]}</div><div class="cv">${s[6].toFixed(2)}</div>`);
+    grid.appendChild(d);
+    drawSeat(cv, s);
+  });
+  box.appendChild(grid);
+  roomsEl.appendChild(box);
+});
+
+/* ── 분석 8석 카드 ─────────────────────────────────────────── */
+const LABEL = { bullish: "BULLISH", bearish: "BEARISH", neutral: "NEUTRAL" };
+const ANALYSTS = [
+  ["기술", "bullish", 0.75, true, [
+    "ADX14가 38.5로 25를 크게 상회해 강력한 상승 추세 국면입니다.",
+    "가격이 SMA20 &gt; SMA50 &gt; SMA200 완전 정배열 위에 있고 5·20·60봉 수익률이 일관되게 우상향합니다.",
+    "다만 52주 고점 -2.69% 구간에서 MACD 히스토그램이 -138.10으로 음전환해 속도 조절 가능성이 있습니다."]],
+  ["수급", "bullish", 0.60, true, [
+    "20일 누적 외국인 275.5억 · 기관 397.2억, 합계 672.7억 스마트머니 순유입입니다.",
+    "같은 기간 개인은 239만 주 순매도, 축적 11일 대 분산 8일로 매집 우위가 유지됩니다.",
+    "8월 21일 외국인 -80,325주 · 기관 -49,733주의 1일 차익 실현이 발생했습니다."]],
+  ["미시구조", "bullish", 0.85, true, [
+    "총자산 1,000만 원 전량을 넣어도 20일 평균 거래량의 0.03% 미만이라 시장 충격이 사실상 없습니다.",
+    "왕복비용 추정 0.25%로 5봉 수익률 1.19% · 20봉 9.04% 대비 낮아 체결 비용이 알파를 훼손하지 않습니다.",
+    "당일 거래량이 0.69배로 줄었지만 이 규모에는 유동성이 여전히 충분합니다."]],
+  ["심리", "neutral", 0.55, true, [
+    "소셜 데이터가 없어 개인 수급을 대중 심리 프록시로 씁니다 — 20일 개인 -239만 주는 양호한 구조입니다.",
+    "다만 고점권에서 8월 21일 개인이 +123,186주 순매수로 전환하고 외국인·기관이 이탈한 분배 조짐이 있습니다.",
+    "지속되던 개인 매도세가 매수로 돌아선 것은 과열 경계 신호일 수 있습니다."]],
+  ["퀀트", "neutral", 0.45, true, [
+    "최근 20봉 승률 55.0%(11승 9패)는 표본 20개 기준 동전 던지기와 통계적으로 구분되지 않습니다.",
+    "5봉 수익률 1.19%는 일별 변동성 2.32%의 0.51배로 신호가 노이즈 범위 안에 있습니다.",
+    "ADX는 강추세를 가리키는데 MACD는 음전환 — 지표 간 불일치가 발생했습니다."]],
+  ["매크로", "neutral", 0.25, false, [
+    "60봉 40.10% 상승, 52주 고점 -2.69%까지 올라온 상태는 관측됩니다.",
+    "그러나 원/달러 환율·금리·외국인 수급 데이터가 없어 매크로 방향성을 확정할 수 없습니다."]],
+  ["펀더멘털", "neutral", 0.10, false, [
+    "매출·영업이익·마진 추이 등 재무제표가 전혀 제공되지 않아 분석이 불가능합니다.",
+    "PER·PBR·EV/EBITDA와 영업현금흐름·부채비율이 있어야 밸류에이션 판단이 가능합니다."]],
+  ["뉴스", "neutral", 0.00, false, [
+    "뉴스·공시 등 분석 대상 텍스트가 전혀 제공되지 않았습니다.",
+    "거래량배수 0.69배로 재료 반영을 시사하는 거래량 급증도 확인되지 않습니다."]]
+];
+
+const wrapEl = document.getElementById("analysts");
+ANALYSTS.forEach(([name, stance, conv, ok, points], i) => {
+  const cls = stance === "bullish" ? "up" : stance === "bearish" ? "down" : "flat";
+  const el = document.createElement("div");
+  el.className = "card boot" + (ok ? "" : " thin");
+  el.style.animationDelay = (i * 0.05) + "s";
+  el.innerHTML =
+    `<div class="top"><span class="title">${name}</span>
+       <span class="chip ${cls}">${LABEL[stance]}</span>
+       <span class="num" style="font-size:12px;color:var(--dim)">${conv.toFixed(2)}</span></div>
+     <div class="meter ${cls}"><i style="width:${conv * 100}%"></i></div>
+     <ul>${points.map(p => `<li>${p}</li>`).join("")}</ul>` +
+    (ok ? "" : `<div class="lack">데이터 부족으로 투표에서 제외됨</div>`);
+  wrapEl.appendChild(el);
+});
+</script>

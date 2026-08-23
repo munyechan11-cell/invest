@@ -52,11 +52,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--rounds", type=int, default=1, help="강세/약세 토론 라운드")
     p.add_argument("--risk-rounds", type=int, default=1)
     p.add_argument("--deadline", type=float, default=300.0)
-    p.add_argument("--max-tokens", type=int, default=1200)
+    p.add_argument("--max-tokens", type=int, default=2400,
+                   help="좌석 응답 한도. 낮으면 잘려서 재시도 비용이 붙습니다")
     p.add_argument("--rpm", type=float, default=0.0,
                    help="분당 요청 상한 (무료 티어는 5~15). 0 = 제한 없음")
     p.add_argument("--seats", default="",
                    help="분석 좌석 축소, 쉼표 구분 (예: technical,flow,quant)")
+    p.add_argument("--json", default="", help="심의 결과를 이 경로에 JSON 으로 저장")
     p.add_argument("--verbose", action="store_true")
     return p.parse_args()
 
@@ -185,6 +187,24 @@ async def run(args: argparse.Namespace) -> int:
           f"{decision.trade.get('execution_note','')[:95]}")
     print(f"  데스크헤드    [{decision.action}] 확신 {decision.conviction:.2f} · "
           f"{decision.rationale[:130]}")
+
+    if args.json:
+        import json as _json
+        Path(args.json).write_text(_json.dumps({
+            "ticker": symbol.ticker, "close": bars[-1].close,
+            "provider": provider, "model": model,
+            "elapsed_s": decision.elapsed_s, "llm_calls": decision.llm_calls,
+            "cost_usd": desk.estimated_cost_usd, "action": decision.action,
+            "conviction": decision.conviction, "scale": decision.position_scale,
+            "consensus": decision.consensus, "voting_seats": decision.voting_seats,
+            "vetoed": decision.vetoed, "degraded": decision.degraded,
+            "analysts": decision.analysts, "debate": decision.debate,
+            "risk_debate": decision.risk_debate, "risk": decision.risk,
+            "plan": decision.plan, "trade": decision.trade,
+            "rationale": decision.rationale, "invalidation": decision.invalidation,
+            "dissent": decision.dissent,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\n  → {args.json} 에 저장했습니다")
 
     print(f"\n  무효화 조건: {decision.invalidation}")
     print(f"  반대 의견:   {decision.dissent or '(없음)'}")

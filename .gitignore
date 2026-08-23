@@ -31,3 +31,6 @@ env/
 .vscode/
 .DS_Store
 *.log
+
+# 검증하며 생기는 일회용 설정 — 저장소에 남길 이유가 없습니다
+configs/tmp_*.yaml
