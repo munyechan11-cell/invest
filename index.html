@@ -1,0 +1,558 @@
+<meta charset="utf-8">
+<title>픽셀 트레이딩 플로어</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans+KR:wght@300;400;500;600;700&family=Press+Start+2P&display=swap">
+
+<style>
+/* ─────────────────────────────────────────────────────────────
+   PIXEL TRADING FLOOR — 심야 CRT 게임 화면.
+   단일 비주얼 월드로 고정하되 바탕과 모든 색을 명시적으로 칠합니다.
+   색 논리는 한국 시장 — 상승 빨강, 하락 파랑, 판정만 금색.
+   ───────────────────────────────────────────────────────────── */
+:root{
+  --void:#080B14; --deep:#0D1220; --panel:#141A2C; --panel2:#1A2138;
+  --rule:#28304E; --edge:#3A4570;
+  --bone:#E9E5DA; --dim:#9FA9C6; --faint:#8790B0;
+  --sang:#FF4D5C; --ha:#4D93FF; --gold:#FFC64A; --mint:#4BE3B0;
+  --px:'Press Start 2P','IBM Plex Mono',monospace;
+  --kr:'IBM Plex Sans KR',system-ui,sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--void); color:var(--bone); font-family:var(--kr);
+  font-weight:300; line-height:1.7; -webkit-font-smoothing:antialiased;
+  overflow-x:hidden}
+body::before{content:""; position:fixed; inset:0; z-index:99; pointer-events:none;
+  background:repeating-linear-gradient(180deg,rgba(0,0,0,.18) 0 1px,transparent 1px 3px);
+  mix-blend-mode:multiply}
+.num{font-family:var(--mono); font-variant-numeric:tabular-nums}
+.wrap{max-width:1200px; margin:0 auto; padding:0 16px 72px}
+
+/* ── 헤더 ─────────────────────────────────────────────────── */
+.top{display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding:22px 0 14px}
+.logo{font-family:var(--px); font-size:clamp(12px,2.5vw,20px); letter-spacing:.02em;
+  color:var(--bone); text-shadow:0 0 18px rgba(255,198,74,.28)}
+.livebadge{display:flex; align-items:center; gap:7px; font-family:var(--px);
+  font-size:8px; color:var(--sang); border:1px solid var(--sang); padding:6px 9px}
+.livebadge .dot{width:6px; height:6px; background:var(--sang)}
+@media (prefers-reduced-motion:no-preference){.livebadge .dot{animation:blip 1.3s infinite}}
+@keyframes blip{50%{opacity:.2}}
+
+.quote{margin-left:auto; display:flex; align-items:baseline; gap:12px}
+.quote .code{font-family:var(--px); font-size:11px; color:var(--dim)}
+.quote .val{font-family:var(--mono); font-size:clamp(22px,4.4vw,34px); font-weight:700;
+  color:var(--sang); font-variant-numeric:tabular-nums; line-height:1}
+.quote .won{font-size:13px; color:var(--dim); font-weight:400}
+
+/* ── 무대 ─────────────────────────────────────────────────── */
+.stage{position:relative; border:1px solid var(--edge); overflow:hidden;
+  background:radial-gradient(120% 95% at 50% 4%, #202946 0%, #121728 52%, #080B14 100%)}
+.stage .grid{position:absolute; inset:0; opacity:.45;
+  background-image:linear-gradient(var(--rule) 1px,transparent 1px),
+                   linear-gradient(90deg,var(--rule) 1px,transparent 1px);
+  background-size:40px 40px;
+  mask-image:linear-gradient(180deg,#000 0%,transparent 72%)}
+.stage .horizon{position:absolute; left:0; right:0; bottom:32px; height:1px;
+  background:linear-gradient(90deg,transparent,var(--edge) 18%,var(--edge) 82%,transparent)}
+.stage .glowfloor{position:absolute; left:0; right:0; bottom:32px; height:38%;
+  background:linear-gradient(180deg,transparent,rgba(58,69,112,.42))}
+
+.seat{position:absolute; transform:translate(-50%,-100%); text-align:center;
+  width:86px; transition:filter .3s, opacity .3s}
+.seat .plate{font-family:var(--px); font-size:7.5px; color:var(--faint);
+  letter-spacing:.02em; margin-bottom:4px; white-space:nowrap}
+.seat canvas{width:46px; height:auto; image-rendering:pixelated; display:block;
+  margin:0 auto 2px}
+@media (prefers-reduced-motion:no-preference){
+  .seat canvas{animation:idle 3.4s ease-in-out infinite}
+  .seat:nth-child(odd) canvas{animation-delay:-1.7s}
+}
+@keyframes idle{50%{transform:translateY(-2px)}}
+.seat .role{font-size:9.5px; color:var(--faint); line-height:1.25; font-weight:500}
+.seat .desk{width:56px; height:8px; margin:3px auto 0; background:var(--rule);
+  border-top:2px solid var(--edge)}
+.seat.waiting{filter:grayscale(.85) brightness(.5); opacity:.72}
+.seat.spoke .plate{color:var(--dim)} .seat.spoke .role{color:var(--faint)}
+.seat.on{filter:none; opacity:1}
+.seat.on .plate{color:var(--gold); text-shadow:0 0 10px rgba(255,198,74,.55)}
+.seat.on .role{color:var(--bone)}
+.seat.on .desk{border-top-color:var(--gold)}
+.seat.on::after{content:""; position:absolute; left:50%; bottom:-6px;
+  transform:translateX(-50%); width:70px; height:7px;
+  background:radial-gradient(ellipse,var(--gold),transparent 68%); opacity:.8}
+@media (prefers-reduced-motion:no-preference){
+  .seat.on canvas{animation:bob .56s ease-in-out infinite}
+}
+@keyframes bob{50%{transform:translateY(-6px)}}
+
+/* 말풍선 */
+.bubble{position:absolute; z-index:8; width:min(400px,72vw); background:var(--panel);
+  border:2px solid var(--gold); padding:11px 14px 12px; font-size:14.5px;
+  color:var(--bone); line-height:1.6; box-shadow:0 0 0 4px rgba(8,11,20,.92),
+  0 0 26px rgba(0,0,0,.6); pointer-events:none}
+.bubble::after{content:""; position:absolute; left:var(--tail,50%); bottom:-9px;
+  transform:translateX(-50%); width:0; height:0;
+  border-left:9px solid transparent; border-right:9px solid transparent;
+  border-top:9px solid var(--gold)}
+.bubble.below::after{bottom:auto; top:-9px; border-top:0;
+  border-bottom:9px solid var(--gold)}
+.bubble .hd{display:flex; align-items:center; gap:9px; margin-bottom:8px}
+.bubble .hd .nm{font-family:var(--px); font-size:9px; color:var(--gold)}
+.bubble .hd .rl{font-size:10.5px; color:var(--faint); font-weight:500;
+  letter-spacing:.06em}
+.bubble .caret{display:inline-block; width:8px; height:15px; background:var(--gold);
+  vertical-align:-2px; margin-left:3px}
+@media (prefers-reduced-motion:no-preference){
+  .bubble .caret{animation:blink .75s steps(1) infinite}
+}
+@keyframes blink{50%{opacity:0}}
+.bubble.up{border-color:var(--sang)} .bubble.up::after{border-top-color:var(--sang)}
+.bubble.up.below::after{border-bottom-color:var(--sang)}
+.bubble.up .hd .nm{color:var(--sang)} .bubble.up .caret{background:var(--sang)}
+.bubble.down{border-color:var(--ha)} .bubble.down::after{border-top-color:var(--ha)}
+.bubble.down.below::after{border-bottom-color:var(--ha)}
+.bubble.down .hd .nm{color:var(--ha)} .bubble.down .caret{background:var(--ha)}
+
+/* 무대 상단 구역 띠 — 좌석은 y42% 아래에만 있어 여기서는 겹치지 않습니다 */
+.zones{position:absolute; top:0; left:0; right:0; display:flex;
+  border-bottom:1px solid var(--rule); background:rgba(8,11,20,.55);
+  pointer-events:none; z-index:4}
+.roomlab{flex:1; text-align:center; font-family:var(--px); font-size:8px;
+  color:var(--faint); letter-spacing:.06em; padding:9px 4px; transition:color .3s;
+  border-right:1px solid var(--rule); white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis}
+.roomlab:last-child{border-right:0}
+.roomlab.on{color:var(--gold); background:rgba(255,198,74,.09);
+  text-shadow:0 0 10px rgba(255,198,74,.5)}
+
+/* 근거 티커 — 좌석들이 실제로 다투는 수치 */
+.ticker{position:absolute; left:0; right:0; bottom:0; height:32px;
+  border-top:1px solid var(--edge); background:rgba(8,11,20,.9);
+  display:flex; align-items:center; overflow:hidden}
+.ticker .run{display:flex; gap:26px; white-space:nowrap; padding-left:16px;
+  font-family:var(--mono); font-size:11.5px; font-variant-numeric:tabular-nums;
+  color:var(--dim); will-change:transform}
+@media (prefers-reduced-motion:no-preference){
+  .ticker .run{animation:slide 34s linear infinite}
+}
+@keyframes slide{to{transform:translateX(-50%)}}
+.ticker b{font-weight:600; color:var(--bone)}
+.ticker .u{color:var(--sang)} .ticker .d{color:var(--ha)}
+
+/* ── 조작부 ───────────────────────────────────────────────── */
+.prog{height:3px; background:var(--rule)}
+.prog i{display:block; height:100%; width:0; background:var(--gold);
+  transition:width .3s linear; box-shadow:0 0 10px rgba(255,198,74,.7)}
+.bar{display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  border:1px solid var(--edge); border-top:0; background:var(--panel); padding:10px 13px}
+button{font-family:var(--px); font-size:9px; background:var(--panel2); color:var(--bone);
+  border:1px solid var(--rule); padding:9px 13px; cursor:pointer; letter-spacing:.05em}
+button:hover{border-color:var(--gold); color:var(--gold)}
+button:focus-visible{outline:2px solid var(--gold); outline-offset:2px}
+button[aria-pressed="true"]{border-color:var(--gold); color:var(--gold)}
+.steps{display:flex; gap:6px; margin-left:auto; flex-wrap:wrap}
+.step{font-size:11px; color:var(--faint); font-weight:600; padding:4px 9px;
+  border:1px solid var(--rule); letter-spacing:.04em}
+.step.on{color:var(--gold); border-color:var(--gold)}
+.step.past{color:var(--dim); border-color:var(--edge)}
+
+/* ── 아래: 기록 · 판정 ────────────────────────────────────── */
+.lower{display:grid; gap:14px; margin-top:18px;
+  grid-template-columns:minmax(0,1.5fr) minmax(0,1fr)}
+@media (max-width:860px){.lower{grid-template-columns:1fr}}
+.box{border:1px solid var(--edge); background:var(--panel)}
+.box h3{margin:0; font-size:10px; letter-spacing:.2em; color:var(--dim); font-weight:600;
+  padding:12px 15px; border-bottom:1px solid var(--rule); font-family:var(--kr)}
+.log{max-height:340px; overflow-y:auto}
+.log .row{padding:12px 15px; border-bottom:1px solid var(--rule);
+  display:grid; grid-template-columns:96px 1fr; gap:13px; font-size:13.5px}
+.log .row:last-child{border-bottom:0}
+.log .row .who .nm{font-family:var(--px); font-size:9px; display:block; margin-bottom:4px}
+.log .row .who .rl{font-size:10.5px; color:var(--faint); display:block}
+.log .row.up .who .nm{color:var(--sang)}
+.log .row.down .who .nm{color:var(--ha)}
+.log .row.flat .who .nm{color:var(--dim)}
+.log .empty{padding:26px 15px; color:var(--faint); font-size:13px}
+
+.vpad{padding:15px}
+.vgrid{display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--rule);
+  border:1px solid var(--rule); margin-bottom:14px}
+.vcell{background:var(--panel2); padding:12px 13px}
+.vcell .k{font-size:9.5px; letter-spacing:.16em; color:var(--dim); font-weight:600;
+  margin-bottom:6px}
+.vcell .v{font-family:var(--mono); font-size:21px; font-weight:700;
+  font-variant-numeric:tabular-nums}
+.vcell.call{grid-column:1/-1}
+.vcell.call .v{font-family:var(--px); font-size:27px; color:var(--gold);
+  text-shadow:0 0 20px rgba(255,198,74,.4)}
+.vcell.pend .v{color:var(--faint); font-family:var(--kr); font-size:15px; font-weight:400;
+  text-shadow:none}
+.vlab{font-size:9.5px; letter-spacing:.16em; color:var(--dim); font-weight:600;
+  margin-bottom:6px}
+.line{position:relative; height:3px; background:var(--rule); margin:32px 10px 28px}
+.line .fill{position:absolute; left:0; top:0; bottom:0; width:0; background:var(--gold);
+  transition:width .6s ease-out}
+.pin{position:absolute; top:50%; transform:translate(-50%,-50%); text-align:center;
+  width:92px; opacity:0; transition:opacity .45s}
+.pin.show{opacity:1}
+.pin .dot{width:10px; height:10px; margin:0 auto; background:var(--void);
+  border:3px solid var(--dim)}
+.pin .v{font-family:var(--mono); font-size:20px; font-weight:700;
+  font-variant-numeric:tabular-nums}
+.pin .w{font-size:9.5px; color:var(--dim); letter-spacing:.04em}
+.pin.up .dot{border-color:var(--sang)} .pin.up .v{color:var(--sang)}
+.pin.down .dot{border-color:var(--ha)} .pin.down .v{color:var(--ha)}
+.pin.fin .dot{border-color:var(--gold); width:14px; height:14px}
+.pin.fin .v{color:var(--gold); font-size:22px}
+.pin.hi .v,.pin.hi .w{position:relative; top:-48px}
+.pin.lo .v,.pin.lo .w{position:relative; top:10px}
+.vtext{font-size:13px; margin:0}
+.vtext.muted{color:var(--faint)}
+.split{border-left:3px solid var(--gold); padding-left:12px; margin-top:13px}
+.split.dis{border-left-color:var(--ha)}
+
+/* ── 고지 · 마무리 ────────────────────────────────────────── */
+.notice{display:flex; gap:12px; align-items:flex-start; margin-top:18px;
+  border:1px solid var(--sang); border-left-width:4px;
+  background:rgba(255,77,92,.08); padding:14px 16px; font-size:13px}
+.notice b{color:var(--sang); font-weight:700}
+.notice .ico{font-family:var(--px); font-size:11px; color:var(--sang); padding-top:3px}
+footer{margin-top:30px; border-top:1px solid var(--rule); padding-top:20px;
+  color:var(--faint); font-size:12.5px; display:flex; flex-direction:column; gap:8px}
+footer b{color:var(--dim); font-weight:600}
+</style>
+
+<div class="wrap">
+
+<div class="top">
+  <span class="logo">PIXEL TRADING FLOOR</span>
+  <span class="livebadge"><span class="dot"></span><span id="livelab">IN SESSION</span></span>
+  <span class="quote">
+    <span class="code">005930</span>
+    <span class="val num">39,517</span><span class="won">원</span>
+  </span>
+</div>
+
+<div class="stage" id="stage" aria-label="16석 심의 진행 화면">
+  <div class="grid"></div>
+  <div class="glowfloor"></div>
+  <div class="horizon"></div>
+  <div class="ticker"><div class="run" id="run"></div></div>
+</div>
+<div class="prog"><i id="prog"></i></div>
+<div class="bar">
+  <button id="play" aria-pressed="true">■ PAUSE</button>
+  <button id="again">↺ REPLAY</button>
+  <button id="fast" aria-pressed="false">» 2X</button>
+  <div class="steps" id="steps"></div>
+</div>
+
+<div class="lower">
+  <div class="box">
+    <h3>심의 기록</h3>
+    <div class="log" id="log"><div class="empty">심의를 시작하는 중…</div></div>
+  </div>
+
+  <div class="box">
+    <h3>판정</h3>
+    <div class="vpad">
+      <div class="vgrid">
+        <div class="vcell call pend" id="vcall"><div class="k">FINAL CALL</div><div class="v">심의 중</div></div>
+        <div class="vcell pend" id="vconv"><div class="k">확신도</div><div class="v">—</div></div>
+        <div class="vcell pend" id="vscale"><div class="k">진입 배율</div><div class="v">—</div></div>
+      </div>
+
+      <div class="vlab">리스크 배율 협상</div>
+      <div class="line">
+        <div class="fill" id="fill"></div>
+        <div class="pin down lo" id="pWARDEN" style="left:35%">
+          <div class="dot"></div><div class="v num">0.35</div><div class="w">WARDEN</div></div>
+        <div class="pin fin hi" id="pJUDGE" style="left:50%">
+          <div class="v num">0.50</div><div class="w">JUDGE</div><div class="dot"></div></div>
+        <div class="pin up lo" id="pBLAZE" style="left:80%">
+          <div class="dot"></div><div class="v num">0.80</div><div class="w">BLAZE</div></div>
+      </div>
+
+      <p class="vtext muted" id="vsum">CHIEF가 아직 결론을 내지 않았습니다.</p>
+      <div id="vend" hidden>
+        <div class="split">
+          <div class="vlab">무효화 조건</div>
+          <p class="vtext">일봉 종가가 SMA20(38,850원) 아래로 이탈 마감하거나, 외국인과 기관의
+          동반 순매도가 3거래일 연속 지속되는 경우.</p>
+        </div>
+        <div class="split dis">
+          <div class="vlab">기록된 반대 의견</div>
+          <p class="vtext">BEAR와 WARDEN은 52주 고점 직전 거래량 급감(0.69배), MACD 음전환,
+          직전일 스마트머니 순매도(-60.4억)를 근거로 쌍고점·이격 조정 위험을 제기했습니다.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="notice">
+  <span class="ico">!</span>
+  <div><b>합성 시세로 돌린 기계 검증입니다.</b> 종목 코드는 005930이지만 가격·거래량·수급 수치는
+  모두 합성 데이터이며 실제 삼성전자 시세가 아닙니다. 심의 절차가 실제로 작동하는지를 보이는
+  기록이고, <b>투자 권유가 아닙니다.</b></div>
+</div>
+
+<footer>
+  <div><b>이 화면에 대하여</b> — 16석이 실제 LLM API로 한 바퀴 돈 단일 심의를 그대로 재생합니다.
+  16회 호출, 41.6초, $0.057(gemini-3.7-flash). 각 좌석의 발언은 실제 반환값을 줄인 것이고,
+  전체 원문은 저장소의 <span class="num">docs/deliberation.json</span>에 있습니다.</div>
+  <div><b>왜 한 명씩 말하는가</b> — 좌석은 자기 담당 구획만 봅니다. FLUX에게는 기술지표가,
+  TARO에게는 수급이 보이지 않습니다. 같은 근거로 같은 결론에 몰리는 것을 막기 위해서입니다.</div>
+</footer>
+</div>
+
+<script>
+/* ── 스프라이트 ─────────────────────────────────────────── */
+const SPR=["...hhhhh...","..hhhhhhh..",".hhhhhhhhh.",".hsssssssh.",
+           ".ssesssess.",".sssssssss.","..sssmsss..","...sssss...",
+           "..ooooooo..",".ooooaoooo.",".ooo.a.ooo.","..oo...oo.."];
+const SC={up:"#FF4D5C",down:"#4D93FF",flat:"#9FA9C6"};
+
+/* 이름은 엔진의 SPRITE_NAMES 와 같습니다 (quant/alpha/seats.py).
+   [코드명, 역할, 머리, 옷, 피부, 태도, x%, y%, 단계] */
+const SEATS=[
+ ["TARO","기술적 분석","#3E4A78","#2C6E63","#E8B893","up",   8,42,0],
+ ["FLUX","수급 분석","#7A4A2E","#8C3B4A","#D9A47C","up",    24,42,0],
+ ["DIANA","기본적 분석","#4A4256","#3A4560","#E8C6A6","flat",40,42,0],
+ ["NOVA","뉴스·공시","#2E3A5C","#55506B","#D5A182","flat",  56,42,0],
+ ["ECHO","심리·센티먼트","#6B3A5E","#3F5F7A","#EFC9A8","flat",8,66,0],
+ ["ATLAS","매크로","#54432C","#37605A","#DBA87E","flat",    24,66,0],
+ ["MICRO","미시구조","#2F5566","#7A5230","#E3B491","up",    40,66,0],
+ ["SIGMA","퀀트","#3B3F52","#4B4270","#D9AE8A","flat",      56,66,0],
+ ["BULL","강세론","#8A2B33","#B03A44","#E8B893","up",       76,42,1],
+ ["BEAR","약세론","#26456E","#33598C","#D5A182","down",     92,42,1],
+ ["BLAZE","공격형 리스크","#96323C","#6E2F38","#EFC9A8","up",76,66,2],
+ ["WARDEN","보수형 리스크","#2B4A72","#2F4257","#DBA87E","down",92,66,2],
+ ["JUDGE","중립 판정","#4E4630","#5C5238","#E3B491","flat",  84,88,2],
+ ["SAGE","리서치 매니저","#33544A","#2E4A52","#E8C6A6","up", 16,88,3],
+ ["BLITZ","트레이더","#4A3350","#5A3C4E","#D9A47C","up",     36,88,3],
+ ["CHIEF","데스크 헤드","#8A6A1E","#3A3F5E","#E8B893","up",  56,88,3]
+];
+const BY={}; SEATS.forEach((s,i)=>BY[s[0]]=i);
+
+/* 실제 심의에서 각 좌석이 낸 결론을 그 좌석의 말투로 줄인 대사 */
+const SCRIPT=[
+ ["TARO","정배열에 ADX 38.5. 추세는 아직 살아 있다."],
+ ["FLUX","20일 동안 외국인 275억, 기관 397억. 개인만 239만 주를 팔았다."],
+ ["MICRO","1,000만 원 전량을 때려도 하루 거래량의 0.03%다. 호가에 티도 안 난다."],
+ ["ECHO","그 개인이 어제부터 사기 시작했다. 고점에서 그건 좋은 신호가 아니다."],
+ ["SIGMA","20봉 승률 55%. 표본 20개로는 동전 던지기와 구분되지 않는다."],
+ ["ATLAS","환율도 금리도 안 왔다. 나는 기권한다."],
+ ["DIANA","재무제표가 한 줄도 없다. 밸류에이션 판단 불가."],
+ ["NOVA","뉴스도 공시도 없다. 나도 기권."],
+ ["BULL","672억이 들어온 자리다. 마찰비용 0.25%면 돌파를 노릴 값이 나온다."],
+ ["BEAR","거래량이 20일 평균의 0.69배다. 뚫을 힘 자체가 없다."],
+ ["BULL","어제 하루 판 건 인정한다. 그걸로 추세가 꺾였다고 하기엔 이르다."],
+ ["BEAR","추세가 견고한 것도 인정한다. 그래도 지금 들어갈 자리는 아니다."],
+ ["BLAZE","손절이 SMA20까지 -1.7%다. 손익비 3.5:1. 0.80으로 간다."],
+ ["WARDEN","고점 직전 거래량 급감에 MACD 음전환. 돌파 확인 전엔 0.35."],
+ ["JUDGE","둘 다 맞다. 추세는 살아 있고 분배 조짐도 실재한다. 0.80을 0.50으로 줄인다. 거부권은 쓰지 않는다."],
+ ["SAGE","강세론을 채택한다. 단, 추격 매수는 금지."],
+ ["BLITZ","시장가는 안 쓴다. SMA20 눌림목에서 두 번 나눠 지정가로 받는다."],
+ ["CHIEF","매수. 확신 0.65, 배율 0.50. SMA20을 종가로 이탈하면 이 판단은 무효다."]
+];
+const STAGES=["분석 8석","맞토론","리스크 3석","결정 3석"];
+
+/* 좌석들이 실제로 다투는 수치 — 장식이 아니라 근거입니다 */
+const FACTS=[
+ ["ADX14","38.5",""],["SMA20","38,850","u"],["SMA50","34,922","u"],["SMA200","27,330","u"],
+ ["MACD hist","-138.10","d"],["RSI14","61.6",""],["거래량배수","0.69×","d"],
+ ["외국인 20일","+275.5억","u"],["기관 20일","+397.2억","u"],["개인 20일","-239만주","d"],
+ ["52주 고점 대비","-2.69%","d"],["60봉 수익률","+40.10%","u"],
+ ["일변동성","2.32%",""],["왕복비용","0.25%",""]
+];
+
+/* ── 무대 ───────────────────────────────────────────────── */
+const stage=document.getElementById("stage");
+const ZONE_H=34, TICK_H=32;
+function sizeStage(){
+  const w=stage.clientWidth;
+  stage.style.height=Math.max(430,Math.min(560,w*0.50))+"px";
+}
+/* 행 위치를 퍼센트로 박아두면 무대가 짧아질 때 좌석끼리 겹칩니다.
+   구역 띠와 티커를 뺀 남는 높이를 3등분해 각 행의 발밑에 맞춥니다. */
+function layout(){
+  const H=stage.clientHeight;
+  const top=ZONE_H+10, bot=H-TICK_H-6, rowH=(bot-top)/3;
+  nodes.forEach((n,k)=>{
+    const y=SEATS[k][7], row=y===42?0:y===66?1:2;
+    n.style.top=(top+rowH*(row+1))+"px";
+  });
+}
+addEventListener("resize",()=>{sizeStage(); layout(); if(bubble) placeBubble();});
+
+function drawSeat(cv,s){
+  const P=4,W=11,H=12; cv.width=W*P; cv.height=H*P;
+  const g=cv.getContext("2d");
+  const m={h:s[2],o:s[3],s:s[4],e:"#141828",m:"#B4695E",a:SC[s[5]]};
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){const c=m[SPR[y][x]]; if(!c)continue;
+    g.fillStyle=c; g.fillRect(x*P,y*P,P,P);}
+}
+const nodes=SEATS.map(s=>{
+  const d=document.createElement("div");
+  d.className="seat waiting"; d.style.left=s[6]+"%"; d.style.top=s[7]+"%";
+  d.insertAdjacentHTML("beforeend",`<div class="plate">${s[0]}</div>`);
+  const cv=document.createElement("canvas");
+  cv.setAttribute("aria-label",s[0]+" · "+s[1]);
+  d.appendChild(cv); drawSeat(cv,s);
+  d.insertAdjacentHTML("beforeend",`<div class="role">${s[1]}</div><div class="desk"></div>`);
+  stage.appendChild(d); return d;
+});
+
+const zones=document.createElement("div");
+zones.className="zones"; stage.appendChild(zones);
+const labs=["1 · ANALYSTS","2 · DEBATE","3 · RISK","4 · DECIDE"].map(t=>{
+  const e=document.createElement("div"); e.className="roomlab"; e.textContent=t;
+  zones.appendChild(e); return e;});
+
+/* 티커 — 이음매 없이 돌도록 두 벌 */
+const runEl=document.getElementById("run");
+const strip=FACTS.map(([k,v,c])=>
+  `<span><b>${k}</b>&nbsp;&nbsp;<span class="${c}">${v}</span></span>`
+  ).join('<span style="color:var(--rule)">◆</span>');
+runEl.innerHTML=strip+strip;
+
+const stepEls=STAGES.map(t=>{const e=document.createElement("span");
+  e.className="step"; e.textContent=t;
+  document.getElementById("steps").appendChild(e); return e;});
+
+/* ── 재생기 ─────────────────────────────────────────────── */
+const logEl=document.getElementById("log"), progEl=document.getElementById("prog");
+const reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
+let i=0, playing=true, speed=1, bubble=null, timer=null, typer=null;
+const clearAll=()=>{clearTimeout(timer); clearInterval(typer);};
+
+function setStage(st){
+  stepEls.forEach((e,k)=>{e.classList.toggle("on",k===st); e.classList.toggle("past",k<st);});
+  labs.forEach((e,k)=>e.classList.toggle("on",k===st));
+}
+
+function showBubble(idx,text,stance){
+  if(bubble) bubble.remove();
+  const s=SEATS[idx];
+  bubble=document.createElement("div");
+  bubble.className="bubble "+stance;
+  bubble.innerHTML=`<div class="hd"><span class="nm">${s[0]}</span>
+    <span class="rl">${s[1]}</span></div><span class="body"></span><span class="caret"></span>`;
+  stage.appendChild(bubble);
+  bubble.dataset.seat=idx;
+  placeBubble();
+
+  const body=bubble.querySelector(".body");
+  if(reduce){body.textContent=text; return text.length;}
+  let n=0; clearInterval(typer);
+  typer=setInterval(()=>{
+    body.textContent=text.slice(0,++n);
+    if(n>=text.length){clearInterval(typer);
+      const c=bubble&&bubble.querySelector(".caret"); if(c) c.remove();}
+  },22/speed);
+  return text.length;
+}
+
+/* 말풍선을 화자 옆·무대 안에 놓습니다. 퍼센트 앵커만으로는 가장자리
+   좌석에서 폭의 절반이 밖으로 나갑니다 — 꼬리만 화자 쪽으로 되돌립니다. */
+function placeBubble(){
+  if(!bubble) return;
+  const idx=+bubble.dataset.seat, node=nodes[idx], s=SEATS[idx];
+  const PAD=10, sw=stage.clientWidth, bw=bubble.offsetWidth, bh=bubble.offsetHeight;
+  const seatTop=node.offsetTop-node.offsetHeight, seatBot=node.offsetTop;
+  const below=seatTop-bh-12 < ZONE_H+4;      // 위가 좁으면 아래로 붙인다
+  bubble.classList.toggle("below",below);
+  bubble.style.top=(below?seatBot+12:seatTop-12)+"px";
+  bubble.style.transform=below?"translateY(0)":"translateY(-100%)";
+  const sx=s[6]/100*sw;
+  const left=Math.max(PAD,Math.min(sw-bw-PAD,sx-bw/2));
+  bubble.style.left=left+"px";
+  bubble.style.setProperty("--tail",Math.max(14,Math.min(bw-14,sx-left))+"px");
+}
+
+function addLog(idx,text){
+  if(logEl.querySelector(".empty")) logEl.innerHTML="";
+  const s=SEATS[idx];
+  const row=document.createElement("div");
+  row.className="row "+s[5];
+  row.innerHTML=`<div class="who"><span class="nm">${s[0]}</span>
+    <span class="rl">${s[1]}</span></div><div>${text}</div>`;
+  logEl.appendChild(row); logEl.scrollTop=logEl.scrollHeight;
+}
+
+function finish(){
+  document.getElementById("livelab").textContent="SESSION CLOSED";
+  const set=(id,v)=>{const e=document.getElementById(id);
+    e.classList.remove("pend"); e.querySelector(".v").textContent=v;};
+  set("vcall","BUY"); set("vconv","0.65"); set("vscale","0.50");
+  const sum=document.getElementById("vsum");
+  sum.classList.remove("muted");
+  sum.textContent="8석 중 5석이 투표해 합의 +0.69. DIANA·NOVA·ATLAS는 데이터가 없다며 "
+    +"기권했습니다. 리스크 좌석은 거부권 대신 배율만 0.80에서 0.50으로 줄였습니다.";
+  document.getElementById("vend").hidden=false;
+  const p=document.getElementById("play");
+  p.textContent="▶ PLAY"; p.setAttribute("aria-pressed","false"); playing=false;
+}
+
+function step(){
+  if(i>=SCRIPT.length){finish(); return;}
+  const [name,text]=SCRIPT[i], idx=BY[name], s=SEATS[idx];
+  nodes.forEach((n,k)=>{
+    n.classList.toggle("on",k===idx);
+    n.classList.toggle("waiting",k!==idx&&!n.dataset.spoke);
+  });
+  nodes[idx].dataset.spoke="1"; nodes[idx].classList.add("spoke");
+  setStage(s[8]);
+  const len=showBubble(idx,text,s[5]);
+  addLog(idx,text);
+  const pin=document.getElementById("p"+name);
+  if(pin){pin.classList.add("show");
+    if(name==="JUDGE") document.getElementById("fill").style.width="50%";}
+  i++;
+  progEl.style.width=(i/SCRIPT.length*100)+"%";
+  timer=setTimeout(()=>{if(playing) step();},(reduce?1500:950+len*26)/speed);
+}
+
+function reset(){
+  clearAll(); i=0;
+  if(bubble){bubble.remove(); bubble=null;}
+  logEl.innerHTML='<div class="empty">심의를 시작하는 중…</div>';
+  progEl.style.width="0";
+  nodes.forEach(n=>{delete n.dataset.spoke;
+    n.classList.remove("on","spoke"); n.classList.add("waiting");});
+  ["pBLAZE","pWARDEN","pJUDGE"].forEach(id=>
+    document.getElementById(id).classList.remove("show"));
+  document.getElementById("fill").style.width="0";
+  document.getElementById("vend").hidden=true;
+  document.getElementById("livelab").textContent="IN SESSION";
+  [["vcall","심의 중"],["vconv","—"],["vscale","—"]].forEach(([id,v])=>{
+    const e=document.getElementById(id);
+    e.classList.add("pend"); e.querySelector(".v").textContent=v;});
+  const sum=document.getElementById("vsum");
+  sum.classList.add("muted"); sum.textContent="CHIEF가 아직 결론을 내지 않았습니다.";
+}
+
+const playBtn=document.getElementById("play");
+playBtn.onclick=()=>{
+  if(i>=SCRIPT.length) reset();
+  playing=!playing;
+  playBtn.textContent=playing?"■ PAUSE":"▶ PLAY";
+  playBtn.setAttribute("aria-pressed",String(playing));
+  if(playing) step(); else clearAll();
+};
+document.getElementById("again").onclick=()=>{
+  reset(); playing=true;
+  playBtn.textContent="■ PAUSE"; playBtn.setAttribute("aria-pressed","true"); step();
+};
+const fastBtn=document.getElementById("fast");
+fastBtn.onclick=()=>{
+  speed=speed===1?2:1;
+  fastBtn.textContent=speed===2?"» 1X":"» 2X";
+  fastBtn.setAttribute("aria-pressed",String(speed===2));
+};
+
+sizeStage(); layout(); setStage(0); step();
+</script>
