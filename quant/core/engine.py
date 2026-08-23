@@ -70,6 +70,9 @@ class Engine:
         self.insights = InsightCollection(insight_decay)
         self.ledger = InsightLedger(benchmark=ctx.benchmark)
         self.budget = budget or TradingBudget()
+        # Every budget call that omits `now` must read simulated time, not
+        # the machine's — see TradingBudget.clock.
+        self.budget.clock = ctx.clock
         self.manual = manual or ManualControl()
         brokerage.budget = self.budget
         brokerage.portfolio = ctx.portfolio

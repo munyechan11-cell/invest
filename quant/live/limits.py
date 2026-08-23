@@ -74,6 +74,7 @@ class TradingBudget:
         max_daily_loss_pct: float = 0.0,
         timezone_offset_hours: float = 9.0,
         halt_until_next_day: bool = True,
+        clock=None,
     ):
         self.max_notional = max_daily_notional
         self.max_orders = max_daily_orders
@@ -81,13 +82,22 @@ class TradingBudget:
         self.max_loss_pct = abs(max_daily_loss_pct)
         self.tz_offset = timedelta(hours=timezone_offset_hours)
         self.halt_until_next_day = halt_until_next_day
+        #: The engine's clock. Without it every call that omits `now` reads the
+        #: wall clock, and in a backtest that is a different day from the bar
+        #: being simulated — so the ledger flips between the simulated day and
+        #: today's date on alternate calls and resets its counters each time.
+        #: A daily cap that resets every bar is not a daily cap.
+        self.clock = clock
         self.today: DayLedger | None = None
         self.history: list[DayLedger] = []
         self._halted_reason = ""
 
     # ── day boundary ─────────────────────────────────────────────────────
+    def _now(self) -> datetime:
+        return self.clock.now() if self.clock is not None else datetime.now(UTC)
+
     def _local_day(self, now: datetime | None = None) -> date:
-        return ((now or datetime.now(UTC)) + self.tz_offset).date()
+        return ((now or self._now()) + self.tz_offset).date()
 
     def roll(self, now: datetime | None = None, equity: float = 0.0) -> DayLedger:
         day = self._local_day(now)

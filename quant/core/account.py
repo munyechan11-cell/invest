@@ -107,9 +107,19 @@ class Portfolio:
 
     # ── mutation ─────────────────────────────────────────────────────────
     def mark(self, symbol: Symbol, price: float) -> None:
-        pos = self.positions.get(symbol.key)
-        if pos is not None and not pos.is_flat:
-            pos.mark(price)
+        """Record the last seen price, held or not.
+
+        Skipping flat symbols looks like an optimisation — valuation only reads
+        open positions — but `last_price` is also what every notional guard
+        multiplies by. A market order opening a *new* position therefore priced
+        itself at zero, and both `broker.max_order_notional` and
+        `limits.max_daily_notional` waved through orders hundreds of times their
+        ceiling. Only orders in symbols already held were ever checked.
+
+        `position()` rather than `positions.get()`: a symbol the book has never
+        traded has no entry at all, and that is exactly the new-entry case.
+        """
+        self.position(symbol).mark(price)
 
     def apply_fill(self, fill: Fill) -> ClosedTrade | None:
         """Settle a fill against cash and the position book.
