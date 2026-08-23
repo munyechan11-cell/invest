@@ -94,6 +94,16 @@ Shipped configs: `demo.yaml` (no keys needed), `us_equity.yaml` (Yahoo),
 
 ## Models
 
+**Universe** (a chain: the source generates, filters only remove) — sources
+`static`, `exchange`; filters `age`, `volume`, `price`, `spread`, `volatility`,
+`range_stability`, `correlation`, `performance`, `shuffle`, `limit`. A held
+position is always re-added, because a symbol dropped from the universe can
+never be exited.
+
+**Calendars** — `always_open` (crypto), `krx` (09:00–15:30 KST with the lunar
+holidays), `us_equity`. The live loop sleeps until the next session rather than
+polling a closed book.
+
 **Alpha** — `ema_cross`, `macd`, `rsi_reversion`, `donchian_breakout`,
 `squeeze`, `xs_momentum` (cross-sectional 12-1), `pairs` (stat-arb),
 `regime_filter` (veto), `investor_flow` (수급), `retail_contrarian`,

@@ -66,10 +66,27 @@ class FlowConfig(BaseModel):
 
 
 class UniverseConfig(BaseModel):
+    """What to trade.
+
+    `symbols` alone is a fixed book. Add `filters` to narrow it each cycle, or
+    switch `source` to `exchange` to start from every market the venue lists.
+    The chain only ever removes, so a filter can never introduce an instrument
+    the source did not offer.
+    """
+
     symbols: list[SymbolSpec] = Field(default_factory=list)
-    #: optional dynamic selection, e.g. {type: top_volume, params: {n: 20}}
-    selection: Optional[ModelSpec] = None
+    source: ModelSpec = Field(default_factory=lambda: ModelSpec(type="static"))
+    filters: list[ModelSpec] = Field(default_factory=list)
+    refresh_every_bars: int = 24
     benchmark: Optional[str] = None
+    #: kept for older configs; a bare selection spec is treated as the source
+    selection: Optional[ModelSpec] = None
+
+    @model_validator(mode="after")
+    def _fold_legacy_selection(self) -> "UniverseConfig":
+        if self.selection is not None and self.source.type == "static":
+            self.source = self.selection
+        return self
 
 
 class CostConfig(BaseModel):

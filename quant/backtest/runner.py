@@ -150,9 +150,20 @@ async def run_backtest(
     if not stream:
         raise ValueError("no bars inside the backtest window")
 
+    selector = getattr(engine, "universe_selector", None)
+    dynamic = bool(selector and selector.filters and
+                   any(f.name != "held" for f in selector.filters))
+    if dynamic:
+        log.info("dynamic universe: %d candidates, refresh every %d bars",
+                 len(tradable), selector.refresh_every)
+
     await engine.start()
     total = len(stream)
     for i, (_, batch) in enumerate(stream):
+        # Selection runs before the bars are processed, so the models see the
+        # universe that was decided from data available *before* this bar.
+        if dynamic and selector.due():
+            engine.set_universe(await selector.select(ctx, provider))
         await engine.on_bars(batch)
         if on_progress and (i % 200 == 0 or i == total - 1):
             on_progress(i + 1, total)
@@ -177,6 +188,13 @@ async def run_backtest(
     if config.costs.preset == "zero_cost":
         warnings.append("zero-cost preset in use — this result is not achievable")
 
+    engine_summary = engine.summary()
+    if selector is not None and selector.last_report is not None:
+        engine_summary["universe"] = selector.last_report.to_dict()
+        if not selector.last_report.selected:
+            warnings.append("universe selection ended with zero symbols — "
+                            "check the filter chain")
+
     return BacktestResult(
         config_name=config.name,
         report=report,
@@ -184,7 +202,7 @@ async def run_backtest(
                       for p in portfolio.equity_curve],
         monthly=monthly_returns(portfolio),
         trades=[_trade_dict(t) for t in portfolio.closed_trades],
-        engine_summary=engine.summary(),
+        engine_summary=engine_summary,
         bars=total,
         elapsed_s=time.monotonic() - started,
         warnings=warnings,

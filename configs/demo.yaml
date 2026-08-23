@@ -20,6 +20,16 @@ universe:
     - {ticker: DDD, venue: SIM, tick_size: 0.01}
     - {ticker: EEE, venue: SIM, tick_size: 0.01}
     - {ticker: FFF, venue: SIM, tick_size: 0.01}
+  # 유니버스 체인: 첫 항목이 후보를 만들고, 이후 필터는 제거만 한다.
+  # 보유 종목은 항상 자동으로 다시 포함된다 — 그래야 청산 신호가 나온다.
+  refresh_every_bars: 21
+  filters:
+    - {type: age,             params: {min_bars: 200}}
+    - {type: volatility,      params: {lookback_bars: 60, min_annual_vol: 0.08, max_annual_vol: 1.5}}
+    - {type: range_stability, params: {lookback_bars: 30, min_range_pct: 0.04}}
+    - {type: volume,          params: {lookback_bars: 20, top_n: 5}}
+    - {type: correlation,     params: {lookback_bars: 90, max_correlation: 0.95}}
+    - {type: limit,           params: {max_symbols: 4}}
 
 alpha:
   - type: donchian_breakout

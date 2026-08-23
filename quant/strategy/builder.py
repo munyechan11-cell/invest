@@ -32,6 +32,10 @@ from quant.core.events import EventBus
 from quant.core.types import UTC, AssetClass, RunMode, Symbol
 from quant.data.calendar import calendar_for_venue, create_calendar
 from quant.data.flow import FlowFeed, NullFlowProvider, create_flow_provider
+from quant.data.universe import (
+    BUILTIN_UNIVERSE_FILTERS, BUILTIN_UNIVERSE_SOURCES, StaticSource,
+    UniverseSelector,
+)
 from quant.data.provider import CachingProvider, DataProvider, create_provider
 from quant.execution.costs import PRESETS, FeeModel, FillModel, SlippageModel
 from quant.execution.models import BUILTIN_EXECUTION_MODELS
@@ -138,6 +142,31 @@ def build_calendar(config: StrategyConfig, universe: list[Symbol]):
             sorted(venues), calendar.name,
         )
     return calendar
+
+
+def build_universe_selector(config: StrategyConfig, symbols: list[Symbol]
+                            ) -> UniverseSelector:
+    """The universe chain. With no filters configured this is a passthrough."""
+    spec = config.universe.source
+    if spec.type == "static":
+        source = StaticSource(symbols)
+    else:
+        cls = BUILTIN_UNIVERSE_SOURCES.get(spec.type)
+        if cls is None:
+            raise KeyError(
+                f"unknown universe source {spec.type!r}; "
+                f"available: {sorted(BUILTIN_UNIVERSE_SOURCES)}"
+            )
+        source = cls(**spec.params)
+    filters = [
+        _resolve(BUILTIN_UNIVERSE_FILTERS, f, "universe filter")
+        for f in config.universe.filters
+    ]
+    return UniverseSelector(
+        source, filters,
+        refresh_every_bars=config.universe.refresh_every_bars,
+        warmup_bars=config.data.warmup_bars,
+    )
 
 
 def build_costs(config: StrategyConfig) -> tuple[FeeModel, SlippageModel, FillModel | None]:
@@ -331,4 +360,5 @@ def build_engine(
     # backfill it without threading another return value through everything.
     engine.flow_feed = flow_feed
     engine.calendar = calendar
+    engine.universe_selector = build_universe_selector(config, ctx.universe)
     return engine, build_data_provider(config)

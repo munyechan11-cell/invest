@@ -110,7 +110,10 @@ class Engine:
         # 1 — fills first, using the bar that just closed
         fills = await self._settle(bars)
 
-        # 2 — mark the book
+        # 2 — mark the book. History is kept for *every* symbol in the batch,
+        # not just the active universe: a name that drops out of the universe
+        # and later re-enters needs an unbroken series, or its indicators warm
+        # up from scratch and its first signals are noise.
         for bar in bars.values():
             ctx.push_bar(bar)
             ctx.portfolio.mark(bar.symbol, bar.close)
@@ -126,9 +129,10 @@ class Engine:
             for e in events:
                 await self.bus.publish(EventType.PROTECTION, e)
 
-        # 4 — alpha
+        # 4 — alpha, over the active universe only
+        active = self._active(bars)
         try:
-            fresh = await self.alpha.update(ctx, bars)
+            fresh = await self.alpha.update(ctx, active)
         except Exception:
             log.exception("alpha layer failed on %s", bar_ts)
             fresh = []
@@ -165,6 +169,17 @@ class Engine:
                 await self.bus.publish(EventType.ORDER_SUBMITTED, _order_dict(submitted))
 
         _ = fills  # already published in _settle
+
+    def _active(self, bars: dict[str, Bar]) -> dict[str, Bar]:
+        """The subset of this batch the models are allowed to act on.
+
+        An empty universe means "no restriction" so a strategy that never
+        configures universe selection behaves exactly as before.
+        """
+        if not self.ctx.universe:
+            return bars
+        keys = {s.key for s in self.ctx.universe}
+        return {k: b for k, b in bars.items() if k in keys}
 
     async def _settle(self, bars: dict[str, Bar]) -> list[Fill]:
         """Fill resting orders and book the resulting position changes."""

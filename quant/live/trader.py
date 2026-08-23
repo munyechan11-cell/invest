@@ -195,8 +195,43 @@ class LiveTrader:
             log.info("%s 개장", self.calendar.name)
         return True
 
+    async def _refresh_universe(self) -> None:
+        """Re-run the universe chain and warm any newly admitted symbol.
+
+        A symbol added without history would spend its first N bars emitting
+        signals from a half-warm indicator, which is indistinguishable from a
+        strategy that has started behaving badly.
+        """
+        selector = getattr(self.engine, "universe_selector", None)
+        if selector is None or not selector.filters:
+            return
+        if not any(f.name != "held" for f in selector.filters):
+            return
+        if not selector.due():
+            return
+
+        ctx = self.engine.ctx
+        chosen = await selector.select(ctx, self.provider)
+        fresh = [s for s in chosen if not ctx.history(s)]
+        if fresh:
+            end = datetime.now(UTC)
+            start = end - self.config.warmup_delta
+            series = await gather_history(self.provider, fresh,
+                                          self.config.data.timeframe, start, end)
+            for sym in fresh:
+                bars = series.get(sym.key, [])
+                if bars:
+                    ctx.seed_history(sym, bars)
+                    self._seen[sym.key] = bars[-1].ts
+                    ctx.portfolio.mark(sym, bars[-1].close)
+                else:
+                    log.warning("%s admitted to the universe but returned no history",
+                                sym.ticker)
+        self.engine.set_universe(chosen)
+
     async def _tick(self) -> None:
         try:
+            await self._refresh_universe()
             bars = await self._fetch_new_bars()
             if not bars:
                 log.debug("no new closed bars this cycle")
@@ -228,11 +263,16 @@ class LiveTrader:
         """Return only bars we have not already processed."""
         tf = self.config.data.timeframe
         out: dict[str, Bar] = {}
+        watched = list(self.engine.ctx.universe)
+        seen = {s.key for s in watched}
+        for pos in self.engine.ctx.portfolio.open_positions:
+            if pos.symbol.key not in seen:
+                watched.append(pos.symbol)       # never stop pricing what we hold
         results = await asyncio.gather(
-            *(self.provider.latest_bars(s, tf, 3) for s in self.engine.ctx.universe),
+            *(self.provider.latest_bars(s, tf, 3) for s in watched),
             return_exceptions=True,
         )
-        for symbol, result in zip(self.engine.ctx.universe, results):
+        for symbol, result in zip(watched, results):
             if isinstance(result, BaseException):
                 log.warning("data fetch failed for %s: %s", symbol.ticker, result)
                 continue
