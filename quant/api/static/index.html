@@ -2887,6 +2887,12 @@ function renderStrategyBrief() {
 
   const row = (g, cls) =>
     `<div class="stitem${cls}"><b>${esc(g.ko)}</b><span>${esc(g.what)}</span></div>`;
+
+  // 지연 시세로 실시간 매매를 하면 화면 가격과 체결 가격이 다릅니다.
+  const feedWarn = st.realtime === false
+    ? `<div class="stitem guard"><b>시세 주의</b><span>${esc(st.feed_ko || "")}</span></div>`
+    : "";
+
   $("#stSignals").innerHTML = feedWarn +
     (st.signals || []).map(g => row(g, "")).join("") +
     (st.guards || []).map(g => row(g, " guard")).join("");
@@ -2901,11 +2907,6 @@ function renderStrategyBrief() {
       ? "심의 1회는 서비스가 비용을 냅니다 — 요금제 한도 안에서 쓸 수 있습니다."
       : `'${st.name}' 에는 AI 데스크가 없습니다. 데스크가 있는 전략을 고르면 물어볼 수 있습니다.`;
   }
-
-  // 지연 시세로 실시간 매매를 하면 화면 가격과 체결 가격이 다릅니다.
-  const feedWarn = st.realtime === false
-    ? `<div class="stitem guard"><b>시세 주의</b><span>${esc(st.feed_ko || "")}</span></div>`
-    : "";
 
   const line = (label, value) =>
     `<div class="r"><b>${esc(label)}</b><span>${esc(value)}</span></div>`;
@@ -2993,7 +2994,9 @@ $("#tradeMore").onclick = () => loadTradeLog(true);
 // 전략을 바꾸면 설명과 차트와 종목이 같이 따라와야 합니다. 설명만 옛것에
 // 남아 있으면, 읽은 것과 시작되는 것이 서로 다른 전략이 됩니다.
 $("#strategyPick").onchange = () => {
-  renderStrategyBrief();
+  // 설명 렌더가 죽어도 종목·차트·수익은 따라와야 합니다. 한 줄이 던지면
+  // 나머지 넷이 통째로 멈추고, 화면은 옛 전략을 그대로 보여줍니다.
+  try { renderStrategyBrief(); } catch (e) { console.error(e); }
   refreshSymbols();
   loadPnl();
   loadTradeLog();
