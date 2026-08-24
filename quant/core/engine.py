@@ -236,6 +236,23 @@ class Engine:
 
         _ = fills  # already published in _settle
 
+    async def flush_manual(self) -> int:
+        """대기 중인 수동 주문만 지금 내보낸다. 돌려주는 값은 낸 건수.
+
+        수동 주문은 원래 `on_bars` 안에서 함께 나갔습니다. 일봉 전략에서 그건
+        "다음 장 마감까지 기다리라" 는 뜻이고, 매수를 누른 사람에게는 아무 일도
+        안 일어난 것과 같습니다 — 수동매매의 뜻이 사라집니다.
+
+        알파·포트폴리오·리스크는 타지 않습니다. 그게 수동의 정의입니다. 다만
+        브로커의 가드(하루 한도·주문당 상한·중복창)는 그대로 통과합니다 —
+        "내가 직접 낸다" 가 "한도를 무시한다" 는 아닙니다.
+        """
+        orders = self.manual.build_orders(self.ctx)
+        if not orders:
+            return 0
+        await self._submit(orders)
+        return len(orders)
+
     async def _submit(self, orders: list[Order]) -> None:
         for order in orders:
             submitted = await self.brokerage.submit(order)

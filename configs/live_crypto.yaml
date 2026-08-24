@@ -9,7 +9,10 @@
 name: crypto-trend-4h
 label_ko: "코인 · 추세추종 4시간봉"
 description: Donchian breakout + squeeze release on major pairs, vol-targeted.
-mode: dry_run
+# 🔴 **실거래입니다.** 다만 `broker.params.sandbox: true` 라 아직 거래소
+#    샌드박스로 나갑니다. 진짜 계좌로 내려면 그 값을 false 로 바꾸세요 —
+#    두 곳을 다 바꿔야 실제 돈이 움직입니다.
+mode: live
 
 data:
   provider: ccxt
@@ -54,7 +57,9 @@ alpha:
       cost_limit_usd: 10
 
 portfolio:
-  starting_cash: 10000
+  # 실거래에서는 거래소가 알려주는 실제 잔고가 이 값을 대체합니다.
+  # $500 × 비중 0.35 = $175 ≤ 주문당 상한 $200.
+  starting_cash: 500
   base_currency: USDT
   model: {type: vol_target, params: {target_annual_vol: 0.35, lookback: 90}}
   max_position_weight: 0.35
@@ -86,8 +91,21 @@ broker:
     api_key: "${BINANCE_KEY}"
     secret: "${BINANCE_SECRET}"
     sandbox: true
-  max_order_notional: 3000
-  live_trading_confirmed: false
+  max_order_notional: 200
+  live_trading_confirmed: true
+
+# ── 하루 거래 한도 ────────────────────────────────────────────────────────
+# 이 설정에는 한도가 아예 없었습니다. 백테스트·모의에서는 티가 안 나지만,
+# 실거래에서 한도 없는 봇은 고장났을 때 멈출 이유가 없는 봇입니다.
+#
+# 코인은 24시간 열려 있어서 "오늘" 을 정해 줘야 존재합니다 — 한국시간 자정.
+limits:
+  max_daily_notional: 300         # 하루 총 거래대금 $300
+  max_daily_orders: 10            # 하루 주문 10건
+  max_daily_loss: 30              # 하루 실현손실 $30
+  max_daily_loss_pct: 0.01        # 또는 자산의 1%
+  timezone_offset_hours: 9
+  halt_until_next_day: true
 
 backtest:
   start: 2023-01-01T00:00:00Z

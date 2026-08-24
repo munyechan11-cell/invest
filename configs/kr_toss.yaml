@@ -3,14 +3,15 @@
 #   python -m quant validate configs/kr_toss.yaml
 #   python -m quant dryrun   configs/kr_toss.yaml     ← 반드시 여기서 충분히 검증
 #
-# ⚠️ 토스 Open API 에는 모의투자 환경이 없습니다. KIS 와 달리 "실계좌와 분리된
-#    연습 계좌"가 존재하지 않으므로, dry_run(실시간 시세 + 가상 체결)이 유일한
-#    안전망입니다. 실거래 전환은 mode: live 와 broker.live_trading_confirmed
-#    두 곳을 모두 바꿔야 하며, limits 의 하루 한도도 반드시 채워야 합니다.
+# 🔴 **실거래입니다.** 이 설정으로 시작하면 진짜 주문이 나가고 진짜 돈이
+#    움직입니다. 토스 Open API 에는 모의투자 환경이 없어서 "실계좌와 분리된
+#    연습 계좌" 라는 것이 존재하지 않습니다 — 되돌릴 수 있는 것이 없습니다.
+#
+#    연습하려면 `mode: dry_run` 으로 바꾸세요(실시간 시세 + 가상 체결).
 name: kr-toss-flow
-label_ko: "국내 · 수급 추종 (토스만)"
+label_ko: "국내 · 수급 추종 (토스)"
 description: 외국인·기관 수급 추종 + 추세 확인, 변동성 타겟 사이징.
-mode: dry_run
+mode: live
 
 data:
   provider: toss
@@ -68,7 +69,10 @@ alpha:
       cost_limit_usd: 10
 
 portfolio:
-  starting_cash: 10000000
+  # 실거래에서는 증권사가 알려주는 실제 잔고가 이 값을 대체합니다. 모의로
+  # 예행연습할 때의 자본이기도 하니, 실제로 넣을 금액과 맞춰 두세요.
+  # 80만 × 비중 0.35 = 28만 ≤ 주문당 상한 30만.
+  starting_cash: 800000
   base_currency: KRW
   model: {type: vol_target, params: {target_annual_vol: 0.16, lookback: 60}}
   max_position_weight: 0.35
@@ -98,17 +102,20 @@ broker:
   type: toss
   params: {client_id: "${TOSS_CLIENT_ID}", client_secret: "${TOSS_CLIENT_SECRET}",
            account_no: "${TOSS_ACCOUNT_NO}"}
-  max_order_notional: 2000000
-  live_trading_confirmed: false
+  max_order_notional: 300000
+  live_trading_confirmed: true
 
 # ── 하루 거래 한도 ────────────────────────────────────────────────────────
 # 전략이 정상일 때를 가정하는 다른 한도들과 달리, 이건 전략이 고장났을 때를
 # 가정합니다. 셋 중 하나만 걸려도 신규 진입이 멈추고, 청산은 절대 막지 않습니다.
+#
+# 실거래 첫 주는 작게 둡니다. 이 숫자는 "잘 되면 얼마나 벌까" 가 아니라
+# "고장나면 얼마까지 잃어도 되는가" 입니다.
 limits:
-  max_daily_notional: 5000000     # 하루 총 거래대금 500만원
-  max_daily_orders: 20            # 하루 주문 20건
-  max_daily_loss: 200000          # 하루 실현손실 20만원
-  max_daily_loss_pct: 0.02        # 또는 자산의 2%
+  max_daily_notional: 500000      # 하루 총 거래대금 50만원
+  max_daily_orders: 10            # 하루 주문 10건
+  max_daily_loss: 50000           # 하루 실현손실 5만원
+  max_daily_loss_pct: 0.01        # 또는 자산의 1%
   timezone_offset_hours: 9        # 한국시간 기준으로 자정에 초기화
   halt_until_next_day: true
 

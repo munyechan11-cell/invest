@@ -2216,6 +2216,16 @@ def create_app(config: StrategyConfig | None = None,
                 # 키를 등록하지 않은 사람에게는 아예 안 뜹니다.
                 "tickers": book.labels(
                     [sy.ticker for sy in cfg.universe.symbols][:12]),
+                # 실거래를 켜기 전에 사람이 읽어야 하는 숫자입니다. 화면이
+                # 확인 창에서 이 값을 그대로 보여줍니다 — "얼마까지 잃어도
+                # 되는가" 를 모르는 채로 켜는 일이 없어야 합니다.
+                "limits": {
+                    "daily_notional": cfg.limits.max_daily_notional or None,
+                    "daily_orders": cfg.limits.max_daily_orders or None,
+                    "daily_loss": cfg.limits.max_daily_loss or None,
+                    "daily_loss_pct": cfg.limits.max_daily_loss_pct or None,
+                    "per_order": cfg.broker.max_order_notional or None,
+                },
             })
         return {"strategies": out}
 

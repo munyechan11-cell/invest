@@ -227,6 +227,19 @@ header.top{position:sticky;top:0;z-index:40;background:var(--bg);
   color:var(--red);text-transform:uppercase}
 .mode.dry{border-color:var(--gold);color:var(--gold)}
 .mode.backtest{border-color:var(--muted);color:var(--muted)}
+/* 실거래로 도는 동안에는 화면이 통째로 그 사실을 말합니다. 모의와 실거래를
+   같은 화면으로 두면 어느 쪽인지 헷갈리는 순간이 반드시 오고, 그 순간에
+   누르는 버튼은 진짜 돈을 씁니다. */
+body.live .mode{background:var(--red);color:#fff;border-color:var(--red);
+  animation:livepulse 2.4s ease-in-out infinite}
+@keyframes livepulse{0%,100%{opacity:1}50%{opacity:.62}}
+body.live .top{border-bottom:3px solid var(--red)}
+.livebar{display:none}
+body.live .livebar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  border:2px solid var(--red);background:rgba(224,69,60,.12);color:var(--ink);
+  padding:9px 13px;margin:0 0 12px;font-size:13px}
+.livebar b{color:var(--red);font-family:var(--px)}
+@media (prefers-reduced-motion:reduce){body.live .mode{animation:none}}
 .grow{flex:1}
 .tab{font-family:var(--px);font-size:11px;background:var(--plate);border:2px solid var(--line);
   border-bottom:none;padding:5px 12px;color:var(--muted)}
@@ -897,6 +910,10 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
       </div>
       <!-- 고른 전략이 무엇을 하는지. 영어 식별자만 보여주면 그게 뭔지 이미
            아는 사람만 이 버튼을 누를 수 있습니다. -->
+      <div class="livebar" id="liveBar">
+        <b>🔴 실거래</b>
+        <span id="liveBarText">진짜 주문이 나가고 있습니다.</span>
+      </div>
       <div class="stbrief" id="stBrief" hidden>
         <div class="stmeta" id="stMeta"></div>
         <!-- 이 전략에 키가 모자랄 때, 모자란 이름만 말하고 끝내면 막다른
@@ -3545,6 +3562,12 @@ function deskFailed(message) {
   scrollToDesk();
 }
 
+/* 한도 숫자를 사람이 읽는 모양으로. 없으면 "—" — 0 으로 쓰면 "한도 없음" 과
+   "모름" 이 같은 글자가 됩니다. */
+function fmtNum(v) {
+  return v == null ? "—" : Number(v).toLocaleString("ko-KR");
+}
+
 /* 재생 줄 — 속도 고르기와 다시 보기. */
 function syncPlayBar() {
   const bar = $("#playBar");
@@ -3779,6 +3802,19 @@ function tickerLabel(entry) {
 function renderRunSummary(running) {
   document.body.classList.toggle("running", !!running);
   const st = shownStrategy();
+  // 실거래 여부는 **서버가 말한 모드**로 정합니다. 선택기에서 읽으면 봇이
+  // 도는 동안 다른 전략의 모드를 보게 됩니다.
+  const mode = (botState && botState.mode) || (st && st.mode) || "";
+  const live = !!running && mode === "live";
+  document.body.classList.toggle("live", live);
+  const bar = $("#liveBarText");
+  if (bar && live && st) {
+    const l = st.limits || {};
+    bar.textContent =
+      `${stLabel(st)} — 하루 한도 거래대금 ${fmtNum(l.daily_notional)} · ` +
+      `주문 ${l.daily_orders ?? "—"}건 · 실현손실 ${fmtNum(l.daily_loss)}. ` +
+      `한도에 닿으면 신규 진입만 멈추고 청산은 계속됩니다.`;
+  }
   $("#runSum").textContent = running && st
     ? `${stLabel(st)} · ${st.mode_ko || st.mode} · ${st.broker_ko || st.broker} — 돌고 있습니다.`
     : "";
@@ -3804,9 +3840,30 @@ document.getElementById("runStart").onclick = async () => {
     $("#stNeed")?.scrollIntoView({behavior: "smooth", block: "center"});
     return note("#runMsg", "이 전략은 지금 못 돕니다 — 위 안내를 보세요", "err");
   }
-  note("#runMsg", "시작하는 중…", "dim");
+  // 실거래는 CLI 가 콘솔에서 묻는 것과 **같은 확인**을 받습니다 — 전략 이름을
+  // 정확히 타이핑. 예/아니오 버튼은 손이 먼저 움직이지만, 이름을 적는 동안은
+  // 자기가 무엇을 켜는지 한 번은 읽게 됩니다.
+  const body = {config_path: id};
+  if (st.mode === "live") {
+    const typed = prompt(
+      `🔴 실거래를 시작합니다.\n\n` +
+      `'${stLabel(st)}' 로 **진짜 주문이 나가고 진짜 돈이 움직입니다.**\n` +
+      `되돌릴 수 없습니다.\n\n` +
+      `하루 한도 — 거래대금 ${fmtNum(st.limits?.daily_notional)} · ` +
+      `주문 ${st.limits?.daily_orders ?? "—"}건 · ` +
+      `실현손실 ${fmtNum(st.limits?.daily_loss)}\n\n` +
+      `계속하려면 전략 이름을 그대로 적으세요:\n${st.name}`);
+    if (typed === null) return note("#runMsg", "취소했습니다", "dim");
+    if (typed.trim() !== st.name) {
+      return note("#runMsg",
+        `이름이 다릅니다 — "${st.name}" 을 그대로 적어야 실거래가 시작됩니다.`, "err");
+    }
+    body.mode = "live";
+    body.confirm = typed.trim();
+  }
+  note("#runMsg", st.mode === "live" ? "🔴 실거래를 시작합니다…" : "시작하는 중…", "dim");
   try {
-    const res = await post("/api/trader/start", {config_path: id});
+    const res = await post("/api/trader/start", body);
     // 서버가 돌려주는 것은 식별자와 모드 값입니다. 방금 목록에서 읽은 것과
     // 같은 말로 확인해 줘야, 내가 고른 그것이 켜졌는지 알 수 있습니다.
     note("#runMsg", `${runningLabel(res.strategy)} 시작됨 — ${modeKo(res.mode)}`, "ok");

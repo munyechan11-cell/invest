@@ -11,12 +11,13 @@
 #    낮에 시작하면 봉이 갱신되지 않는 것이 정상이고, 봇은 다음 개장을 기다립니다.
 #    데스크는 봉이 새로 닫힐 때만 발언하므로 낮에는 조용한 것이 맞습니다.
 #
-# ⚠️ 토스 Open API 에는 모의투자 환경이 없습니다. dry_run(실시간 시세 + 가상
-#    체결)이 유일한 안전망입니다.
+# 🔴 **실거래입니다.** 이 설정으로 시작하면 진짜 주문이 나가고 진짜 돈이
+#    움직입니다. 토스에는 모의투자 환경이 없어서 되돌릴 수 있는 것이 없습니다.
+#    연습하려면 `mode: dry_run` 으로 바꾸세요.
 name: us-toss-desk
-label_ko: "미국 · AI 데스크 (토스만)"
+label_ko: "미국 · AI 데스크 (토스)"
 description: 미국주식 16석 AI 데스크 + 상대강도, 실시간 시세(토스). KIS 키 불필요.
-mode: dry_run
+mode: live
 
 data:
   provider: toss
@@ -60,7 +61,10 @@ alpha:
       cost_limit_usd: 10
 
 portfolio:
-  starting_cash: 10000
+  # 실거래에서는 증권사가 알려주는 실제 잔고가 이 값을 대체합니다. 모의로
+  # 예행연습할 때의 자본이기도 하니, 실제로 넣을 금액과 맞춰 두세요.
+  # $1,000 × 비중 0.30 = $300 = 주문당 상한.
+  starting_cash: 1000
   base_currency: USD
   model: {type: vol_target, params: {target_annual_vol: 0.18, lookback: 60}}
   max_position_weight: 0.30
@@ -90,14 +94,16 @@ broker:
   type: toss
   params: {client_id: "${TOSS_CLIENT_ID}", client_secret: "${TOSS_CLIENT_SECRET}",
            account_no: "${TOSS_ACCOUNT_NO}"}
-  max_order_notional: 2000
-  live_trading_confirmed: false
+  max_order_notional: 300
+  live_trading_confirmed: true
 
+# 실거래 첫 주는 작게 둡니다. 이 숫자는 "잘 되면 얼마나 벌까" 가 아니라
+# "고장나면 얼마까지 잃어도 되는가" 입니다.
 limits:
-  max_daily_notional: 5000
-  max_daily_orders: 20
-  max_daily_loss: 200
-  max_daily_loss_pct: 0.02
+  max_daily_notional: 500          # 하루 총 거래대금 $500
+  max_daily_orders: 10             # 하루 주문 10건
+  max_daily_loss: 50               # 하루 실현손실 $50
+  max_daily_loss_pct: 0.01         # 또는 자산의 1%
   # 미국 시장이 대상이어도 경계는 한국시간 자정입니다 — 이 서비스를 쓰는 사람이
   # "오늘" 이라고 부르는 하루가 그쪽이기 때문입니다.
   timezone_offset_hours: 9

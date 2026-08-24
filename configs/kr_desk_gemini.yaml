@@ -6,10 +6,13 @@
 # 데스크는 시작할 때 값싼 호출 하나로 사전 점검을 합니다. 키가 잘못됐거나
 # 크레딧/쿼터가 없으면 매 봉 19번씩 실패하는 대신 그 자리에서 이유를 말하고
 # 비활성화됩니다.
+# 🔴 **실거래입니다.** 이 설정으로 시작하면 진짜 주문이 나가고 진짜 돈이
+#    움직입니다. 연습하려면 `mode: dry_run` 으로 바꾸세요 — KIS 는 모의투자
+#    환경이 따로 있어서 `data.params.paper: true` 로도 연습할 수 있습니다.
 name: kr-desk-gemini
 label_ko: "국내 · AI 데스크 + 수급 (한투)"
 description: 16석 AI 데스크 + 수급 알파. 판정 좌석만 더 큰 모델을 씁니다.
-mode: dry_run
+mode: live
 
 data:
   provider: kis
@@ -48,7 +51,10 @@ alpha:
       cost_limit_usd: 10
 
 portfolio:
-  starting_cash: 10000000
+  # 실거래에서는 증권사가 알려주는 실제 잔고가 이 값을 대체합니다. 모의로
+  # 예행연습할 때의 자본이기도 하니, 실제로 넣을 금액과 맞춰 두세요.
+  # 100만 × 비중 0.30 = 30만 = 주문당 상한.
+  starting_cash: 1000000
   base_currency: KRW
   model: {type: vol_target, params: {target_annual_vol: 0.16, lookback: 60}}
   max_position_weight: 0.30
@@ -74,11 +80,16 @@ costs: {preset: kr_equity}
 broker:
   type: kis
   params: {product_code: "01"}
-  max_order_notional: 2000000
-  live_trading_confirmed: false
+  max_order_notional: 300000
+  live_trading_confirmed: true
 
+# 실거래 첫 주는 작게 둡니다. "고장나면 얼마까지 잃어도 되는가" 입니다.
+# 실현손실 한도가 빠져 있었습니다 — 비율만으로는 자산이 큰 계좌에서 한도가
+# 사실상 없는 것과 같습니다.
 limits:
-  max_daily_notional: 5000000
-  max_daily_orders: 20
-  max_daily_loss_pct: 0.02
+  max_daily_notional: 500000      # 하루 총 거래대금 50만원
+  max_daily_orders: 10            # 하루 주문 10건
+  max_daily_loss: 50000           # 하루 실현손실 5만원
+  max_daily_loss_pct: 0.01        # 또는 자산의 1%
   timezone_offset_hours: 9
+  halt_until_next_day: true

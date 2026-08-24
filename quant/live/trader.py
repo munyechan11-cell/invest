@@ -389,7 +389,10 @@ class LiveTrader:
                 sleep_for = (wake - datetime.now(UTC)).total_seconds()
                 if sleep_for > 0:
                     log.debug("sleeping %.1fs until %s", sleep_for, wake.isoformat())
-                    if not await self._sleep(sleep_for):
+                    # 봉 하나를 통째로 자면 그 사이 사람이 누른 매수·매도가
+                    # 다음 봉까지 대기합니다. 일봉이면 내일이고, 그건 수동매매가
+                    # 아닙니다. 짧게 끊어 자면서 대기열을 비웁니다.
+                    if not await self._sleep_serving_manual(sleep_for):
                         break
                 if not self.running:
                     break
@@ -401,6 +404,32 @@ class LiveTrader:
             self.running = False
         finally:
             await self.shutdown()
+
+    #: 수동 주문 대기열을 얼마나 자주 비우는가. 사람이 버튼을 누르고 이만큼은
+    #: 기다릴 수 있지만, 그보다 길면 "안 눌렸나" 싶어 다시 누릅니다.
+    MANUAL_FLUSH_S = 5.0
+
+    async def _sleep_serving_manual(self, seconds: float) -> bool:
+        """자되, 그 사이 수동 주문은 제때 내보낸다. 정지 신호가 오면 False."""
+        left = seconds
+        while left > 0:
+            chunk = min(left, self.MANUAL_FLUSH_S)
+            if not await self._sleep(chunk):
+                return False
+            left -= chunk
+            if not self.running:
+                return False
+            try:
+                sent = await self.engine.flush_manual()
+                if sent:
+                    log.info("수동 주문 %d건 즉시 제출", sent)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:      # noqa: BLE001 — 루프는 살립니다
+                log.warning("수동 주문 제출 실패: %s", exc)
+                await self.engine.ctx.bus.publish(
+                    EventType.ERROR, {"error": f"수동 주문 제출 실패: {exc}"})
+        return True
 
     async def _wait_for_market(self) -> bool:
         """Sleep until the venue opens. Returns True if we slept.
