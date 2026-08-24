@@ -343,3 +343,26 @@ def test_wide_new_blocks_wrap_instead_of_scrolling(html):
     for rule in (r"\.steps\{[^}]*flex-wrap:wrap", r"\.link\{[^}]*flex-wrap:wrap"):
         assert re.search(rule, html), rule
     assert re.search(r"\.pwform\{[^}]*minmax\(180px,1fr\)", html)
+
+
+def test_the_strategy_list_waits_for_the_credentials(script):
+    """연동 정보를 받기 전에 목록을 그리면 전부 "연동 필요" 로 남습니다.
+
+    `configuredKeys` 가 아직 비어 있으면 어떤 전략도 필요한 키를 갖췄다고
+    판정되지 않습니다. 실제로 연동을 마친 사람이 자기 전략을 고를 수 없게
+    되고, 화면은 그 이유를 말해 주지 않습니다.
+    """
+    import re
+    body = re.search(r"function start\(\) \{(.*?)\n\}", script, re.S).group(1)
+    assert "loadStrategies" in body
+    # loadSetup 안에서 불려야 합니다 — 그 전에 부르면 빈 목록을 보고 그립니다.
+    assert body.index("loadSetup") < body.index("loadStrategies"), \
+        "연동 정보보다 먼저 전략 목록을 그립니다"
+
+
+def test_saving_credentials_refreshes_the_strategy_list(script):
+    """방금 넣은 키로 쓸 수 있게 된 전략이 계속 "연동 필요" 면 같은 고장입니다."""
+    import re
+    body = re.search(r'\$\("#setupSave"\)\.onclick = async \(\) => \{(.*?)\n\};',
+                     script, re.S).group(1)
+    assert "loadStrategies()" in body

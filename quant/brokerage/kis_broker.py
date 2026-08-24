@@ -29,6 +29,7 @@ from quant.brokerage.live_base import LiveBrokerage
 from quant.core.types import UTC, Fill, Order, OrderSide, OrderType, utcnow
 from quant.data.calendar import KST
 from quant.data.providers.kis import kis_host, kis_token
+from quant.execution.costs import krx_sell_tax_bps
 
 log = logging.getLogger("quant.brokerage.kis")
 
@@ -68,7 +69,7 @@ class KisBrokerage(LiveBrokerage):
     def __init__(self, portfolio, app_key: str = "", app_secret: str = "",
                  account_no: str = "", product_code: str = "01",
                  overseas_exchange: str = "NASD", paper_trading: bool = False,
-                 commission_bps: float = 1.5, sell_tax_bps: float = 18.0,
+                 commission_bps: float = 1.5, sell_tax_bps: float | None = None,
                  overseas_commission_bps: float = 25.0, **kwargs):
         if paper_trading and kwargs.get("live"):
             raise BrokerageError(
@@ -88,6 +89,10 @@ class KisBrokerage(LiveBrokerage):
         # of 0.0 is a number the accounting layer believes. Charge the KRX
         # retail schedule the backtest already assumes instead.
         self.commission_bps = commission_bps
+        #: None 이면 체결 시점의 법정 세율(`krx_sell_tax_bps`)을 씁니다. 여기에
+        #: 상수를 박아두면 세율이 바뀐 해부터 조용히 틀리고, 백테스트가 돌던
+        #: 과거 구간에도 오늘 값이 소급됩니다. 명시하면 그 값으로 고정 —
+        #: 우대 요율처럼 법정 세율과 다른 계좌를 위한 탈출구입니다.
         self.sell_tax_bps = sell_tax_bps
         self.overseas_commission_bps = overseas_commission_bps
         self._client = httpx.AsyncClient(timeout=20)
@@ -240,12 +245,27 @@ class KisBrokerage(LiveBrokerage):
             raise BrokerageError(f"KIS 체결 조회 거부: {data.get('msg1') or data}")
         return list(data.get(output) or [])
 
-    def _fill_fee(self, order: Order, quantity: Decimal, price: float) -> float:
+    def _sell_tax_bps(self, when: datetime | None = None) -> float:
+        """그 체결에 실제로 물린 증권거래세율.
+
+        세율은 해마다 바뀌므로(`KRX_SELL_TAX_BPS`) 오늘이 아니라 **체결 시각**
+        으로 찾습니다 — 과거 구간을 되짚는 세션이 오늘 요율을 소급하면, 세율이
+        달랐던 구간의 손익이 통째로 틀립니다.
+
+        과세 기준은 한국의 역년이라 KST 로 옮겨서 연도를 봅니다. UTC 그대로면
+        1월 1일 오전(KST)의 체결이 전년도 세율로 매겨집니다.
+        """
+        if self.sell_tax_bps is not None:
+            return self.sell_tax_bps
+        return krx_sell_tax_bps(None if when is None else when.astimezone(KST))
+
+    def _fill_fee(self, order: Order, quantity: Decimal, price: float,
+                  when: datetime | None = None) -> float:
         notional = abs(float(quantity)) * price * float(order.symbol.multiplier)
         if order.symbol.quote_currency == "KRW":
             bps = self.commission_bps
             if order.side is OrderSide.SELL:
-                bps += self.sell_tax_bps      # 증권거래세 — 매도에만 붙는다
+                bps += self._sell_tax_bps(when)   # 증권거래세 — 매도에만 붙는다
         else:
             bps = self.overseas_commission_bps
         return notional * bps / 10_000.0
@@ -277,11 +297,14 @@ class KisBrokerage(LiveBrokerage):
                     # the shares in the book with no basis and no cash paid.
                     unpriced.append(order.broker_id)
                     continue
+                # 수수료는 체결 시각으로 매깁니다 — 거래세율이 그 시점 기준
+                # 이라, 같은 row 에서 읽은 시각을 그대로 넘겨야 합니다.
+                ts = _ccld_ts(row)
                 fill = Fill(
                     order_id=order.id, symbol=order.symbol, side=order.side,
                     quantity=newly, price=price,
-                    fee=self._fill_fee(order, newly, price),
-                    ts=_ccld_ts(row), tag=order.tag,
+                    fee=self._fill_fee(order, newly, price, ts),
+                    ts=ts, tag=order.tag,
                     liquidity="taker" if order.type is OrderType.MARKET else "maker",
                 )
                 order.apply_fill(fill)

@@ -28,6 +28,7 @@ from quant.core.types import (
     Symbol,
 )
 from quant.data.providers.kis import MOCK_HOST
+from quant.execution.costs import KRX_SELL_TAX_BPS
 from quant.live.limits import TradingBudget
 
 SYM = Symbol("005930", venue="kis", quote_currency="KRW", tick_size=Decimal("100"))
@@ -151,8 +152,77 @@ async def test_a_sell_fill_carries_the_transaction_tax_as_well_as_commission():
     fees = {f.side: f.fee for f in await broker.poll_fills()}
 
     notional = 700_000.0
+    # 2026년 체결(_row 의 기본 날짜)이니 수수료 1.5bp + 거래세 20bp
     assert fees[OrderSide.BUY] == pytest.approx(notional * 1.5 / 10_000)
-    assert fees[OrderSide.SELL] == pytest.approx(notional * 19.5 / 10_000)
+    assert fees[OrderSide.SELL] == pytest.approx(notional * 21.5 / 10_000)
+
+
+# ── 거래세는 체결 시점의 요율 ────────────────────────────────────────────
+async def _tax_bps_charged(day: str, clock: str = "101530", **kwargs) -> float:
+    """그 날짜에 체결된 매도에 실제로 붙은 거래세를 bp 로 환산.
+
+    같은 수량·가격의 매수와 매도를 나란히 체결시켜 차액만 봅니다. 수수료가
+    얼마든 양쪽에서 상쇄되므로, 남는 것은 매도에만 붙는 세금뿐입니다.
+    """
+    broker = FakeKis(_portfolio(), paper_trading=True,
+                     max_order_notional=100_000_000.0, **kwargs)
+    buy, sell = _order(), _order(side=OrderSide.SELL)
+    await broker.submit(buy)
+    await broker.submit(sell)
+    broker.rows = [_row(buy.broker_id, 10, 70_000.0, day=day, clock=clock),
+                   _row(sell.broker_id, 10, 70_000.0, day=day, clock=clock)]
+    fees = {f.side: f.fee for f in await broker.poll_fills()}
+    return (fees[OrderSide.SELL] - fees[OrderSide.BUY]) / 700_000.0 * 10_000
+
+
+@pytest.mark.parametrize("year", [2024, 2025, 2026])
+async def test_the_sell_tax_is_the_rate_that_applied_when_the_fill_happened(year):
+    """어댑터에 세율을 박아두면 요율이 바뀐 해부터 조용히 틀립니다.
+
+    2024년 값(18bp)으로 굳어 있었는데 2025년에 내렸고 2026년에 다시 올랐습니다.
+    백테스트가 쓰는 표(`KRX_SELL_TAX_BPS`)와 실거래 어댑터가 어긋나면, 같은
+    전략의 시뮬레이션과 실제 손익이 매도마다 갈라집니다.
+    """
+    charged = await _tax_bps_charged(f"{year}0601")
+    assert charged == pytest.approx(KRX_SELL_TAX_BPS[year])
+
+
+async def test_a_rate_change_between_two_fills_is_not_flattened_to_one_number():
+    """한 요율로 눌러버리면 세율이 오르내린 사실 자체가 사라집니다."""
+    charged = {y: await _tax_bps_charged(f"{y}0601") for y in (2024, 2025, 2026)}
+    assert len(set(charged.values())) == 3, charged
+    assert charged[2026] > charged[2025]
+
+
+async def test_a_new_years_day_fill_is_taxed_by_the_korean_calendar_year():
+    """과세 기준은 역년인데, 그 역년은 KST 기준입니다.
+
+    2026-01-01 08:30 KST 는 UTC 로 아직 2025년입니다. 체결 시각을 UTC 그대로
+    보면 새해 첫 체결들이 전년도 세율로 매겨집니다.
+    """
+    charged = await _tax_bps_charged("20260101", clock="083000")
+    assert charged == pytest.approx(KRX_SELL_TAX_BPS[2026])
+
+
+async def test_an_explicit_rate_still_overrides_the_year():
+    """법정 세율과 다른 계좌 — 우대 요율 등 — 를 위한 탈출구는 남습니다."""
+    assert await _tax_bps_charged("20250601", sell_tax_bps=7.0) == pytest.approx(7.0)
+
+
+async def test_an_overseas_fill_pays_no_korean_transaction_tax():
+    """거래세는 KRX 매도에만 붙습니다 — 통화로 갈라지는 분기가 살아 있는지."""
+    broker = FakeKis(_portfolio(), paper_trading=True,
+                     max_order_notional=100_000_000.0)
+    usd = Symbol("AAPL", venue="kis", quote_currency="USD")
+    broker.portfolio.mark(usd, 200.0)
+    order = Order(symbol=usd, side=OrderSide.SELL, quantity=Decimal("10"),
+                  type=OrderType.LIMIT, limit_price=200.0, tag="exit")
+    await broker.submit(order)
+    broker.rows = [{"odno": order.broker_id, "pdno": "AAPL", "ft_ord_qty": "10",
+                    "ft_ccld_qty": "10", "ft_ccld_unpr3": "200",
+                    "ord_gno_dt": "20260601", "ord_tm": "101530"}]
+    fill = (await broker.poll_fills())[0]
+    assert fill.fee == pytest.approx(2_000.0 * 25.0 / 10_000)
 
 
 async def test_open_orders_come_from_the_execution_rows():
