@@ -123,6 +123,9 @@ body[data-page="account"] .viewtabs{display:none}
   font-variant-numeric:tabular-nums;color:var(--ink)}
 .mini i{font-style:normal;font-family:var(--mono);font-size:12px;color:var(--muted)}
 .mini i.up{color:var(--up)} .mini i.down{color:var(--down)}
+.since{font-family:var(--mono);font-size:11px;color:var(--faint);
+  flex:0 0 auto;white-space:nowrap}
+@media(max-width:900px){.since{display:none}}
 @media(max-width:520px){.mini b{font-size:12px}.mini i{font-size:11px}}
 
 .backrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;
@@ -830,6 +833,9 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
     <button class="btn" id="demoBtn">▶ 데모</button>
     <button class="btn" id="tourBtn" title="첫 화면 안내를 다시 봅니다">? 안내</button>
     <span class="tab on px" id="strategy">—</span>
+    <!-- 이 서버가 언제 시작했는지. 코드를 고쳐도 재시작 전에는 옛 코드가
+         돕니다 — 그 사실을 화면에서 알 수 있어야 합니다. -->
+    <span class="since" id="serverSince" title="서버 시작 시각"></span>
   </div>
 </header>
 
@@ -1687,6 +1693,11 @@ async function refresh() {
   try {
     const h = await api("/api/health");
     setConn(h.trader_running);
+    if (h.started_at) {
+      const t = new Date(h.started_at);
+      $("#serverSince").textContent = "서버 " + t.toLocaleTimeString("ko-KR",
+        {timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit"}) + " 시작";
+    }
     // 버튼이 실제 상태를 따라가야 합니다 — 봇이 스스로 멈췄는데 화면에
     // "정지" 만 서 있으면 사용자는 돌고 있다고 믿습니다.
     if (typeof runnerState === "function") runnerState(!!h.trader_running);

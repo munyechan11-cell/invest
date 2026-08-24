@@ -1320,6 +1320,10 @@ def create_app(config: StrategyConfig | None = None,
         out = {
             "ok": True,
             "version": "1.0.0",
+            # 코드를 고쳐도 파이썬은 재시작 전까지 옛 모듈을 씁니다. 화면에
+            # 이 시각이 없으면 "고쳤는데 왜 그대로냐" 를 알아낼 방법이
+            # 없습니다 — 실제로 그것 때문에 몇 시간을 잃었습니다.
+            "started_at": state.started_at.isoformat(),
             "uptime_s": round((datetime.now(UTC) - state.started_at).total_seconds(), 1),
             # 자기 봇만 봅니다. 로그인하지 않았으면 볼 봇이 없습니다.
             "trader_running": running,
