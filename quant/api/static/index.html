@@ -164,6 +164,13 @@ body.running #runner .runsum{display:block}
 .stmore .r span{color:var(--ink);line-height:1.6}
 
 /* ── 기간별 실현손익 ──────────────────────────────────────────────── */
+/* 모의/실거래 선택기. **`display` 를 여기서 정하지 않습니다** — 저자 오리진의
+   `display` 선언은 UA 의 `[hidden]{display:none}` 을 이기기 때문에, 언젠가
+   이 칸을 `hidden` 으로 감추려는 사람이 나타나면 프로퍼티만 바뀌고 화면은
+   그대로 남습니다. 이 파일이 그 함정을 아는 곳에서는 짝을 붙여 뒀습니다
+   (`form.auth[hidden]`, `.page[hidden]`). 짝이 없으면 규칙도 두지 않습니다. */
+#pnlMode{background:var(--panel2);color:var(--bone);border:2px solid var(--field);
+  padding:6px 9px;font-family:var(--px);font-size:12px}
 .pnlgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:9px}
 .pnlcard{border:2px solid var(--line);background:#0b0e16;padding:10px 11px;min-width:0}
 .pnlcard .lab{font-family:var(--px);font-size:11px;color:var(--dim);
@@ -1055,12 +1062,27 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
   </section>
 
   <!-- 기간별 실현손익. 봇을 껐다 켜도 이어집니다 — 재시작마다 0 으로
-       돌아가는 숫자는 수익이 아니라 실행 시간입니다. -->
+       돌아가는 숫자는 수익이 아니라 실행 시간입니다.
+
+       모의와 실거래를 **한 숫자로 합치지 않습니다.** 합치면 화면은 모의로 번
+       돈까지 "실현 수익" 이라고 부르게 되고, 모의에서 크게 벌고 실거래에서
+       잃은 사람이 자기가 벌고 있다고 믿습니다. 그래서 한 번에 한 쪽만 셉니다. -->
   <section class="panel">
     <span class="plate"><span class="d" aria-hidden="true">◆</span> 실현 수익 <span class="d" aria-hidden="true">◆</span></span>
     <div class="body">
+      <div class="row" style="margin-bottom:9px">
+        <label class="dim" for="pnlMode" style="margin-right:8px">매매 구분</label>
+        <select id="pnlMode">
+          <option value="dry_run">모의매매</option>
+          <option value="live">실거래</option>
+        </select>
+        <span class="dim" style="margin-left:8px">실현 수익과 매매 기록이 함께 바뀝니다</span>
+      </div>
       <div class="pnlgrid" id="pnlGrid"></div>
-      <div class="msg">확정된 손익만 셉니다 — 아직 들고 있는 종목의 평가손익은
+      <!-- 이 낱말은 숫자를 그린 응답이 같이 찍습니다. 선택기(위)는 "무엇을
+           청했나" 이고, 여기는 "화면에 실제로 뭐가 그려져 있나" 입니다. 응답이
+           늦거나 실패하면 둘이 갈리는데, 그때 믿을 것은 이쪽입니다. -->
+      <div class="msg"><b id="pnlModeShown"></b>확정된 손익만 셉니다 — 아직 들고 있는 종목의 평가손익은
         위 계좌 칸에 있습니다. 수수료와 세금을 뺀 값입니다.</div>
     </div>
   </section>
@@ -1072,7 +1094,11 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
       <div class="scroll"><table class="tradelog"><tbody id="tradeLog"></tbody></table></div>
       <div class="row" style="margin-top:10px">
         <button class="btn" id="tradeMore" hidden>더 보기</button>
-        <span class="dim" id="tradeCount"></span>
+        <!-- 이 표가 어느 쪽 기록인지. 위 "실현 수익" 의 선택기가 정하는데,
+             그 선택기는 다른 칸에 있어서 여기까지 스크롤해 온 사람에게는
+             보이지 않습니다. 그래서 표 옆에 한 번 더 적습니다. -->
+        <span class="dim" id="tradeModeShown" style="margin-left:8px"></span>
+        <span class="dim" id="tradeCount" style="margin-left:8px"></span>
       </div>
     </div>
   </section>
@@ -1899,6 +1925,10 @@ async function refresh() {
     if (s.running && s.strategy) runningStrategy = s.strategy;
     if (s.running === false) runningStrategy = "";
     setRunning(!!s.running);
+    // 실현 수익·매매 기록이 보여 줄 모드도 서버가 말하는 것을 따릅니다.
+    // 머리말 배지(아래)와 같은 값이라, 배지가 "실거래" 인데 아래 표는 모의를
+    // 세고 있는 화면이 나오지 않습니다.
+    if (s.running) adoptRunMode(s.mode);
     if (s.portfolio) {
       // `/api/status` 는 식별자(`kr-toss-desk`)만 돌려줍니다. 목록에서 고른
       // 것과 머리말에 뜬 것이 다른 글자면, 사용자는 자기가 고른 전략이
@@ -3292,10 +3322,67 @@ function hasDesk(st) {
 /* ── 기간별 실현손익 ─────────────────────────────────────────────── */
 const PNL_LABEL = {today: "오늘", week: "이번 주", month: "이번 달", year: "올해"};
 
+/* 실현 수익과 매매 기록이 지금 보여 주는 모드. **모의와 실거래를 한 숫자로
+   합치지 않기 위해 존재합니다** — 저장소도 API 도 진작부터 `mode` 를 받는데
+   화면만 안 붙이고 있었고, 그래서 "실현 수익" 은 모의로 번 돈과 실제로 번
+   돈을 더한 값이었습니다.
+
+   **언제 이게 안 통하는가**: `runs.mode` 에 dry_run/live 말고 다른 값이
+   들어가게 되면(현재는 `quant/live/trader.py` 가 그 둘만 받습니다) 그 거래는
+   두 화면 어디에도 안 나옵니다 — 합쳐서 보여 주는 것보다는 낫지만, 그때는
+   선택기에 항목을 늘려야 합니다. */
+let pnlMode = "dry_run";
+
+//: 마지막으로 서버가 말한 "돌고 있는 봇의 모드". 같은 값이 계속 오는 동안
+//: 아무것도 하지 않기 위해서만 있습니다.
+let seenRunMode = "";
+
+/* 봇이 어떤 모드로 돌기 시작하면 화면도 그쪽으로 한 번 따라갑니다.
+
+   기본값을 한쪽에 고정하면 **반대쪽 사람은 오늘 난 자기 체결을 못 봅니다.**
+   dry_run 고정이면 실거래 중인 사람이, live 고정이면 오늘 모의로 돌린
+   사람이 빈 표를 봅니다. 지금 무엇이 도는지는 서버가 이미 말해 주고
+   (`/api/status` 의 `mode` — 머리말 배지가 바로 그 값입니다), 그게 사람이
+   방금 한 일입니다.
+
+   **언제 이게 안 통하는가**: 봇이 멈추면 서버는 모드를 말하지 않으므로
+   화면은 마지막에 보던 쪽에 머뭅니다. 그리고 사용자가 선택기를 만진 뒤라도
+   봇을 다른 모드로 새로 켜면 그쪽으로 옮겨 갑니다 — 새로 시작한 실행이
+   사용자의 더 최근 의사라고 봅니다. 매 tick 이 아니라 **바뀐 순간에만**
+   움직이는 이유가 그것입니다. 매번 되돌리면 고른 값이 30초마다 튕깁니다. */
+function adoptRunMode(m) {
+  // backtest 와 미가동(모드 없음)에는 이 화면이 셀 거래가 없습니다.
+  if (m !== "dry_run" && m !== "live") return;
+  if (m === seenRunMode) return;
+  seenRunMode = m;
+  setPnlMode(m);
+}
+
+function setPnlMode(m) {
+  if (m === pnlMode) return;
+  pnlMode = m;
+  $("#pnlMode").value = m;
+  // 화면은 그대로 둡니다. 지금 걸려 있는 숫자와 그 옆 낱말은 **같은 응답이
+  // 함께 찍은 한 쌍** 이라 서로 맞습니다. 새 응답이 오기 전에 낱말만 바꾸면
+  // 남의 모드 숫자 위에 이쪽 이름표가 붙습니다.
+  loadPnl();
+  loadTradeLog();
+}
+
+$("#pnlMode").onchange = () => setPnlMode($("#pnlMode").value);
+
 async function loadPnl() {
+  //: 이 응답이 어느 모드를 물어본 것인지. 그려 넣을 때 다시 `pnlMode` 를
+  //: 읽으면, 기다리는 사이에 모드가 바뀐 경우 A 의 숫자가 B 의 이름표를
+  //: 달게 됩니다.
+  const asked = pnlMode;
   let d;
-  try { d = await api("/api/pnl"); } catch { return; }
+  try { d = await api(`/api/pnl?mode=${encodeURIComponent(asked)}`); } catch { return; }
+  if (asked !== pnlMode) return;      // 늦게 온 남의 모드 응답
   const p = d.periods || {};
+  // 이름표와 숫자는 여기서 **함께** 찍힙니다. 사이에 await 가 없으므로 둘이
+  // 갈릴 틈이 없습니다 — 한쪽만 바꾸는 경로를 만들지 마세요.
+  $("#pnlModeShown").textContent = `${MODE_BADGE[asked] || asked} 기준입니다. `;
   $("#pnlGrid").innerHTML = ["today", "week", "month", "year"].map(k => {
     const v = p[k] || {};
     const pnl = v.pnl || 0;
@@ -3315,11 +3402,18 @@ async function loadPnl() {
 let tradeShown = 0;
 
 async function loadTradeLog(more) {
+  //: 실현 수익 칸과 **같은** 모드를 봅니다. 표와 그 위 숫자가 서로 다른
+  //: 모드를 세면, 둘을 맞춰 보려는 사람이 어느 쪽도 믿을 수 없게 됩니다.
+  const asked = pnlMode;
   if (!more) tradeShown = 0;
   let d;
   try {
-    d = await api(`/api/tradelog?limit=40&offset=${more ? tradeShown : 0}`);
+    d = await api(`/api/tradelog?limit=40&offset=${more ? tradeShown : 0}`
+                  + `&mode=${encodeURIComponent(asked)}`);
   } catch { return; }
+  // "더 보기" 로 청한 40줄이 모드가 바뀐 뒤에 도착하면, 그대로 이어 붙었을
+  // 때 한 표 안에 두 모드가 섞입니다 — 이 결함의 원래 모습 그대로입니다.
+  if (asked !== pnlMode) return;
   const rows = (d.trades || []).map(t => {
     const pnl = t.pnl || 0;
     const cls = pnl > 0 ? "up" : pnl < 0 ? "down" : "";
@@ -3337,6 +3431,9 @@ async function loadTradeLog(more) {
       <td class="tl-why">${esc(t.exit_tag || "")}</td></tr>`;
   });
   const body = $("#tradeLog");
+  // 이름표는 줄과 같은 응답에서, 같은 자리에서 찍습니다. "아직 완료된 매매가
+  // 없습니다" 도 어느 쪽에서 없다는 것인지 말해야 뜻이 생깁니다.
+  $("#tradeModeShown").textContent = MODE_BADGE[asked] || asked;
   if (more) body.insertAdjacentHTML("beforeend", rows.join(""));
   else body.innerHTML = rows.join("") ||
     `<tr><td class="dim" style="padding:14px 5px">아직 완료된 매매가 없습니다.
