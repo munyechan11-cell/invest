@@ -165,8 +165,13 @@ def test_setup_steps_are_in_the_order_the_owner_asked_for(tags):
     assert _ids_in_order(tags, set(REQUIRED_STEP_ORDER)) == REQUIRED_STEP_ORDER
 
 
-def test_setup_step_headings_are_numbered_to_match(markup):
-    headings = re.findall(r"<h3>(.*?)</h3>", markup, re.S)
+def test_setup_step_headings_are_numbered_to_match(setup_sheet):
+    """설정 시트 안의 제목만 봅니다.
+
+    전체 문서를 보면 첫 화면(랜딩)의 소제목이 먼저 잡힙니다 — 그건 설정
+    단계가 아니라 서비스 소개라서, 번호를 요구할 대상이 아닙니다.
+    """
+    headings = re.findall(r"<h3>(.*?)</h3>", setup_sheet, re.S)
     numbered = [re.sub(r"\s+", " ", h).strip() for h in headings]
     assert numbered[0].startswith("1 · 증권사 · 거래소 연동")
     assert numbered[1].startswith("2 · 하루 거래 한도")
