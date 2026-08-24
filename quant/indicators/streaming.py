@@ -7,13 +7,15 @@ engine feeds strategies through these rather than recomputing a DataFrame each
 bar (which is both slow and the classic source of look-ahead bugs).
 
 Contract: `update(value) -> float | None`. `None` until warmed up; `is_ready`
-tells you when the window has filled.
+tells you when the window has filled. Indicators that need the whole candle
+take `update_bar(bar)`; the two-symbol ones take `update_pair(target, reference)`.
 """
 from __future__ import annotations
 
 import math
 from collections import deque
 from collections.abc import Iterable
+from datetime import datetime
 
 from quant.core.types import Bar
 
@@ -365,6 +367,221 @@ class VWAP(BarIndicator):
         self._pv = self._v = 0.0
         self.value = None
         self.samples = 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Two-symbol indicators
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: KRX 가격제한폭 — ±30% of the previous close (since 2015-06-15).
+KRX_PRICE_LIMIT = 0.30
+
+#: The limit price is snapped onto the tick ladder before it is applied, so a
+#: 상한가 usually lands a few basis points short of a clean ±30% and a bare
+#: `>= 0.30` test would miss most of them.
+LIMIT_TOLERANCE = 0.005
+
+
+def is_limit_move(ret: float, limit: float = KRX_PRICE_LIMIT,
+                  tolerance: float = LIMIT_TOLERANCE) -> bool:
+    """Does this return look like a 상한가/하한가 close?
+
+    Such a bar is a *censored* observation rather than a data point: the true
+    move was cut off at the limit. Keeping one attenuates the measured
+    covariance with the market — on a 테마주 that limits up when the market
+    rallies it drags beta down, which is exactly the name whose beta you most
+    need to be right about.
+    """
+    return limit > 0 and abs(ret) >= limit - tolerance
+
+
+class DualSymbolIndicator(Indicator):
+    """Base for indicators over two bar streams (LEAN's DualSymbolIndicator).
+
+    The two legs arrive independently and an observation is formed only once
+    both have delivered a bar for the same timestamp; an unmatched bar is
+    dropped, never carried forward. That matters: filling a missing bar with
+    the last price feeds a zero return against a live market, which drags every
+    covariance estimate toward zero. On KRX a missing bar is not an edge case —
+    it is what a 거래정지 or a thin KOSDAQ name looks like.
+
+    Both legs always span the *same* interval, because each return is measured
+    from the last pair that matched. A gap therefore yields one two-day
+    observation on both sides rather than a two-day return regressed on a
+    one-day one.
+    """
+
+    def __init__(self, name: str, period: int, price_limit: float | None = None,
+                 history: int = 0):
+        super().__init__(name, period, history)
+        self.price_limit = price_limit
+        self.dropped = 0
+        self._target: Bar | None = None
+        self._reference: Bar | None = None
+        self._prev: tuple[float, float] | None = None
+        self._matched_ts: datetime | None = None
+
+    def update(self, value: float) -> float | None:  # pragma: no cover - guard
+        raise TypeError(f"{self.name} has two legs — use update_pair(target, reference)")
+
+    def update_target(self, bar: Bar) -> float | None:
+        self._target = bar
+        return self._match()
+
+    def update_reference(self, bar: Bar) -> float | None:
+        self._reference = bar
+        return self._match()
+
+    def update_pair(self, target: Bar, reference: Bar) -> float | None:
+        self._target, self._reference = target, reference
+        return self._match()
+
+    def prime_pairs(self, target: Iterable[Bar], reference: Iterable[Bar]) -> DualSymbolIndicator:
+        """Warm from two histories that need not line up bar for bar."""
+        by_end = {b.end_ts: b for b in reference}
+        for bar in target:
+            ref = by_end.get(bar.end_ts)
+            if ref is not None:
+                self.update_pair(bar, ref)
+        return self
+
+    def observe(self, target_ret: float, reference_ret: float) -> float | None:
+        """Feed one already-aligned pair of returns."""
+        if self._censored(target_ret) or self._censored(reference_ret):
+            self.dropped += 1
+            return self._held()
+        self.samples += 1
+        self.value = self._compute_pair(target_ret, reference_ret)
+        if self.value is not None:
+            self._history.append(self.value)
+        return self._held()
+
+    def _censored(self, ret: float) -> bool:
+        return self.price_limit is not None and is_limit_move(ret, self.price_limit)
+
+    def _held(self) -> float | None:
+        return self.value if self.is_ready else None
+
+    def _match(self) -> float | None:
+        target, reference = self._target, self._reference
+        if target is None or reference is None:
+            return self._held()
+        if target.end_ts != reference.end_ts or target.end_ts == self._matched_ts:
+            return self._held()          # one leg is ahead — wait for the other
+        self._matched_ts = target.end_ts
+        prev, self._prev = self._prev, (target.close, reference.close)
+        if prev is None or prev[0] <= 0 or prev[1] <= 0:
+            return self._held()
+        return self.observe(target.close / prev[0] - 1.0, reference.close / prev[1] - 1.0)
+
+    def _compute_pair(self, target_ret: float,
+                      reference_ret: float) -> float | None:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+
+class MarketModel(DualSymbolIndicator):
+    """Rolling market model: `target = alpha + beta * reference + residual`.
+
+    `value` is the *shrunk* beta, and it is the number anything downstream
+    should size or score off. A raw 60-bar rolling beta has a standard error
+    near 0.26 on KRX-like data, and Vasicek (1973) shrinkage toward the
+    cross-sectional prior cuts the forecast error of that estimate — it also
+    beats the more elaborate priors that came after it.
+
+    `raw_beta`, `alpha` and `residuals` are the unshrunk regression itself:
+    residual momentum wants the residual series, not the beta.
+
+    The reference leg must be a genuine market factor. On KRX that is not the
+    index: 삼성전자 and SK하이닉스 together are over half of KOSPI 200, so
+    regressing either against a cap-weighted index ETF regresses a thing on
+    itself. Feed a leave-one-out or equal-weighted basket instead.
+    """
+
+    def __init__(self, period: int = 60, prior_beta: float = 1.0, prior_sd: float = 0.5,
+                 price_limit: float | None = None, history: int = 4):
+        super().__init__("BETA", period, price_limit=price_limit, history=history)
+        # `prior_sd` is the dispersion of beta across the cross-section, not a
+        # tuning knob: it is what says how much of a surprising estimate to
+        # believe. Half a beta point is the usual measured value.
+        self.prior_beta = prior_beta
+        self.prior_var = prior_sd ** 2
+        self._x: deque[float] = deque(maxlen=period)      # reference returns
+        self._y: deque[float] = deque(maxlen=period)      # target returns
+        self._sums = [0.0] * 5                            # x, y, xx, xy, yy
+        self._since_rebuild = 0
+        self.raw_beta: float | None = None
+        self.alpha: float | None = None
+        self.residual: float | None = None
+
+    @property
+    def beta(self) -> float:
+        """Shrunk beta — the prior until there is anything to estimate from.
+
+        A thin window is not a special case: it shrinks hard toward the prior
+        of its own accord, because that is what its sampling variance implies.
+        """
+        return self.value if self.value is not None else self.prior_beta
+
+    @property
+    def residuals(self) -> list[float]:
+        """The window's residuals, oldest first — residual momentum's raw input.
+
+        Computed on demand: every one of them moves when beta does, so caching
+        them would cost a full pass per bar for a series most callers of this
+        indicator (beta-budgeted sizing, attribution) never look at.
+        """
+        if self.raw_beta is None or self.alpha is None:
+            return []
+        return [y - self.alpha - self.raw_beta * x for x, y in zip(self._x, self._y)]
+
+    def _compute_pair(self, target_ret: float, reference_ret: float) -> float | None:
+        if len(self._x) == self.period:
+            self._accumulate(self._x[0], self._y[0], -1.0)
+        self._x.append(reference_ret)
+        self._y.append(target_ret)
+        self._accumulate(reference_ret, target_ret, 1.0)
+        self._since_rebuild += 1
+        if self._since_rebuild >= self.period:
+            self._rebuild()
+
+        n = len(self._x)
+        if n < 3:
+            return self.prior_beta       # nothing to shrink toward the prior from yet
+        sum_x, sum_y, sum_xx, sum_xy, sum_yy = self._sums
+        sxx = sum_xx - sum_x * sum_x / n
+        if sxx <= 1e-18:
+            return self.prior_beta       # a reference that never moved says nothing
+        sxy = sum_xy - sum_x * sum_y / n
+        syy = sum_yy - sum_y * sum_y / n
+        self.raw_beta = sxy / sxx
+        self.alpha = (sum_y - self.raw_beta * sum_x) / n
+        self.residual = target_ret - self.alpha - self.raw_beta * reference_ret
+        # Vasicek: weight the sample estimate by its own precision against the
+        # dispersion of betas in the cross-section. A noisy window (few points,
+        # fat residuals, a quiet reference) collapses toward the prior on its
+        # own, so no separate warm-up rule is needed.
+        sse = max(syy - self.raw_beta * sxy, 0.0)
+        sample_var = (sse / (n - 2)) / sxx
+        weight = self.prior_var / (self.prior_var + sample_var)
+        return weight * self.raw_beta + (1.0 - weight) * self.prior_beta
+
+    def _accumulate(self, x: float, y: float, sign: float) -> None:
+        for i, term in enumerate((x, y, x * x, x * y, y * y)):
+            self._sums[i] += sign * term
+
+    def _rebuild(self) -> None:
+        """Recompute the rolling sums from the window itself.
+
+        They are maintained by subtraction, so rounding error accumulates for
+        as long as the session runs — and a live session runs for years. One
+        rebuild per window bounds the drift for one extra pass per `period`
+        updates.
+        """
+        self._sums = [
+            sum(self._x), sum(self._y), sum(x * x for x in self._x),
+            sum(x * y for x, y in zip(self._x, self._y)), sum(y * y for y in self._y),
+        ]
+        self._since_rebuild = 0
 
 
 class IndicatorSet:

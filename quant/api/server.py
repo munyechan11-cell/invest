@@ -952,7 +952,10 @@ def create_app(config: StrategyConfig | None = None,
             raise HTTPException(
                 503, "서비스가 준비되지 않았습니다 — QUANT_SECRET_KEY 를 설정하고 "
                      "다시 시작하세요.")
-        user = accounts.user_for_session(scope.cookies.get(SESSION_COOKIE, ""))
+        # 쿠키 이름은 https 여부에 따라 달라집니다 (`__Host-` 는 Secure 없이는
+        # 브라우저가 저장하지 않습니다). 인증하는 쪽이 그 규칙을 알고 있어야
+        # 로컬 http 개발에서 로그인이 조용히 실패하지 않습니다.
+        user = accounts.user_for_session(auth.session_token(scope))
         if user is None:
             raise HTTPException(
                 401, "로그인이 필요합니다 — 계정이 없으면 먼저 가입하세요.")
@@ -1040,8 +1043,9 @@ def create_app(config: StrategyConfig | None = None,
     app.state.accounts = accounts
     app.state.registry = registry
 
-    if accounts is not None:
-        app.include_router(build_auth(accounts).router)
+    auth = build_auth(accounts) if accounts is not None else None
+    if auth is not None:
+        app.include_router(auth.router)
 
     # ── read-only ────────────────────────────────────────────────────────
     @app.get("/api/health")
@@ -1245,11 +1249,24 @@ def create_app(config: StrategyConfig | None = None,
         return {"available": True, "window": window, "symbols": out}
 
     @app.get("/api/universe")
-    async def universe(seat: Desk = Depends(desk)):
-        """Symbols with their last mark — drives the ticker tape."""
+    async def universe(strategy: str | None = Query(None, max_length=64),
+                       seat: Desk = Depends(desk)):
+        """Symbols with their last mark — drives the ticker tape and the chart.
+
+        봇이 꺼져 있으면 전략 이름으로 그 템플릿의 종목을 돌려줍니다. 시세를
+        보려면 먼저 봇을 켜야 한다면, 데스크가 수동 매수를 추천했을 때 정작
+        그 종목을 고를 수가 없습니다.
+        """
         trader = seat.trader()
         if trader is None:
-            return {"symbols": []}
+            if not strategy:
+                return {"symbols": []}
+            cfg = load_config(str(resolve_template(strategy)))
+            return {"symbols": [
+                {"ticker": sym.ticker, "venue": sym.venue,
+                 "currency": sym.quote_currency, "price": None,
+                 "change_pct": 0.0, "invested": False}
+                for sym in _config_symbols(cfg)]}
         ctx = trader.engine.ctx
         out = []
         for sym in ctx.universe:
@@ -1602,6 +1619,17 @@ def create_app(config: StrategyConfig | None = None,
     # ── dashboard ────────────────────────────────────────────────────────
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+        # 서비스 워커는 자기가 놓인 경로만 통제합니다. /static/sw.js 로 두면
+        # 스코프가 /static/ 이라 앱 전체를 감싸지 못하므로 루트에서 냅니다.
+        @app.get("/sw.js", include_in_schema=False)
+        async def service_worker():
+            return FileResponse(STATIC_DIR / "sw.js", media_type="text/javascript")
+
+        @app.get("/manifest.webmanifest", include_in_schema=False)
+        async def manifest():
+            return FileResponse(STATIC_DIR / "manifest.webmanifest",
+                                media_type="application/manifest+json")
 
         @app.get("/")
         async def index():

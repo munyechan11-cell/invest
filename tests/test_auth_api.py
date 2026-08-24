@@ -79,7 +79,19 @@ def app(auth) -> FastAPI:
 
 @pytest.fixture
 def client(app) -> TestClient:
-    return TestClient(app)
+    """배포와 같은 https 로 부릅니다.
+
+    `__Host-` 접두사는 `Secure` 없이는 브라우저가 **저장 자체를 거부**하므로,
+    평문 http 로 검사하면 배포에서 실제로 나가는 쿠키가 아니라 개발용 대체
+    이름을 검사하게 됩니다.
+    """
+    return TestClient(app, base_url="https://desk.example")
+
+
+@pytest.fixture
+def plain_client(app) -> TestClient:
+    """평문 http — 로컬 개발에서 쓰이는 경로."""
+    return TestClient(app, base_url="http://localhost")
 
 
 def signup(client, email="a@example.com", password=GOOD, name="첫 사용자"):
@@ -154,6 +166,26 @@ def raw_cookie_header(response) -> str:
     return response.headers["set-cookie"]
 
 
+def test_over_plain_http_the_name_drops_the_prefix_so_login_works(plain_client):
+    """`__Host-` 를 http 에서 고집하면 로그인이 성공했다고 답한 뒤 아무 일도
+    일어나지 않습니다 — 브라우저가 쿠키를 버리고, 이유는 어디에도 안 보입니다.
+
+    http 에서는 접두사가 줄 보호가 애초에 없으므로 이름을 낮춥니다. 보호를
+    포기하는 것이 아니라, 없는 보호를 이유로 서비스를 못 쓰게 만들지 않는 것입니다.
+    """
+    header = raw_cookie_header(signup(plain_client))
+    assert header.startswith("quant_session=")
+    assert "secure" not in header.lower()
+    # 그래도 세션은 실제로 동작해야 합니다.
+    assert plain_client.get("/api/auth/me").status_code == 200
+
+
+def test_over_https_the_prefix_is_kept(client):
+    header = raw_cookie_header(signup(client))
+    assert header.startswith(f"{SESSION_COOKIE}=")
+    assert "secure" in header.lower()
+
+
 def test_the_session_cookie_is_httponly_lax_and_rooted(client):
     sent = signup(client)
     # 이름은 대소문자를 지켜서 봅니다 — 브라우저는 `__host-` 를 특별 취급하지
@@ -170,10 +202,10 @@ def test_samesite_is_present_at_all(client):
     assert "samesite=" in cookie_header(signup(client))
 
 
-def test_plain_http_does_not_get_a_secure_cookie(client):
+def test_plain_http_does_not_get_a_secure_cookie(plain_client):
     # Secure 를 붙이면 http 로는 쿠키가 아예 오가지 않습니다. 로컬 개발이
     # 조용히 로그인 불가가 되면 안 됩니다.
-    assert "; secure" not in cookie_header(signup(client))
+    assert "; secure" not in cookie_header(signup(plain_client))
 
 
 def test_https_gets_a_secure_cookie(app):

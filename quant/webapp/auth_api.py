@@ -313,7 +313,9 @@ def _arrived_over_https(request: Request) -> bool:
     # Never let a header take Secure *away*: a forged one can only add it, and
     # a Secure cookie on a plain-http deployment merely stops working, which is
     # the failure everybody notices immediately rather than the silent one.
-    if request.url.scheme == "https" or proto == "https":
+    # WebSocket 핸드셰이크는 스킴이 wss 입니다. 같은 TLS 연결인데 여기서
+    # 놓치면 소켓만 쿠키 이름을 다르게 읽어 인증이 조용히 실패합니다.
+    if request.url.scheme in ("https", "wss") or proto == "https":
         return True
     return os.environ.get("QUANT_COOKIE_SECURE", "").strip().lower() in ("1", "true", "yes")
 
@@ -365,6 +367,10 @@ class Auth:
         """로그인했으면 그 사람, 아니면 None. 공개/비공개가 섞인 화면용."""
         return self.accounts.user_for_session(self._session_token(request))
 
+    def session_token(self, request: Request) -> str:
+        """이 요청이 들고 온 세션 토큰. 쿠키 이름 규칙을 여기 한 곳에 둡니다."""
+        return self._session_token(request)
+
     def _session_token(self, request: Request) -> str:
         """쿠키가 두 장이면 세션으로 보지 않습니다.
 
@@ -375,10 +381,11 @@ class Auth:
         The `__Host-` prefix is what keeps a sibling subdomain from writing the
         second one; this is the belt to that pair of braces.
         """
-        values = _cookie_values(request.headers.get("cookie", ""), self.cookie)
+        name = self._cookie_name(request)
+        values = _cookie_values(request.headers.get("cookie", ""), name)
         if len(values) > 1:
             log.warning("한 요청에 %s 쿠키가 %d 장 왔습니다 — 세션으로 보지 않습니다",
-                        self.cookie, len(values))
+                        name, len(values))
             return ""
         return values[0] if values else ""
 
@@ -397,12 +404,27 @@ class Auth:
         return user
 
     # ── 쿠키 ─────────────────────────────────────────────────────────────
+    def _cookie_name(self, request: Request) -> str:
+        """이 요청에 실제로 쓸 쿠키 이름.
+
+        `__Host-` 는 브라우저가 `Secure` 없이는 **저장 자체를 거부합니다**. 그래서
+        평문 http 로 들어온 요청에 그 이름을 쓰면 로그인이 성공했다고 응답한 뒤
+        아무 일도 일어나지 않습니다 — 화면은 계속 로그인 창에 머물고, 이유는
+        어디에도 보이지 않습니다.
+
+        http 에서는 접두사가 줄 보호가 애초에 없으므로 이름을 낮춥니다. 보호를
+        포기하는 것이 아니라, 있지도 않은 보호를 이유로 서비스를 못 쓰게 만들지
+        않는 것입니다. 배포는 https 이므로 거기서는 언제나 `__Host-` 입니다.
+        """
+        if self.cookie.startswith("__Host-") and not _arrived_over_https(request):
+            _warn_host_prefix_needs_secure(self.cookie)
+            return self.cookie[len("__Host-"):]
+        return self.cookie
+
     def _set_cookie(self, request: Request, response: Response, token: str) -> None:
         secure = _arrived_over_https(request)
-        if self.cookie.startswith("__Host-") and not secure:
-            _warn_host_prefix_needs_secure(self.cookie)
         response.set_cookie(
-            self.cookie, token,
+            self._cookie_name(request), token,
             max_age=COOKIE_MAX_AGE,
             path="/",             # __Host- 가 요구하는 값이기도 합니다
             httponly=True,        # 스크립트가 세션 토큰을 읽지 못하게
@@ -416,10 +438,13 @@ class Auth:
     def _clear_cookie(self, request: Request, response: Response) -> None:
         # Same attributes as when it was set — a browser matches on name, path
         # and domain, so a mismatch leaves the old cookie sitting there.
-        response.delete_cookie(
-            self.cookie, path="/", httponly=True, samesite="lax",
-            secure=_arrived_over_https(request),
-        )
+        # 이름이 상황에 따라 달라지므로 둘 다 지웁니다 — https 로 바뀌기 전에
+        # 받은 평문 쿠키가 남아 있으면 로그아웃이 절반만 됩니다.
+        for name in {self.cookie, self._cookie_name(request)}:
+            response.delete_cookie(
+                name, path="/", httponly=True, samesite="lax",
+                secure=_arrived_over_https(request),
+            )
 
     # ── 엔드포인트 ───────────────────────────────────────────────────────
     def _install(self) -> None:

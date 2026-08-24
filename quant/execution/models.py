@@ -5,7 +5,7 @@ import statistics
 from decimal import Decimal
 
 from quant.core.types import Order, OrderType, TimeInForce
-from quant.execution.base import ExecutionModel
+from quant.execution.base import ExecutionModel, OrderAgePolicy
 
 
 class ImmediateExecution(ExecutionModel):
@@ -14,7 +14,7 @@ class ImmediateExecution(ExecutionModel):
     name = "immediate"
 
     def execute(self, ctx, targets):
-        return [self._order(t, d) for t, d, _ in self._deltas(ctx, targets)]
+        return [self._order(ctx, t, d) for t, d, _ in self._deltas(ctx, targets)]
 
 
 class LimitExecution(ExecutionModel):
@@ -23,36 +23,61 @@ class LimitExecution(ExecutionModel):
     Saves the spread on the fills that happen, at the cost of missing some
     moves. Worth it for slow signals and mid-cap liquidity; wrong for anything
     that decays inside a bar.
+
+    `urgent_after_bars` is both halves of one decision, and they only work
+    together: at the same age the resting limit is asked back and the symbol's
+    patience runs out, so the escalation is a cancel followed — one bar later,
+    once the cancel has actually settled — by a market order. Counting patience
+    only on bars where the diff still asked for something is what made the
+    escalation inert: the resting order itself makes the diff go quiet.
     """
 
     name = "limit"
 
     def __init__(self, offset_bps: float = 5.0, urgent_after_bars: int = 3,
-                 min_order_notional: float = 1.0):
-        super().__init__(min_order_notional)
+                 min_order_notional: float = 1.0, order_age=None):
+        # A patience of zero means "never actually post" — legal here, but not a
+        # timeout a policy can express, so it floors at one bar and the counter
+        # below does the crossing.
+        patience = max(urgent_after_bars, 1)
+        super().__init__(
+            min_order_notional,
+            order_age if order_age is not None
+            else OrderAgePolicy(entry_bars=patience, exit_bars=patience),
+        )
         self.offset = offset_bps / 10_000.0
         self.urgent_after = urgent_after_bars
         self._pending: dict[str, int] = {}
 
     def execute(self, ctx, targets):
         orders: list[Order] = []
-        for t, delta, price in self._deltas(ctx, targets):
+        deltas = self._deltas(ctx, targets)
+        for t, delta, price in deltas:
             key = t.symbol.key
             waited = self._pending.get(key, 0)
             if waited >= self.urgent_after:
                 self._pending.pop(key, None)
-                orders.append(self._order(t, delta, tag_suffix=" | urgent→market"))
+                orders.append(self._order(ctx, t, delta, tag_suffix=" | urgent→market"))
                 continue
             self._pending[key] = waited + 1
             quote = ctx.quote(t.symbol)
             ref = quote.mid if quote else price
             limit = ref * (1 - self.offset) if delta > 0 else ref * (1 + self.offset)
-            orders.append(self._order(t, delta, OrderType.LIMIT, limit,
+            orders.append(self._order(ctx, t, delta, OrderType.LIMIT, limit,
                                       TimeInForce.DAY, f" | post {self.offset:.2%}"))
-        # a symbol that reached its target is no longer waiting on anything
-        wanted = {t.symbol.key for t, _, _ in self._deltas(ctx, targets)}
+        # A symbol that reached its target is no longer waiting on anything. One
+        # whose own limit is still resting very much is — and counting only the
+        # bars where the diff spoke is what made the escalation inert, because
+        # the resting order is exactly what makes the diff go quiet. Ageing it
+        # here lands the two halves on the same bar: the policy asks for the
+        # order back, and by the time the book is clear the patience is spent.
+        wanted = {t.symbol.key for t, _, _ in deltas}
         for key in list(self._pending):
-            if key not in wanted:
+            if key in wanted:
+                continue
+            if self._resting_on(key):
+                self._pending[key] += 1
+            else:
                 self._pending.pop(key, None)
         return orders
 
@@ -66,8 +91,8 @@ class TwapExecution(ExecutionModel):
 
     name = "twap"
 
-    def __init__(self, slices: int = 4, min_order_notional: float = 1.0):
-        super().__init__(min_order_notional)
+    def __init__(self, slices: int = 4, min_order_notional: float = 1.0, order_age=None):
+        super().__init__(min_order_notional, order_age)
         self.slices = max(slices, 1)
         self._remaining: dict[str, tuple[Decimal, int]] = {}
 
@@ -85,7 +110,9 @@ class TwapExecution(ExecutionModel):
             slice_qty = t.symbol.round_qty(rem / Decimal(left))
             if slice_qty == 0:
                 slice_qty = rem
-            orders.append(self._order(t, slice_qty, tag_suffix=f" | twap {self.slices - left + 1}/{self.slices}"))
+            orders.append(self._order(ctx, t, slice_qty,
+                                      tag_suffix=f" | twap {self.slices - left + 1}/"
+                                                 f"{self.slices}"))
             leftover = rem - slice_qty
             if left <= 1 or leftover == 0:
                 self._remaining.pop(key, None)
@@ -108,8 +135,8 @@ class VolumeParticipationExecution(ExecutionModel):
     name = "pov"
 
     def __init__(self, participation: float = 0.08, lookback: int = 20,
-                 min_order_notional: float = 1.0):
-        super().__init__(min_order_notional)
+                 min_order_notional: float = 1.0, order_age=None):
+        super().__init__(min_order_notional, order_age)
         self.participation = participation
         self.lookback = lookback
 
@@ -119,7 +146,7 @@ class VolumeParticipationExecution(ExecutionModel):
             bars = ctx.history(t.symbol, self.lookback)
             volumes = [b.volume for b in bars if b.volume > 0]
             if not volumes:
-                orders.append(self._order(t, delta))
+                orders.append(self._order(ctx, t, delta))
                 continue
             adv = statistics.fmean(volumes)
             cap = t.symbol.round_qty(Decimal(str(adv * self.participation)))
@@ -127,7 +154,7 @@ class VolumeParticipationExecution(ExecutionModel):
             if qty == 0:
                 continue
             pct = abs(float(qty)) / adv
-            orders.append(self._order(t, qty, tag_suffix=f" | pov {pct:.1%} of ADV"))
+            orders.append(self._order(ctx, t, qty, tag_suffix=f" | pov {pct:.1%} of ADV"))
         return orders
 
 
@@ -141,8 +168,8 @@ class StandardDeviationExecution(ExecutionModel):
     name = "std_dev"
 
     def __init__(self, period: int = 20, deviations: float = 1.0,
-                 max_wait_bars: int = 5, min_order_notional: float = 1.0):
-        super().__init__(min_order_notional)
+                 max_wait_bars: int = 5, min_order_notional: float = 1.0, order_age=None):
+        super().__init__(min_order_notional, order_age)
         self.period = period
         self.deviations = deviations
         self.max_wait = max_wait_bars
@@ -156,17 +183,18 @@ class StandardDeviationExecution(ExecutionModel):
             waited = self._waiting.get(key, 0)
             if len(closes) < self.period or waited >= self.max_wait:
                 self._waiting.pop(key, None)
-                orders.append(self._order(t, delta, tag_suffix=" | patience exhausted"))
+                orders.append(self._order(ctx, t, delta,
+                                          tag_suffix=" | patience exhausted"))
                 continue
             mean, sd = statistics.fmean(closes), statistics.pstdev(closes)
             if sd <= 0:
-                orders.append(self._order(t, delta))
+                orders.append(self._order(ctx, t, delta))
                 continue
             z = (price - mean) / sd
             favourable = z <= -self.deviations if delta > 0 else z >= self.deviations
             if favourable:
                 self._waiting.pop(key, None)
-                orders.append(self._order(t, delta, tag_suffix=f" | z={z:+.2f}"))
+                orders.append(self._order(ctx, t, delta, tag_suffix=f" | z={z:+.2f}"))
             else:
                 self._waiting[key] = waited + 1
         return orders

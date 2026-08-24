@@ -29,7 +29,7 @@ from pathlib import Path
 
 from quant.core.account import Portfolio
 from quant.core.context import Context
-from quant.core.types import UTC, ClosedTrade, Fill, Symbol
+from quant.core.types import UTC, ClosedTrade, Direction, Fill, Insight, Symbol
 from quant.live.limits import TradingBudget
 
 try:                                    # POSIX only; Windows falls back to the
@@ -128,7 +128,58 @@ CREATE TABLE IF NOT EXISTS events (
   type TEXT NOT NULL, payload TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id DESC);
+CREATE TABLE IF NOT EXISTS journal_meta (
+  run_id INTEGER PRIMARY KEY,
+  version INTEGER NOT NULL,
+  desk_unscored INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS desk_pending (
+  run_id INTEGER NOT NULL, symbol_key TEXT NOT NULL, decided_at TEXT NOT NULL,
+  ticker TEXT NOT NULL, action TEXT NOT NULL, conviction REAL NOT NULL,
+  price_at_decision REAL NOT NULL, horizon_bars INTEGER NOT NULL,
+  benchmark_key TEXT, benchmark_price REAL NOT NULL DEFAULT 0,
+  rationale TEXT, invalidation TEXT,
+  PRIMARY KEY (run_id, symbol_key, decided_at)
+);
+CREATE TABLE IF NOT EXISTS desk_lessons (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL, symbol_key TEXT NOT NULL, ticker TEXT NOT NULL,
+  decided_at TEXT NOT NULL, settled_at TEXT NOT NULL,
+  action TEXT NOT NULL, conviction REAL NOT NULL, entry_price REAL NOT NULL,
+  realised_pct REAL NOT NULL, benchmark_pct REAL NOT NULL DEFAULT 0,
+  excess_pct REAL NOT NULL DEFAULT 0, benchmark_key TEXT,
+  correct INTEGER NOT NULL, rationale TEXT, invalidation TEXT,
+  UNIQUE (run_id, symbol_key, decided_at, action)
+);
+CREATE TABLE IF NOT EXISTS insight_pending (
+  run_id INTEGER NOT NULL, insight_id TEXT NOT NULL, symbol_key TEXT NOT NULL,
+  source TEXT NOT NULL, direction INTEGER NOT NULL, confidence REAL NOT NULL,
+  magnitude REAL, weight REAL, generated_at TEXT NOT NULL, period_s REAL NOT NULL,
+  entry_price REAL NOT NULL, reference_legs TEXT NOT NULL DEFAULT '[]',
+  beta REAL NOT NULL DEFAULT 1, reference_label TEXT, benchmark_key TEXT, tag TEXT,
+  PRIMARY KEY (run_id, insight_id)
+);
+CREATE TABLE IF NOT EXISTS insight_scores (
+  run_id INTEGER NOT NULL, insight_id TEXT NOT NULL, source TEXT NOT NULL,
+  ticker TEXT NOT NULL, direction INTEGER NOT NULL,
+  confidence REAL NOT NULL, magnitude REAL,
+  generated_at TEXT NOT NULL, settled_at TEXT NOT NULL,
+  entry_price REAL NOT NULL, exit_price REAL NOT NULL,
+  realised_pct REAL NOT NULL, benchmark_pct REAL NOT NULL DEFAULT 0,
+  excess_pct REAL NOT NULL DEFAULT 0, beta REAL NOT NULL DEFAULT 1,
+  reference_label TEXT, benchmark_key TEXT,
+  correct INTEGER NOT NULL, tag TEXT,
+  PRIMARY KEY (run_id, insight_id)
+);
+CREATE INDEX IF NOT EXISTS idx_insight_scores_run ON insight_scores(run_id, settled_at);
 """
+
+#: Journal rows carry the layout version that wrote them. A build that meets
+#: rows from a newer one skips them instead of half-reading them: the desk
+#: reads this journal before every decision, so a mis-parsed row is not a
+#: cosmetic bug — it is a wrong lesson taught confidently.
+JOURNAL_VERSION = 1
 
 
 class StateStore:
@@ -144,6 +195,10 @@ class StateStore:
         self._owns = False
         self._lock_fd: int | None = None
         self._heartbeat_at = 0.0
+        #: How many of the ledger's scored insights are already on disk. The
+        #: scored list is append-only between saves, so writing only the tail
+        #: keeps a per-bar save cheap no matter how long the run has been up.
+        self._scored_saved = 0
 
     # ── exclusive ownership ──────────────────────────────────────────────
     def _claim(self) -> None:
@@ -502,6 +557,324 @@ class StateStore:
         budget.bind_store(self)
         self.save_budget(budget)          # the stored row now matches the ledger
         return restored
+
+    # ── decision journal ─────────────────────────────────────────────────
+    # Two halves of one question — what did this desk decide, and was it right.
+    # Both used to live only in memory, which made them dead code in practice:
+    # the desk's calibration line needs four settled calls at conviction ≥ 0.7
+    # and a source verdict needs twenty scored insights, and on daily bars
+    # neither threshold survives to be reached before the next deploy.
+    def _journal_readable(self) -> bool:
+        """False when this run's journal was written by a newer build."""
+        row = self.conn.execute(
+            "SELECT version FROM journal_meta WHERE run_id=?", (self.run_id,)
+        ).fetchone()
+        if row is None or int(row["version"]) <= JOURNAL_VERSION:
+            return True
+        log.warning("판단 기록이 더 새로운 형식(v%s)으로 저장되어 있습니다 — 잘못 읽는 대신 "
+                    "이번 실행은 기록을 사용하지도 덮어쓰지도 않습니다", row["version"])
+        return False
+
+    def _stamp_journal(self, desk_unscored: int | None = None) -> None:
+        """Mark this run's journal with the layout that wrote it."""
+        row = self.conn.execute(
+            "SELECT desk_unscored FROM journal_meta WHERE run_id=?", (self.run_id,)
+        ).fetchone()
+        keep = int(row["desk_unscored"]) if row is not None else 0
+        self.conn.execute(
+            "INSERT OR REPLACE INTO journal_meta(run_id, version, desk_unscored, "
+            "updated_at) VALUES(?,?,?,?)",
+            (self.run_id, JOURNAL_VERSION,
+             keep if desk_unscored is None else int(desk_unscored),
+             datetime.now(UTC).isoformat()),
+        )
+
+    def save_desk_memory(self, memory) -> None:
+        """Persist the desk's open calls and its settled lessons.
+
+        The whole write is one transaction, so a crash in the middle leaves the
+        previous journal standing rather than half of the new one — the SQLite
+        equivalent of writing a temp file and renaming it over the old one.
+        Lessons go in with INSERT OR IGNORE: a restart between scoring a call
+        and committing it must not let the same call into the calibration
+        sample twice.
+        """
+        if self.run_id is None:
+            return
+        state = memory.to_state()
+        self._claim()
+        try:
+            self.conn.execute("DELETE FROM desk_pending WHERE run_id=?", (self.run_id,))
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO desk_pending(run_id, symbol_key, decided_at, "
+                "ticker, action, conviction, price_at_decision, horizon_bars, "
+                "benchmark_key, benchmark_price, rationale, invalidation) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                [(self.run_id, r["symbol_key"], r["decided_at"], r["ticker"],
+                  r["action"], r["conviction"], r["price_at_decision"],
+                  r["horizon_bars"], r["benchmark_key"], r["benchmark_price"],
+                  r["rationale"], r["invalidation"]) for r in state["pending"]],
+            )
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO desk_lessons(run_id, symbol_key, ticker, "
+                "decided_at, settled_at, action, conviction, entry_price, "
+                "realised_pct, benchmark_pct, excess_pct, benchmark_key, correct, "
+                "rationale, invalidation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [(self.run_id, r["symbol_key"], r["ticker"], r["decided_at"],
+                  r["settled_at"], r["action"], r["conviction"], r["entry_price"],
+                  r["realised_pct"], r["benchmark_pct"], r["excess_pct"],
+                  r["benchmark_key"], r["correct"], r["rationale"],
+                  r["invalidation"]) for r in state["lessons"]],
+            )
+            self._stamp_journal(state.get("unscored", 0))
+            self.conn.commit()
+        except Exception:
+            # Leave nothing half-applied: the connection is shared, so an open
+            # transaction would otherwise be committed by whoever writes next —
+            # including the DELETE that emptied the open calls.
+            self.conn.rollback()
+            raise
+
+    def restore_desk_memory(self, memory) -> int:
+        """Reload the desk's journal, then keep it durable from here on.
+
+        Returns how many rows came back.
+        """
+        if self.run_id is None:
+            return 0
+        self._claim()
+        if not self._journal_readable():
+            return 0
+        pending = [dict(r) for r in self.conn.execute(
+            "SELECT * FROM desk_pending WHERE run_id=? ORDER BY decided_at",
+            (self.run_id,)).fetchall()]
+        # Newest first, then reversed: the table keeps every lesson ever scored
+        # (it is the run's record), while the desk only ever reads the last
+        # `capacity` of them.
+        lessons = [dict(r) for r in reversed(self.conn.execute(
+            "SELECT * FROM desk_lessons WHERE run_id=? ORDER BY id DESC LIMIT ?",
+            (self.run_id, memory.capacity)).fetchall())]
+        meta = self.conn.execute(
+            "SELECT desk_unscored FROM journal_meta WHERE run_id=?", (self.run_id,)
+        ).fetchone()
+        restored = memory.load_state({
+            "pending": pending, "lessons": lessons,
+            "unscored": meta["desk_unscored"] if meta is not None else 0,
+        })
+        memory.bind_store(self)
+        if restored:
+            log.info("복원: 데스크 판단 기록 %d건 (대기 %d, 회고 %d)", restored,
+                     memory.stats["pending"], memory.stats["scored"])
+        return restored
+
+    def save_insight_ledger(self, ledger) -> None:
+        """Persist the attribution ledger: open insights and scored outcomes.
+
+        Open insights are rewritten wholesale — there are few and the set turns
+        over every bar — while scored rows are appended, because they are the
+        sample every per-source verdict is computed from and rewriting all of
+        them once a bar would cost more than the rest of the loop.
+
+        Reaches into `_pending` because the ledger has no accessor for it yet;
+        that accessor belongs in attribution.py, not here.
+        """
+        if self.run_id is None:
+            return
+        self._claim()
+        bench_key = ledger.benchmark.key if ledger.benchmark is not None else ""
+        try:
+            self.conn.execute("DELETE FROM insight_pending WHERE run_id=?",
+                              (self.run_id,))
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO insight_pending(run_id, insight_id, "
+                "symbol_key, source, direction, confidence, magnitude, weight, "
+                "generated_at, period_s, entry_price, reference_legs, beta, "
+                "reference_label, benchmark_key, tag) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [self._open_insight_row(item, bench_key) for item in ledger._pending],
+            )
+            scored = ledger.scored
+            # A shorter list than we last wrote means the ledger trimmed itself.
+            # Re-offer every surviving row (INSERT OR IGNORE makes that a no-op)
+            # and mirror the cap on disk, so the table cannot grow for ever
+            # either.
+            resync = len(scored) < self._scored_saved
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO insight_scores(run_id, insight_id, source, "
+                "ticker, direction, confidence, magnitude, generated_at, settled_at, "
+                "entry_price, exit_price, realised_pct, benchmark_pct, excess_pct, "
+                "beta, reference_label, benchmark_key, correct, tag) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [self._scored_insight_row(s, bench_key)
+                 for s in (scored if resync else scored[self._scored_saved:])],
+            )
+            if resync:
+                self.conn.execute(
+                    "DELETE FROM insight_scores WHERE run_id=? AND rowid NOT IN "
+                    "(SELECT rowid FROM insight_scores WHERE run_id=? "
+                    "ORDER BY settled_at DESC LIMIT ?)",
+                    (self.run_id, self.run_id, ledger.max_scored),
+                )
+            self._stamp_journal()
+            self.conn.commit()
+            self._scored_saved = len(scored)
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def _open_insight_row(self, item, bench_key: str) -> tuple:
+        ins = item.insight
+        # The reference basket is stored by symbol key and entry price, because
+        # what a call was measured against is part of the call: re-deriving the
+        # basket from today's universe would grade it against a different one.
+        legs = json.dumps([[s.key, price] for s, price in item.legs])
+        return (self.run_id, ins.id, ins.symbol.key, ins.source, int(ins.direction),
+                ins.confidence, ins.magnitude, ins.weight,
+                ins.generated_at.isoformat(), ins.period.total_seconds(),
+                item.entry, legs, item.beta, item.reference, bench_key, ins.tag)
+
+    def _scored_insight_row(self, s, bench_key: str) -> tuple:
+        return (self.run_id, s.insight_id, s.source, s.ticker, s.direction,
+                s.confidence, s.magnitude, s.generated_at.isoformat(),
+                s.settled_at.isoformat(), s.entry_price, s.exit_price,
+                s.realised_pct, s.benchmark_pct, s.excess_pct, s.beta,
+                s.reference, bench_key, int(s.correct), s.tag)
+
+    def restore_insight_ledger(self, ledger, symbols: dict[str, Symbol]) -> int:
+        """Reload the attribution ledger. Returns how many scored rows came back.
+
+        Per-source scores are rebuilt *from* the scored rows rather than stored
+        beside them: two representations of one number drift, and this is the
+        number that answers "which alpha model should be removed".
+        """
+        if self.run_id is None:
+            return 0
+        self._claim()
+        if not self._journal_readable():
+            return 0
+        # Imported here so the live-state layer does not pull the alpha layer
+        # in at module load; this is the only method that needs it.
+        from quant.alpha.attribution import ScoredInsight, SourceScore, _Pending
+
+        bench_key = ledger.benchmark.key if ledger.benchmark is not None else ""
+        # The benchmark is deliberately kept out of the universe, so it has to
+        # be added by hand or every restored call would lose the very leg it
+        # was measured against and quietly fall back to its raw return.
+        lookup = dict(symbols)
+        if ledger.benchmark is not None:
+            lookup.setdefault(ledger.benchmark.key, ledger.benchmark)
+        known = {item.insight.id for item in ledger._pending}
+        missing = unreferenced = swapped = 0
+        for r in self.conn.execute("SELECT * FROM insight_pending WHERE run_id=?",
+                                   (self.run_id,)).fetchall():
+            if r["insight_id"] in known:
+                continue
+            symbol = lookup.get(r["symbol_key"])
+            if symbol is None:
+                missing += 1
+                continue
+            swapped += (r["benchmark_key"] or "") != bench_key
+            legs = [(lookup[key], float(price))
+                    for key, price in json.loads(r["reference_legs"] or "[]")
+                    if key in lookup]
+            if not legs and (r["reference_legs"] or "[]") != "[]":
+                # Every leg of the basket has left the universe. The ledger
+                # already treats an unpriceable reference as no reference —
+                # excess becomes the raw return — but say so, because a whole
+                # column of the attribution table quietly changes meaning.
+                unreferenced += 1
+            ledger._pending.append(_Pending(
+                insight=Insight(
+                    symbol=symbol, direction=Direction(int(r["direction"])),
+                    period=timedelta(seconds=float(r["period_s"])),
+                    generated_at=datetime.fromisoformat(r["generated_at"]),
+                    magnitude=r["magnitude"], confidence=float(r["confidence"] or 0.0),
+                    weight=r["weight"], source=r["source"], tag=r["tag"] or "",
+                    id=r["insight_id"],
+                ),
+                entry=float(r["entry_price"] or 0.0), legs=legs,
+                beta=float(r["beta"] or 1.0), reference=r["reference_label"] or "",
+            ))
+        if missing:
+            log.warning("보류 중이던 인사이트 %d건이 현재 유니버스에 없는 종목이라 "
+                        "채점 대기열로 복원하지 못했습니다", missing)
+        if unreferenced:
+            log.warning("보류 중이던 인사이트 %d건은 비교 대상 종목이 모두 사라져 "
+                        "원수익률로 채점됩니다", unreferenced)
+        if swapped:
+            # Each call keeps the basket it was stamped with, so the numbers
+            # stay honest — but they are no longer all against one reference,
+            # and a reader comparing the column across the run must know.
+            log.warning("벤치마크가 바뀐 뒤 복원된 인사이트 %d건은 판단 당시의 비교 대상으로 "
+                        "채점됩니다 — 이 실행의 초과수익 열은 기준이 섞여 있습니다", swapped)
+
+        seen = {s.insight_id for s in ledger.scored}
+        rows = self.conn.execute(
+            "SELECT * FROM insight_scores WHERE run_id=? "
+            "ORDER BY settled_at DESC, rowid DESC LIMIT ?",
+            (self.run_id, ledger.max_scored)).fetchall()
+        restored = 0
+        for r in reversed(rows):
+            if r["insight_id"] in seen:
+                continue
+            record = ScoredInsight(
+                insight_id=r["insight_id"], source=r["source"], ticker=r["ticker"],
+                direction=int(r["direction"]), confidence=float(r["confidence"] or 0.0),
+                magnitude=r["magnitude"],
+                generated_at=datetime.fromisoformat(r["generated_at"]),
+                settled_at=datetime.fromisoformat(r["settled_at"]),
+                entry_price=r["entry_price"], exit_price=r["exit_price"],
+                realised_pct=r["realised_pct"], benchmark_pct=r["benchmark_pct"],
+                excess_pct=r["excess_pct"], correct=bool(r["correct"]),
+                beta=float(r["beta"] or 1.0), reference=r["reference_label"] or "",
+                tag=r["tag"] or "",
+            )
+            ledger.scored.append(record)
+            # Mirrors InsightLedger.settle's own aggregation. It is duplicated
+            # rather than shared only because the ledger cannot yet load itself.
+            score = ledger.sources.setdefault(record.source, SourceScore(record.source))
+            score.scored += 1
+            score.correct += int(record.correct)
+            score.realised.append(record.realised_pct)
+            score.excess.append(record.excess_pct)
+            score.confidences.append(record.confidence)
+            score.correctness.append(record.correct)
+            score.betas.append(record.beta)
+            restored += 1
+        # Everything in `scored` came off disk only if the ledger started empty.
+        # Otherwise make the next save re-offer every row — INSERT OR IGNORE
+        # makes that idempotent, and the alternative is losing the rows that
+        # were scored before this restore.
+        self._scored_saved = 0 if seen else len(ledger.scored)
+        if restored:
+            log.info("복원: 채점된 인사이트 %d건 · 알파 모델 %d개", restored,
+                     len(ledger.sources))
+        return restored
+
+    def restore_journal(self, ledger=None, memory=None,
+                        symbols: dict[str, Symbol] | None = None) -> dict:
+        """Reload both halves of the decision journal, then keep them durable.
+
+        One call because they answer one question. Restoring only half of it
+        would report a hit rate over a sample missing its own open calls.
+        """
+        return {
+            "desk": self.restore_desk_memory(memory) if memory is not None else 0,
+            "insights": (self.restore_insight_ledger(ledger, symbols or {})
+                         if ledger is not None else 0),
+        }
+
+    def save_journal(self, ledger=None, memory=None) -> None:
+        """Flush both halves.
+
+        The desk half also writes itself through on every change — see
+        `DeskMemory.bind_store` — so in practice this is the ledger's route to
+        disk, and the desk's belt and braces.
+        """
+        if memory is not None:
+            self.save_desk_memory(memory)
+        if ledger is not None:
+            self.save_insight_ledger(ledger)
 
     def record_event(self, event_type: str, payload: dict) -> None:
         self._claim()

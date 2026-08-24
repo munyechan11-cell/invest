@@ -35,6 +35,10 @@ from quant.config.schema import StrategyConfig
 from quant.webapp import accounts as accounts_module
 from quant.webapp.auth_api import SESSION_COOKIE
 
+#: 이 파일의 async 헬퍼들은 평문 http 로 부릅니다. `__Host-` 는 Secure 없이는
+#: 브라우저가 저장하지 않으므로 서버도 그때는 접두사 없는 이름을 봅니다.
+_PLAIN_COOKIE = SESSION_COOKIE.replace("__Host-", "")
+
 SECRET = "api-surface-hardening-secret-0123456789abcd"
 TOKEN = "t" * 40
 PASSWORD = "korea-invest-1"
@@ -104,7 +108,7 @@ def app(env):
 
 @pytest.fixture
 def client(app):
-    with TestClient(app) as c:
+    with TestClient(app, base_url="https://desk.example") as c:
         yield c
 
 
@@ -241,11 +245,13 @@ def test_the_single_operator_path_closes_the_moment_someone_registers(env, monke
     가입자들의 데이터는 그대로 디스크에 남아 있습니다. 그 자리에서 토큰 하나가
     다시 모든 것을 여는 것은 로그인을 없애는 것과 같습니다.
     """
-    with TestClient(create_app(None, state_path=str(env / "state.db"))) as c:
+    with TestClient(create_app(None, state_path=str(env / "state.db")),
+                    base_url="https://desk.example") as c:
         signup(c, "admin@example.com")
 
     monkeypatch.delenv("QUANT_SECRET_KEY", raising=False)
-    with TestClient(create_app(None, state_path=str(env / "state.db"))) as c:
+    with TestClient(create_app(None, state_path=str(env / "state.db")),
+                    base_url="https://desk.example") as c:
         r = c.get("/api/limits", headers={"Authorization": f"Bearer {TOKEN}"})
         assert r.status_code == 503
         assert "QUANT_SECRET_KEY" in r.json()["detail"]
@@ -324,13 +330,13 @@ async def _backtest_while_the_loop_watches(app, cookie: str, other: str) -> tupl
                                      timeout=120) as c:
             job = asyncio.create_task(
                 c.post("/api/backtest", json={"config_path": "slow"},
-                       cookies={SESSION_COOKIE: cookie}))
+                       cookies={_PLAIN_COOKIE: cookie}))
             started = time.monotonic()
             await asyncio.sleep(0.25)
             late = time.monotonic() - started - 0.25
             result = await job
             elapsed = time.monotonic() - started
-            served = await c.get("/api/status", cookies={SESSION_COOKIE: other})
+            served = await c.get("/api/status", cookies={_PLAIN_COOKIE: other})
             return result, late, elapsed, served
 
 
@@ -354,7 +360,7 @@ async def _two_at_once(app, cookie: str) -> list[int]:
                                      timeout=120) as c:
             async def one():
                 return await c.post("/api/backtest", json={"config_path": "slow"},
-                                    cookies={SESSION_COOKIE: cookie})
+                                    cookies={_PLAIN_COOKIE: cookie})
 
             return sorted(r.status_code for r in await asyncio.gather(one(), one()))
 

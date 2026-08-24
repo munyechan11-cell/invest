@@ -7,11 +7,19 @@ direction — it only decides *how much*.
 Every model returns absolute targets for the full union of (symbols with active
 insights) ∪ (symbols currently held), so a symbol that stops being liked gets an
 explicit zero target rather than being silently forgotten.
+
+Sizing is gated by an asymmetric buy/hold band shared by every model: it takes
+more conviction to open a position than to keep one. A signal oscillating across
+a single threshold otherwise buys and sells the same name repeatedly while
+carrying no new information, and every one of those round trips pays the 거래세
+on its sell side. The band can only ever subtract exposure, never add it, which
+is what keeps it out of the way of the risk layer downstream.
 """
 from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from datetime import datetime
 from decimal import Decimal
 
 from quant.core.context import Context
@@ -30,6 +38,8 @@ class PortfolioConstructionModel(ABC):
         cash_reserve_pct: float = 0.02,
         allow_short: bool = False,
         min_trade_weight: float = 0.005,
+        entry_conviction: float = 0.40,
+        hold_conviction: float = 0.15,
     ):
         self.max_position_weight = max_position_weight
         self.max_gross_leverage = max_gross_leverage
@@ -38,6 +48,16 @@ class PortfolioConstructionModel(ABC):
         #: rebalances smaller than this fraction of equity are skipped — churning
         #: 0.1% of the book back and forth just donates the spread to the venue
         self.min_trade_weight = min_trade_weight
+        if not 0.0 <= hold_conviction <= entry_conviction <= 1.0:
+            raise ValueError(
+                "buy/hold band needs 0 <= hold_conviction <= entry_conviction <= 1, got "
+                f"hold={hold_conviction} entry={entry_conviction}"
+            )
+        #: the buy/hold spread, in `Insight.confidence` units. Opening asks for
+        #: `entry_conviction`, keeping only `hold_conviction`; equal values turn
+        #: the asymmetry off and 0/0 removes the gate entirely.
+        self.entry_conviction = entry_conviction
+        self.hold_conviction = hold_conviction
 
     @abstractmethod
     def weights(self, ctx: Context, insights: list[Insight]) -> dict[str, float]:
@@ -93,13 +113,15 @@ class PortfolioConstructionModel(ABC):
         return out
 
     # ── helper for subclasses ────────────────────────────────────────────
-    @staticmethod
-    def _net_scores(insights: list[Insight], ctx: Context) -> dict[str, tuple[Symbol, float]]:
+    def _net_scores(self, insights: list[Insight], ctx: Context) -> dict[str, tuple[Symbol, float]]:
         """Collapse many insights per symbol into one decayed, signed score.
 
         FLAT is treated as a hard veto rather than a vote, so a regime filter or
         a risk-committee veto reliably zeroes the position instead of being
-        averaged away by two enthusiastic momentum models.
+        averaged away by two enthusiastic momentum models. The veto is settled
+        before the buy/hold band ever runs: a regime filter is a risk
+        instruction wearing an alpha's clothes, and banding it would widen a
+        stop the operator believes is in place.
         """
         buckets: dict[str, list[Insight]] = {}
         for ins in insights:
@@ -111,10 +133,66 @@ class PortfolioConstructionModel(ABC):
             if any(i.direction is Direction.FLAT for i in items):
                 out[key] = (symbol, 0.0)
                 continue
-            num = den = 0.0
-            for i in items:
-                w = i.decayed_confidence(ctx.now) * (1.0 + abs(i.magnitude or 0.0))
-                num += int(i.direction) * w
-                den += w
-            out[key] = (symbol, num / den if den > 0 else 0.0)
+            score, conviction = self._consensus(items, ctx.now)
+            out[key] = (symbol, self._banded(ctx, symbol, score, conviction))
         return out
+
+    @staticmethod
+    def _consensus(items: list[Insight], now: datetime) -> tuple[float, float]:
+        """One symbol's insights as (signed direction consensus, conviction).
+
+        The consensus is a vote on *direction*: with every model pointing the
+        same way it is exactly ±1 however timid they are, so on its own it says
+        nothing about how strongly the book believes. Conviction is what does —
+        the decayed confidence behind that vote, on the same 0..1 scale as
+        `Insight.confidence`, falling both when models contradict each other and
+        when their evidence goes stale. Magnitude reweights the vote but cancels
+        out of the conviction, so a band expressed in confidence units means the
+        same thing for a 1% and for a 20% expected move.
+        """
+        num = den = mass = 0.0
+        for ins in items:
+            scale = 1.0 + abs(ins.magnitude or 0.0)
+            w = ins.decayed_confidence(now) * scale
+            num += int(ins.direction) * w
+            den += w
+            mass += scale
+        if den <= 0 or mass <= 0:
+            return 0.0, 0.0
+        return num / den, abs(num) / mass
+
+    def _banded(self, ctx: Context, symbol: Symbol, score: float, conviction: float) -> float:
+        """Asymmetric buy/hold spread — a higher bar to open than to keep.
+
+        Novy-Marx & Velikov (RFS 29(1) 2016) test the simple cost-mitigation
+        techniques against each other and find the buy/hold spread the most
+        effective of them; Chen & Velikov's 120-anomaly replication puts the
+        gain at roughly 7-15bp a month. It is worth more on KRX than in their US
+        sample, because a Korean sell pays 거래세 with no offset, so every extra
+        round trip is charged for information the signal never added.
+
+        The band is measured against conviction rather than the score, since a
+        book whose models all agree scores ±1 no matter how faint the evidence,
+        and gating that would gate nothing.
+
+        A sign flip is an open, not a hold: an existing long does not vouch for
+        a short. So the position falls to zero unless the new direction clears
+        the entry bar on its own.
+
+        The result is the score or it is zero — never larger, never the other
+        way round. Anything the unbanded engine would have closed still closes,
+        which is what makes the band safe to sit upstream of the risk layer.
+        """
+        # The tax is paid on a position, not on an intention — an entry order
+        # still resting is free to abandon — so this reads the filled quantity
+        # and not the projected one.
+        held = ctx.portfolio.quantity(symbol)
+        sustaining = (held > 0 and score > 0) or (held < 0 and score < 0)
+        floor = self.hold_conviction if sustaining else self.entry_conviction
+        if conviction >= floor:
+            return score
+        log.debug(
+            "band: %s conviction %.3f below the %s bar %.3f — score %+.3f dropped",
+            symbol.ticker, conviction, "hold" if sustaining else "entry", floor, score,
+        )
+        return 0.0

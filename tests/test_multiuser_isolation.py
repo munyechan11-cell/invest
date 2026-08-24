@@ -42,6 +42,15 @@ from quant.webapp import accounts as accounts_module
 from quant.webapp.accounts import SecretKeyMissing
 from quant.webapp.auth_api import SESSION_COOKIE
 
+#: TestClient 는 쿠키 항아리를 웹소켓 핸드셰이크에 붙이지 않습니다 (브라우저는
+#: 붙입니다). 그리고 그 핸드셰이크의 스킴은 ws 라 서버가 접두사 없는 이름을
+#: 봅니다 — `__Host-` 는 Secure 없이는 브라우저가 저장하지 않기 때문입니다.
+_WS_COOKIE = SESSION_COOKIE.replace("__Host-", "")
+
+
+def ws_headers(cookie: str) -> dict:
+    return {"cookie": f"{_WS_COOKIE}={cookie}"} if cookie else {}
+
 SECRET = "multiuser-integration-secret-0123456789ab"
 PASSWORD = "korea-invest-1"
 
@@ -149,7 +158,7 @@ def app(env):
 def client(app):
     # 컨텍스트 매니저여야 lifespan 이 돌고, 요청들이 **같은** 이벤트 루프를
     # 공유합니다. 봇은 그 루프 위의 태스크라 이게 없으면 첫 요청과 함께 죽습니다.
-    with TestClient(app) as c:
+    with TestClient(app, base_url="https://desk.example") as c:
         yield c
 
 
@@ -534,7 +543,8 @@ def test_the_equity_curve_read_is_the_callers_own_state_file(client, app, env):
 
     # 프로세스 기본 설정이 있어야 resume_run 이 붙습니다 — 배포에서 `quant serve
     # configs/…` 로 뜨는 그 모양입니다.
-    with TestClient(create_app(_paper_config(), state_path=str(env / "state.db"))) as c2:
+    with TestClient(create_app(_paper_config(), state_path=str(env / "state.db")),
+                    base_url="https://desk.example") as c2:
         a2 = Caller(c2, cookie=_login(c2, "a@example.com"))
         b2 = Caller(c2, cookie=_login(c2, "b@example.com"))
         assert len(a2.get("/api/equity").json()["points"]) == 1
@@ -634,8 +644,7 @@ def test_a_websocket_needs_a_session(client):
         ws.receive_text()
     assert exc.value.code == 4401
 
-    client.cookies.set(SESSION_COOKIE, a.cookie)
-    with client.websocket_connect("/ws"):
+    with client.websocket_connect("/ws", headers=ws_headers(a.cookie)):
         pass
 
 
@@ -648,14 +657,11 @@ def test_a_socket_joins_only_its_own_fan_out(client, app):
          "source": "engine", "payload": {"ticker": "SIM1"}})
 
     client.cookies.clear()
-    client.cookies.set(SESSION_COOKIE, a.cookie)
-    with client.websocket_connect("/ws") as ws:
+    with client.websocket_connect("/ws", headers=ws_headers(a.cookie)) as ws:
         # 붙자마자 자기 링을 재생받습니다.
         assert json.loads(ws.receive_text())["payload"]["ticker"] == "SIM1"
 
-    client.cookies.clear()
-    client.cookies.set(SESSION_COOKIE, b.cookie)
-    with client.websocket_connect("/ws"):
+    with client.websocket_connect("/ws", headers=ws_headers(b.cookie)):
         # B 는 B 의 링에만 앉아 있습니다 — A 의 다음 체결은 오지 않습니다.
         assert len(hubs.hub_for(b.id).clients) == 1
         assert hubs.hub_for(a.id).clients == set()
@@ -733,7 +739,8 @@ def test_the_user_list_carries_no_credentials(client):
 @pytest.fixture
 def token_app(env, monkeypatch):
     monkeypatch.setenv("QUANT_API_TOKEN", "t" * 40)
-    with TestClient(create_app(None, state_path=str(env / "state.db"))) as c:
+    with TestClient(create_app(None, state_path=str(env / "state.db")),
+                    base_url="https://desk.example") as c:
         yield c
 
 
@@ -808,7 +815,7 @@ def test_user_files_land_beside_the_state_db_by_default(tmp_path, monkeypatch):
     disk.mkdir()
 
     app = create_app(None, state_path=str(disk / "quant_state.db"))
-    with TestClient(app) as c:
+    with TestClient(app, base_url="https://desk.example") as c:
         a = signup(c, "a@example.com")
 
     assert (disk / "quant_users.db").exists()

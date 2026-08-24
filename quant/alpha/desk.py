@@ -121,6 +121,12 @@ class DeskDecision:
     action: str
     conviction: float
     price_at_decision: float = 0.0
+    #: The benchmark this call will be scored against, and its price at the
+    #: moment of the call. Stamped on the row rather than read at settle time:
+    #: switching the configured benchmark mid-run would otherwise silently
+    #: re-base every open call against an index it was never measured on.
+    benchmark_key: str = ""
+    benchmark_price: float = 0.0
     target_weight_pct: float = 0.0
     expected_move_pct: float = 0.0
     horizon_bars: int = 12
@@ -188,6 +194,8 @@ class DeskDecision:
             "action": self.action,
             "conviction": round(self.conviction, 3),
             "price_at_decision": self.price_at_decision,
+            "benchmark_key": self.benchmark_key,
+            "benchmark_price": self.benchmark_price,
             "target_weight_pct": round(self.target_weight_pct, 2),
             "expected_move_pct": round(self.expected_move_pct, 2),
             "horizon_bars": self.horizon_bars,
@@ -238,6 +246,15 @@ class Lesson:
     correct: bool
     rationale: str
     invalidation: str
+    #: What the benchmark did over the same window, and the excess left after
+    #: subtracting it. `benchmark_key` is empty when the call was scored raw —
+    #: no benchmark configured, or a different one than the call was stamped
+    #: with — so a reader can tell "beat the index" from "the tape went up".
+    benchmark_pct: float = 0.0
+    excess_pct: float = 0.0
+    benchmark_key: str = ""
+    settled_at: datetime | None = None
+    symbol_key: str = ""
 
 
 class DeskMemory:
@@ -246,50 +263,126 @@ class DeskMemory:
     Without this the desk makes the same mistake indefinitely: nothing in a
     stateless prompt chain can notice that "외국인 순매수 연속" has been wrong
     six times running on this particular name. Scoring is done against realised
-    price, not against the desk's own later opinion, so the feedback is real.
+    price, not against the desk's own later opinion, so the feedback is real —
+    and against the benchmark where the call recorded one, because in a rising
+    KOSPI every long call looks right and a hit rate that measures the index
+    teaches the desk nothing about itself.
+
+    The journal is durable once `bind_store` has been called: the calibration
+    line needs four settled calls at conviction ≥ 0.7, which on daily bars with
+    a four-name shortlist is weeks of trading — longer than this process is
+    likely to live.
     """
 
-    def __init__(self, capacity: int = 400, lookback_lessons: int = 6):
+    def __init__(self, capacity: int = 400, lookback_lessons: int = 6,
+                 settle_grace_bars: int = 5):
         self.capacity = capacity
         self.lookback = lookback_lessons
+        #: How long a due call is held when it cannot be priced yet. A late or
+        #: stalled feed is the common case and resolves itself; see `settle`.
+        self.grace_bars = max(settle_grace_bars, 0)
+        #: Calls that could never be scored. Kept and reported rather than
+        #: forgotten: it is the only number that shows the sample is
+        #: conditioned on the names that stayed priceable.
+        self.unscored = 0
         self._pending: list[DeskDecision] = []
         self._lessons: list[Lesson] = []
+        #: durable store, once one is bound — see `bind_store`.
+        self._store = None
 
     def record(self, decision: DeskDecision) -> None:
         if decision.action == "hold" or decision.price_at_decision <= 0:
             return
         self._pending.append(decision)
         if len(self._pending) > self.capacity:
-            del self._pending[: len(self._pending) // 2]
+            dropped = len(self._pending) // 2
+            # These are calls the desk will now never grade. Counting them
+            # keeps the hit rate honest about what it is a hit rate *of*.
+            self.unscored += dropped
+            del self._pending[:dropped]
+        self._persist()
 
     def settle(self, ctx: Context) -> list[Lesson]:
         """Score every pending call whose horizon has now passed."""
         settled: list[Lesson] = []
         still_open: list[DeskDecision] = []
+        dropped = 0
         for d in self._pending:
             due = d.decided_at + ctx.bar_delta * max(d.horizon_bars, 1)
             if ctx.now < due:
                 still_open.append(d)
                 continue
-            symbol = next((s for s in ctx.universe if s.key == d.symbol_key), None)
-            price = ctx.price(symbol) if symbol is not None else 0.0
+            price = self._mark(ctx, d.symbol_key)
             if price <= 0 or d.price_at_decision <= 0:
+                # A call on a name that had left the universe used to be
+                # discarded here in silence, which conditions the sample on
+                # survival — and the names that stop being priced are not a
+                # random half. Hold it while the feed might still catch up,
+                # then drop it loudly and count it.
+                if d.price_at_decision > 0 and ctx.now < due + ctx.bar_delta * self.grace_bars:
+                    still_open.append(d)
+                    continue
+                dropped += 1
+                log.warning("데스크 회고 불가: %s %s (%s 판단) — 가격을 구할 수 없어 "
+                            "채점에서 제외합니다", d.ticker, d.action, d.decided_at.date())
                 continue
             realised = price / d.price_at_decision - 1.0
+            bench_move, bench_key = self._benchmark_move(ctx, d)
+            excess = realised - bench_move
             direction, _ = ACTION_TO_DIRECTION.get(d.action, (Direction.FLAT, 0))
-            correct = (realised > 0) if direction is Direction.UP else (realised < 0)
+            correct = (excess > 0) if direction is Direction.UP else (excess < 0)
             lesson = Lesson(
                 ticker=d.ticker, decided_at=d.decided_at, action=d.action,
                 conviction=d.conviction, entry_price=d.price_at_decision,
                 realised_pct=realised * 100, correct=correct,
                 rationale=d.rationale[:220], invalidation=d.invalidation[:160],
+                benchmark_pct=bench_move * 100, excess_pct=excess * 100,
+                benchmark_key=bench_key, settled_at=ctx.now, symbol_key=d.symbol_key,
             )
             self._lessons.append(lesson)
             settled.append(lesson)
         self._pending = still_open
         if len(self._lessons) > self.capacity:
             del self._lessons[: len(self._lessons) // 2]
+        self.unscored += dropped
+        if settled or dropped:
+            self._persist()
         return settled
+
+    @staticmethod
+    def _mark(ctx: Context, symbol_key: str) -> float:
+        """Last price for a symbol key, in or out of the current universe."""
+        symbol = next((s for s in ctx.universe if s.key == symbol_key), None)
+        if symbol is None:
+            venue, _, ticker = symbol_key.partition(":")
+            if not ticker:
+                return 0.0
+            # Quotes and bar history are keyed by `key` alone, so a stand-in
+            # carrying the same key prices a name the universe has since
+            # dropped off the history the context still holds.
+            symbol = Symbol(ticker=ticker, venue=venue)
+        return ctx.price(symbol)
+
+    @staticmethod
+    def _benchmark_move(ctx: Context, d: DeskDecision) -> tuple[float, str]:
+        """The benchmark's move over the call's window, and which benchmark.
+
+        Returns `(0.0, "")` when the call must be scored raw. Refuses to mix
+        instruments: if the configured benchmark has changed since the call was
+        made, the stored entry price belongs to a different index, and
+        subtracting a number that means nothing is worse than subtracting none.
+        """
+        bench = ctx.benchmark
+        if bench is None or not d.benchmark_key or d.benchmark_price <= 0:
+            return 0.0, ""
+        if bench.key != d.benchmark_key:
+            log.warning("벤치마크가 %s → %s 로 바뀌어 %s 판단은 원수익률로 채점합니다",
+                        d.benchmark_key, bench.key, d.ticker)
+            return 0.0, ""
+        now = ctx.price(bench)
+        if now <= 0:
+            return 0.0, ""
+        return now / d.benchmark_price - 1.0, d.benchmark_key
 
     def lessons_for(self, symbol: Symbol) -> str:
         """Prose the head of desk reads before deciding.
@@ -304,9 +397,11 @@ class DeskMemory:
             lines.append(f"[{symbol.ticker} 과거 판단 결과]")
             for l in same:
                 mark = "적중" if l.correct else "실패"
+                versus = (f" (벤치 {l.benchmark_pct:+.2f}%, 초과 {l.excess_pct:+.2f}%)"
+                          if l.benchmark_key else "")
                 lines.append(
                     f"- {l.decided_at:%Y-%m-%d} {l.action} (확신 {l.conviction:.2f}) "
-                    f"→ {l.realised_pct:+.2f}% {mark} · 근거: {l.rationale[:120]}"
+                    f"→ {l.realised_pct:+.2f}%{versus} {mark} · 근거: {l.rationale[:120]}"
                 )
         confident = [l for l in self._lessons if l.conviction >= 0.7]
         if len(confident) >= 4:
@@ -321,15 +416,116 @@ class DeskMemory:
     @property
     def stats(self) -> dict:
         if not self._lessons:
-            return {"scored": 0, "pending": len(self._pending)}
-        hits = sum(1 for l in self._lessons if l.correct)
+            return {"scored": 0, "pending": len(self._pending),
+                    "unscored": self.unscored}
+        hits = sum(1 for x in self._lessons if x.correct)
         return {
             "scored": len(self._lessons),
             "pending": len(self._pending),
+            "unscored": self.unscored,
             "hit_rate": round(hits / len(self._lessons), 3),
             "avg_realised_pct": round(
-                statistics.fmean([l.realised_pct for l in self._lessons]), 3),
+                statistics.fmean([x.realised_pct for x in self._lessons]), 3),
+            "avg_excess_pct": round(
+                statistics.fmean([x.excess_pct for x in self._lessons]), 3),
         }
+
+    # ── durability ───────────────────────────────────────────────────────
+    def bind_store(self, store) -> None:
+        """Write the journal through to `store` on every change.
+
+        Binding rather than snapshotting on a timer, for the same reason the
+        daily budget binds: the desk decides once per cadence and the process
+        can die at any point in between, and a journal that is one cycle behind
+        loses exactly the call that was in flight when it died.
+        """
+        self._store = store
+
+    def _persist(self) -> None:
+        if self._store is None:
+            return
+        try:
+            self._store.save_desk_memory(self)
+        except Exception:
+            # A bookkeeping failure must never stop the trading path — but say
+            # so loudly: from here the journal only lasts until the restart.
+            self._store = None
+            log.exception("데스크 회고 저장 실패 — 재시작하면 판단 이력이 초기화됩니다")
+
+    def to_state(self) -> dict:
+        """The journal as plain rows, for the state DB."""
+        return {
+            "pending": [{
+                "symbol_key": d.symbol_key, "ticker": d.ticker,
+                "decided_at": d.decided_at.isoformat(), "action": d.action,
+                "conviction": d.conviction,
+                "price_at_decision": d.price_at_decision,
+                "horizon_bars": d.horizon_bars,
+                "benchmark_key": d.benchmark_key,
+                "benchmark_price": d.benchmark_price,
+                "rationale": d.rationale, "invalidation": d.invalidation,
+            } for d in self._pending],
+            "lessons": [{
+                "symbol_key": x.symbol_key, "ticker": x.ticker,
+                "decided_at": x.decided_at.isoformat(),
+                "settled_at": x.settled_at.isoformat() if x.settled_at else "",
+                "action": x.action, "conviction": x.conviction,
+                "entry_price": x.entry_price, "realised_pct": x.realised_pct,
+                "benchmark_pct": x.benchmark_pct, "excess_pct": x.excess_pct,
+                "benchmark_key": x.benchmark_key, "correct": int(x.correct),
+                "rationale": x.rationale, "invalidation": x.invalidation,
+            } for x in self._lessons],
+            "unscored": self.unscored,
+        }
+
+    def load_state(self, state: dict) -> int:
+        """Rebuild the journal from stored rows. Returns how many came back.
+
+        A row this build cannot parse is skipped, not raised: the journal is a
+        learning aid, and refusing to start the bot over one malformed line
+        would be a far worse failure than losing the line.
+        """
+        pending: list[DeskDecision] = []
+        for row in state.get("pending") or []:
+            try:
+                pending.append(DeskDecision(
+                    symbol_key=row["symbol_key"], ticker=row["ticker"],
+                    decided_at=datetime.fromisoformat(row["decided_at"]),
+                    action=row["action"], conviction=float(row["conviction"] or 0.0),
+                    price_at_decision=float(row["price_at_decision"] or 0.0),
+                    horizon_bars=int(row["horizon_bars"] or 1),
+                    benchmark_key=row["benchmark_key"] or "",
+                    benchmark_price=float(row["benchmark_price"] or 0.0),
+                    rationale=row["rationale"] or "",
+                    invalidation=row["invalidation"] or "",
+                ))
+            except (KeyError, TypeError, ValueError):
+                log.warning("데스크 대기 판단 한 건을 읽지 못해 건너뜁니다", exc_info=True)
+        lessons: list[Lesson] = []
+        for row in state.get("lessons") or []:
+            try:
+                settled_at = row.get("settled_at") or ""
+                lessons.append(Lesson(
+                    ticker=row["ticker"],
+                    decided_at=datetime.fromisoformat(row["decided_at"]),
+                    action=row["action"], conviction=float(row["conviction"] or 0.0),
+                    entry_price=float(row["entry_price"] or 0.0),
+                    realised_pct=float(row["realised_pct"] or 0.0),
+                    correct=bool(row["correct"]),
+                    rationale=row["rationale"] or "",
+                    invalidation=row["invalidation"] or "",
+                    benchmark_pct=float(row["benchmark_pct"] or 0.0),
+                    excess_pct=float(row["excess_pct"] or 0.0),
+                    benchmark_key=row["benchmark_key"] or "",
+                    settled_at=datetime.fromisoformat(settled_at) if settled_at else None,
+                    symbol_key=row.get("symbol_key") or "",
+                ))
+            except (KeyError, TypeError, ValueError):
+                log.warning("데스크 회고 한 건을 읽지 못해 건너뜁니다", exc_info=True)
+        self._pending = pending[-self.capacity:]
+        self._lessons = lessons[-self.capacity:]
+        self.unscored = int(state.get("unscored") or 0)
+        return len(self._pending) + len(self._lessons)
 
 
 ContextSource = Callable[[Symbol, datetime], Awaitable[str]]
@@ -807,11 +1003,20 @@ class TradingDesk(AlphaModel):
             log.warning("%s: %s", symbol.ticker, degraded)
             head, risk = self._consensus_fallback(analysts, risk)
 
+        # Stamp the benchmark the call will be graded against, not just its
+        # price: a benchmark that is configured but unpriced (no warm-up data)
+        # would otherwise grade every call against a flat line pretending to be
+        # an index. Unstamped means "score this one raw", and says so.
+        bench = ctx.benchmark
+        bench_price = ctx.price(bench) if bench is not None else 0.0
+
         return DeskDecision(
             symbol_key=symbol.key,
             ticker=symbol.ticker,
             decided_at=ctx.now,
             price_at_decision=ctx.price(symbol),
+            benchmark_key=bench.key if bench is not None and bench_price > 0 else "",
+            benchmark_price=bench_price,
             action=str(head.get("action", "hold")).lower(),
             conviction=float(head.get("conviction") or 0.0),
             target_weight_pct=float(head.get("target_weight_pct") or 0.0),
@@ -882,8 +1087,13 @@ class TradingDesk(AlphaModel):
 
         if self.memory is not None:
             for lesson in self.memory.settle(ctx):
-                log.info("데스크 회고: %s %s → %+.2f%% (%s)", lesson.ticker, lesson.action,
-                         lesson.realised_pct, "적중" if lesson.correct else "실패")
+                # The verdict is on the excess, so print it — "+2.1% 실패" reads
+                # like a bug until you can see the index did +3.4%.
+                log.info("데스크 회고: %s %s → %+.2f%%%s (%s)",
+                         lesson.ticker, lesson.action, lesson.realised_pct,
+                         f" · 벤치 {lesson.benchmark_pct:+.2f}% · 초과 "
+                         f"{lesson.excess_pct:+.2f}%" if lesson.benchmark_key else "",
+                         "적중" if lesson.correct else "실패")
 
         self._bar_count += 1
         if (self._bar_count - 1) % self.cadence != 0:

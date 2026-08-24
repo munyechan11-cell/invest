@@ -2,6 +2,13 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#080B14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="퀀트 데스크">
+<link rel="apple-touch-icon" href="/static/icons/icon-180.png">
+<link rel="icon" href="/static/icons/icon-64.png">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>◆ QUANT TRADING FLOOR ◆</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -255,6 +262,55 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
 /* The floor belongs to a signed-in operator. Everything else is hidden by
    default rather than hidden by script, so a slow /api/auth/me — or a script
    error — can never flash somebody else's desk before the check lands. */
+/* ── 증권앱 배치: 왼쪽에 판단, 오른쪽에 시세 ─────────────────────────
+   왼쪽이 "무엇을 할지" 를 말하고 오른쪽이 "지금 얼마인지" 를 보여줍니다.
+   자동매매면 왼쪽이 알아서 하고 그 결과가 오른쪽 봉 위에 점으로 찍히며,
+   수동 추천이면 오른쪽 호가를 보고 그 자리에서 체결합니다. */
+.deck{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,.8fr);
+  gap:14px;align-items:start}
+/* 오른쪽은 따라옵니다 — 왼쪽 심의를 읽는 동안 시세가 화면 밖으로 나가면
+   "보면서 산다" 는 흐름이 끊깁니다. */
+.deck-r{position:sticky;top:12px}
+.tabs{display:none}
+@media(max-width:1000px){
+  .deck{grid-template-columns:1fr}
+  .deck-r{position:static}
+  /* 좁은 화면에서 세로로 쌓으면 시세가 심의 한참 아래 깔립니다. 탭으로 가릅니다. */
+  .tabs{display:grid;grid-template-columns:1fr 1fr;position:sticky;top:0;z-index:30;
+    border:1px solid var(--edge);border-bottom:0;background:var(--panel)}
+  .tabs button{border:0;border-right:1px solid var(--rule);min-height:46px;
+    font-family:var(--px);font-size:9px;background:transparent;color:var(--dim);cursor:pointer}
+  .tabs button:last-child{border-right:0}
+  .tabs button[aria-selected="true"]{color:var(--gold);background:rgba(255,198,74,.09)}
+  body[data-view="chart"] .deck-l,
+  body[data-view="desk"]  .deck-r{display:none}
+}
+.quotebar{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:12px 14px;
+  border-bottom:1px solid var(--rule)}
+.quotebar select{background:var(--panel2);color:var(--bone);border:1px solid var(--rule);
+  padding:8px 10px;font-family:var(--mono);font-size:13px;min-height:40px}
+.quotebar .last{font-family:var(--mono);font-size:26px;font-weight:700;
+  font-variant-numeric:tabular-nums;margin-left:auto}
+.quotebar .last.up{color:var(--sang)}.quotebar .last.down{color:var(--ha)}
+.quotebar .stale{font-size:11px;color:var(--sang);border:1px solid var(--sang);padding:3px 6px}
+#chartBox{position:relative;height:300px}
+#chartBox canvas{width:100%;height:100%;display:block;touch-action:pan-y}
+.mypos{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:8px;
+  padding:10px 14px;border-top:1px solid var(--rule);font-size:12px}
+.mypos .k{color:var(--dim);font-size:10px;letter-spacing:.12em}
+.mypos .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:15px;
+  font-weight:600}
+.mypos .v.up{color:var(--sang)}.mypos .v.down{color:var(--ha)}
+.ticket{padding:12px 14px;border-top:1px solid var(--rule);display:grid;gap:9px}
+.ticket .row{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.ticket label{font-size:10px;color:var(--dim);letter-spacing:.1em;display:block;
+  margin-bottom:4px}
+.ticket input{width:100%;background:var(--panel2);color:var(--bone);
+  border:1px solid var(--rule);padding:9px 10px;font-family:var(--mono);min-height:42px}
+.ticket .hint{font-size:11px;color:var(--faint);line-height:1.5}
+.ticket .go{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.ticket .go button{min-height:46px;font-family:var(--px);font-size:10px}
+
 .app-only{display:none}
 body.authed .app-only{display:block}
 body:not(.authed) .overlay{display:none}
@@ -375,6 +431,12 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
 </header>
 
 <div class="wrap app-only">
+  <div class="tabs" role="tablist">
+    <button id="tabDesk" role="tab" aria-selected="true">DESK</button>
+    <button id="tabChart" role="tab" aria-selected="false">CHART</button>
+  </div>
+  <div class="deck">
+  <div class="deck-l">
 
   <!-- HUD -->
   <section class="panel">
@@ -539,10 +601,48 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
     <div class="body"><div class="feed" id="feed"></div></div>
   </section>
 
+  </div><!-- /deck-l -->
+
+  <!-- 시세 · 매매 — 오른쪽 -->
+  <div class="deck-r">
+    <section class="panel">
+      <span class="plate"><span class="d">◆</span> 시세 · 매매 <span class="d">◆</span></span>
+      <div class="quotebar">
+        <select id="cSym" aria-label="종목"><option value="">—</option></select>
+        <select id="cTf" aria-label="봉 주기">
+          <option value="1d">일봉</option><option value="1h">1시간</option>
+          <option value="15m">15분</option><option value="5m">5분</option>
+        </select>
+        <span class="stale" id="cStale" hidden>지연</span>
+        <span class="last" id="cLast">—</span>
+      </div>
+      <div id="chartBox"><canvas id="chart"></canvas></div>
+      <div class="mypos" id="cPos"></div>
+      <div class="ticket">
+        <div class="row">
+          <div><label for="cQty">수량</label>
+            <input id="cQty" type="number" step="any" placeholder="주"></div>
+          <div><label for="cNotional">금액</label>
+            <input id="cNotional" type="number" step="any" placeholder="예: 500000"></div>
+        </div>
+        <div>
+          <label for="cLimit">지정가 — 차트를 눌러 고르세요 (비우면 시장가)</label>
+          <input id="cLimit" type="number" step="any" placeholder="시장가">
+        </div>
+        <div class="go">
+          <button class="btn buy" id="cBuy">매수</button>
+          <button class="btn sell" id="cSell">매도</button>
+        </div>
+        <div class="hint" id="cMsg">수동 주문도 하루 한도와 주문당 한도를 그대로 받습니다.
+          매수한 종목은 전략이 되팔지 않도록 고정됩니다.</div>
+      </div>
+    </section>
+  </div>
+  </div><!-- /deck -->
 </div>
 
 <footer class="app-only">
-  읽기 전용 화면입니다. 시작·정지는 CLI 전용.
+  왼쪽은 판단, 오른쪽은 시세입니다. 자동매매 중에도 오른쪽에서 직접 사고팔 수 있습니다.
   과거 성과는 예측이 아니며, 매매에는 원금 손실 위험이 있습니다.
 </footer>
 
@@ -620,6 +720,7 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
 
 <div class="tape app-only"><div class="tape-in" id="tape"></div></div>
 
+<script src="/static/chart.js"></script>
 <script>
 "use strict";
 const $ = s => document.querySelector(s);
@@ -1229,7 +1330,10 @@ async function refreshManual() {
 
 async function refreshSymbols() {
   try {
-    const data = await api("/api/universe");
+    // 봇이 꺼져 있으면 고른 전략의 종목을 받습니다 — 데스크가 수동 매수를
+    // 추천하는 순간이 바로 봇이 꺼져 있는 때입니다.
+    const data = await api("/api/universe?strategy=" +
+                           encodeURIComponent(chartStrategy()));
     const sel = $("#mSymbol");
     const keep = sel.value;
     const syms = data.symbols || [];
@@ -1238,6 +1342,7 @@ async function refreshSymbols() {
           `${x.invested ? " (보유)" : ""} — ${num(x.price, 2)}</option>`).join("")
       : `<option value="">— 실행 중인 봇 없음 —</option>`;
     if (keep) sel.value = keep;
+    syncChartSymbols(syms);
   } catch {}
 }
 
@@ -1826,6 +1931,8 @@ $("#registerForm").addEventListener("submit", async ev => {
 function start() {
   refreshManual();
   refreshSymbols();
+  loadChart();
+  timers.push(setInterval(loadChart, 10000));
   timers.push(setInterval(() => { refreshManual(); refreshSymbols(); }, 8000));
   refresh();
   connect();
@@ -1843,6 +1950,123 @@ function start() {
   const user = await whoami();
   if (user) signedIn(user); else signedOut();
 })();
+
+
+/* ── 시세 · 매매 (오른쪽) ──────────────────────────────────────────────
+   왼쪽이 판단을 말하고 여기서 그 가격을 봅니다. 자동매매 중이면 봇이 낸
+   체결이 봉 위에 점으로 찍히고, 수동이면 봉을 눌러 그 자리에 주문을 겁니다. */
+let chart = null, chartData = null;
+
+function fmtPrice(n, cur) {
+  if (!(n > 0)) return "—";
+  return cur === "KRW" ? Math.round(n).toLocaleString("ko-KR")
+                       : n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+function chartStrategy() {
+  const sel = document.getElementById("strategy");
+  return (sel && sel.value) || "demo";
+}
+
+function syncChartSymbols(syms) {
+  const sel = document.getElementById("cSym");
+  if (!sel) return;
+  const names = (syms || []).map(x => (typeof x === "string" ? x : x.ticker)).filter(Boolean);
+  const now = [...sel.options].map(o => o.value).join();
+  if (names.join() === now) return;
+  const keep = sel.value;
+  sel.innerHTML = names.length
+    ? names.map(t => `<option value="${t}">${t}</option>`).join("")
+    : '<option value="">—</option>';
+  sel.value = names.includes(keep) ? keep : (names[0] || "");
+}
+
+async function loadChart() {
+  const sel = document.getElementById("cSym");
+  if (!sel || !sel.value || !me) return;
+  try {
+    const q = new URLSearchParams({ ticker: sel.value,
+                                    timeframe: document.getElementById("cTf").value,
+                                    count: "160", strategy: chartStrategy() });
+    chartData = await api("/api/candles?" + q);
+  } catch (e) {
+    note("#cMsg", "시세를 불러오지 못했습니다: " + e.message, "err");
+    return;
+  }
+  const d = chartData;
+  document.getElementById("cStale").hidden = !d.stale;
+  const last = (d.quote || {}).price || 0;
+  const first = d.bars.length ? d.bars[0].c : 0;
+  const el = document.getElementById("cLast");
+  el.textContent = fmtPrice(last, d.currency);
+  el.classList.toggle("up", last >= first);
+  el.classList.toggle("down", last < first);
+
+  if (!chart) {
+    chart = new PriceChart(document.getElementById("chart"));
+    chart.onPick = (p) => { document.getElementById("cLimit").value = p; };
+  }
+  chart.set(d);
+  chart.resize();
+
+  const pos = d.position;
+  const pct = pos && pos.unrealized_pct != null ? pos.unrealized_pct : null;
+  document.getElementById("cPos").innerHTML = pos
+    ? `<div><div class="k">보유</div><div class="v">${pos.quantity}</div></div>
+       <div><div class="k">평균단가</div><div class="v">${fmtPrice(pos.avg_price, d.currency)}</div></div>
+       <div><div class="k">평가손익</div><div class="v ${pct >= 0 ? "up" : "down"}">${
+         pct == null ? "—" : (pct >= 0 ? "+" : "") + (pct * 100).toFixed(2) + "%"}</div></div>
+       <div><div class="k">미체결</div><div class="v">${d.orders.length}</div></div>`
+    : '<div style="grid-column:1/-1;color:var(--faint)">이 종목은 아직 보유하고 있지 않습니다</div>';
+}
+
+async function chartOrder(side) {
+  const d = chartData;
+  if (!d) return;
+  const qty = parseFloat(document.getElementById("cQty").value);
+  const notional = parseFloat(document.getElementById("cNotional").value);
+  const limit = parseFloat(document.getElementById("cLimit").value);
+  if (!(qty > 0) && !(notional > 0)) {
+    return note("#cMsg", "수량 또는 금액 중 하나는 입력하세요", "err");
+  }
+  const payload = { ticker: d.ticker };
+  if (qty > 0) payload.quantity = qty;
+  if (notional > 0) payload.notional = notional;
+  if (limit > 0) payload.limit_price = limit;
+  const how = limit > 0 ? `지정가 ${fmtPrice(limit, d.currency)}` : "시장가";
+  if (!confirm(`${d.ticker} ${side === "buy" ? "매수" : "매도"} — ${how}\n계속할까요?`)) return;
+  try {
+    const res = await post("/api/manual/" + side, payload);
+    note("#cMsg", `접수됨: ${JSON.stringify(res.queued || res)}`.slice(0, 300), "ok");
+    loadChart();
+    refreshManual();
+  } catch (e) {
+    note("#cMsg", "실패: " + e.message, "err");
+  }
+}
+
+document.getElementById("cSym").onchange = loadChart;
+document.getElementById("cTf").onchange = loadChart;
+document.getElementById("cBuy").onclick = () => chartOrder("buy");
+document.getElementById("cSell").onclick = () => chartOrder("sell");
+
+/* 좁은 화면에서는 한 번에 하나만 봅니다 */
+function showView(view) {
+  document.body.dataset.view = view;
+  document.getElementById("tabDesk").setAttribute("aria-selected", String(view === "desk"));
+  document.getElementById("tabChart").setAttribute("aria-selected", String(view === "chart"));
+  if (view === "chart" && chart) chart.resize();
+}
+document.getElementById("tabDesk").onclick = () => showView("desk");
+document.getElementById("tabChart").onclick = () => showView("chart");
+showView(new URLSearchParams(location.search).get("view") === "chart" ? "chart" : "desk");
+
+addEventListener("resize", () => { if (chart) chart.resize(); });
+
+/* 앱으로 설치되게 합니다. 실패해도 화면은 그대로 돕니다. */
+if ("serviceWorker" in navigator) {
+  addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+}
 
 addEventListener("resize", drawEquity);
 </script>
