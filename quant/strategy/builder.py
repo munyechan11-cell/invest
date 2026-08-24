@@ -366,9 +366,14 @@ def build_brokerage(config: StrategyConfig, portfolio: Portfolio,
     if config.broker.type == "toss":
         from quant.brokerage.toss_broker import TossBrokerage
 
+        # `fee` 를 그대로 넘깁니다 — 토스 어댑터는 체결 비용을 스스로 계산해야
+        # 하는데, 거기서 요율을 따로 정하면 같은 설정의 백테스트와 실거래가
+        # 다른 비용을 뭅니다. `costs.sell_tax_bps` 를 실거래에서만 무시하는
+        # 것이 가장 비싼 경우입니다.
         return TossBrokerage(
             portfolio, max_order_notional=config.broker.max_order_notional,
-            live=config.mode is RunMode.LIVE, **config.broker.params,
+            live=config.mode is RunMode.LIVE, fee_model=fee,
+            **config.broker.params,
         )
     if config.broker.type == "alpaca":
         from quant.brokerage.alpaca_broker import AlpacaBrokerage

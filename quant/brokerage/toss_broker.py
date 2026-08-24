@@ -45,6 +45,7 @@ from quant.core.types import (
     utcnow,
 )
 from quant.data.provider import DataProvider, register_provider
+from quant.execution.costs import PRESETS, FeeModel, SideAwareFeeModel
 
 log = logging.getLogger("quant.toss")
 
@@ -438,14 +439,68 @@ class TossBrokerage(LiveBrokerage):
     name = "toss"
 
     def __init__(self, portfolio, client_id: str = "", client_secret: str = "",
-                 account_no: str = "", **kwargs):
+                 account_no: str = "", fee_model: FeeModel | None = None, **kwargs):
         super().__init__(portfolio, **kwargs)
         self.client = _TossClient(client_id, client_secret, account_no)
+        #: 체결에 물릴 비용. `build_brokerage` 가 `build_costs` 로 만든 **바로 그**
+        #: 모델을 그대로 넘겨줍니다. 어댑터가 자기 bps knob 을 따로 들면 같은
+        #: 설정의 백테스트와 실거래가 조용히 다른 비용을 물고, `costs.sell_tax_bps`
+        #: 처럼 사람이 명시한 값이 실거래에서만 무시됩니다.
+        self.fees = fee_model
+        #: `fee_model` 이 없을 때만 쓰는 프리셋. 통화별로 한 번씩 만들어 둡니다.
+        self._preset_fees: dict[str, FeeModel] = {}
         if self.live:
             log.warning(
                 "토스증권 실거래 모드 — 모의투자 환경이 없으므로 모든 주문이 실계좌로 나갑니다. "
                 "일일 한도(limits)와 주문 한도(max_order_notional)를 반드시 확인하세요."
             )
+
+    # ── 체결 비용 ────────────────────────────────────────────────────────
+    def _fee_model_for(self, symbol: Symbol, side: OrderSide) -> FeeModel:
+        """이 체결에 적용할 비용 모델.
+
+        `SideAwareFeeModel` 은 반드시 `for_side` 를 거쳐야 합니다. 그 클래스의
+        `fee()` 는 base(위탁수수료)만 계산하므로 그냥 부르면 **매도 거래세가
+        통째로 사라집니다** — kr_equity 프리셋 기준 2026년 20bp, 이 결함이
+        되찾으려는 금액의 대부분입니다.
+
+        `fee_model` 이 안 넘어온 경로(어댑터를 직접 만든 테스트·스크립트)에서도
+        0원이어서는 안 되므로 프리셋으로 물러섭니다. 여기서 요율을 새로 정하지
+        않는 것이 중요합니다 — 백테스트에 없는 숫자를 실거래에만 발명하는 순간
+        두 장부를 비교할 수 없게 됩니다.
+        """
+        model = self.fees
+        if model is None:
+            key = "kr_equity" if symbol.quote_currency == "KRW" else "us_equity"
+            model = self._preset_fees.get(key)
+            if model is None:
+                model = self._preset_fees[key] = PRESETS[key]()[0]
+        if isinstance(model, SideAwareFeeModel):
+            return model.for_side(side)
+        return model
+
+    def _fill_fee(self, order: Order, quantity: Decimal, price: float,
+                  when: datetime) -> float:
+        """체결 하나에 실제로 물릴 위탁수수료 + (매도면) 증권거래세.
+
+        `when` 은 체결 시각입니다. 한국 거래세는 해마다 요율이 바뀌므로
+        (`KRX_SELL_TAX_BPS`) 오늘이 아니라 그 체결의 시각으로 찾아야 합니다.
+
+        **언제 이게 안 통하는가.** 이 값은 설정의 비용 모델이 말하는 *예상*
+        청구액이지 토스가 실제로 청구한 금액이 아닙니다. 우대 요율 계좌나
+        수수료 면제 이벤트가 걸려 있으면 그만큼 어긋납니다. 토스 공식 스펙은
+        주문 조회 응답의 `execution.commission` / `execution.tax` 로 실제
+        청구액을 주지만, 그 블록은 이 어댑터가 체결 수량조차 최상위에서 찾고
+        있어(`_FIELDS["filled_qty"]`) 같이 손대야 읽을 수 있습니다 — 이 결함의
+        범위 밖이라 두었습니다.
+        """
+        model = self._fee_model_for(order.symbol, order.side)
+        # 토스에 **실제로 나간** 호가 유형으로 maker/taker 를 가릅니다.
+        # `_venue_submit` 은 LIMIT 이 아닌 것을 전부 MARKET 으로 보내므로,
+        # `order.type` 을 그대로 믿으면 시장가로 나간 STOP 주문이 maker 로
+        # 매겨집니다. (kr/us 프리셋은 이 인자를 보지 않아 지금은 무해합니다.)
+        return model.fee(order.symbol, quantity, price,
+                         order.type is OrderType.LIMIT, when)
 
     async def _venue_submit(self, order: Order) -> str:
         if order.type is OrderType.MARKET and order.symbol.quote_currency != "KRW":
@@ -469,13 +524,23 @@ class TossBrokerage(LiveBrokerage):
 
         filled = float(data.get(_FIELDS["filled_qty"]) or 0)
         if filled > 0:
-            self._pending_fills.append(Fill(
-                order_id=order.id, symbol=order.symbol, side=order.side,
-                quantity=Decimal(str(filled)),
-                price=float(data.get(_FIELDS["avg_price"])
-                            or order.limit_price or 0),
-                fee=0.0, ts=utcnow(), tag=order.tag,
-            ))
+            price = float(data.get(_FIELDS["avg_price"]) or order.limit_price or 0)
+            quantity = Decimal(str(filled))
+            if price > 0:
+                ts = utcnow()
+                self._pending_fills.append(Fill(
+                    order_id=order.id, symbol=order.symbol, side=order.side,
+                    quantity=quantity, price=price,
+                    fee=self._fill_fee(order, quantity, price, ts),
+                    ts=ts, tag=order.tag,
+                ))
+            else:
+                # 단가를 모르면 수수료도 0원으로 계산됩니다 — 요율에 0 을 곱한
+                # 값이니까요. 그건 "수수료가 없다" 가 아니라 "아직 모른다" 이고,
+                # 원가도 낸 돈도 없는 주식을 장부에 얹는 쪽이 더 나쁩니다.
+                # 이 주문은 열려 있으므로 다음 `poll_fills` 가 다시 봅니다.
+                log.warning("토스 주문 %s: 체결 %s주의 단가를 읽을 수 없어 이번에는 "
+                            "체결로 잡지 않습니다", broker_id, filled)
         return broker_id
 
     async def _venue_cancel(self, order: Order) -> bool:
@@ -513,11 +578,22 @@ class TossBrokerage(LiveBrokerage):
                 newly = Decimal(str(remote.get(_FIELDS["filled_qty"]) or 0)) \
                     - order.filled_qty
                 if newly > 0:
+                    price = float(remote.get(_FIELDS["avg_price"]) or 0)
+                    if price <= 0:
+                        # 단가 0 에 요율을 곱하면 0원입니다. 그 0 을 장부에 넣으면
+                        # 회계층은 "공짜로 샀다" 로 읽습니다 — 다음 폴링까지
+                        # 미루는 편이 낫습니다. `order.filled_qty` 를 올리지
+                        # 않았으므로 같은 수량이 그대로 다시 잡힙니다.
+                        log.warning("토스 주문 %s: 체결단가를 읽을 수 없어 이번 "
+                                    "폴링에서는 체결로 잡지 않습니다",
+                                    order.broker_id)
+                        continue
+                    ts = utcnow()
                     fill = Fill(
                         order_id=order.id, symbol=order.symbol, side=order.side,
-                        quantity=newly,
-                        price=float(remote.get(_FIELDS["avg_price"]) or 0),
-                        fee=0.0, ts=utcnow(), tag=order.tag,
+                        quantity=newly, price=price,
+                        fee=self._fill_fee(order, newly, price, ts),
+                        ts=ts, tag=order.tag,
                     )
                     order.apply_fill(fill)
                     self._pending_fills.append(fill)
