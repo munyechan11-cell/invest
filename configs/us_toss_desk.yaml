@@ -1,0 +1,108 @@
+# 토스증권 미국주식 + 16석 AI 데스크 — 토스 키 하나로만 돕니다.
+#
+#   python -m quant validate configs/us_toss_desk.yaml
+#   python -m quant dryrun   configs/us_toss_desk.yaml     ← 반드시 여기서 충분히 검증
+#
+# `us_toss.yaml` 과 같은 종목·같은 시세를 쓰되 데스크가 붙어 있습니다. 규칙 신호가
+# "왜" 를 말하지 못하는 자리에서 16석이 근거를 남기고, 그 기록이 나중에 왜 샀는지
+# 되짚을 수 있는 유일한 자료가 됩니다.
+#
+# ⚠️ 미국 시장은 한국 시간 밤에 열립니다(서머타임 22:30~05:00, 그 외 23:30~06:00).
+#    낮에 시작하면 봉이 갱신되지 않는 것이 정상이고, 봇은 다음 개장을 기다립니다.
+#    데스크는 봉이 새로 닫힐 때만 발언하므로 낮에는 조용한 것이 맞습니다.
+#
+# ⚠️ 토스 Open API 에는 모의투자 환경이 없습니다. dry_run(실시간 시세 + 가상
+#    체결)이 유일한 안전망입니다.
+name: us-toss-desk
+description: 미국주식 16석 AI 데스크 + 상대강도, 실시간 시세(토스). KIS 키 불필요.
+mode: dry_run
+
+data:
+  provider: toss
+  params: {client_id: "${TOSS_CLIENT_ID}", client_secret: "${TOSS_CLIENT_SECRET}"}
+  timeframe: 1d
+  warmup_bars: 300
+  calendar: us_equity
+
+universe:
+  benchmark: SPY
+  symbols:
+    - {ticker: AAPL,  venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: MSFT,  venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: NVDA,  venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: GOOGL, venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: AMZN,  venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: META,  venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: AVGO,  venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: LLY,   venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+  refresh_every_bars: 21
+  filters:
+    - {type: age, params: {min_bars: 250}}
+    - {type: volatility, params: {lookback_bars: 60, min_annual_vol: 0.15, max_annual_vol: 0.9}}
+    - {type: limit, params: {max_symbols: 4}}
+
+alpha:
+  # 규칙 기반 알파는 데스크와 독립적으로 계속 돕니다 — LLM 이 죽어도 엔진은 삽니다.
+  - {type: xs_momentum, params: {lookback: 126, skip: 21, top_n: 3, rebalance_every: 21, vol_adjust: true}}
+  - {type: ema_cross, params: {fast: 20, slow: 60, adx_min: 20, hold_bars: 20}}
+  - {type: regime_filter, params: {period: 200, max_annual_vol: 0.9}}
+  - type: desk
+    params:
+      llm:          {provider: google, model: gemini-3.7-flash, max_tokens: 1200}
+      decision_llm: {provider: google, model: gemini-3.1-pro-preview, max_tokens: 1600}
+      cadence_bars: 1
+      max_symbols_per_run: 2
+      debate_rounds: 1
+      risk_debate_rounds: 1
+      deadline_s: 120
+      min_conviction: 0.6
+      cost_limit_usd: 10
+
+portfolio:
+  starting_cash: 10000
+  base_currency: USD
+  model: {type: vol_target, params: {target_annual_vol: 0.18, lookback: 60}}
+  max_position_weight: 0.30
+  max_gross_leverage: 0.9
+  cash_reserve_pct: 0.05
+  allow_short: false
+
+risk:
+  models:
+    - {type: max_dd_per_security, params: {atr_multiple: 8.0, max_drawdown_pct: 0.22, lock_bars: 4}}
+    - {type: trailing_stop, params: {atr_multiple: 5.0, activate_at_pct: 0.08}}
+    - {type: max_positions, params: {max_positions: 3}}
+    - {type: max_dd_portfolio, params: {max_drawdown_pct: 0.20, halt_bars: 10}}
+  protections:
+    - {type: cooldown, params: {stop_bars: 2}}
+    - {type: stoploss_guard, params: {lookback_bars: 60, trade_limit: 3, stop_bars: 15}}
+
+execution:
+  # 미국 대형주는 호가가 촘촘해서 한 틱이 스프레드의 전부인 경우가 많습니다.
+  model: {type: limit, params: {offset_bps: 5, urgent_after_bars: 2}}
+  min_order_notional: 200
+
+costs:
+  preset: us_equity
+
+broker:
+  type: toss
+  params: {client_id: "${TOSS_CLIENT_ID}", client_secret: "${TOSS_CLIENT_SECRET}",
+           account_no: "${TOSS_ACCOUNT_NO}"}
+  max_order_notional: 2000
+  live_trading_confirmed: false
+
+limits:
+  max_daily_notional: 5000
+  max_daily_orders: 20
+  max_daily_loss: 200
+  max_daily_loss_pct: 0.02
+  # 미국 시장이 대상이어도 경계는 한국시간 자정입니다 — 이 서비스를 쓰는 사람이
+  # "오늘" 이라고 부르는 하루가 그쪽이기 때문입니다.
+  timezone_offset_hours: 9
+  halt_until_next_day: true
+
+notify:
+  telegram_bot_token: "${TELEGRAM_BOT_TOKEN}"
+  telegram_chat_id: "${TELEGRAM_CHAT_ID}"
+  on_events: [order_filled, trade_closed, protection, order_rejected, error, state]

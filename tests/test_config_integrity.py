@@ -83,7 +83,8 @@ def test_model_params_stay_free_form():
 @pytest.mark.parametrize("path", [
     "configs/demo.yaml", "configs/demo_flow.yaml", "configs/kr_equity.yaml",
     "configs/kr_toss.yaml", "configs/kr_desk_gemini.yaml", "configs/live_crypto.yaml",
-    "configs/us_equity.yaml",
+    "configs/us_equity.yaml", "configs/us_toss.yaml",
+    "configs/kr_toss_desk.yaml", "configs/us_toss_desk.yaml",
 ])
 def test_shipped_configs_have_no_unknown_keys(path):
     load_config(path)
