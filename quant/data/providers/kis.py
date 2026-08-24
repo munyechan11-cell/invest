@@ -18,6 +18,7 @@ import httpx
 
 from quant.core.aio import LazyLock
 from quant.core.types import UTC, AssetClass, Bar, Quote, Symbol
+from quant.data.calendar import KRX_REGULAR, KST
 from quant.data.provider import DataProvider, register_provider
 
 log = logging.getLogger("quant.data.kis")
@@ -31,6 +32,40 @@ _TOKEN_LOCK = asyncio.Lock()
 
 def kis_host(paper: bool) -> str:
     return MOCK_HOST if paper else REAL_HOST
+
+
+def _session_closed(label: datetime, now: datetime) -> bool:
+    """`label` 이 가리키는 거래일의 정규장이 이미 끝났는가.
+
+    KIS 는 장중에도 "오늘" 행을 실어 줍니다. 그 행의 종가 자리에는 그 순간의
+    현재가가 들어 있어서, 09:30 에 읽은 값과 14:00 에 읽은 값이 다릅니다.
+    그걸 확정 일봉으로 받으면 같은 봉 위에서 지표가 하루 종일 흔들리고, 신호가
+    붙었다 떨어졌다 합니다 — 백테스트에서는 절대 재현되지 않는 방식으로.
+
+    판정 기준이 `봉 시작 + 봉 길이` 가 **아닌** 이유: `stck_bsop_date` 는 UTC
+    시각이 아니라 KST 거래일 날짜 라벨이고, 위에서 UTC 자정에 박아 둡니다.
+    ccxt·토스가 쓰는 `end_ts <= now` 를 그대로 옮기면 마감이 다음 날 09:00 KST
+    로 계산되어, 이미 확정된 당일 종가가 매일 17시간 30분씩 사라집니다.
+
+    휴장일 표는 일부러 보지 않습니다. 표는 해마다 밀리고(`KrxCalendar.
+    stale_after`), 표가 밀렸다는 이유로 KIS 가 실제로 준 확정 행을 숨기면
+    화면에서 거래일 하나가 통째로 없어집니다. 휴장일에는 애초에 그 날짜 행이
+    오지 않으므로 표 없이도 손해가 없습니다.
+
+    **언제 이게 안 통하는가**
+
+    · 주봉: KIS 가 주봉 라벨에 그 주의 첫 거래일을 쓰는지 마지막 거래일을
+      쓰는지 실 응답 없이는 확인할 수 없습니다. 라벨이 오늘이면 확실히
+      거르지만, 첫 거래일 규칙이라면 주 중반의 미완성 주봉은 그대로 지나갑니다.
+      수정 전보다 나빠지지는 않되, 주봉은 여기서 닫히지 않습니다.
+    · 종가 단일가(15:20~15:30) 결과가 15:30:00 뒤 몇 초 늦게 실린다면 그 몇 초
+      동안 읽은 종가가 나중에 바뀔 수 있습니다. 여유 초를 얼마로 둘지는 실
+      응답을 봐야 알 수 있고, 지어낸 여유 초만큼은 확정 종가가 또 가려집니다.
+    · 시간외 단일가(15:40~18:00)는 `KRX_REGULAR` 자체가 정규장만 정의하므로
+      모델에 없습니다.
+    """
+    close = datetime.combine(label.date(), KRX_REGULAR.close, tzinfo=KST)
+    return now >= close
 
 
 async def kis_token(app_key: str, app_secret: str, paper: bool) -> str:
@@ -145,7 +180,13 @@ class KisProvider(DataProvider):
                 except (KeyError, ValueError):
                     continue
             cursor_end = cursor_start - timedelta(days=1)
-        uniq = {b.ts: b for b in bars if start <= b.ts < end}
+        # 아직 장이 안 끝난 라벨은 버립니다 — 계약이 "closed bars" 입니다.
+        # `end` 가 아니라 `now` 로 판정합니다: `end` 를 과거로 고정한 백테스트는
+        # 수정 전과 같은 봉을 받아야 하고, 지금 문제인 것은 "지금 미완성 봉이
+        # 나온다" 쪽입니다.
+        now = datetime.now(UTC)
+        uniq = {b.ts: b for b in bars
+                if start <= b.ts < end and _session_closed(b.ts, now)}
         return [uniq[k] for k in sorted(uniq)]
 
     async def quote(self, symbol):
