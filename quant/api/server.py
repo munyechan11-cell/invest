@@ -73,6 +73,7 @@ from quant.live.credentials import (
 )
 from quant.live.profile import ProfileStore, questionnaire, score_answers
 from quant.live.state import StateStore
+from quant.strategy import glossary
 from quant.webapp.accounts import AccountError, Accounts, SecretKeyMissing, User
 from quant.webapp.auth_api import build_auth, public_user
 from quant.webapp.registry import (
@@ -1232,6 +1233,36 @@ def create_app(config: StrategyConfig | None = None,
         finally:
             store.close()
 
+    @app.get("/api/pnl")
+    async def pnl(strategy: str | None = Query(None, max_length=80),
+                  seat: Desk = Depends(desk)):
+        """오늘·이번주·이번달·올해 실현손익.
+
+        run 을 가로질러 셉니다. 봇을 껐다 켤 때마다 "이번 달 수익" 이 0 으로
+        돌아가면 그건 수익이 아니라 실행 시간을 재는 숫자입니다.
+        """
+        store = StateStore(seat.state_path)
+        try:
+            return {"periods": store.pnl_by_period(strategy=strategy)}
+        finally:
+            store.close()
+
+    @app.get("/api/tradelog")
+    async def tradelog(limit: int = Query(100, ge=1, le=500),
+                       offset: int = Query(0, ge=0),
+                       strategy: str | None = Query(None, max_length=80),
+                       seat: Desk = Depends(desk)):
+        """매매 기록 — 지금 돌고 있는 run 만이 아니라 전부.
+
+        `/api/trades` 는 현재 run 만 봅니다. 어제 껐다 켰으면 어제 거래가
+        사라지는데, "내가 뭘 사고팔았나" 는 재시작과 무관한 질문입니다.
+        """
+        store = StateStore(seat.state_path)
+        try:
+            return store.trade_log(limit=limit, offset=offset, strategy=strategy)
+        finally:
+            store.close()
+
     @app.get("/api/events")
     async def events(limit: int = Query(100, ge=1, le=500),
                      type: str | None = Query(None, max_length=500),
@@ -1509,18 +1540,50 @@ def create_app(config: StrategyConfig | None = None,
 
     @app.get("/api/strategies")
     async def strategies(_: Desk = Depends(desk)):
-        """이 서비스가 돌려주는 전략 목록 — `/api/trader/start` 가 받는 이름들."""
+        """이 서비스가 돌려주는 전략 목록 — `/api/trader/start` 가 받는 이름들.
+
+        각 전략이 **무엇을 하는지 한국어로** 함께 내보냅니다. 화면에
+        `kr-toss-flow` 만 뜨면 그게 뭔지 이미 아는 사람만 쓸 수 있고, 이건
+        자기 돈을 넣는 사람이 읽어야 하는 목록입니다.
+        """
         out = []
         for name, path in strategy_catalog().items():
             try:
                 cfg = load_config(str(path))
             except Exception:
                 continue          # 전략이 아닌 YAML(파라미터 공간 등)
-            out.append({"id": name, "name": cfg.name, "mode": cfg.mode.value,
-                        "broker": cfg.broker.type,
-                        "symbols": len(cfg.universe.symbols),
-                        "requires": required_secrets(cfg)})
+            signals = [glossary.describe(glossary.ALPHA, m.type) for m in cfg.alpha]
+            out.append({
+                "id": name, "name": cfg.name, "mode": cfg.mode.value,
+                "broker": cfg.broker.type,
+                "symbols": len(cfg.universe.symbols),
+                "requires": required_secrets(cfg),
+                # ── 한국어 ──────────────────────────────────────────────
+                "mode_ko": glossary.MODE.get(cfg.mode.value, cfg.mode.value),
+                "broker_ko": glossary.BROKER.get(cfg.broker.type, cfg.broker.type),
+                "timeframe": cfg.data.timeframe,
+                # 장세 필터는 사는 쪽이 아니라 막는 쪽입니다. 섞어서 보여주면
+                # "이것만 켜면 알아서 산다" 로 읽힙니다.
+                "signals": [g for g in signals if g["kind"] == "signal"],
+                "guards": [g for g in signals if g["kind"] == "guard"],
+                "execution": glossary.describe(glossary.EXECUTION,
+                                               cfg.execution.model.type),
+                "protections": [glossary.describe(glossary.RISK, r.type)
+                                for r in cfg.risk.models],
+                "tickers": [sy.ticker for sy in cfg.universe.symbols][:12],
+            })
         return {"strategies": out}
+
+    @app.get("/api/glossary")
+    async def glossary_all(_: Desk = Depends(desk)):
+        """부품 이름 사전 전체 — 화면이 어디서든 한국어로 쓸 수 있게."""
+        return {
+            "alpha": {k: glossary.describe(glossary.ALPHA, k) for k in glossary.ALPHA},
+            "execution": {k: glossary.describe(glossary.EXECUTION, k)
+                          for k in glossary.EXECUTION},
+            "risk": {k: glossary.describe(glossary.RISK, k) for k in glossary.RISK},
+            "mode": glossary.MODE, "broker": glossary.BROKER,
+        }
 
     @app.get("/api/models")
     async def models(_: Desk = Depends(desk)):

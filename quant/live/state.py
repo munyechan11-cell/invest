@@ -48,6 +48,11 @@ OWNER_STALE_AFTER = timedelta(minutes=5)
 OWNER_HEARTBEAT_SECONDS = 20.0
 
 
+#: 하루·주·달의 경계는 한국 시간입니다. UTC 자정으로 자르면 장중 오전 9시에
+#: "오늘" 이 바뀌어서, 아침에 팔아 낸 이익이 어제 것으로 기록됩니다.
+_KST_OFFSET = timedelta(hours=9)
+
+
 class StateInUseError(RuntimeError):
     """Another live process already owns this state DB."""
 
@@ -968,6 +973,81 @@ class StateStore:
             (self.run_id, limit)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def pnl_by_period(self, now: datetime | None = None,
+                      strategy: str | None = None) -> dict:
+        """오늘·이번주·이번달·올해 실현손익.
+
+        **run 을 가로질러 셉니다.** 봇을 멈추고 다시 켜면 새 run 이 열리는데,
+        그때마다 "이번 달 수익" 이 0 으로 돌아가면 그건 수익이 아니라 실행
+        시간을 재는 숫자입니다. 사람이 알고 싶은 것은 "내 계좌가 이번 달에
+        얼마를 벌었나" 이고, 그건 재시작과 무관합니다.
+
+        경계는 한국 시간입니다. UTC 자정으로 자르면 장중 오전 9시에 "오늘"
+        이 바뀝니다 — 아침에 팔아서 낸 이익이 어제 것이 됩니다.
+
+        주는 월요일에 시작합니다(ISO). 국내 시장이 월요일에 열리므로, 일요일
+        시작 주로 자르면 주말 하나를 사이에 두고 같은 주의 거래가 갈립니다.
+
+        `strategy` 를 주면 그 전략의 run 만 셉니다. 안 주면 이 계정의 전부.
+        """
+        now = (now or datetime.now(UTC)).astimezone(UTC)
+        kst = now + _KST_OFFSET
+        day = kst.date()
+        bounds = {
+            "today": day,
+            "week": day - timedelta(days=day.weekday()),
+            "month": day.replace(day=1),
+            "year": day.replace(month=1, day=1),
+        }
+
+        run_filter, run_args = "", []
+        if strategy:
+            run_filter = " AND t.run_id IN (SELECT id FROM runs WHERE strategy=?)"
+            run_args = [strategy]
+
+        out: dict[str, dict] = {}
+        for label, start in bounds.items():
+            # 저장된 exit_ts 는 UTC ISO 입니다. KST 경계를 UTC 로 되돌려 자릅니다.
+            since = (datetime(start.year, start.month, start.day, tzinfo=UTC)
+                     - _KST_OFFSET).isoformat()
+            row = self.conn.execute(
+                "SELECT COUNT(*) n, COALESCE(SUM(t.pnl),0) pnl, "
+                "COALESCE(SUM(t.fees),0) fees, "
+                "COALESCE(SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END),0) wins "
+                f"FROM trades t WHERE t.exit_ts >= ?{run_filter}",
+                [since, *run_args]).fetchone()
+            n = row["n"]
+            out[label] = {
+                "trades": n,
+                "pnl": round(row["pnl"], 2),
+                "fees": round(row["fees"], 2),
+                "wins": row["wins"],
+                "win_rate": round(row["wins"] / n, 4) if n else None,
+                "since": start.isoformat(),
+            }
+        return out
+
+    def trade_log(self, limit: int = 200, offset: int = 0,
+                  strategy: str | None = None) -> dict:
+        """매매 기록 — run 을 가로질러, 최근 것부터.
+
+        `recent_trades` 는 지금 돌고 있는 run 만 봅니다. 그건 화면 상단의
+        "이번 실행" 요약에는 맞지만, "내가 지금까지 뭘 사고팔았나" 라는
+        질문에는 답하지 못합니다. 봇을 어제 껐다 켰으면 어제 거래가 사라집니다.
+        """
+        where, args = "", []
+        if strategy:
+            where = " WHERE t.run_id IN (SELECT id FROM runs WHERE strategy=?)"
+            args = [strategy]
+        total = self.conn.execute(
+            f"SELECT COUNT(*) n FROM trades t{where}", args).fetchone()["n"]
+        rows = self.conn.execute(
+            "SELECT t.*, r.strategy, r.mode FROM trades t "
+            "JOIN runs r ON r.id = t.run_id" + where
+            + " ORDER BY t.exit_ts DESC, t.id DESC LIMIT ? OFFSET ?",
+            [*args, limit, offset]).fetchall()
+        return {"total": total, "offset": offset, "trades": [dict(r) for r in rows]}
 
     def recent_events(self, limit: int = 200, event_type: str | None = None) -> list[dict]:
         sql = "SELECT ts, type, payload FROM events WHERE run_id=?"

@@ -55,6 +55,52 @@ body{font-family:var(--kr);font-size:14px;line-height:1.5;
 svg,canvas{image-rendering:pixelated;shape-rendering:crispEdges}
 .px{font-family:var(--px);letter-spacing:.04em}
 
+/* ── 전략 설명 ────────────────────────────────────────────────────────
+   드롭다운의 이름만으로는 그 전략이 무엇을 하는지 알 수 없습니다. 고른
+   즉시 아래에 한국어로 펼칩니다 — 시작 버튼을 누르기 전에 읽어야 하는 것. */
+.stbrief{margin-top:12px;border:2px solid var(--line);background:#0b0e16;padding:11px 12px}
+.stmeta{font-family:var(--px);font-size:11px;color:var(--gold);
+  display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.stmeta .tag{border:1px solid var(--gold-dim);padding:2px 7px;color:var(--ink)}
+.stmeta .tag.live{border-color:var(--red);color:#ff8a83}
+.stlist{margin-top:9px;display:grid;gap:7px}
+.stitem{display:flex;gap:9px;align-items:baseline}
+.stitem b{font-size:13px;color:var(--ink);flex:0 0 auto;font-weight:600}
+.stitem span{font-size:12px;color:var(--dim);line-height:1.6;
+  word-break:keep-all;overflow-wrap:anywhere}
+.stitem.guard b{color:var(--warn)}
+.stmore{margin-top:10px}
+.stmore summary{font-family:var(--px);font-size:11px;color:var(--gold);
+  cursor:pointer;min-height:32px;display:flex;align-items:center}
+.stmore .r{display:flex;gap:8px;padding:5px 0;border-top:1px solid var(--rule);
+  font-size:12px}
+.stmore .r b{flex:0 0 118px;color:var(--dim);font-weight:400}
+.stmore .r span{color:var(--ink);line-height:1.6}
+
+/* ── 기간별 실현손익 ──────────────────────────────────────────────── */
+.pnlgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:9px}
+.pnlcard{border:2px solid var(--line);background:#0b0e16;padding:10px 11px;min-width:0}
+.pnlcard .lab{font-family:var(--px);font-size:11px;color:var(--dim);
+  letter-spacing:.08em}
+.pnlcard .v{font-family:var(--mono);font-size:19px;font-weight:700;margin-top:5px;
+  font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.pnlcard .sub{font-size:11px;color:var(--faint);margin-top:4px;line-height:1.5}
+.pnlcard.plus{border-color:rgba(255,90,82,.5)}
+.pnlcard.minus{border-color:rgba(91,157,255,.5)}
+
+/* ── 매매 기록 ────────────────────────────────────────────────────── */
+table.tradelog{font-size:12px}
+table.tradelog td{padding:6px 5px;border-bottom:1px solid var(--rule);
+  vertical-align:baseline}
+table.tradelog .tl-sym{font-family:var(--px);font-size:11px;white-space:nowrap}
+table.tradelog .tl-side{font-family:var(--px);font-size:11px;white-space:nowrap}
+table.tradelog .tl-num{font-family:var(--mono);text-align:right;
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+table.tradelog .tl-when{color:var(--faint);font-size:11px;white-space:nowrap}
+table.tradelog .tl-why{color:var(--dim);font-size:11px;max-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:560px){table.tradelog .tl-why,table.tradelog .tl-when{display:none}}
+
 /* ── frame ───────────────────────────────────────────────────────────── */
 /* 아래 42px 은 고정 티커 자리입니다 — 안 비우면 마지막 줄(위험 고지)이
    영구히 가려집니다. */
@@ -573,6 +619,16 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
         <button class="btn buy" id="runStart">▶ 시작</button>
         <button class="btn" id="runStop" hidden>■ 정지</button>
       </div>
+      <!-- 고른 전략이 무엇을 하는지. 영어 식별자만 보여주면 그게 뭔지 이미
+           아는 사람만 이 버튼을 누를 수 있습니다. -->
+      <div class="stbrief" id="stBrief" hidden>
+        <div class="stmeta" id="stMeta"></div>
+        <div class="stlist" id="stSignals"></div>
+        <details class="stmore">
+          <summary>자세히</summary>
+          <div id="stDetail"></div>
+        </details>
+      </div>
       <div class="msg" id="runMsg"></div>
     </div>
   </section>
@@ -595,6 +651,29 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
   <section class="panel">
     <span class="plate"><span class="d" aria-hidden="true">◆</span> 보유 종목 <span class="d" aria-hidden="true">◆</span></span>
     <div class="body scroll"><table id="positions"><tbody></tbody></table></div>
+  </section>
+
+  <!-- 기간별 실현손익. 봇을 껐다 켜도 이어집니다 — 재시작마다 0 으로
+       돌아가는 숫자는 수익이 아니라 실행 시간입니다. -->
+  <section class="panel">
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 실현 수익 <span class="d" aria-hidden="true">◆</span></span>
+    <div class="body">
+      <div class="pnlgrid" id="pnlGrid"></div>
+      <div class="msg">확정된 손익만 셉니다 — 아직 들고 있는 종목의 평가손익은
+        위 계좌 칸에 있습니다. 수수료와 세금을 뺀 값입니다.</div>
+    </div>
+  </section>
+
+  <!-- 매매 기록 -->
+  <section class="panel">
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 매매 기록 <span class="d" aria-hidden="true">◆</span></span>
+    <div class="body">
+      <div class="scroll"><table class="tradelog"><tbody id="tradeLog"></tbody></table></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="tradeMore" hidden>더 보기</button>
+        <span class="dim" id="tradeCount"></span>
+      </div>
+    </div>
   </section>
 
   <!-- analyst room -->
@@ -2199,6 +2278,9 @@ $("#registerForm").addEventListener("submit", async ev => {
 function start() {
   loadStrategies();
   loadPlan();
+  loadPnl();
+  loadTradeLog();
+  timers.push(setInterval(loadPnl, 30000));
   refreshManual();
   refreshSymbols();
   loadChart();
@@ -2363,8 +2445,124 @@ async function loadStrategies() {
   // 연동이 끝난 전략을 기본으로 고릅니다.
   const ready = strategies.find(st => !(st.requires || []).some(k => !linked.has(k)));
   sel.value = keep || (ready ? ready.id : (strategies[0] || {}).id || "");
+  renderStrategyBrief();
   if (chart) loadChart();
 }
+
+/* ── 고른 전략이 무엇을 하는가 ─────────────────────────────────────
+   시작 버튼을 누르기 전에 읽어야 하는 것입니다. 영어 식별자만 보여주고
+   "▶ 시작" 을 옆에 두면, 무엇이 일어날지 모르는 채로 누르게 됩니다. */
+function renderStrategyBrief() {
+  const box = $("#stBrief");
+  const st = strategies.find(x => x.id === chartStrategy());
+  if (!st) { box.hidden = true; return; }
+  box.hidden = false;
+
+  const live = st.mode === "live";
+  $("#stMeta").innerHTML =
+    `<span class="tag${live ? " live" : ""}">${esc(st.mode_ko || st.mode)}</span>` +
+    `<span class="tag">${esc(st.broker_ko || st.broker)}</span>` +
+    `<span class="tag">${esc(st.timeframe || "")} 봉</span>` +
+    `<span class="tag">종목 ${st.symbols}개</span>`;
+
+  const row = (g, cls) =>
+    `<div class="stitem${cls}"><b>${esc(g.ko)}</b><span>${esc(g.what)}</span></div>`;
+  $("#stSignals").innerHTML =
+    (st.signals || []).map(g => row(g, "")).join("") +
+    (st.guards || []).map(g => row(g, " guard")).join("");
+
+  const line = (label, value) =>
+    `<div class="r"><b>${esc(label)}</b><span>${esc(value)}</span></div>`;
+  const ex = st.execution || {};
+  const tickers = st.tickers || [];
+  $("#stDetail").innerHTML =
+    line("주문 방식", `${ex.ko || "—"} — ${ex.what || ""}`)
+    + (st.protections || []).map(r => line(r.ko, r.what)).join("")
+    + (tickers.length ? line("대상 종목", tickers.join(", ")) : "");
+}
+
+/* ── 기간별 실현손익 ─────────────────────────────────────────────── */
+const PNL_LABEL = {today: "오늘", week: "이번 주", month: "이번 달", year: "올해"};
+
+async function loadPnl() {
+  let d;
+  try { d = await api("/api/pnl"); } catch { return; }
+  const p = d.periods || {};
+  $("#pnlGrid").innerHTML = ["today", "week", "month", "year"].map(k => {
+    const v = p[k] || {};
+    const pnl = v.pnl || 0;
+    const cls = pnl > 0 ? " plus" : pnl < 0 ? " minus" : "";
+    const sign = pnl > 0 ? "+" : "";
+    const rate = v.win_rate == null ? "—" : (v.win_rate * 100).toFixed(0) + "%";
+    return `<div class="pnlcard${cls}">
+      <div class="lab">${PNL_LABEL[k]}</div>
+      <div class="v ${cls.trim()}">${sign}${num(pnl)}</div>
+      <div class="sub">${v.trades || 0}건 · 승률 ${rate}</div></div>`;
+  }).join("");
+}
+
+/* ── 매매 기록 ───────────────────────────────────────────────────────
+   `/api/trades` 는 지금 돌고 있는 실행만 봅니다. 어제 껐다 켰으면 어제
+   거래가 사라지는데, "내가 뭘 사고팔았나" 는 재시작과 무관한 질문입니다. */
+let tradeShown = 0;
+
+async function loadTradeLog(more) {
+  if (!more) tradeShown = 0;
+  let d;
+  try {
+    d = await api(`/api/tradelog?limit=40&offset=${more ? tradeShown : 0}`);
+  } catch { return; }
+  const rows = (d.trades || []).map(t => {
+    const pnl = t.pnl || 0;
+    const cls = pnl > 0 ? "up" : pnl < 0 ? "down" : "";
+    const pct = t.pnl_pct == null ? "" : ` (${pct2(t.pnl_pct)})`;
+    // 저장된 side 는 진입 방향입니다. 기록으로 보는 사람에게는 "샀다 팔았다"
+    // 가 한 줄이므로, 방향을 그대로 쓰면 매도 기록이 없어 보입니다.
+    const side = t.side === "buy" ? "매수→매도" : "매도→매수";
+    return `<tr>
+      <td class="tl-sym">${esc(String(t.symbol || "").split(":").pop())}</td>
+      <td class="tl-side dim">${side}</td>
+      <td class="tl-num">${num(t.quantity)}</td>
+      <td class="tl-num">${num(t.entry_price)} → ${num(t.exit_price)}</td>
+      <td class="tl-num ${cls}">${pnl > 0 ? "+" : ""}${num(pnl)}${pct}</td>
+      <td class="tl-when">${when(t.exit_ts)}</td>
+      <td class="tl-why">${esc(t.exit_tag || "")}</td></tr>`;
+  });
+  const body = $("#tradeLog");
+  if (more) body.insertAdjacentHTML("beforeend", rows.join(""));
+  else body.innerHTML = rows.join("") ||
+    `<tr><td class="dim" style="padding:14px 5px">아직 완료된 매매가 없습니다.
+      사고 <b>팔아서</b> 손익이 확정되면 여기에 한 줄씩 쌓입니다 — 아직 들고
+      있는 종목은 위 <b>보유 종목</b>에 있습니다.</td></tr>`;
+  tradeShown = (more ? tradeShown : 0) + (d.trades || []).length;
+  $("#tradeCount").textContent = d.total ? `${tradeShown} / ${d.total}건` : "";
+  $("#tradeMore").hidden = tradeShown >= (d.total || 0);
+}
+
+const pct2 = n => (n == null || !isFinite(n)) ? "—"
+  : (n >= 0 ? "+" : "") + (n * 100).toFixed(2) + "%";
+
+/* 기록에 뜨는 시각은 한국 시간이어야 합니다 — UTC 로 보여주면 아침에 낸
+   거래가 전날 밤으로 보입니다. */
+function when(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d)) return "—";
+  return d.toLocaleString("ko-KR", {timeZone: "Asia/Seoul", month: "2-digit",
+    day: "2-digit", hour: "2-digit", minute: "2-digit"});
+}
+
+$("#tradeMore").onclick = () => loadTradeLog(true);
+
+// 전략을 바꾸면 설명과 차트와 종목이 같이 따라와야 합니다. 설명만 옛것에
+// 남아 있으면, 읽은 것과 시작되는 것이 서로 다른 전략이 됩니다.
+$("#strategyPick").onchange = () => {
+  renderStrategyBrief();
+  refreshSymbols();
+  loadPnl();
+  loadTradeLog();
+  if (chart) loadChart();
+};
 
 function runnerState(running) {
   document.getElementById("runStart").hidden = running;
