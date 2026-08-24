@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 import random
 from abc import ABC, abstractmethod
+from datetime import date, datetime
 from decimal import Decimal
 
 from quant.core.types import Bar, Order, OrderSide, OrderType, Quote, Symbol
@@ -21,7 +22,15 @@ from quant.core.types import Bar, Order, OrderSide, OrderType, Quote, Symbol
 # ─── fees ────────────────────────────────────────────────────────────────
 class FeeModel(ABC):
     @abstractmethod
-    def fee(self, symbol: Symbol, quantity: Decimal, price: float, is_maker: bool) -> float: ...
+    def fee(self, symbol: Symbol, quantity: Decimal, price: float, is_maker: bool,
+            when: datetime | date | None = None) -> float:
+        """체결 하나에 붙는 비용.
+
+        `when` 은 체결 시각입니다. 대부분의 모델은 무시하지만, 한국 거래세처럼
+        **해마다 요율이 바뀌는** 비용이 있어서 받습니다. 여러 해에 걸친
+        백테스트에서 한 요율로 눌러버리면 그 구간의 성과가 통째로 틀어집니다.
+        """
+        raise NotImplementedError
 
 
 class PercentFeeModel(FeeModel):
@@ -33,7 +42,7 @@ class PercentFeeModel(FeeModel):
         self.maker = (maker_bps if maker_bps is not None else taker_bps) / 10_000.0
         self.minimum = minimum
 
-    def fee(self, symbol, quantity, price, is_maker):
+    def fee(self, symbol, quantity, price, is_maker, when=None):
         rate = self.maker if is_maker else self.taker
         return max(abs(float(quantity)) * price * float(symbol.multiplier) * rate, self.minimum)
 
@@ -47,42 +56,85 @@ class PerShareFeeModel(FeeModel):
         self.minimum = minimum
         self.cap_pct = max_pct_of_notional
 
-    def fee(self, symbol, quantity, price, is_maker):
+    def fee(self, symbol, quantity, price, is_maker, when=None):
         qty = abs(float(quantity))
         raw = max(qty * self.per_share, self.minimum)
         return min(raw, qty * price * self.cap_pct) if self.cap_pct else raw
 
 
-class KoreanEquityFeeModel(FeeModel):
-    """KRX: brokerage commission both ways plus a sell-side transaction tax.
+#: 증권거래세 + 농어촌특별세, 매도 대금 기준 bp. 해마다 바뀝니다.
+#:
+#: 한 해에 한 값이지 시장별로 다르지 않습니다 — KOSPI 는 증권거래세를 낮추고
+#: 농특세를 얹어 KOSDAQ 과 총부담을 맞춰 왔습니다(2026: KOSPI 0.05+0.15,
+#: KOSDAQ 0.20). 그래서 시장이 아니라 **연도**로 찾습니다.
+#:
+#: 2026년에 다시 올랐습니다. 내린 줄 알고 2024년 값을 쓰면 매도마다 2bp 씩
+#: 실제보다 싸게 계산되고, 회전율이 높은 전략일수록 백테스트가 실제보다
+#: 좋아 보입니다.
+KRX_SELL_TAX_BPS: dict[int, float] = {
+    2023: 20.0,
+    2024: 18.0,
+    2025: 15.0,
+    2026: 20.0,
+}
+_LATEST_TAX_YEAR = max(KRX_SELL_TAX_BPS)
 
-    The asymmetry matters — a round trip costs materially more than 2× the
-    commission, which quietly kills high-turnover strategies on Korean equities.
+
+def krx_sell_tax_bps(when: datetime | date | None = None) -> float:
+    """그 시점에 실제로 물린 세율. 모르는 미래는 마지막으로 아는 값."""
+    if when is None:
+        year = _LATEST_TAX_YEAR
+    else:
+        year = when.year
+    if year in KRX_SELL_TAX_BPS:
+        return KRX_SELL_TAX_BPS[year]
+    # 표보다 이전이면 가장 오래된 값, 이후면 가장 최근 값. 없는 해를 0 으로
+    # 두면 그 구간만 비용이 사라져 백테스트가 조용히 좋아집니다.
+    return KRX_SELL_TAX_BPS[min(KRX_SELL_TAX_BPS) if year < min(KRX_SELL_TAX_BPS)
+                            else _LATEST_TAX_YEAR]
+
+
+class KoreanEquityFeeModel(FeeModel):
+    """KRX 위탁수수료 — 양방향으로 같은 요율.
+
+    매도 거래세는 여기 없습니다. 예전에는 `sell_tax_bps` 를 받아서 **저장만
+    하고 쓰지 않았는데**, 세율을 넣은 사람은 그것이 부과된다고 믿을 수밖에
+    없었습니다. 조용히 0원을 물리는 인자는 없느니만 못합니다. 거래세는
+    `KoreanEquitySellTax` 를 `SideAwareFeeModel` 의 매도 쪽에 붙여 씁니다 —
+    그래야 왕복 비용이 수수료 2배보다 크다는 사실이 구조에 드러납니다.
     """
 
-    def __init__(self, commission_bps: float = 1.5, sell_tax_bps: float = 18.0):
+    def __init__(self, commission_bps: float = 1.5):
         self.commission = commission_bps / 10_000.0
-        self.sell_tax = sell_tax_bps / 10_000.0
 
-    def fee(self, symbol, quantity, price, is_maker):
-        notional = abs(float(quantity)) * price
-        return notional * self.commission
+    def fee(self, symbol, quantity, price, is_maker, when=None):
+        return abs(float(quantity)) * price * self.commission
 
 
 class KoreanEquitySellTax(FeeModel):
-    def __init__(self, sell_tax_bps: float = 18.0):
-        self.rate = sell_tax_bps / 10_000.0
+    """매도에만 붙는 세금. 연도별 실제 세율을 씁니다.
 
-    def fee(self, symbol, quantity, price, is_maker):
-        return abs(float(quantity)) * price * self.rate
+    `sell_tax_bps` 를 명시하면 그 값으로 고정되고, 비워두면 체결 시점의
+    연도에서 찾습니다 — 여러 해에 걸친 백테스트에서 한 값으로 눌러버리면
+    세율이 달랐던 구간의 성과가 통째로 틀어집니다.
+    """
+
+    def __init__(self, sell_tax_bps: float | None = None):
+        self.fixed = None if sell_tax_bps is None else sell_tax_bps / 10_000.0
+
+    def rate_at(self, when: datetime | date | None = None) -> float:
+        return self.fixed if self.fixed is not None else krx_sell_tax_bps(when) / 10_000.0
+
+    def fee(self, symbol, quantity, price, is_maker, when=None):
+        return abs(float(quantity)) * price * self.rate_at(when)
 
 
 class CompositeFeeModel(FeeModel):
     def __init__(self, *models: FeeModel):
         self.models = models
 
-    def fee(self, symbol, quantity, price, is_maker):
-        return sum(m.fee(symbol, quantity, price, is_maker) for m in self.models)
+    def fee(self, symbol, quantity, price, is_maker, when=None):
+        return sum(m.fee(symbol, quantity, price, is_maker, when) for m in self.models)
 
 
 class SideAwareFeeModel(FeeModel):
@@ -97,8 +149,8 @@ class SideAwareFeeModel(FeeModel):
         extra = self.sell_extra if side is OrderSide.SELL else self.buy_extra
         return CompositeFeeModel(self.base, extra) if extra else self.base
 
-    def fee(self, symbol, quantity, price, is_maker):
-        return self.base.fee(symbol, quantity, price, is_maker)
+    def fee(self, symbol, quantity, price, is_maker, when=None):
+        return self.base.fee(symbol, quantity, price, is_maker, when)
 
 
 # ─── slippage ────────────────────────────────────────────────────────────

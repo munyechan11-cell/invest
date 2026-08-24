@@ -133,7 +133,8 @@ class PaperBrokerage(Brokerage):
         fee_model = self.fees
         if isinstance(fee_model, SideAwareFeeModel):
             fee_model = fee_model.for_side(order.side)
-        fee = fee_model.fee(order.symbol, qty, price, is_maker)
+        # 체결 시각을 넘깁니다 — 한국 거래세는 해마다 요율이 다릅니다.
+        fee = fee_model.fee(order.symbol, qty, price, is_maker, bar.end_ts)
 
         if order.side is OrderSide.BUY:
             cost = float(qty) * price * float(order.symbol.multiplier) + fee
@@ -147,7 +148,7 @@ class PaperBrokerage(Brokerage):
                                         f"have {self.portfolio.cash:.2f}")
                     return None
                 qty = affordable
-                fee = fee_model.fee(order.symbol, qty, price, is_maker)
+                fee = fee_model.fee(order.symbol, qty, price, is_maker, bar.end_ts)
 
         fill = Fill(
             order_id=order.id, symbol=order.symbol, side=order.side, quantity=qty,
