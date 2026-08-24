@@ -15,14 +15,17 @@ from pathlib import Path
 import pytest
 
 SW = Path("quant/api/static/sw.js").read_text(encoding="utf-8")
+HTML = Path("quant/api/static/index.html").read_text(encoding="utf-8")
 
 
 def test_code_is_fetched_from_the_network_first():
     """js/css 는 네트워크 우선이어야 합니다. 캐시 우선이면 못 고칩니다."""
     assert re.search(r"\(js\|css\)\$", SW), "코드 확장자를 따로 다루지 않습니다"
     branch = SW[SW.find("(js|css)$"):]
-    assert branch.index("fetch(e.request)") < branch.index("caches.match"), \
+    assert branch.index("fetch(e.request") < branch.index("caches.match"), \
         "코드 경로가 아직 캐시를 먼저 봅니다"
+    assert "cache: 'no-cache'" in branch, \
+        "network-first가 브라우저의 fresh HTTP cache에서 멈춥니다"
 
 
 def test_money_never_comes_from_a_cache():
@@ -33,7 +36,32 @@ def test_money_never_comes_from_a_cache():
 
 def test_documents_are_network_first():
     nav = SW[SW.find("mode === 'navigate'"):]
-    assert nav.index("fetch(e.request)") < nav.index("caches.match")
+    assert nav.index("fetch(e.request") < nav.index("caches.match")
+    assert "cache: 'no-cache'" in nav[:nav.index("return;")]
+
+
+def test_latest_document_replaces_the_offline_shell():
+    """온라인 재방문 뒤 오프라인에서도 옛 inline JS를 되살리지 않습니다."""
+    nav = SW[SW.find("mode === 'navigate'"):]
+    online = nav[:nav.index(".catch")]
+    assert "save(res, '/')" in online
+
+
+def test_cache_write_failure_does_not_replace_a_fresh_response():
+    """저장 공간 부족은 최신 network 응답을 옛 cache로 바꾸면 안 됩니다."""
+    save = SW[SW.index("const save"):SW.index("// 문서는 네트워크 우선")]
+    assert "try {" in save and "} catch {" in save
+    assert save.rfind("return res") > save.index("} catch {")
+
+
+def test_this_redesign_rotates_the_shell_and_stylesheet_url():
+    assert "quant-shell-v4" in SW
+    stylesheet = re.search(r'href="(/static/app\.css\?v=[^"]+)"', HTML)
+    assert stylesheet
+    assert f"'{stylesheet.group(1)}'" in SW
+    assert "'/static/chart.js'" in SW
+    install = SW[SW.find("addEventListener('install'"):SW.find("addEventListener('activate'")]
+    assert "new Request(url, { cache: 'no-cache' })" in install
 
 
 def test_old_caches_are_dropped_on_activate():

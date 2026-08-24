@@ -63,6 +63,20 @@ def test_the_tour_holds_the_keyboard_while_it_is_up():
     assert "tourReturnFocus" in SCRIPT          # 끝나면 원래 자리로
 
 
+def test_mobile_tour_returns_focus_to_a_visible_header_control():
+    """도구 menu가 닫힌 뒤 숨은 ? 버튼이나 focus 불가 nav로 보내지 않습니다."""
+    body = re.search(r"function tourEnd\(\) \{(.*?)\n\}", SCRIPT, re.S).group(1)
+    assert 'getElementById("headToolsToggle")' in body
+    assert "#pageTabs [aria-current=\"page\"]" in body
+    assert 'getElementById("pageTabs")' not in body
+
+
+def test_tour_positions_the_ring_after_a_synchronous_scroll():
+    """rect를 곧바로 다시 읽는 경로는 smooth animation을 시작하면 안 됩니다."""
+    body = re.search(r"function tourShow\(\) \{(.*?)\n\}", SCRIPT, re.S).group(1)
+    assert '"nearest", "auto"' in body
+
+
 def test_replaying_the_tour_does_not_re_announce_it():
     """? 안내로 다시 보는 경우에는 서버에 알릴 것이 없습니다."""
     body = re.search(r"function tourEnd\(\) \{(.*?)\n\}", SCRIPT, re.S).group(1)

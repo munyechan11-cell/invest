@@ -60,7 +60,11 @@ class Tags(HTMLParser):
 @pytest.fixture(scope="module")
 def setup_sheet(markup: str) -> str:
     """초기 설정 오버레이만 — 마이페이지에도 '투자 성향' 이 있기 때문입니다."""
-    start = markup.index('<div class="overlay" id="setup">')
+    # Dialog semantics may add attributes after the stable id.  Locating the
+    # element by that identity keeps this fixture focused on setup content.
+    match = re.search(r'<div\s+class="overlay"\s+id="setup"(?:\s[^>]*)?>', markup)
+    assert match, "초기 설정 overlay가 없습니다"
+    start = match.start()
     return markup[start:markup.index('<div class="tape', start)]
 
 
