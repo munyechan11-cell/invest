@@ -495,6 +495,43 @@ def _scrub(text: str, secrets_used: dict[str, str]) -> str:
     return text
 
 
+#: 각 자격증명이 어떤 모양이어야 하는가. 값을 검사하는 게 아니라 **모양**만
+#: 봅니다 — 유효한지는 불러 봐야 알지만, "브라우저 자동완성이 로그인
+#: 비밀번호를 넣어 두었다" 같은 것은 부르기 전에 알 수 있습니다.
+#:
+#: (접두사, 최소 길이, 사람이 읽을 이름)
+_KEY_SHAPE: dict[str, tuple[str, int, str]] = {
+    "TOSS_CLIENT_ID": ("tsck_", 20, "토스 클라이언트 ID"),
+    "TOSS_CLIENT_SECRET": ("tssk_", 20, "토스 클라이언트 시크릿"),
+    "KIS_APP_KEY": ("", 30, "KIS 앱 키"),
+    "KIS_APP_SECRET": ("", 100, "KIS 앱 시크릿"),
+}
+
+
+def _shape_problem(env: str, value: str) -> str:
+    """이 값이 그 자리에 들어갈 모양인가. 문제 없으면 빈 문자열.
+
+    자동완성이 채운 로그인 비밀번호, 복사하다 딸려온 공백, 잘린 값 —
+    전부 부르기 전에 알 수 있는 것들이고, 부른 뒤에는 서버가 그냥
+    `access_denied` 라고만 답합니다.
+    """
+    shape = _KEY_SHAPE.get(env)
+    if not shape or not value:
+        return ""
+    prefix, min_len, label = shape
+    if value != value.strip():
+        return f"{label}: 앞뒤에 공백이나 줄바꿈이 섞여 있습니다"
+    if any(ch.isspace() for ch in value):
+        return f"{label}: 값 안에 공백이 있습니다 — 복사할 때 잘린 것 같습니다"
+    if prefix and not value.startswith(prefix):
+        return (f"{label}: '{prefix}' 로 시작해야 합니다. 브라우저 자동완성이 "
+                f"다른 값을 채웠을 수 있습니다 — 칸을 비우고 콘솔에서 복사한 "
+                f"값을 다시 붙여 넣어 보세요.")
+    if len(value) < min_len:
+        return f"{label}: 너무 짧습니다({len(value)}자) — 값이 잘린 것 같습니다"
+    return ""
+
+
 async def _verify_kis(values: dict[str, str]) -> dict:
     """토큰만 보지 않고 **봇이 실제로 밟는 길**을 밟아 봅니다.
 
@@ -616,6 +653,16 @@ async def verify_venue(venue_id: str, values: dict[str, str]) -> dict:
                if required and not values.get(env)]
     if missing:
         return {"ok": False, "error": f"미입력 항목: {', '.join(missing)}"}
+
+    # 부르기 전에 알 수 있는 것부터. 서버는 잘못된 값에 `access_denied` 라고만
+    # 답하고, 그 한 마디로는 무엇이 잘못됐는지 알 수 없습니다.
+    shape_issues = [msg for env in values
+                    if (msg := _shape_problem(env, values.get(env, "")))]
+    if shape_issues:
+        return {"ok": False,
+                "steps": [{"step": "저장된 값 모양 확인", "ok": False,
+                           "detail": msg} for msg in shape_issues],
+                "error": shape_issues[0]}
 
     try:
         if venue_id == "kis":
@@ -1949,6 +1996,37 @@ def create_app(config: StrategyConfig | None = None,
             note += (" — 거부된 항목: "
                      + ", ".join(f"{k}({v})" for k, v in out["rejected"].items()))
         return {**out, "note": note}
+
+    @app.get("/api/setup/inspect")
+    async def setup_inspect(seat: Desk = Depends(desk)):
+        """저장된 자격증명의 **모양**만 봅니다. 값은 어떤 경로로도 나가지 않습니다.
+
+        "키를 넣었는데 403" 일 때 가장 먼저 확인해야 하는 것은 "내가 넣은 값이
+        실제로 저장돼 있는가" 입니다. 브라우저 자동완성이 로그인 비밀번호를
+        채우고 그것이 덮어써지는 일이 실제로 일어나고, 그때 서버는 그냥
+        `access_denied` 라고만 답합니다.
+
+        길이·접두사·공백 여부만 돌려줍니다. 그것만으로 잘못 저장된 값은
+        대부분 드러나고, 값 자체는 여전히 다시 조회할 수 없습니다.
+        """
+        secrets = await run_in_threadpool(
+            seat.registry.accounts.secrets_for, seat.user.id)
+        out = []
+        for env in sorted(secrets):
+            value = secrets[env] or ""
+            problem = _shape_problem(env, value)
+            out.append({
+                "name": env,
+                "length": len(value),
+                # 앞 5자면 접두사를 확인하기에 충분하고, 그것만으로는 키를
+                # 되살릴 수 없습니다.
+                "starts_with": value[:5],
+                "ends_with": value[-4:] if len(value) > 12 else "",
+                "has_whitespace": any(ch.isspace() for ch in value),
+                "trimmed": value != value.strip(),
+                "problem": problem,
+            })
+        return {"secrets": out}
 
     @app.post("/api/setup/verify/{venue_id}")
     async def setup_verify(venue_id: str, seat: Desk = Depends(desk)):
