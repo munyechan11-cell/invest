@@ -299,11 +299,22 @@ def test_viewport_meta_is_intact(tags):
 
 
 def test_new_controls_are_finger_sized(html):
+    """44px 은 손가락 하나의 크기입니다. 그보다 작으면 옆 칸이 눌립니다.
+
+    선택자의 **모양**이 아니라 그 칸이 규칙에 걸리는지를 봅니다. 처음에는
+    `.pwform .fld input` 처럼 좁게 짚었는데, 그 래퍼 밖에 있던 추천 코드
+    칸이 19px 로 남아 있었습니다 — 좁은 선택자를 검사하면 그 선택자가
+    닿지 않는 칸을 놓칩니다.
+    """
     assert re.search(r"\.btn\.tap\{min-height:44px", html)
     assert re.search(r"\.tabs \.tab\{[^}]*min-height:44px", html)
-    assert re.search(r"form\.auth \.fld input\{min-height:44px\}", html)
-    assert re.search(r"\.pwform \.fld input\{min-height:44px\}", html)
+    assert re.search(r"\.fld input[^{]*\{[^}]*min-height:44px", html), \
+        "입력칸 전반에 걸리는 44px 규칙이 없습니다"
+    assert re.search(r"\.pwform input\{[^}]*min-height:44px", html), \
+        ".pwform 안의 칸이 .fld 래퍼 밖에 있어도 44px 이어야 합니다"
     assert re.search(r"\.venue \.head\{min-height:44px\}", html)
+    assert re.search(r"\.actions \.btn\{min-width:44px\}", html), \
+        "수동 매수/매도 버튼이 43px 이었습니다 — 폭도 손가락 크기여야 합니다"
 
 
 def test_every_gate_and_account_button_is_a_tap_target(tags):

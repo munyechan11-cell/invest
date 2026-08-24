@@ -17,8 +17,10 @@
 <style>
 /* Pixel Hangul is optional: drop a woff2 into static/fonts/ and it is picked up.
    Missing files fail silently, so the stack just falls through. */
-@font-face{font-family:"PixelKR";src:url("/static/fonts/galmuri11.woff2") format("woff2");font-display:swap}
-@font-face{font-family:"PixelKR2";src:url("/static/fonts/neodgm.woff2") format("woff2");font-display:swap}
+/* 픽셀 한글 폰트는 저장소에 없습니다(라이선스·용량). 선언만 남겨 두면
+   브라우저가 매 로드마다 없는 파일을 두 번 요청하고 콘솔에 404 를 찍습니다 —
+   얻는 것 없이 실패만 기록합니다. 넣는 방법은 static/fonts/README.md 에
+   있고, 스택에는 이름이 그대로 남아 있어서 선언만 되살리면 바로 잡힙니다. */
 
 :root{
   --bg:#07080c; --panel:#0e1119; --plate:#151a25; --line:#252c3a;
@@ -26,7 +28,11 @@
   /* 한국 색 논리: 오르면 빨강, 내리면 파랑. 시세 패널과 차트는 이미
      이쪽이었고 티커·이벤트만 서구식이라, 같은 상승이 한 화면에서
      초록과 빨강으로 동시에 칠해지고 있었습니다. */
+  /* 방향(등락) — 한국식: 오르면 빨강, 내리면 파랑. 여기 말고는 쓰지 않습니다. */
   --up:#ff5a52; --down:#5b9dff;
+  /* 상태(성공·경고·실패) — 방향과 별개입니다. 겸용하면 한국식으로 바꾸는
+     순간 "저장 완료" 가 빨강이 되고 "오류" 가 파랑이 됩니다. */
+  --ok:#57d977; --warn:#f0c040; --bad:#ff8a83;
   --ink:#e8ecf2; --muted:#7b8494; --white:#fff;
   --wood:#8a6a45; --wood-dark:#6d5236; --turf:#2f6b4a; --turf-dark:#255840;
   --px:"Silkscreen","PixelKR","PixelKR2",ui-monospace,"SFMono-Regular",Menlo,monospace;
@@ -80,7 +86,7 @@ header.top{position:sticky;top:0;z-index:40;background:var(--bg);
   border-bottom:none;padding:5px 12px;color:var(--muted)}
 .tab.on{color:var(--gold);border-color:var(--gold-dim)}
 .conn{width:11px;height:11px;background:var(--muted);flex:0 0 auto}
-.conn.on{background:var(--up);box-shadow:0 0 0 3px rgba(87,217,119,.18)}
+.conn.on{background:var(--ok);box-shadow:0 0 0 3px rgba(87,217,119,.18)}
 .conn.off{background:var(--red)}
 
 /* ── panels ──────────────────────────────────────────────────────────── */
@@ -121,7 +127,8 @@ tr:last-child td{border-bottom:0}
 .scroll{overflow:auto;max-height:260px}
 
 /* ── the floor ───────────────────────────────────────────────────────── */
-.room{position:relative;padding:38px 10px 12px;overflow:hidden}
+.room{position:relative;padding:52px 10px 12px;overflow:hidden;
+  overflow:clip;overflow-clip-margin:36px}
 .room.wood{background-image:
   repeating-linear-gradient(0deg,rgba(0,0,0,.10) 0 22px,rgba(0,0,0,0) 22px 24px),
   repeating-linear-gradient(90deg,var(--wood) 0 46px,var(--wood-dark) 46px 48px);
@@ -157,6 +164,14 @@ tr:last-child td{border-bottom:0}
   word-break:keep-all;overflow-wrap:anywhere;
   box-shadow:3px 3px 0 rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .12s}
 .seat.talking .bubble{opacity:1}
+/* 줄 끝의 자리는 말풍선을 안쪽으로 당깁니다 — 가운데 정렬 그대로 두면
+   좁은 화면에서 방 밖으로 나가 잘립니다. */
+.seats .seat:first-child .bubble,.duel .seat:first-child .bubble{
+  left:0;transform:none}
+.seats .seat:last-child .bubble,.duel .seat:last-child .bubble{
+  left:auto;right:0;transform:none}
+.seats .seat:first-child .bubble:after{left:34px}
+.seats .seat:last-child .bubble:after{left:auto;right:30px}
 .bubble:after{content:"";position:absolute;top:100%;left:50%;margin-left:-5px;
   width:0;height:0;border:5px solid transparent;border-top-color:#2a1d0e}
 .bubble b{display:block;font-family:var(--px);font-size:11px;margin-bottom:3px}
@@ -219,7 +234,8 @@ tr:last-child td{border-bottom:0}
 .feed div{display:flex;gap:8px;padding:3px 0;border-bottom:1px solid var(--line)}
 .feed .t{color:var(--muted);flex:0 0 54px}
 .feed .ty{flex:0 0 118px}
-.feed .m{color:#aeb6c4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.feed .m{color:#aeb6c4;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
 
 /* ticker tape */
 .tape{position:fixed;left:0;right:0;bottom:0;z-index:50;background:#000;
@@ -245,13 +261,14 @@ select,#mSymbol{min-height:44px}
   align-items:end}
 .fld{display:flex;flex-direction:column;gap:4px;min-width:0}
 .fld label{font-family:var(--px);font-size:11px;color:var(--muted);letter-spacing:.05em}
-.fld input,.fld select{background:#0a0d14;border:2px solid var(--field);color:var(--ink);
+.fld input,.fld select{min-height:44px;background:#0a0d14;border:2px solid var(--field);color:var(--ink);
   font-family:var(--px);font-size:12px;padding:6px 8px;width:100%}
 .fld input:focus,.fld select:focus{border-color:var(--gold)}
 /* 키보드로 오는 사람에게는 어디에 있는지가 유일한 단서입니다. 마우스로 누를
    때는 안 뜨고(:focus-visible), 탭으로 올 때만 뜹니다. */
 :focus-visible{outline:3px solid var(--gold);outline-offset:2px}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.actions .btn{min-width:44px}
 .pins{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
 .pin{font-family:var(--px);font-size:11px;border:2px solid var(--gold-dim);color:var(--gold);
   padding:3px 7px;display:flex;gap:6px;align-items:center}
@@ -261,13 +278,13 @@ select,#mSymbol{min-height:44px}
 .gauge .lab{display:flex;justify-content:space-between;font-family:var(--px);font-size:11px;
   color:var(--muted)}
 .gauge .track{height:8px;background:#0a0d14;border:1px solid var(--line);margin-top:3px}
-.gauge .track i{display:block;height:100%;background:var(--up)}
+.gauge .track i{display:block;height:100%;background:var(--ok)}
 .gauge.hot .track i{background:var(--gold)}
-.gauge.over .track i{background:var(--down)}
+.gauge.over .track i{background:var(--red)}
 .msg{font-family:var(--px);font-size:12px;margin-top:10px;padding:6px 8px;
   border-left:3px solid var(--gold-dim);color:var(--muted);word-break:keep-all;overflow-wrap:anywhere}
-.msg.err{border-color:var(--down);color:var(--down)}
-.msg.ok{border-color:var(--up);color:var(--up)}
+.msg.err{border-color:var(--red);color:var(--bad)}
+.msg.ok{border-color:var(--ok);color:var(--ok)}
 
 /* ── 설정 마법사 ───────────────────────────────────────────────────── */
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.86);z-index:100;overflow:auto;
@@ -340,10 +357,11 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
   gap:14px;align-items:start}
 /* 오른쪽은 따라옵니다 — 왼쪽 심의를 읽는 동안 시세가 화면 밖으로 나가면
    "보면서 산다" 는 흐름이 끊깁니다. */
-.deck-r{position:sticky;top:calc(var(--header-h,64px) + 12px)}
+.deck-r{position:sticky;top:calc(var(--header-h,64px) + 12px);
+  max-height:calc(100vh - var(--header-h,64px) - 24px);overflow:auto}
 .viewtabs{display:none}
 @media(max-width:1000px){
-  .deck{grid-template-columns:1fr}
+  .deck{grid-template-columns:minmax(0,1fr)}
   .deck-r{position:static}
   /* 좁은 화면에서 세로로 쌓으면 시세가 심의 한참 아래 깔립니다. 탭으로 가릅니다. */
   .viewtabs{display:grid;grid-template-columns:1fr 1fr;position:sticky;
@@ -358,7 +376,8 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
 }
 .quotebar{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:12px 14px;
   border-bottom:1px solid var(--rule)}
-.quotebar select{background:var(--panel2);color:var(--bone);border:1px solid var(--rule);
+.quotebar select{background:var(--panel2);color:var(--bone);
+  border:2px solid var(--field);
   padding:8px 10px;font-family:var(--mono);font-size:13px;min-height:44px}
 .quotebar .last{font-family:var(--mono);font-size:26px;font-weight:700;
   font-variant-numeric:tabular-nums;margin-left:auto}
@@ -377,14 +396,15 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
 .ticket label{font-size:12px;color:var(--dim);letter-spacing:.1em;display:block;
   margin-bottom:4px}
 .ticket input{width:100%;background:var(--panel2);color:var(--bone);
-  border:1px solid var(--rule);padding:9px 10px;font-family:var(--mono);min-height:44px}
+  border:2px solid var(--field);padding:9px 10px;font-family:var(--mono);
+  min-height:44px}
 .ticket .hint{font-size:11px;color:var(--faint);line-height:1.5}
 .ticket .go{display:grid;grid-template-columns:1fr 1fr;gap:9px}
 .ticket .go button{min-height:46px;font-family:var(--px);font-size:12px}
 
 .runbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .runbar select{flex:1;min-width:180px;min-height:44px;background:var(--plate);
-  color:var(--ink);border:2px solid var(--line);padding:8px 10px;font-size:13px}
+  color:var(--ink);border:2px solid var(--field);padding:8px 10px;font-size:13px}
 .runbar .btn{flex:0 0 auto}
 
 /* ── 첫 방문 안내 ─────────────────────────────────────────────────────
@@ -458,18 +478,18 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
 .link .btn{margin-left:auto}
 .pwform{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;
   align-items:end;margin-top:8px}
-.pwform .fld input{min-height:44px}
+.pwform input{min-height:44px}
 
 /* ── 설정 진행 상태 ────────────────────────────────────────────────── */
 .steps{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
 .steps span{font-family:var(--px);font-size:11px;border:2px solid var(--line);
   padding:5px 8px;color:var(--muted)}
-.steps span.done{border-color:var(--up);color:var(--up)}
+.steps span.done{border-color:var(--ok);color:var(--ok)}
 .steps span.now{border-color:var(--gold);color:var(--gold)}
 .steps span.skipped{border-color:var(--gold-dim);color:var(--gold)}
 .step .head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .step .head .mark{font-family:var(--px);font-size:11px;color:var(--muted);margin-left:auto}
-.step .head .mark.done{color:var(--up)}
+.step .head .mark.done{color:var(--ok)}
 .venue .head{min-height:44px}
 </style>
 </head>
@@ -881,8 +901,10 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
 <script>
 "use strict";
 const $ = s => document.querySelector(s);
-const token = new URLSearchParams(location.search).get("token") || "";
-const auth = token ? {Authorization: "Bearer " + token} : {};
+/* CSS 토큰을 캔버스에서도 씁니다. 색을 두 군데 적으면 반드시 한쪽만 바뀝니다 —
+   자산곡선이 상승을 초록으로 그리는 동안 바로 옆 숫자는 빨강이었습니다. */
+const tok = name => getComputedStyle(document.documentElement)
+  .getPropertyValue(name).trim() || "#888";
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const num = (n, d = 0) => n == null || !isFinite(n) ? "—"
@@ -1158,7 +1180,7 @@ function renderVerdict(d, demo) {
 /* The session lives in an HttpOnly cookie, so the browser must be told to
    send it — and nothing here ever holds a token, which is the point. */
 async function api(path) {
-  const r = await fetch(path, {headers: auth, credentials: "same-origin"});
+  const r = await fetch(path, {credentials: "same-origin"});
   if (r.status === 401) { signedOut(); throw new Error("로그인이 필요합니다"); }
   if (!r.ok) throw new Error(r.status + " " + path);
   return r.json();
@@ -1188,7 +1210,8 @@ function drawEquity() {
   const up = vals[vals.length - 1] >= vals[0];
   ctx.beginPath();
   equity.forEach((p, i) => i ? ctx.lineTo(X(i), Y(p.equity)) : ctx.moveTo(X(i), Y(p.equity)));
-  ctx.strokeStyle = up ? "#57d977" : "#ff5a52"; ctx.lineWidth = 2; ctx.stroke();
+  // 같은 상승을 바로 옆 숫자는 빨강으로, 이 선은 초록으로 그리고 있었습니다.
+  ctx.strokeStyle = tok(up ? "--up" : "--down"); ctx.lineWidth = 2; ctx.stroke();
 }
 
 function renderHud(p) {
@@ -1239,7 +1262,7 @@ function renderFlow(data) {
       <div class="bars">
         ${trio.map(([n, q]) => {
           const h = Math.max(Math.abs(q) / scale * 100, 3);
-          const c = q >= 0 ? "#57d977" : "#ff5a52";
+          const c = tok(q >= 0 ? "--up" : "--down");
           return `<span class="lbl">${n}</span>
             <span class="b" title="${n} ${num(q)}"><i style="height:${h}%;background:${c}"></i></span>`;
         }).join("")}
@@ -1325,7 +1348,9 @@ let lastShown = null;
 let socket = null, ping = null;
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws${token ? "?token=" + token : ""}`);
+  // 세션은 HttpOnly 쿠키입니다. 웹소켓 핸드셰이크에도 같은 쿠키가 실려
+  // 나가므로 주소에 붙일 것이 없습니다 — 쿼리스트링은 서버 로그에 남습니다.
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
   socket = ws;
   ws.onmessage = m => {
     let e; try { e = JSON.parse(m.data); } catch { return; }
@@ -2074,7 +2099,7 @@ function showTab(which) {
    요점이라, 로그인 여부는 서버에 물어보는 것 말고는 알 방법이 없습니다. */
 async function whoami() {
   try {
-    const r = await fetch("/api/auth/me", {headers: auth, credentials: "same-origin"});
+    const r = await fetch("/api/auth/me", {credentials: "same-origin"});
     if (!r.ok) return null;
     const data = await r.json();
     const user = data && data.user ? data.user : data;
@@ -2468,12 +2493,26 @@ function tourShow() {
                            inline: "nearest", behavior: "instant"});
     r = target.getBoundingClientRect();
   }
-  const pad = 6;
+  // 대상이 화면보다 크면 링을 화면 안으로 자릅니다. 잘린 변은 테두리를
+  // 지웁니다 — 화면 가장자리에 그어진 금색 선은 "여기가 끝" 이라는 거짓말이라,
+  // 없는 편이 낫습니다.
+  const pad = 6, edge = 2;
+  const top = Math.max(edge, r.top - pad);
+  const left = Math.max(edge, r.left - pad);
+  const bottom = Math.min(innerHeight - edge, r.bottom + pad);
+  const right = Math.min(innerWidth - edge, r.right + pad);
   ring.style.display = "block";
-  ring.style.top = (r.top - pad) + "px";
-  ring.style.left = (r.left - pad) + "px";
-  ring.style.width = (r.width + pad * 2) + "px";
-  ring.style.height = (r.height + pad * 2) + "px";
+  ring.style.top = top + "px";
+  ring.style.left = left + "px";
+  ring.style.width = Math.max(0, right - left) + "px";
+  ring.style.height = Math.max(0, bottom - top) + "px";
+  ring.style.borderTopColor = r.top - pad < edge ? "transparent" : "";
+  ring.style.borderLeftColor = r.left - pad < edge ? "transparent" : "";
+  ring.style.borderBottomColor = r.bottom + pad > innerHeight - edge ? "transparent" : "";
+  ring.style.borderRightColor = r.right + pad > innerWidth - edge ? "transparent" : "";
+  // place() 는 잘린 링 기준으로 자리를 잡아야 합니다 — 원래 rect 로 재면
+  // 화면 밖 좌표를 피하려다 상자를 대상 위에 얹습니다.
+  r = {top, left, bottom, right, width: right - left, height: bottom - top};
 
   // 애니메이션은 요소가 새로 붙어야 다시 돕니다. 클래스를 껐다 켜서
   // 단계마다 한 번씩 페이드가 걸리게 합니다.
@@ -2524,7 +2563,10 @@ function tourEnd() {
   document.body.classList.remove("touring");
   tourInerted.forEach(el => { el.inert = false; });
   tourInerted = [];
-  if (tourReturnFocus && tourReturnFocus.focus) tourReturnFocus.focus();
+  const back = [tourReturnFocus, document.getElementById("tourBtn"),
+                document.getElementById("meBtn")]
+    .find(el => el && el.focus && el.getClientRects().length);
+  if (back) back.focus();
   tourReturnFocus = null;
 
   // 이미 본 사람이 ? 안내로 다시 돌린 경우에는 서버에 알릴 것이 없습니다.
@@ -2607,8 +2649,12 @@ function setConn(running) {
 
 function measureHeader() {
   const h = document.querySelector("header.top");
-  if (h) document.documentElement.style.setProperty(
-    "--header-h", Math.round(h.getBoundingClientRect().height) + "px");
+  if (!h) return;
+  const px = Math.round(h.getBoundingClientRect().height);
+  // 숨어 있는 동안은 0 입니다. 그 값을 쓰면 var() 는 "정의됨" 이 되어
+  // calc(var(--header-h, 64px)) 의 대체값이 죽고, 시세 기둥이 헤더 뒤로
+  // 파고듭니다. 잴 수 없을 때는 아무 말도 하지 않는 편이 낫습니다.
+  if (px > 0) document.documentElement.style.setProperty("--header-h", px + "px");
 }
 measureHeader();
 addEventListener("resize", measureHeader);

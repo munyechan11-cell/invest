@@ -8,7 +8,7 @@
  * 인증도 마찬가지입니다. 세션 쿠키가 붙는 응답을 캐시하면 로그아웃한 뒤에도
  * 남의 화면이 남습니다. /api/* 는 통째로 지나갑니다.
  */
-const SHELL = 'quant-shell-v1';
+const SHELL = 'quant-shell-v2';
 const FILES = [
   '/',
   '/static/manifest.webmanifest',
@@ -42,13 +42,29 @@ self.addEventListener('fetch', (e) => {
     );
     return;
   }
+  const save = (res) => {
+    if (res && res.ok && res.type === 'basic') {
+      const copy = res.clone();
+      caches.open(SHELL).then((c) => c.put(e.request, copy));
+    }
+    return res;
+  };
+
+  // 코드는 네트워크 우선입니다. 캐시 우선으로 두면 한 번 받아 간 사용자에게
+  // 고친 파일이 **영원히** 안 갑니다 — 배포해도 안 고쳐집니다. 실제로
+  // 차트를 무한 재귀에서 구해 놓고도 옛 chart.js 가 계속 나갔습니다.
+  //
+  // 더 나쁜 것은 문서만 네트워크 우선이었다는 점입니다. 새 index.html 과
+  // 옛 chart.js 가 섞여서, 어느 쪽 코드도 아닌 조합이 돌아갑니다.
+  if (/\.(js|css)$/.test(url.pathname)) {
+    e.respondWith(
+      fetch(e.request).then(save).catch(() => caches.match(e.request))
+    );
+    return;
+  }
+
+  // 그림·글꼴·매니페스트는 내용이 바뀌지 않습니다. 캐시에서 바로 줍니다.
   e.respondWith(
-    caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
-      if (res.ok && res.type === 'basic') {
-        const copy = res.clone();
-        caches.open(SHELL).then((c) => c.put(e.request, copy));
-      }
-      return res;
-    }))
+    caches.match(e.request).then((hit) => hit || fetch(e.request).then(save))
   );
 });
