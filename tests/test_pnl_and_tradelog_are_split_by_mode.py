@@ -340,6 +340,29 @@ def _obs(screen: dict, key: str):
 
 
 # ── 요청 ─────────────────────────────────────────────────────────────────
+
+def _without_comments(src: str) -> str:
+    """`//` 와 `/* */` 를 같은 길이의 공백으로. 줄 번호와 자리를 유지합니다.
+
+    문자열 안의 `//` 는 주석이 아니지만, 이 검사가 찾는 것은 `/api/...` 라
+    그 구분까지 할 필요는 없습니다 — 문자열 안의 주소는 진짜 호출부입니다.
+    """
+    out, i, n = [], 0, len(src)
+    while i < n:
+        if src.startswith("//", i):
+            j = src.find("\n", i)
+            j = n if j < 0 else j
+        elif src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+        else:
+            out.append(src[i])
+            i += 1
+            continue
+        out.append("".join(c if c == "\n" else " " for c in src[i:j]))
+        i = j
+    return "".join(out)
+
 def test_the_picker_is_wired(screen):
     """선택기가 없거나 아무 데도 연결돼 있지 않으면 아래 검사가 전부 무의미합니다."""
     assert _obs(screen, "picker_wired"), "#pnlMode 의 onchange 가 없습니다"
@@ -426,10 +449,59 @@ def test_every_call_site_in_the_source_carries_a_mode():
     그래도 "한 호출부에서 모드를 빠뜨렸다" 는 이 결함의 원래 모습이라, 그
     모양만큼은 여기서 막힙니다.
     """
-    sites = list(re.finditer(r"/api/(?:pnl|tradelog)", SCRIPT))
+    # 주석에서 이 주소를 **언급**하는 것은 호출이 아닙니다. 코드만 봅니다 —
+    # 안 그러면 "이 결함이 왜 생겼는지" 를 설명하는 주석을 다는 순간 검사가
+    # 실패하고, 다음 사람은 설명을 지우게 됩니다.
+    code = _without_comments(SCRIPT)
+    sites = list(re.finditer(r"/api/(?:pnl|tradelog)", code))
     assert sites, "두 주소를 부르는 자리가 아예 없습니다"
     for m in sites:
         # 한 줄이 아니라 그 자리 언저리를 봅니다 — 주소를 이어 붙이느라 줄이
         # 바뀌는 것은 이 결함과 아무 상관이 없습니다.
-        near = SCRIPT[m.start():m.start() + 160]
+        near = code[m.start():m.start() + 160]
         assert "mode=" in near, f"모드 없이 부르는 자리: {near.splitlines()[0]}"
+
+
+def test_a_failed_switch_does_not_leave_a_table_you_can_append_to():
+    """모드를 바꾸는 첫 요청이 실패하면 표에는 앞 모드의 줄이 남습니다.
+
+    그 상태에서 `tradeShown` 은 이미 0 이라, '더 보기' 를 누르면 새 모드의
+    줄이 옛 줄 **아래에 이어 붙습니다** — 실거래 체결이 "모의매매" 이름표
+    밑에 서고, 카운트는 화면과 다른 숫자를 자신 있게 뜁니다.
+
+    트리거는 흔합니다: 전환 중 502 한 번(서버 재시작·모바일 끊김) + 클릭 한 번.
+    """
+    body = re.search(r"async function loadTradeLog\(more\) \{(.*?)\n\}",
+                     SCRIPT, re.S).group(1)
+    catch = body[body.index("catch"):body.index("const rows")]
+    assert "tradeMore" in catch, (
+        "요청이 실패했는데 '더 보기' 를 살려 둡니다 — 누르면 두 모드가 한 표에 "
+        "섞입니다.")
+    assert "tradeLog" in catch, (
+        "요청이 실패했는데 앞 모드의 줄을 그대로 둡니다")
+
+
+def test_a_stopped_bot_does_not_show_zero_to_a_live_only_account():
+    """실거래 사용자의 표준 동선은 장 마감 후에 결과를 보러 오는 것입니다.
+
+    그때가 정확히 봇이 꺼져 있는 때이고, 모드를 정할 근거가 없어 기본값
+    `dry_run` 의 숫자 — 즉 0 — 이 뜹니다. 실거래만 해 온 계정이 "오늘 0원,
+    0건" 을 봅니다.
+
+    서버는 답을 이미 실어 보냅니다: `/api/pnl` 의 `modes` 는 기록이 실제로
+    있는 모드 목록입니다.
+    """
+    assert "function adoptRecordedMode" in SCRIPT, (
+        "봇이 꺼져 있을 때 어느 모드를 볼지 정하는 곳이 없습니다")
+    pnl = re.search(r"async function loadPnl\(\) \{(.*?)\n\}", SCRIPT, re.S).group(1)
+    assert "adoptRecordedMode(d.modes)" in pnl, (
+        "서버가 보낸 `modes` 를 버립니다 — 저장소 주석이 경고하는 것의 정확한 "
+        "대칭형입니다.")
+    body = re.search(r"function adoptRecordedMode\(modes\) \{(.*?)\n\}",
+                     SCRIPT, re.S).group(1)
+    # 돌고 있는 봇이 있으면 그쪽이 우선입니다.
+    assert "seenRunMode" in body, "돌고 있는 봇의 모드를 덮어씁니다"
+    # 양쪽 다 기록이 있으면 사람이 고른 것을 그대로 둬야 합니다.
+    assert "length !== 1" in body, (
+        "양쪽 다 기록이 있을 때도 한쪽을 골라 버립니다 — 사람이 고른 것을 "
+        "덮으면 안 됩니다.")

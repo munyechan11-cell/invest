@@ -570,10 +570,9 @@ class TossBrokerage(LiveBrokerage):
                     ts=ts, tag=order.tag,
                 ))
             else:
-                # 단가를 모르면 수수료도 0원으로 계산됩니다 — 요율에 0 을 곱한
-                # 값이니까요. 그건 "수수료가 없다" 가 아니라 "아직 모른다" 이고,
-                # 원가도 낸 돈도 없는 주식을 장부에 얹는 쪽이 더 나쁩니다.
-                # 이 주문은 열려 있으므로 다음 `poll_fills` 가 다시 봅니다.
+                # 제출 응답에서 단가를 못 읽은 경우입니다. 이쪽은 주문이 아직
+                # 열려 있어서 다음 `poll_fills` 가 같은 수량을 다시 보므로,
+                # 여기서 미루는 것이 맞습니다 — 위 조회 경로와 다릅니다.
                 log.warning("토스 주문 %s: 체결 %s주의 단가를 읽을 수 없어 이번에는 "
                             "체결로 잡지 않습니다", broker_id, filled)
         return broker_id
@@ -696,19 +695,33 @@ class TossBrokerage(LiveBrokerage):
                 if newly > 0:
                     price = float(remote.get(_FIELDS["avg_price"]) or 0)
                     if price <= 0:
-                        # 단가 0 에 요율을 곱하면 0원입니다. 그 0 을 장부에 넣으면
-                        # 회계층은 "공짜로 샀다" 로 읽습니다 — 다음 폴링까지
-                        # 미루는 편이 낫습니다. `order.filled_qty` 를 올리지
-                        # 않았으므로 같은 수량이 그대로 다시 잡힙니다.
-                        log.warning("토스 주문 %s: 체결단가를 읽을 수 없어 이번 "
-                                    "폴링에서는 체결로 잡지 않습니다",
-                                    order.broker_id)
-                        continue
+                        # 단가를 못 읽었습니다. 전에는 여기서 `continue` 로
+                        # 넘겼습니다 — "다음 폴링이 같은 수량을 다시 본다" 는
+                        # 전제였는데, **취소 경로에는 다음 폴링이 없습니다.**
+                        # `cancel()` 은 `_reap()` 직후 주문을 목록에서 빼고,
+                        # `Engine.stop()` 은 세션을 닫을 때 열린 주문을 전부
+                        # 취소합니다. 그래서 거래소에는 체결로 남은 것이
+                        # 여기서는 통째로 사라졌습니다 — `_reap` 의 docstring 이
+                        # 막으려던 바로 그 사고입니다.
+                        #
+                        # 수량은 반드시 잡습니다. 그것이 손절·사이징·하루
+                        # 한도가 이 포지션을 보는 유일한 근거입니다. 단가는
+                        # 주문이 들고 있는 값(지정가)으로 대신하고, 그것마저
+                        # 없으면 0 으로 두되 수수료를 **지어내지 않습니다** —
+                        # 요율 × 0 = 0원은 "공짜" 가 아니라 "모름" 입니다.
+                        price = float(order.limit_price or 0)
+                        log.warning("토스 주문 %s: 체결단가를 읽지 못해 %s 로 "
+                                    "잡습니다 — 수수료는 다음 대조에서 맞춰집니다",
+                                    order.broker_id,
+                                    f"지정가 {price:,.4g}" if price > 0 else "단가 미상")
                     ts = utcnow()
                     fill = Fill(
                         order_id=order.id, symbol=order.symbol, side=order.side,
                         quantity=newly, price=price,
-                        fee=self._fill_fee(order, newly, price, ts),
+                        # 단가를 모르면 수수료도 모릅니다. 0 을 적어 두면
+                        # 회계층이 "공짜" 로 읽으므로, 계산이 설 때만 적습니다.
+                        fee=(self._fill_fee(order, newly, price, ts)
+                             if price > 0 else 0.0),
                         ts=ts, tag=order.tag,
                     )
                     order.apply_fill(fill)

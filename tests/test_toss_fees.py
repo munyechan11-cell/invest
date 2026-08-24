@@ -164,15 +164,39 @@ async def test_the_configured_cost_model_reaches_the_toss_adapter():
 async def test_a_fill_with_no_price_is_not_booked_as_a_free_one():
     """단가 0 에 요율을 곱하면 0원입니다 — 그건 "공짜" 가 아니라 "모른다" 입니다.
 
-    수량만 장부에 넣으면 원가도 낸 돈도 없는 주식이 생깁니다. 다음 폴링이
-    같은 수량을 다시 볼 수 있도록 `filled_qty` 도 올리지 않아야 합니다.
+    처음에는 이 경우를 통째로 건너뛰었습니다. "다음 폴링이 같은 수량을 다시
+    본다" 는 전제였는데, **취소 경로에는 다음 폴링이 없습니다** — `cancel()` 은
+    체결을 훑은 직후 주문을 목록에서 빼고, 세션을 닫을 때는 열린 주문을 전부
+    취소합니다. 그래서 거래소에 체결로 남은 것이 여기서는 사라졌고, 손절도
+    사이징도 하루 한도도 걸리지 않는 포지션이 생겼습니다.
+
+    수량은 반드시 잡습니다. 단가는 주문이 들고 있는 지정가로 대신합니다.
     """
     broker = _brokerage(_kr_fee_model())
-    order = _order(OrderSide.BUY)
+    order = _order(OrderSide.BUY)          # 지정가 주문
     fills = await _poll_once(broker, order, {"filledQuantity": "10",
                                              "averagePrice": None})
-    assert fills == []
-    assert order.filled_qty == 0
+    assert len(fills) == 1, "체결이 통째로 사라졌습니다 — 취소 경로에서 영구 손실"
+    assert order.filled_qty == QTY, "수량이 안 잡히면 손절이 이 포지션을 못 봅니다"
+    assert fills[0].price == float(order.limit_price)
+    assert fills[0].fee > 0, "지정가로 계산할 수 있는데 수수료를 0 으로 뒀습니다"
+
+
+async def test_a_fill_with_no_price_at_all_is_not_given_an_invented_fee():
+    """지정가마저 없으면(시장가) 수수료를 계산할 근거가 없습니다.
+
+    그래도 수량은 잡습니다 — 없는 포지션이 되는 것이 원가 모르는 포지션보다
+    나쁩니다. 다만 수수료는 **지어내지 않습니다**.
+    """
+    broker = _brokerage(_kr_fee_model())
+    order = Order(KRX, OrderSide.BUY, QTY, type=OrderType.MARKET)
+    order.broker_id = "T-1"
+    order.status = OrderStatus.SUBMITTED
+    fills = await _poll_once(broker, order, {"filledQuantity": "10",
+                                             "averagePrice": None})
+    assert len(fills) == 1
+    assert fills[0].price == 0.0
+    assert fills[0].fee == 0.0
 
 
 async def test_an_unpriced_market_fill_is_not_booked_on_the_submit_path_either():
