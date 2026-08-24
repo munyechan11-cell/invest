@@ -34,6 +34,24 @@ alpha:
                                        min_atr_pct: 0.008, allow_short: false}}
   - {type: squeeze, params: {bb_period: 20, kc_period: 20, hold_bars: 24}}
   - {type: regime_filter, params: {period: 200, max_annual_vol: 2.0}}
+  # ── AI 데스크 ────────────────────────────────────────────────────────
+  # 실매매를 하는 전략은 전부 데스크를 거칩니다. 규칙 신호는 "무엇을" 만
+  # 말하고 "왜" 는 말하지 못하는데, 나중에 왜 샀는지 되짚을 수 있는 자료가
+  # 그것뿐이면 잘못된 매매에서 배울 것이 없습니다.
+  #
+  # 데스크가 꺼져도(키 없음·한도 초과·오류) 위 규칙 신호는 그대로 돕니다 —
+  # LLM 이 죽었다고 엔진까지 멈추지는 않습니다.
+  - type: desk
+    params:
+      llm:          {provider: google, model: gemini-3.7-flash, max_tokens: 1200}
+      decision_llm: {provider: google, model: gemini-3.1-pro-preview, max_tokens: 1600}
+      cadence_bars: 3
+      max_symbols_per_run: 2
+      debate_rounds: 1
+      risk_debate_rounds: 1
+      deadline_s: 120
+      min_conviction: 0.65
+      cost_limit_usd: 10
 
 portfolio:
   starting_cash: 10000

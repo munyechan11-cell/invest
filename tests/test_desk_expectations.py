@@ -1,11 +1,12 @@
 """심의를 기다릴 이유가 있는가.
 
-전략 중 일부만 AI 데스크를 씁니다. 나머지는 규칙 기반 신호로만 매매하므로
-데스크 방이 영원히 비어 있는 것이 **정상** 입니다.
+실매매 전략은 이제 전부 데스크를 거칩니다(`test_every_live_strategy_has_a_desk`).
+데스크가 없는 것은 백테스트 전략뿐이고, 거기서는 **없는 것이 맞습니다** —
+LLM 은 과거 날짜의 미래를 알아서 성적표를 거짓으로 좋게 만듭니다.
 
-그런데 화면은 그 자리에 "대기 중 — 심의가 시작되면 여기에 발언이 그대로
-남습니다" 를 띄웠습니다. 곧 뭔가 시작될 것처럼 읽히고, 실제로는 오지 않습니다.
-기다릴 이유가 없는 것을 기다리게 만드는 화면입니다.
+그런데 화면은 데스크 없는 전략에서도 "대기 중 — 심의가 시작되면 여기에 발언이
+그대로 남습니다" 를 띄웠습니다. 곧 뭔가 시작될 것처럼 읽히고, 실제로는 오지
+않습니다. 기다릴 이유가 없는 것을 기다리게 만드는 화면입니다.
 """
 from __future__ import annotations
 
@@ -25,8 +26,12 @@ def _has_desk(cfg) -> bool:
     return any(m.type in ("desk", "council") for m in cfg.alpha)
 
 
-def test_most_strategies_genuinely_have_no_desk():
-    """이 테스트의 전제 — 데스크 없는 전략이 다수입니다."""
+def test_some_strategies_genuinely_have_no_desk():
+    """이 파일의 전제 — 데스크가 영원히 안 도는 전략이 실제로 있습니다.
+
+    전부 데스크를 쓰게 되면 아래 화면 검사들은 지킬 대상이 없어집니다.
+    그때는 이 테스트가 먼저 실패해서 그 사실을 알려 줍니다.
+    """
     without = []
     for name, path in strategy_catalog().items():
         try:
@@ -35,7 +40,7 @@ def test_most_strategies_genuinely_have_no_desk():
             continue
         if not _has_desk(cfg):
             without.append(name)
-    assert len(without) >= 5, f"데스크 없는 전략: {without}"
+    assert without, "데스크 없는 전략이 하나도 없습니다 — 이 파일의 검사가 무의미해집니다"
 
 
 def test_the_screen_says_when_no_deliberation_is_coming():
