@@ -136,6 +136,17 @@ The engine tries hard not to flatter itself:
 
 - **Fills happen on the next bar**, at its open, capped at a share of its volume.
   Nothing fills at the close of the bar that generated the signal.
+- **A limit order fills only if the bar traded *through* it**, by at least one
+  tick — not merely touched it. A bar whose low equals your buy limit turned
+  around there; the volume at that price was thin and what there was belonged to
+  orders already queued ahead of you. Counting that as a fill is how a backtest
+  earns money on orders that would never have been hit. Configure with
+  `limit_through_ticks` (0 restores touch-only).
+- **A limit order's size is capped by the volume beyond its price**, not by the
+  whole bar's. Volume is assumed spread evenly across the bar's range — crude,
+  but far less wrong than letting a limit near the low absorb a tenth of
+  everything that traded. Set `limit_volume_participation` separately from the
+  market-order rate.
 - **Costs are on by default** — commission, spread, and √(size/ADV) market
   impact. The `zero_cost` preset exists for unit tests and prints a warning.
 - **Deflated Sharpe** discounts for how many parameter sets you tried. Run 200
