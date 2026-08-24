@@ -11,14 +11,14 @@ LLM 은 과거 날짜의 미래를 알아서 성적표를 거짓으로 좋게 �
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import pytest
 
 from quant.api.server import strategy_catalog
 from quant.config.loader import load_config
+from tests.screen import screen
 
-HTML = Path("quant/api/static/index.html").read_text(encoding="utf-8")
+HTML = screen()
 SCRIPT = "\n".join(re.findall(r"<script>(.*?)</script>", HTML, re.S))
 
 

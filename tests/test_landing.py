@@ -7,9 +7,10 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
-HTML = Path("quant/api/static/index.html").read_text(encoding="utf-8")
+from tests.screen import screen
+
+HTML = screen()
 SCRIPT = "\n".join(re.findall(r"<script>(.*?)</script>", HTML, re.S))
 CSS = HTML[HTML.find("<style>"):HTML.find("</style>")]
 

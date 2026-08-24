@@ -23,7 +23,11 @@ PAGE = Path(__file__).resolve().parent.parent / "quant" / "api" / "static" / "in
 
 @pytest.fixture(scope="module")
 def html() -> str:
-    return PAGE.read_text(encoding="utf-8")
+    # 스타일이 app.css 로 갈라졌습니다. 화면을 검사하는 쪽에서는 여전히
+    # 한 화면이라 합쳐서 봅니다.
+    from tests.screen import screen
+
+    return screen()
 
 
 @pytest.fixture(scope="module")
