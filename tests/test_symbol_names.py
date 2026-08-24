@@ -305,20 +305,35 @@ async def test_toss_keeps_the_name_when_the_price_call_fails(monkeypatch):
 
 
 # ── API 응답 ────────────────────────────────────────────────────────────
-STRATEGY = {
-    "name": "이름확인전략",
-    "mode": "dry_run",
-    "data": {"provider": "synthetic", "timeframe": "1d", "calendar": "always_open",
-             "warmup_bars": 60},
-    "universe": {"symbols": [
-        {"ticker": "005930", "venue": "toss", "quote_currency": "KRW",
-         "tick_size": 100, "lot_size": 1},
-        {"ticker": "AAPL", "venue": "toss", "quote_currency": "USD",
-         "tick_size": 0.01, "lot_size": 1},
-    ]},
-    "alpha": [{"type": "ema_cross"}],
-    "broker": {"type": "paper"},
-}
+# 원화 책과 달러 책을 **따로** 둡니다. 한 유니버스에 원화 종목과 달러 종목을
+# 같이 넣으면 설정 검증이 막습니다(`StrategyConfig._one_currency_per_book`) —
+# 장부의 현금이 숫자 하나라 7만(원)과 250(달러)이 그냥 더해지기 때문입니다.
+# 이름을 싣는 것은 통화와 아무 상관이 없으므로, 여기서는 나눠 두고 양쪽을
+# 다 확인합니다. 한쪽만 남기면 미국 티커 경로가 통째로 안 덮입니다.
+def _template(name: str, currency: str, symbols: list[dict]) -> dict:
+    return {
+        "name": name,
+        "mode": "dry_run",
+        "data": {"provider": "synthetic", "timeframe": "1d",
+                 "calendar": "always_open", "warmup_bars": 60},
+        "universe": {"symbols": symbols},
+        "alpha": [{"type": "ema_cross"}],
+        "portfolio": {"base_currency": currency},
+        "broker": {"type": "paper"},
+    }
+
+
+STRATEGY = _template("이름확인전략", "KRW", [
+    {"ticker": "005930", "venue": "toss", "quote_currency": "KRW",
+     "tick_size": 100, "lot_size": 1},
+    {"ticker": "000660", "venue": "toss", "quote_currency": "KRW",
+     "tick_size": 500, "lot_size": 1},
+])
+
+US_STRATEGY = _template("이름확인전략-미국", "USD", [
+    {"ticker": "AAPL", "venue": "toss", "quote_currency": "USD",
+     "tick_size": 0.01, "lot_size": 1},
+])
 
 
 @pytest.fixture
@@ -328,6 +343,8 @@ def client(tmp_path, monkeypatch):
     root.mkdir()
     (root / "named.yaml").write_text(
         yaml.safe_dump(STRATEGY, allow_unicode=True), encoding="utf-8")
+    (root / "named_us.yaml").write_text(
+        yaml.safe_dump(US_STRATEGY, allow_unicode=True), encoding="utf-8")
     monkeypatch.setenv("QUANT_SECRET_KEY", "n" * 48)
     monkeypatch.setenv("QUANT_USERS_DB", str(tmp_path / "users.db"))
     monkeypatch.setenv("QUANT_USER_DATA", str(tmp_path / "userdata"))
@@ -342,16 +359,20 @@ def client(tmp_path, monkeypatch):
 
 def test_the_strategy_list_says_what_it_buys(client):
     """`005930, 000660` 만 늘어놓으면 무엇에 돈을 넣는 전략인지 알 수 없습니다."""
-    listed = client.get("/api/strategies").json()["strategies"]
-    named = next(s for s in listed if s["id"] == "named")
-    assert named["tickers"] == [{"ticker": "005930", "name": "삼성전자"},
-                                {"ticker": "AAPL", "name": "애플"}]
+    listed = {s["id"]: s for s in client.get("/api/strategies").json()["strategies"]}
+    assert listed["named"]["tickers"] == [{"ticker": "005930", "name": "삼성전자"},
+                                          {"ticker": "000660", "name": "SK하이닉스"}]
+    assert listed["named_us"]["tickers"] == [{"ticker": "AAPL", "name": "애플"}]
 
 
-def test_the_ticker_tape_carries_names(client):
-    rows = client.get("/api/universe", params={"strategy": "named"}).json()["symbols"]
-    assert {r["ticker"]: r["name"] for r in rows} == {"005930": "삼성전자",
-                                                     "AAPL": "애플"}
+@pytest.mark.parametrize("strategy,expected", [
+    ("named", {"005930": "삼성전자", "000660": "SK하이닉스"}),
+    ("named_us", {"AAPL": "애플"}),
+])
+def test_the_ticker_tape_carries_names(client, strategy, expected):
+    rows = client.get("/api/universe",
+                      params={"strategy": strategy}).json()["symbols"]
+    assert {r["ticker"]: r["name"] for r in rows} == expected
 
 
 def test_the_chart_says_which_company_it_is_showing(client):

@@ -65,6 +65,9 @@ _FIELDS = {
     "accounts_path": "/api/v1/accounts",
     "holdings_path": "/api/v1/holdings",
     "orders_path": "/api/v1/orders",
+    # 환율. `dateTime` 을 받으므로 "봉 시각의 환율" 이 흉내가 아니라 실제로
+    # 받아지는 값입니다 — 쓰는 곳은 `quant/core/fx.py` 한 곳뿐입니다.
+    "exchange_rate_path": "/api/v1/exchange-rate",
     "account_header": "X-Tossinvest-Account",
     # 주문 요청 본문
     "order_symbol": "symbol",

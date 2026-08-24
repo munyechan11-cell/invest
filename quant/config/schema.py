@@ -8,12 +8,15 @@ this equity curve" always has an answer.
 from __future__ import annotations
 
 import difflib
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from quant.core.types import RunMode, timeframe_seconds
+
+log = logging.getLogger("quant.config")
 
 
 class ConfigBlock(BaseModel):
@@ -332,6 +335,84 @@ class StrategyConfig(ConfigBlock):
                 "zero trades and zero cost. Use broker.type: paper to backtest, "
                 "or mode: dry_run to run against the venue."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _one_currency_per_book(self) -> StrategyConfig:
+        """통화가 섞인 유니버스는 시작 자체를 막습니다.
+
+        `Portfolio` 의 현금은 아직 숫자 하나이고, `Symbol.quote_currency` 는
+        실려 다니기만 하고 환산되지 않습니다. 그래서 원화 종목과 달러 종목을
+        한 유니버스에 넣어도 **에러가 나지 않습니다** — 7만(원)과 250(달러)이
+        같은 자릿수로 더해져 70,250 이 되고, 그 위에서 계산된 평가금액·수익률·
+        하루 손실 한도가 전부 뜻을 잃는데 화면에는 아무 표시 없이 뜹니다.
+
+        환산 계층(`quant/core/fx.py`)은 만들었지만 장부에는 아직 물려 있지
+        않습니다(`docs/cross_market.md` 의 2~4단계). 안전하게 다룰 수 없는
+        동안에는 조용히 틀린 숫자를 내는 것보다 시작을 막는 편이 낫습니다.
+
+        **막는 것은 "섞인 것" 하나뿐입니다.** 한 통화짜리 유니버스는 장부의
+        `base_currency` 라벨이 무엇이든 지금과 **완전히 같은 숫자**를 냅니다 —
+        더하는 값들이 전부 같은 통화라 환산이 끼어들 자리가 없고,
+        `base_currency` 는 오늘은 표시에만 쓰입니다. 그래서 라벨이 어긋난
+        설정은 거절하지 않고 경고만 합니다. 여기서 함께 막으면 산수가 멀쩡한
+        설정까지 못 돌게 되는데, 그건 이 작업이 하지 않기로 한 일입니다.
+        다만 장부가 환산을 시작하는 순간 이 라벨은 곧바로 산수에 들어오므로,
+        그 전에 눈에 띄어야 합니다.
+
+        **언제 이게 안 통하는가:** 이 검증은 설정에 적힌 종목만 봅니다.
+        `universe.source: exchange` 는 실행 중에 종목을 받아 오므로 아래에서
+        후보를 좁히는 통화를 명시하도록 요구합니다. 알파에 직접 적는
+        종목(예: `pairs`)은 여기서 보이지 않습니다.
+        """
+        base = (self.portfolio.base_currency or "").strip().upper()
+        if not base:
+            raise ValueError("portfolio.base_currency 가 비어 있습니다")
+
+        by_currency: dict[str, list[str]] = {}
+        for spec in self.universe.symbols:
+            currency = (spec.quote_currency or "").strip().upper() or "(빈 값)"
+            by_currency.setdefault(currency, []).append(spec.ticker)
+
+        if len(by_currency) > 1:
+            listed = "; ".join(
+                f"{currency} — {', '.join(tickers[:6])}"
+                + (f" 외 {len(tickers) - 6}종목" if len(tickers) > 6 else "")
+                for currency, tickers in sorted(by_currency.items())
+            )
+            raise ValueError(
+                f"유니버스에 통화가 섞여 있습니다 ({listed}). 지금 엔진은 현금이 "
+                f"숫자 하나라 이것들을 그냥 더합니다 — 7만(원)과 250(달러)이 같은 "
+                f"자릿수로 합쳐져 70,250 이 되고, 평가금액도 수익률도 하루 손실 "
+                f"한도도 뜻이 없어지는데 화면에는 멀쩡한 숫자로 뜹니다. 통화별로 "
+                f"전략을 나누세요."
+            )
+
+        if by_currency and base not in by_currency:
+            log.warning(
+                "portfolio.base_currency 는 %s 인데 유니버스는 %s 로 매겨져 "
+                "있습니다. 오늘은 산수가 달라지지 않습니다(더하는 값이 모두 한 "
+                "통화라 환산이 없습니다) — 화면의 통화 표시와 계좌 잔고를 읽는 "
+                "쪽만 이 라벨을 봅니다. 다만 장부가 환산을 시작하면 이 어긋남은 "
+                "곧바로 금액에 들어옵니다. 둘을 맞춰 두세요.",
+                base, next(iter(by_currency)),
+            )
+
+        source = self.universe.source
+        if source.type == "exchange":
+            wanted = str(source.params.get("quote_currency", "") or "").strip()
+            if not wanted:
+                raise ValueError(
+                    "universe.source: exchange 는 거래소가 상장한 시장을 전부 "
+                    "후보로 넣습니다. 한 거래소에 USDT·BTC·KRW 마켓이 함께 있으면 "
+                    "통화가 섞인 책이 **실행 중에** 만들어지고, 그건 설정만 봐서는 "
+                    "보이지 않습니다. params.quote_currency 로 한 통화를 지정하세요 "
+                    f"(예: {base})."
+                )
+            if wanted.upper() != base:
+                log.warning(
+                    "portfolio.base_currency 는 %s 인데 universe.source 는 %s "
+                    "마켓만 고릅니다 — 둘을 맞춰 두세요.", base, wanted.upper())
         return self
 
     @property
