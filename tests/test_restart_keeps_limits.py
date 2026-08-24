@@ -218,6 +218,214 @@ def test_an_empty_ledger_is_not_written(db_path):
     assert st.conn.execute("SELECT count(*) c FROM day_budget").fetchone()["c"] == 0
 
 
+# ── 전략을 바꿔 켜도 중단은 남는다 ────────────────────────────────────────
+# `resume_run` 은 전략 이름으로 run 을 찾습니다. 그래서 손실 한도에 걸린 뒤
+# 목록에서 다른 전략을 고르기만 하면 원장이 빈 새 run 이 열렸고, "다음 거래일
+# 까지 신규 진입 중단" 이 다음 거래일이 아니라 다음 전략까지만 유지됐습니다.
+def halted_account(db_path):
+    """'모멘텀' 이 오늘 손실 한도로 중단된 상태의 계정을 만든다."""
+    st = opened(db_path, strategy="모멘텀")
+    st.restore_budget(spent_budget(), now=T0)
+    st.close()
+
+
+def second_bot(db_path, strategy="평균회귀", mode="live", now=T0, **budget_kw):
+    """같은 상태 파일에서 전략만 바꿔 켠 두 번째 봇 → (store, budget)."""
+    kw = {"max_daily_loss": 1_000, "timezone_offset_hours": 9}
+    kw.update(budget_kw)
+    st = opened(db_path, strategy=strategy, mode=mode)
+    budget = TradingBudget(clock=SimClock(now), **kw)
+    st.restore_budget(budget, now=now)
+    return st, budget
+
+
+def test_switching_strategies_does_not_hand_back_the_days_halt(db_path):
+    """중단을 무력화하는 데 재배포조차 필요 없었습니다 — 목록에서 다른 전략을
+    고르기만 하면 됐습니다."""
+    halted_account(db_path)
+    st, budget = second_bot(db_path)
+
+    assert budget.halted
+    allowed, reason = budget.check(order(10), 70_000.0, is_reducing=False, now=T0)
+    assert not allowed and "다음 거래일까지" in reason
+
+
+def test_a_carried_halt_still_lets_you_out(db_path):
+    """한도가 손실 포지션에 가두면 그건 안전장치가 아닙니다."""
+    halted_account(db_path)
+    st, budget = second_bot(db_path)
+
+    assert budget.check(order(10, side=OrderSide.SELL), 70_000.0,
+                        is_reducing=True, now=T0)[0]
+
+
+def test_a_carried_halt_does_not_show_another_accounts_numbers(db_path):
+    """사유에 남의 계좌·남의 통화 금액이 박혀 있으면 이 봇의 원장(손익 0)과
+    정면으로 모순되고, 그 모순이 운영자에게 해제 버튼을 누르게 만듭니다."""
+    halted_account(db_path)
+    st, budget = second_bot(db_path)
+
+    status = budget.status(now=T0)
+    assert status["halted"]
+    assert not any(ch.isdigit() for ch in status["halt_reason"])
+    assert status["loss"]["realized_pnl"] == 0.0
+    assert status["notional"]["used"] == 0.0
+
+
+def test_a_carried_halt_is_not_copied_into_the_new_runs_ledger(db_path):
+    """사유를 남기는 것은 그 사유를 만든 run 뿐이어야 합니다. 사본이 run 마다
+    번지면, 실제로 한도를 넘긴 run 을 해제해도 사본이 계정을 계속 막습니다."""
+    halted_account(db_path)
+    st, budget = second_bot(db_path)
+    assert budget.halted
+    budget.record_order(order(1), 70_000.0, now=T0)     # 자기 행을 쓰게 만든다
+
+    rows = st.conn.execute(
+        "SELECT run_id FROM day_budget WHERE COALESCE(halt_reason,'') <> ''"
+    ).fetchall()
+    assert [r["run_id"] for r in rows] == [1]
+
+
+def test_carrying_a_halt_does_not_stamp_an_empty_ledger(db_path):
+    """거래하지 않은 봇이 '오늘, 0 사용' 행을 남기면 안 된다는 성질은 그대로."""
+    halted_account(db_path)
+    st, budget = second_bot(db_path)
+
+    assert budget.halted
+    assert st.conn.execute(
+        "SELECT count(*) c FROM day_budget").fetchone()["c"] == 1
+
+
+def test_releasing_a_carried_halt_is_not_undone_by_a_restart(db_path):
+    """해제가 이어받기의 역연산이 아니면, 봇을 껐다 켤 때마다 해제가 되돌아오고
+    사유를 남긴 run 은 화면에 보이지도 않아 손댈 방법이 없습니다."""
+    halted_account(db_path)
+    st, budget = second_bot(db_path)
+    assert budget.halted
+    budget.release()
+    assert budget.check(order(10), 70_000.0, is_reducing=False, now=T0)[0]
+    st.close()
+
+    st3 = opened(db_path, strategy="제3전략")
+    third = TradingBudget(max_daily_loss=1_000, timezone_offset_hours=9,
+                          clock=SimClock(T0))
+    st3.restore_budget(third, now=T0)
+    assert not third.halted
+    assert third.check(order(10), 70_000.0, is_reducing=False, now=T0)[0]
+
+
+def test_releasing_a_carried_halt_does_not_waive_this_bots_own_caps(db_path):
+    """이 봇은 아무 한도도 넘기지 않았습니다. 지울 것은 남의 중단 하나뿐이고,
+    자기 거래대금·건수·손실 한도까지 하루 종일 함께 풀려서는 안 됩니다."""
+    halted_account(db_path)
+    st, budget = second_bot(db_path, max_daily_notional=1_000_000)
+    assert budget.halted
+    budget.release()
+
+    assert budget.check(order(10), 70_000.0, is_reducing=False, now=T0)[0]
+    budget.record_order(order(14), 70_000.0, now=T0)             # 980,000 사용
+    allowed, reason = budget.check(order(10), 70_000.0, is_reducing=False, now=T0)
+    assert not allowed and "거래대금" in reason
+
+
+def test_releasing_a_bot_that_was_not_halted_leaves_the_record_alone(db_path):
+    """중단이 걸려 있지 않았으면 지울 것도 없습니다 — 아무 봇에서나 해제를 누르는
+    것이 계정의 중단 기록을 조용히 치우는 버튼이 되면 안 됩니다."""
+    halted_account(db_path)
+    st, budget = second_bot(db_path, halt_until_next_day=False)   # 이어받지 않는다
+    assert not budget.halted
+    budget.release()
+    st.close()
+
+    st3 = opened(db_path, strategy="제3전략")
+    third = TradingBudget(max_daily_loss=1_000, timezone_offset_hours=9,
+                          clock=SimClock(T0))
+    st3.restore_budget(third, now=T0)
+    assert third.halted
+
+
+def test_the_run_that_broke_the_limit_rehalts_after_an_account_release(db_path):
+    """해제가 지우는 것은 '오늘 누가 넘었다' 는 표시이지 넘었다는 사실이
+    아닙니다 — 사용량은 그대로 남아 다시 켜면 곧바로 다시 중단됩니다."""
+    halted_account(db_path)
+    st, budget = second_bot(db_path)
+    budget.release()
+    st.close()
+
+    st1 = opened(db_path, strategy="모멘텀")
+    again = TradingBudget(max_daily_loss=1_000, timezone_offset_hours=9)
+    st1.restore_budget(again, now=T0)
+    assert again.roll(T0).realized_pnl == pytest.approx(-4_930.0)
+    allowed, reason = again.check(order(10), 70_000.0, is_reducing=False, now=T0)
+    assert not allowed and "일일 손실 한도" in reason
+
+
+def test_a_bot_that_declined_the_day_latch_is_not_latched_by_another_run(db_path):
+    """`halt_until_next_day=False` 의 뜻은 '하루를 잠그는 래치를 만들지 말라'
+    하나뿐입니다. 자기 힘으로 만들 수 없는 래치를 남의 run 이 대신 걸어 줄 수는
+    없습니다."""
+    halted_account(db_path)
+    st, budget = second_bot(db_path, halt_until_next_day=False)
+
+    assert not budget.halted
+    assert budget.check(order(10), 70_000.0, is_reducing=False, now=T0)[0]
+
+
+def test_a_bot_with_no_daily_caps_is_not_halted_by_another_run(db_path):
+    """일일 한도를 하나도 걸지 않은 봇 — 이 안전장치를 쓰지 않겠다는 뜻이므로,
+    남의 중단을 근거로 세울 자리가 없습니다."""
+    halted_account(db_path)
+    st, budget = second_bot(db_path, max_daily_loss=0)
+
+    assert not budget.configured
+    assert not budget.halted
+    assert budget.check(order(10), 70_000.0, is_reducing=False, now=T0)[0]
+
+
+def test_a_dry_run_halt_does_not_stop_the_live_bot(db_path):
+    """모의 실행이 실거래를 멈추면 안 됩니다 — 바로 그러라고 있는 것입니다."""
+    st = opened(db_path, strategy="모멘텀", mode="dry_run")
+    st.restore_budget(spent_budget(), now=T0)
+    st.close()
+
+    st2, budget = second_bot(db_path, mode="live")
+    assert not budget.halted
+    assert budget.check(order(10), 70_000.0, is_reducing=False, now=T0)[0]
+
+
+def test_a_carried_halt_is_gone_on_the_next_trading_day(db_path):
+    halted_account(db_path)
+    st, budget = second_bot(db_path, now=NEXT_DAY)
+
+    assert not budget.halted
+    assert budget.check(order(10), 70_000.0, is_reducing=False, now=NEXT_DAY)[0]
+
+
+def test_a_carried_halt_expires_even_if_the_bot_never_traded(db_path):
+    """장 마감 뒤 켜 두고 아침에 첫 주문을 내는 흔한 경우. 거래가 한 건도 없으면
+    원장은 계속 비어 있어서, 중단이 걸린 날을 원장과 따로 들고 있지 않으면 어제
+    중단이 오늘 아침 첫 주문을 막습니다."""
+    halted_account(db_path)
+    st, budget = second_bot(db_path)
+    assert budget.halted
+    assert budget.today is None                     # 아직 한 건도 거래하지 않았다
+
+    assert not budget.check(order(10), 70_000.0, is_reducing=False, now=T0)[0]
+    allowed, reason = budget.check(order(10), 70_000.0, is_reducing=False,
+                                   now=NEXT_DAY)
+    assert allowed, reason
+    assert not budget.halted
+
+
+def test_a_changed_timezone_does_not_carry_the_halt_either(db_path):
+    """'오늘' 의 범위가 달라졌으니 같은 날인지 말할 수 없습니다 — `load_state`
+    가 자기 원장 복원을 거부하는 것과 같은 이유입니다. 공개된 범위 축소."""
+    halted_account(db_path)
+    st, budget = second_bot(db_path, timezone_offset_hours=0)
+
+    assert not budget.halted
+
+
 # ── 운영자 고정(pin) ──────────────────────────────────────────────────────
 def live_ctx():
     ctx = Context(SimClock(T0), Portfolio(10_000_000.0, "KRW"), EventBus(),

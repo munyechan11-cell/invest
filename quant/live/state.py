@@ -599,6 +599,12 @@ class StateStore:
         "다음 거래일까지 중단" lasted until the next deploy instead. A stored
         day that is no longer today is left where it is; `load_state` decides,
         so a genuinely new trading day still starts clean.
+
+        The run's own ledger is only half of it. `resume_run` looks a run up by
+        strategy name, so *changing strategy* opens a new run with an empty
+        ledger — and a halt keyed to one run lasted until the next strategy
+        rather than until the next trading day. `_halt_in_force` is what closes
+        that door; it carries the halt and nothing else.
         """
         self._claim()
         row = self.conn.execute(
@@ -608,7 +614,85 @@ class StateStore:
         restored = budget.load_state(dict(row) if row is not None else {}, now)
         budget.bind_store(self)
         self.save_budget(budget)          # the stored row now matches the ledger
+        if not budget.halted:
+            found = self._halt_in_force(budget, now)
+            if found is not None and budget.adopt_halt(found["strategy"], now):
+                # 원본 사유는 로그에만 남깁니다 — 다른 계좌의, 다른 통화의
+                # 금액이라 화면에 띄우면 이 봇의 원장과 모순됩니다.
+                log.warning("복원: 오늘 이 계정은 이미 중단된 상태입니다 "
+                            "(run %s '%s' — %s)",
+                            found["run_id"], found["strategy"], found["reason"])
         return restored
+
+    def _halt_in_force(self, budget: TradingBudget,
+                       now: datetime | None = None) -> sqlite3.Row | None:
+        """오늘 이 계정에서 이미 중단이 걸려 있으면 그 행, 아니면 None.
+
+        "같은 계정" 의 근사치는 `(mode, 거래일, 시간대)` 입니다. 하나씩 이유가
+        있습니다.
+
+        · `mode` — dry_run 의 중단이 live 를 멈추면 안 됩니다. 모의 실행은
+          바로 그러라고 있는 것입니다.
+        · 거래일 — 어제 중단은 오늘과 무관합니다.
+        · 시간대 — 설정이 다르면 '오늘' 이 가리키는 구간이 달라져 같은 날인지
+          말할 수 없습니다. `load_state` 도 같은 이유로 복원을 거부합니다.
+
+        거래소나 통화까지 좁히지 못하는 것은 `runs` 에 그 정보가 없기 때문이고,
+        그래서 이 근사치는 **너무 넓은 쪽으로** 틀립니다 — 원화 봇의 중단이 달러
+        봇도 멈춥니다. 그 방향을 고른 이유는 청산은 어차피 통과하고(`check()`
+        의 `is_reducing`), 다음 거래일에 저절로 풀리고, 운영자가 해제할 수 있기
+        때문입니다. 반대 방향의 오류는 손실 중단이 조용히 사라지는 것입니다.
+        """
+        if self.run_id is None:
+            return None
+        me = self.conn.execute("SELECT mode FROM runs WHERE id=?",
+                               (self.run_id,)).fetchone()
+        if me is None:
+            return None
+        return self.conn.execute(
+            "SELECT b.run_id AS run_id, b.halt_reason AS reason, "
+            "       r.strategy AS strategy "
+            "FROM day_budget b JOIN runs r ON r.id = b.run_id "
+            "WHERE b.day=? AND b.run_id<>? AND r.mode=? "
+            "  AND COALESCE(b.halt_reason,'') <> '' "
+            "  AND abs(b.tz_offset_hours - ?) < 1e-9 "
+            "ORDER BY b.updated_at DESC LIMIT 1",
+            (budget.local_day(now).isoformat(), self.run_id, me["mode"],
+             budget.tz_offset.total_seconds() / 3600),
+        ).fetchone()
+
+    def release_day_halts(self, budget: TradingBudget) -> int:
+        """운영자 해제 — 오늘 이 계정에 남은 중단 사유를 원장에서 지웁니다.
+
+        `_halt_in_force` 가 읽는 집합과 **정확히 같은 집합**을 지웁니다. 둘이
+        같지 않으면 해제가 이어받기의 역연산이 아니게 되고, 재시작 한 번마다
+        해제가 되살아납니다.
+
+        사용량 숫자는 건드리지 않습니다. 그래서 실제로 한도를 넘긴 run 은 다시
+        켜면 자기 원장으로 곧바로 다시 중단되고, 그 사유가 다시 계정에 걸립니다.
+        해제가 지우는 것은 "오늘 누가 넘었다" 는 표시이지 넘었다는 사실이
+        아닙니다.
+        """
+        if self.run_id is None:
+            return 0
+        me = self.conn.execute("SELECT mode FROM runs WHERE id=?",
+                               (self.run_id,)).fetchone()
+        if me is None:
+            return 0
+        self._claim()
+        day = budget.today.day if budget.today is not None else budget.local_day()
+        cur = self.conn.execute(
+            "UPDATE day_budget SET halt_reason='' "
+            "WHERE day=? AND COALESCE(halt_reason,'') <> '' "
+            "  AND abs(tz_offset_hours - ?) < 1e-9 "
+            "  AND run_id IN (SELECT id FROM runs WHERE mode=?)",
+            (day.isoformat(), budget.tz_offset.total_seconds() / 3600, me["mode"]),
+        )
+        self.conn.commit()
+        if cur.rowcount:
+            log.warning("운영자 해제: %s 의 중단 기록 %d건을 지웠습니다",
+                        day, cur.rowcount)
+        return cur.rowcount
 
     # ── decision journal ─────────────────────────────────────────────────
     # Two halves of one question — what did this desk decide, and was it right.
