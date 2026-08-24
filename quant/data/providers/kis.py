@@ -181,6 +181,42 @@ class KisProvider(DataProvider):
             lot_size=1, tick_size=korean_tick_size(probe.mid),
         )
 
+    async def describe(self, ticker: str) -> dict | None:
+        """종목코드 하나를 사람이 읽을 수 있는 것으로 바꿉니다.
+
+        한글 종목명은 시세 응답(`hts_kor_isnm`)에 이미 실려 옵니다 — 지금까지
+        버리고 있었을 뿐입니다. 화면에 "005930" 만 띄우면 그게 무슨 회사인지
+        외운 사람만 쓸 수 있고, 잘못 고르면 다른 회사를 삽니다.
+        """
+        code = "".join(ch for ch in ticker if ch.isdigit()).zfill(6)
+        if len(code) != 6:
+            return None
+        try:
+            data = await self._get(
+                "/uapi/domestic-stock/v1/quotations/inquire-price",
+                "FHKST01010100",
+                {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code},
+            )
+        except Exception as exc:
+            log.debug("kis describe failed for %s: %s", code, exc)
+            return None
+        out = data.get("output") or {}
+        price = float(out.get("stck_prpr") or 0)
+        if price <= 0:
+            return None
+        return {
+            "ticker": code,
+            "name": (out.get("hts_kor_isnm") or "").strip(),
+            "price": price,
+            "change_pct": float(out.get("prdy_ctrt") or 0.0),
+            "venue": "kis",
+            "currency": "KRW",
+            # 상하한가는 국내 시장의 하드 제약입니다. 그 밖의 지정가는 거절됩니다.
+            "upper_limit": float(out.get("stck_mxpr") or 0) or None,
+            "lower_limit": float(out.get("stck_llam") or 0) or None,
+            "tick_size": float(korean_tick_size(price)),
+        }
+
     async def close(self):
         await self._client.aclose()
 

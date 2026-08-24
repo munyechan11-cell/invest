@@ -76,6 +76,19 @@ class DataProvider(ABC):
         """Turn a user-typed ticker into a fully specified Symbol."""
         return None
 
+    async def describe(self, ticker: str) -> dict | None:
+        """사람이 읽을 수 있는 종목 정보 — 이름, 현재가, 호가단위, 상하한가.
+
+        `resolve` 는 엔진이 쓸 Symbol 을 만들고, 이건 화면이 보여줄 것을
+        만듭니다. 종목코드만 띄우면 그게 무슨 회사인지 외운 사람만 고를 수
+        있고, 잘못 고르면 다른 회사를 삽니다.
+
+        지원하지 않는 프로바이더는 None 을 냅니다 — 그러면 화면이 "이 거래소
+        에서는 검색을 지원하지 않습니다" 라고 말할 수 있습니다. 빈 목록을
+        내면 "그런 종목이 없다" 는 뜻이 되어 버립니다.
+        """
+        return None
+
     async def close(self) -> None:
         return None
 
@@ -125,6 +138,9 @@ class CachingProvider(DataProvider):
     async def resolve(self, ticker):
         return await self.inner.resolve(ticker)
 
+    async def describe(self, ticker):
+        return await self.inner.describe(ticker)
+
     def stream(self, symbols, timeframe):
         return self.inner.stream(symbols, timeframe)
 
@@ -162,6 +178,13 @@ class CompositeProvider(DataProvider):
             sym = await p.resolve(ticker)
             if sym:
                 return sym
+        return None
+
+    async def describe(self, ticker):
+        for p in self.providers.values():
+            found = await p.describe(ticker)
+            if found:
+                return found
         return None
 
     async def close(self):

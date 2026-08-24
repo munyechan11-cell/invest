@@ -144,6 +144,31 @@ class UsageStore:
             self.conn.commit()
         return cost
 
+    def record_spend(self, user_id: int, llm_calls: int, cost_usd: float,
+                     own_key: bool = False, now: datetime | None = None) -> None:
+        """이미 계산된 비용을 그대로 적습니다.
+
+        `record` 는 모델 이름과 토큰 수로 비용을 다시 계산합니다. 그건 호출이
+        한 모델로만 나갈 때 맞고, 데스크는 분석석과 결정석에 **다른 모델**을
+        씁니다 — 하나의 이름으로 뭉쳐서 계산하면 싼 쪽을 비싸게(또는 그 반대로)
+        치게 됩니다. 데스크는 자기 비용을 모델별로 이미 알고 있으므로, 그
+        숫자를 받아 적는 편이 정확합니다.
+
+        토큰 수는 남기지 않습니다 — 모델이 섞여 있어서 합계가 의미를 잃습니다.
+        """
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO desk_usage (user_id, day, deliberations, llm_calls, "
+                "input_tokens, output_tokens, cost_usd, own_key) "
+                "VALUES (?,?,1,?,0,0,?,?) "
+                "ON CONFLICT(user_id, day, own_key) DO UPDATE SET "
+                "  deliberations = deliberations + 1, "
+                "  llm_calls     = llm_calls + excluded.llm_calls, "
+                "  cost_usd      = cost_usd + excluded.cost_usd",
+                (user_id, _kst_day(now).isoformat(), llm_calls,
+                 float(cost_usd), 1 if own_key else 0))
+            self.conn.commit()
+
     # ── 조회 ─────────────────────────────────────────────────────────────
     def today(self, user_id: int, now: datetime | None = None) -> dict:
         return self._sum("user_id=? AND day=? AND own_key=0",

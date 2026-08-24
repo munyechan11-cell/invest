@@ -57,6 +57,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
+from starlette.concurrency import run_in_threadpool
 
 from quant.config.loader import load_config
 from quant.config.schema import StrategyConfig
@@ -174,6 +175,17 @@ class ManualOrderRequest(BaseModel):
     #: hand the resulting position back to the strategy instead of pinning it
     manage: bool = False
     note: str = ""
+
+
+class EvaluateRequest(BaseModel):
+    """종목 하나를 지금 심의해 달라는 요청.
+
+    함수 안에 두면 FastAPI 가 본문 모델로 알아보지 못하고 쿼리 파라미터로
+    해석합니다 — 모든 호출이 422 로 떨어집니다.
+    """
+
+    ticker: str = Field(..., max_length=24)
+    strategy: str | None = Field(None, max_length=64)
 
 
 class ProfileRequest(BaseModel):
@@ -563,6 +575,55 @@ def _config_symbols(config: StrategyConfig) -> list[Symbol]:
     from quant.strategy.builder import build_symbol
 
     return [build_symbol(spec) for spec in config.universe.symbols]
+
+
+def _template_config(name: str | None):
+    """전략 이름으로 설정을 읽습니다. 없거나 잘못된 이름이면 None.
+
+    검색은 봇이 꺼져 있을 때도 되어야 합니다 — 데스크가 어떤 종목을 사라고
+    했을 때, 그걸 찾으려고 먼저 봇을 켜야 한다면 순서가 뒤바뀝니다.
+    """
+    if not name:
+        return None
+    try:
+        return load_config(str(resolve_template(name)))
+    except Exception:
+        return None
+
+
+def build_alpha_desk(spec):
+    """설정에 적힌 데스크를 봇 없이 하나 세웁니다.
+
+    봇이 돌고 있으면 그 데스크를 그대로 쓰는 게 맞습니다(기억과 이력이
+    이어집니다). 꺼져 있을 때만 이 길로 옵니다 — 검색해서 고른 종목을
+    물어보려고 봇부터 켜게 만들지 않기 위해서입니다.
+    """
+    from quant.strategy.builder import _build_council, _build_desk
+    return (_build_desk(spec, None) if spec.type == "desk"
+            else _build_council(spec))
+
+
+def _standalone_context(cfg, symbol, bars):
+    """심의 한 번을 위한 최소 Context.
+
+    데스크는 과거 봉을 읽어서 브리핑을 만듭니다. 그래서 엔진 없이도 봉을
+    담은 Context 가 있으면 심의가 됩니다 — 다만 포트폴리오는 비어 있고
+    시계는 마지막 봉에 맞춥니다. 실제 보유 수량을 넣지 않는 것은 의도적
+    입니다: 이 호출은 "살까?" 를 묻는 것이고, 주문을 내지 않습니다.
+    """
+    from quant.core.account import Portfolio
+    from quant.core.clock import SimClock
+    from quant.core.context import Context
+    from quant.core.events import EventBus
+
+    clock = SimClock(bars[-1].end_ts)
+    ctx = Context(clock=clock, portfolio=Portfolio(starting_cash=0.0),
+                  bus=EventBus(), timeframe=cfg.data.timeframe,
+                  run_mode=cfg.mode, history_size=max(len(bars), 200))
+    ctx.universe = [symbol]
+    for bar in bars:
+        ctx.push_bar(bar)
+    return ctx
 
 
 def resolve_template(name: str) -> Path:
@@ -1262,6 +1323,187 @@ def create_app(config: StrategyConfig | None = None,
             return store.trade_log(limit=limit, offset=offset, strategy=strategy)
         finally:
             store.close()
+
+    @app.get("/api/lookup")
+    async def lookup(q: str = Query("", max_length=40),
+                     strategy: str | None = Query(None, max_length=64),
+                     seat: Desk = Depends(desk)):
+        """종목 검색 — 코드로 조회하고, 한 번 찾은 것은 이름으로도 찾힙니다.
+
+        코드를 넣으면 연동된 증권사에 물어봅니다. 이름을 넣으면 **이미 아는
+        종목** 안에서 찾습니다: 전략에 들어 있는 종목과, 이 계정이 전에 조회해
+        본 종목입니다.
+
+        전체 상장 종목을 이름으로 검색하려면 종목 마스터가 필요하고, 그건
+        증권사마다 다른 별도 파일입니다. 없는 목록을 지어내는 것보다 — 잘못된
+        종목코드는 **다른 회사를 사는 것** 입니다 — 아는 것만 정확히 찾아주고
+        모르는 것은 코드로 물어보게 하는 편이 낫습니다.
+        """
+        text = (q or "").strip()
+        if not text:
+            return {"results": [], "message": ""}
+
+        cfg = (seat.run_config() if seat.running()
+               else (_template_config(strategy) or seat.run_config()))
+        known: dict[str, dict] = {}
+        if cfg is not None:
+            for sym in _config_symbols(cfg):
+                known[sym.ticker] = {"ticker": sym.ticker, "venue": sym.venue,
+                                     "currency": sym.quote_currency, "name": "",
+                                     "source": "strategy"}
+        store = StateStore(seat.state_path)
+        try:
+            for row in store.known_tickers():
+                known.setdefault(row["ticker"], {})
+                known[row["ticker"]].update(
+                    {"ticker": row["ticker"], "venue": row["venue"],
+                     "currency": row.get("currency") or "",
+                     "name": row.get("name") or "", "source": "seen"})
+        finally:
+            store.close()
+
+        digits = "".join(ch for ch in text if ch.isdigit())
+        # 6자리 숫자는 국내 종목코드입니다. 증권사에 직접 물어봅니다.
+        if len(digits) == 6 and cfg is not None:
+            try:
+                provider = seat.data_provider(cfg)
+                found = await provider.describe(digits)
+            except Exception as exc:
+                log.warning("종목 조회 실패 %s: %s", digits, exc)
+                found = None
+            if found:
+                # 다음부터는 이름으로도 찾히게 기억합니다.
+                store = StateStore(seat.state_path)
+                try:
+                    store.remember_ticker(found)
+                finally:
+                    store.close()
+                return {"results": [{**found, "source": "venue"}], "message": ""}
+            return {"results": [], "message":
+                    f"{digits} 를 찾지 못했습니다. 증권사 연동을 확인하거나, "
+                    f"장 시간이 아니면 시세가 오지 않을 수 있습니다."}
+
+        lowered = text.lower()
+        hits = [v for v in known.values()
+                if lowered in v["ticker"].lower() or lowered in (v["name"] or "").lower()]
+        if hits:
+            return {"results": hits[:20], "message": ""}
+        return {"results": [], "message":
+                "이름으로는 전에 조회한 종목과 전략에 들어 있는 종목만 찾습니다. "
+                "처음 찾는 종목은 6자리 종목코드를 넣어 주세요."}
+
+    @app.post("/api/evaluate")
+    async def evaluate(req: EvaluateRequest, seat: Desk = Depends(desk)):
+        """종목 하나를 지금 심의합니다 — 봇을 켜지 않고.
+
+        데스크가 어떤 종목을 사라고 했을 때, 그걸 확인하려고 먼저 봇을 켜야
+        한다면 순서가 뒤바뀝니다. 검색해서 고른 종목을 그 자리에서 16명에게
+        물어볼 수 있어야 합니다.
+
+        **이 호출은 돈이 듭니다.** 심의 한 번이 약 $0.06 이고 그 비용은
+        서비스가 냅니다. 그래서 요금제 한도를 먼저 확인하고, 끝난 뒤에는
+        실제 토큰 수로 계량합니다 — 계량하지 않으면 한 사람의 반복 클릭이
+        운영자 카드로 청구되고, 나중에 소급해서 만들 수도 없습니다.
+        """
+        ticker = (req.ticker or "").strip().upper()
+        if not ticker:
+            raise HTTPException(400, "종목을 지정하세요")
+
+        plan = getattr(seat.user, "plan", "free")
+        own_key = "GOOGLE_API_KEY" in set(seat.registry.accounts.configured(seat.user.id))
+        usage = seat.registry.usage
+        allowed, why = await run_in_threadpool(
+            usage.allow, seat.user.id, plan, own_key)
+        if not allowed:
+            raise HTTPException(429, why)
+
+        # 돌고 있는 봇이 있으면 그 설정으로 심의합니다(데스크의 기억과 이력이
+        # 이어집니다). 꺼져 있으면 사용자가 고른 전략으로 — `run_config()` 는
+        # 봇이 없을 때 프로세스 기본 템플릿으로 물러서므로, 그 값을 그대로
+        # 쓰면 사용자가 무엇을 골랐든 데모 전략으로 심의하게 됩니다.
+        cfg = (seat.run_config() if seat.running()
+               else (_template_config(req.strategy) or seat.run_config()))
+        if cfg is None:
+            raise HTTPException(
+                400, "전략을 먼저 고르세요 — 심의는 그 전략의 설정(봉 간격, "
+                     "리스크 한도, 데스크 모델)을 그대로 씁니다.")
+
+        model = seat.desk_model()
+        if model is None:
+            desk_spec = next((m for m in cfg.alpha if m.type in ("desk", "council")), None)
+            if desk_spec is None:
+                raise HTTPException(
+                    400, f"'{cfg.name}' 전략에는 AI 데스크가 없습니다. "
+                         f"데스크가 있는 전략을 고르세요.")
+            try:
+                model = build_alpha_desk(desk_spec)
+            except Exception as exc:
+                log.warning("데스크 생성 실패: %s", exc)
+                # 사용자가 읽어야 하는 문장입니다. 원문이 영어면 무엇을 해야
+                # 하는지 알 수 없으므로, 가장 흔한 원인은 한국어로 바꿔 줍니다.
+                text = str(exc)
+                if "no API key" in text or "api key" in text.lower():
+                    raise HTTPException(
+                        503, "AI 데스크를 쓸 수 없습니다 — 서비스의 Gemini 키가 "
+                             "설정되지 않았거나 한도에 걸렸습니다. 마이페이지에서 "
+                             "본인 Gemini 키를 넣으면 바로 쓸 수 있습니다.") from None
+                raise HTTPException(
+                    503, f"데스크를 준비할 수 없습니다: {text}") from None
+
+        symbol = next((s for s in _config_symbols(cfg)
+                       if s.ticker.upper() == ticker), None)
+        if symbol is None:
+            try:
+                provider = seat.data_provider(cfg)
+                symbol = await provider.resolve(ticker)
+            except Exception as exc:
+                log.warning("종목 해석 실패 %s: %s", ticker, exc)
+                symbol = None
+        if symbol is None:
+            raise HTTPException(
+                404, f"{ticker} 를 찾을 수 없습니다. 6자리 종목코드인지, "
+                     f"증권사가 연동되어 있는지 확인하세요.")
+
+        # 심의는 과거 봉 위에서 이뤄집니다. 봉이 없으면 16명이 아무것도 볼 수
+        # 없고, 그 상태에서 나온 결론은 심의가 아니라 추측입니다.
+        try:
+            provider = seat.data_provider(cfg)
+            bars = await provider.latest_bars(symbol, cfg.data.timeframe,
+                                              cfg.data.warmup_bars)
+        except Exception as exc:
+            log.warning("시세 조회 실패 %s: %s", symbol.key, exc)
+            raise HTTPException(
+                503, f"{ticker} 의 시세를 받지 못했습니다: {exc}") from None
+        if len(bars) < 60:
+            raise HTTPException(
+                422, f"{ticker} 의 과거 봉이 {len(bars)}개뿐입니다 — 심의하기에 "
+                     f"부족합니다(최소 60개). 상장 직후이거나 거래가 드문 종목일 수 있습니다.")
+
+        ctx = _standalone_context(cfg, symbol, bars)
+        before_calls, before_cost = model.status()["llm_calls"], model.estimated_cost_usd
+        try:
+            decision = await model.deliberate(ctx, symbol)
+        except Exception as exc:
+            log.warning("심의 실패 %s: %s", ticker, exc)
+            raise HTTPException(502, f"심의 중 오류: {exc}") from None
+        finally:
+            # 실패했어도 부른 만큼은 청구됩니다. 성공만 계량하면 실패한
+            # 호출의 비용이 아무 계정에도 잡히지 않습니다.
+            after = model.status()
+            spent = max(0.0, model.estimated_cost_usd - before_cost)
+            calls = max(0, after["llm_calls"] - before_calls)
+            if calls:
+                await run_in_threadpool(
+                    usage.record_spend, seat.user.id, calls, spent, own_key)
+
+        if decision is None:
+            raise HTTPException(
+                422, "심의가 결론에 이르지 못했습니다 — 마감 시간을 넘겼거나 "
+                     "데스크 한도에 걸렸습니다. 잠시 후 다시 시도하세요.")
+        out = decision.to_dict()
+        out["metered"] = {"llm_calls": calls, "cost_usd": round(spent, 4),
+                          "billed_to": "own_key" if own_key else "service"}
+        return out
 
     @app.get("/api/events")
     async def events(limit: int = Query(100, ge=1, le=500),

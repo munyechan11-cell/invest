@@ -55,6 +55,35 @@ body{font-family:var(--kr);font-size:14px;line-height:1.5;
 svg,canvas{image-rendering:pixelated;shape-rendering:crispEdges}
 .px{font-family:var(--px);letter-spacing:.04em}
 
+/* ── 종목 찾기 ────────────────────────────────────────────────────── */
+.lkres{display:grid;gap:6px;margin-top:10px}
+.lkrow{display:flex;gap:10px;align-items:center;border:2px solid var(--line);
+  background:#0b0e16;padding:9px 11px;cursor:pointer;text-align:left;
+  min-height:46px;font:inherit;color:inherit;width:100%}
+.lkrow:hover{border-color:var(--gold-dim)}
+.lkrow .code{font-family:var(--px);font-size:12px;color:var(--gold);flex:0 0 auto}
+.lkrow .nm{font-size:13px;color:var(--ink);flex:1;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lkrow .px{font-family:var(--mono);font-size:13px;font-variant-numeric:tabular-nums}
+.lkrow .src{font-size:11px;color:var(--faint);flex:0 0 auto}
+
+/* ── 개별 심의 결과 ──────────────────────────────────────────────── */
+.askout{margin-top:12px;border:2px solid var(--gold-dim);background:#0b0e16;
+  padding:13px 14px}
+.askout .act{font-family:var(--px);font-size:17px;color:var(--gold);
+  display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.askout .act .cv{font-size:12px;color:var(--dim)}
+.askout .why{margin-top:10px;font-size:13px;line-height:1.8;color:var(--ink);
+  word-break:keep-all;overflow-wrap:anywhere}
+.askout .kv{margin-top:10px;display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
+.askout .kv div{border:1px solid var(--rule);padding:7px 9px}
+.askout .kv b{display:block;font-size:11px;color:var(--dim);font-weight:400}
+.askout .kv span{font-family:var(--mono);font-size:14px}
+.askout .meter{margin-top:10px;font-size:11px;color:var(--faint)}
+.askout.veto{border-color:var(--red)}
+.askout.veto .act{color:#ff8a83}
+
 /* ── 전략 설명 ────────────────────────────────────────────────────────
    드롭다운의 이름만으로는 그 전략이 무엇을 하는지 알 수 없습니다. 고른
    즉시 아래에 한국어로 펼칩니다 — 시작 버튼을 누르기 전에 읽어야 하는 것. */
@@ -885,7 +914,14 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
       <div class="acct">
         <div>
           <div class="who" id="acctWho">—</div>
-          <div class="actions">
+          <div class="row" style="margin-top:12px;gap:9px;display:flex;flex-wrap:wrap">
+        <button class="btn tap" id="mAsk">◆ 16명에게 물어보기</button>
+        <span class="dim" id="mAskCost">심의 1회는 서비스가 비용을 냅니다 —
+          요금제 한도 안에서 쓸 수 있습니다.</span>
+      </div>
+      <div class="askout" id="mAskOut" hidden></div>
+
+      <div class="actions">
             <button class="btn tap" id="logoutBtn">로그아웃</button>
             <button class="btn tap" id="acctSetupBtn">⚙ 초기 설정 열기</button>
           </div>
@@ -942,11 +978,26 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
 
   </div><!-- /mypage -->
 
-  <!-- 수동 개입 -->
-  <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 수동 매매 · 자동매매 중에도 개입 <span class="d" aria-hidden="true">◆</span></span>
+  <!-- 수동 매매 — 내가 고른 종목을 내가 물어보고 내가 냅니다.
+       자동매매는 봇이 종목까지 고르고, 여기는 종목을 내가 고릅니다. -->
+  <section class="panel" id="manualPanel">
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 수동 매매 <span class="d" aria-hidden="true">◆</span></span>
     <div class="body">
-      <div class="manual">
+      <p class="msg" style="margin-top:0">종목을 직접 찾아 <b>16명에게 물어본 뒤</b>
+        사고팝니다. 자동매매는 종목까지 봇이 고르고, 여기는 내가 고릅니다.
+        자동매매가 돌고 있어도 여기서 개입할 수 있습니다.</p>
+
+      <!-- 검색 -->
+      <div class="pwform" style="margin-top:12px">
+        <div class="fld"><label for="lkQ">종목 찾기</label>
+          <input id="lkQ" type="search" autocomplete="off"
+                 placeholder="종목코드 6자리 또는 이름"></div>
+        <div style="align-self:end"><button class="btn tap" id="lkGo">찾기</button></div>
+      </div>
+      <div class="lkres" id="lkRes"></div>
+      <div class="msg" id="lkMsg" hidden></div>
+
+      <div class="manual" style="margin-top:14px">
         <div class="fld"><label for="mSymbol">종목</label>
           <select id="mSymbol"><option value="">— 실행 중인 봇 없음 —</option></select></div>
         <div class="fld"><label for="mQty">수량 (비우면 금액 사용)</label>
@@ -2665,6 +2716,17 @@ function renderStrategyBrief() {
     (st.signals || []).map(g => row(g, "")).join("") +
     (st.guards || []).map(g => row(g, " guard")).join("");
 
+  // 데스크가 없는 전략에서는 물어볼 데가 없습니다. 누르고 나서 실패를
+  // 읽게 하는 대신 미리 말합니다 — 이유를 아는 비활성이 낫습니다.
+  const hasDesk = (st.signals || []).some(g => g.id === "desk" || g.id === "council");
+  const ask = $("#mAsk"), cost = $("#mAskCost");
+  if (ask) {
+    ask.disabled = !hasDesk;
+    cost.textContent = hasDesk
+      ? "심의 1회는 서비스가 비용을 냅니다 — 요금제 한도 안에서 쓸 수 있습니다."
+      : `'${st.name}' 에는 AI 데스크가 없습니다. 데스크가 있는 전략을 고르면 물어볼 수 있습니다.`;
+  }
+
   const line = (label, value) =>
     `<div class="r"><b>${esc(label)}</b><span>${esc(value)}</span></div>`;
   const ex = st.execution || {};
@@ -2757,6 +2819,125 @@ $("#strategyPick").onchange = () => {
   loadTradeLog();
   if (chart) loadChart();
 };
+
+/* ── 종목 찾기 ─────────────────────────────────────────────────────
+   자동매매는 종목까지 봇이 고릅니다. 여기는 내가 고르는 쪽이라, 먼저
+   찾을 수 있어야 합니다. 6자리 코드는 증권사에 직접 물어보고, 이름은
+   전에 조회한 것과 전략에 들어 있는 것 안에서 찾습니다. */
+async function lookup() {
+  const q = $("#lkQ").value.trim();
+  const res = $("#lkRes"), msg = $("#lkMsg");
+  res.innerHTML = ""; msg.hidden = true;
+  if (!q) return;
+  $("#lkGo").disabled = true;
+  let d;
+  try {
+    d = await api(`/api/lookup?q=${encodeURIComponent(q)}` +
+                  `&strategy=${encodeURIComponent(chartStrategy())}`);
+  } catch (e) {
+    note("#lkMsg", "찾기 실패: " + e.message, "err"); msg.hidden = false;
+    $("#lkGo").disabled = false; return;
+  }
+  $("#lkGo").disabled = false;
+  const rows = d.results || [];
+  if (!rows.length) {
+    note("#lkMsg", d.message || "결과가 없습니다.", "");
+    msg.hidden = false;
+    return;
+  }
+  const SRC = {venue: "증권사 조회", strategy: "전략 종목", seen: "전에 조회"};
+  res.innerHTML = rows.map(r => `
+    <button type="button" class="lkrow" data-pick="${esc(r.ticker)}">
+      <span class="code">${esc(r.ticker)}</span>
+      <span class="nm">${esc(r.name || "이름 없음")}</span>
+      <span class="px">${r.price ? num(r.price) : ""}</span>
+      <span class="src">${esc(SRC[r.source] || "")}</span>
+    </button>`).join("");
+  res.querySelectorAll("[data-pick]").forEach(el => {
+    el.onclick = () => pickTicker(el.dataset.pick);
+  });
+}
+
+/* 고른 종목을 주문 칸과 차트에 함께 꽂습니다. 한 곳에만 넣으면 보고 있는
+   것과 주문 나가는 것이 서로 다른 종목이 됩니다. */
+function pickTicker(ticker) {
+  const sel = $("#mSymbol");
+  let opt = [...sel.options].find(o => o.value.split(":").pop() === ticker);
+  if (!opt) {
+    // 전략 밖의 종목입니다 — 목록에 없으면 고를 수가 없으니 넣어 줍니다.
+    opt = document.createElement("option");
+    opt.value = ticker;
+    opt.textContent = ticker + " (직접 지정)";
+    sel.appendChild(opt);
+  }
+  sel.value = opt.value;
+  const cSym = $("#cSym");
+  if (cSym && [...cSym.options].some(o => o.value === opt.value)) {
+    cSym.value = opt.value;
+    loadChart();
+  }
+  $("#mAskOut").hidden = true;
+  $("#lkRes").innerHTML = "";
+  note("#lkMsg", `${ticker} 선택됨 — 아래에서 물어보거나 바로 주문할 수 있습니다.`, "ok");
+  $("#lkMsg").hidden = false;
+}
+
+/* ── 고른 종목 하나를 지금 심의 ────────────────────────────────────
+   데스크가 어떤 종목을 사라고 했을 때, 확인하려고 먼저 봇을 켜야 한다면
+   순서가 뒤바뀝니다. 이 호출은 돈이 들고(약 $0.06) 요금제 한도를 받습니다. */
+async function askDesk() {
+  const raw = ($("#mSymbol").value || "").split(":").pop();
+  if (!raw) { note("#mMsg", "종목을 먼저 고르세요.", "err"); return; }
+  const btn = $("#mAsk"), out = $("#mAskOut");
+  btn.disabled = true;
+  btn.textContent = "◆ 심의 중… (최대 2분)";
+  out.hidden = true;
+  try {
+    const d = await post("/api/evaluate",
+                         {ticker: raw, strategy: chartStrategy()});
+    renderAsk(d, raw);
+  } catch (e) {
+    note("#mMsg", "심의 실패: " + e.message, "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "◆ 16명에게 물어보기";
+  }
+}
+
+const ACT_KO = {
+  strong_buy: "적극 매수", buy: "매수", hold: "관망",
+  sell: "매도", strong_sell: "적극 매도", avoid: "회피",
+};
+
+function renderAsk(d, ticker) {
+  const out = $("#mAskOut");
+  out.className = "askout" + (d.vetoed ? " veto" : "");
+  const act = ACT_KO[d.action] || d.action || "—";
+  const cv = d.conviction == null ? "" :
+    `<span class="cv">확신 ${(d.conviction * 100).toFixed(0)}%</span>`;
+  const kv = (label, value) => `<div><b>${esc(label)}</b><span>${esc(value)}</span></div>`;
+  const m = d.metered || {};
+  out.innerHTML =
+    `<div class="act">${esc(ticker)} · ${esc(act)}${cv}</div>` +
+    (d.veto_reason ? `<div class="why">거부 사유 — ${esc(d.veto_reason)}</div>` : "") +
+    (d.rationale ? `<div class="why">${esc(d.rationale)}</div>` : "") +
+    `<div class="kv">` +
+      kv("목표 비중", d.target_weight_pct ? d.target_weight_pct.toFixed(1) + "%" : "—") +
+      kv("기대 변동", d.expected_move_pct ? pct2(d.expected_move_pct / 100) : "—") +
+      kv("보유 기간", d.horizon_bars ? d.horizon_bars + "봉" : "—") +
+      kv("최대 손실", d.max_loss_pct ? d.max_loss_pct.toFixed(1) + "%" : "—") +
+    `</div>` +
+    (d.invalidation ? `<div class="why">틀렸다고 볼 조건 — ${esc(d.invalidation)}</div>` : "") +
+    (d.dissent ? `<div class="why">소수 의견 — ${esc(d.dissent)}</div>` : "") +
+    `<div class="meter">LLM 호출 ${m.llm_calls || 0}회 · $${(m.cost_usd || 0).toFixed(4)}
+      · ${m.billed_to === "own_key" ? "내 키로 결제" : "서비스 부담"}
+      — 이건 의견이고 주문이 아닙니다. 아래에서 직접 내야 나갑니다.</div>`;
+  out.hidden = false;
+}
+
+$("#lkGo").onclick = lookup;
+$("#lkQ").onkeydown = ev => { if (ev.key === "Enter") { ev.preventDefault(); lookup(); } };
+$("#mAsk").onclick = askDesk;
 
 function runnerState(running) {
   document.getElementById("runStart").hidden = running;

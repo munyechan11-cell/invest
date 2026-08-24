@@ -85,6 +85,12 @@ CREATE TABLE IF NOT EXISTS trades (
   entry_ts TEXT, exit_ts TEXT, pnl REAL, pnl_pct REAL, fees REAL,
   exit_tag TEXT
 );
+CREATE TABLE IF NOT EXISTS known_symbols (
+  ticker TEXT NOT NULL, venue TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL DEFAULT '', currency TEXT NOT NULL DEFAULT '',
+  seen_at TEXT NOT NULL,
+  PRIMARY KEY (ticker, venue)
+);
 CREATE TABLE IF NOT EXISTS equity (
   run_id INTEGER NOT NULL, ts TEXT NOT NULL,
   equity REAL NOT NULL, cash REAL NOT NULL, drawdown REAL NOT NULL,
@@ -1048,6 +1054,39 @@ class StateStore:
             + " ORDER BY t.exit_ts DESC, t.id DESC LIMIT ? OFFSET ?",
             [*args, limit, offset]).fetchall()
         return {"total": total, "offset": offset, "trades": [dict(r) for r in rows]}
+
+    def remember_ticker(self, info: dict) -> None:
+        """조회해 본 종목을 기억합니다 — 다음부터는 이름으로도 찾히게.
+
+        전체 상장 종목 목록을 저장소에 싣는 대신, 이 계정이 실제로 찾아본
+        것만 쌓습니다. 종목코드를 지어내는 것보다 정확하고 — 틀린 코드는
+        **다른 회사를 사는 것** 입니다 — 쓰다 보면 자기 관심 종목이 목록이
+        됩니다.
+
+        `run_id` 와 무관합니다. 봇을 껐다 켜도 찾아본 기록은 남습니다.
+        """
+        ticker = str(info.get("ticker") or "").strip()
+        if not ticker:
+            return
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO known_symbols (ticker, venue, name, currency, seen_at) "
+                "VALUES (?,?,?,?,?) "
+                "ON CONFLICT(ticker, venue) DO UPDATE SET "
+                # 이름이 빈 채로 덮어쓰면 알던 것을 잃습니다.
+                "  name = CASE WHEN excluded.name <> '' THEN excluded.name "
+                "              ELSE known_symbols.name END, "
+                "  currency = excluded.currency, seen_at = excluded.seen_at",
+                (ticker, info.get("venue") or "", info.get("name") or "",
+                 info.get("currency") or "", datetime.now(UTC).isoformat()))
+            self.conn.commit()
+
+    def known_tickers(self, limit: int = 400) -> list[dict]:
+        """전에 조회해 본 종목들 — 최근에 본 것부터."""
+        rows = self.conn.execute(
+            "SELECT ticker, venue, name, currency FROM known_symbols "
+            "ORDER BY seen_at DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
 
     def recent_events(self, limit: int = 200, event_type: str | None = None) -> list[dict]:
         sql = "SELECT ts, type, payload FROM events WHERE run_id=?"

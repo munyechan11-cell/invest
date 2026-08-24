@@ -50,6 +50,7 @@ from quant.core.types import UTC
 from quant.live.credentials import VENUES_BY_ID
 from quant.live.profile import InvestorProfile, ProfileStore, apply_profile
 from quant.webapp.accounts import Accounts
+from quant.webapp.usage import UsageStore
 
 log = logging.getLogger("quant.webapp.registry")
 
@@ -356,6 +357,10 @@ class UserRegistry:
         self.root = Path(root or os.environ.get("QUANT_USER_DATA", "data/users"))
         self.root.mkdir(parents=True, exist_ok=True)
         self._bots: dict[int, _Bot] = {}
+        # AI 데스크 비용은 서비스가 냅니다. 계량을 켜 두지 않으면 한 사람의
+        # 설정 실수가 운영자 카드로 청구되고, 나중에 소급해서 만들 수도
+        # 없습니다 — "누가 얼마나 썼나" 는 기록이 없으면 답이 없습니다.
+        self.usage = UsageStore(self.root / "desk_usage.db")
 
     # ── 파일 자리 ────────────────────────────────────────────────────────
     @staticmethod
