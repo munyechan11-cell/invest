@@ -338,6 +338,11 @@ tr:last-child td{border-bottom:0}
   word-break:keep-all;overflow-wrap:anywhere}
 .saybox.bull .who{color:#5FE39A} .saybox.bear .who{color:#FF8A92}
 .saybox.idle .line{color:var(--muted)}
+/* 기다려도 영영 안 되는 상태. 기다리면 되는 것과 같은 회색으로 두면 사람은
+   계속 기다립니다 — 실제로 열 분을 그렇게 보냈습니다. */
+.saybox.bad{border-color:var(--bad)}
+.saybox.bad .who{color:var(--bad)}
+.saybox.bad .line{color:var(--ink)}
 .saybox .line:after{content:"";display:inline-block;width:7px;height:13px;
   margin-left:4px;background:var(--gold);vertical-align:-2px;
   animation:blink .9s steps(2) infinite}
@@ -1730,6 +1735,7 @@ async function refresh() {
 
   try {
     const s = await api("/api/status");
+    botState = s;
     if (s.portfolio) {
       $("#strategy").textContent = s.strategy || "—";
       const m = $("#mode");
@@ -1746,6 +1752,8 @@ async function refresh() {
   // Replay the newest deliberation we have not shown yet.
   try {
     const d = await api("/api/desk?limit=1");
+    deskState = d;
+    try { renderDeskAvailability(); } catch (e) { console.error(e); }
     const latest = (d.deliberations || [])[0];
     if (latest && latest.decided_at !== lastShown) {
       lastShown = latest.decided_at;
@@ -1754,6 +1762,10 @@ async function refresh() {
   } catch {}
 }
 let lastShown = null;
+//: `/api/desk` 의 마지막 응답. 심의가 없을 때 **왜 없는지**가 여기 있습니다.
+let deskState = null;
+//: `/api/status` 의 마지막 응답. 장이 닫혔는지, 볼 종목이 있는지.
+let botState = null;
 
 let socket = null, ping = null;
 function connect() {
@@ -3289,26 +3301,72 @@ function renderMini(payload) {
 /* 이 전략이 AI 데스크를 쓰는가. 안 쓰면 방은 영영 비어 있는데, 화면에는
    "대기 중" 만 떠서 곧 뭔가 시작될 것처럼 보입니다 — 기다릴 이유가 없는
    것을 기다리게 만드는 화면입니다. */
+/* 심의가 없을 때 **왜 없는지** 말한다.
+
+   "대기 중" 은 네 가지 완전히 다른 상황에서 똑같이 떴습니다 — 데스크가 없는
+   전략, 봇이 안 도는 상태, 장이 닫힌 시간, 그리고 LLM 키가 거절당한 경우.
+   앞의 셋은 기다리면 되고 마지막은 기다려도 영영 안 됩니다. 화면이 그 넷을
+   구분하지 못하니 사람은 열 분쯤 보다가 고장으로 읽었고, 실제로 그랬습니다.
+
+   서버는 이유를 이미 알고 있습니다 — `/api/desk` 의 `disabled_reason`,
+   `/api/status` 의 `market.minutes_to_open` 과 `universe`. 여기까지 와 있던
+   것을 화면이 안 읽었을 뿐입니다. */
+function deskWaitReason() {
+  const st = strategies.find(x => x.id === chartStrategy());
+  if (!st) return null;
+  if (!(st.signals || []).some(g => g.id === "desk" || g.id === "council")) {
+    return {kind: "nodesk", who: "심의 없음",
+            line: `'${st.name}' 은 규칙 기반 신호로만 매매합니다. ` +
+                  `AI 16명의 심의를 보시려면 데스크가 있는 전략을 고르세요.`};
+  }
+  // 영영 안 되는 것부터. 기다려도 소용없는 것을 "대기 중" 으로 두면 안 됩니다.
+  const why = (deskState || {}).disabled_reason;
+  if (why) {
+    return {kind: "broken", who: "데스크가 꺼졌습니다",
+            line: why + " — ⚙ 설정에서 Gemini 키를 확인하세요."};
+  }
+  if (!document.body.classList.contains("running")) {
+    return {kind: "idle", who: "아직 시작하지 않았습니다",
+            line: "위에서 ▶ 시작 을 누르면 그 자리에서 한 번 심의합니다 — " +
+                  "봉이 닫힐 때까지 기다리지 않습니다."};
+  }
+  const uni = (botState || {}).universe;
+  if (Array.isArray(uni) && uni.length === 0) {
+    return {kind: "broken", who: "볼 종목이 없습니다",
+            line: "필터가 후보를 전부 걸러냈습니다. 이 상태로는 아무것도 " +
+                  "사거나 팔지 않습니다 — 전략 설정을 확인해야 합니다."};
+  }
+  const mkt = (botState || {}).market || {};
+  if (mkt.open === false && mkt.minutes_to_open != null
+      && isFinite(mkt.minutes_to_open)) {
+    const h = Math.floor(mkt.minutes_to_open / 60), m = Math.round(mkt.minutes_to_open % 60);
+    return {kind: "closed", who: "휴장",
+            line: `${mkt.calendar || "이 시장"} 이 닫혀 있습니다 — 개장까지 ` +
+                  (h ? `${h}시간 ${m}분` : `${m}분`) + ". 열리면 이어서 봅니다."};
+  }
+  return {kind: "waiting", who: "대기 중",
+          line: "다음 봉이 닫히면 심의가 시작되고, 발언은 여기 그대로 남습니다."};
+}
+
 function renderDeskAvailability() {
   const st = strategies.find(x => x.id === chartStrategy());
   const has = !!st && (st.signals || []).some(g => g.id === "desk" || g.id === "council");
   document.body.classList.toggle("nodesk", !!st && !has);
-  const tag = $("#deskSubject");
   if (!st) return;
-  if (!has) {
-    tag.textContent = "이 전략은 데스크를 쓰지 않습니다";
-    ["analyst", "debate", "risk", "decision"].forEach(room => {
-      const box = document.getElementById("say-" + room);
-      if (!box) return;
-      box.className = "saybox idle";
-      box.querySelector(".who").textContent = "심의 없음";
-      box.querySelector(".line").textContent =
-        `'${st.name}' 은 규칙 기반 신호로만 매매합니다. AI 16명의 심의를 ` +
-        `보시려면 데스크가 있는 전략(kr-desk-gemini)을 고르세요.`;
-    });
-  } else if (tag.textContent === "이 전략은 데스크를 쓰지 않습니다") {
-    tag.textContent = "대기 중";
-  }
+  const r = deskWaitReason();
+  if (!r) return;
+  const tag = $("#deskSubject");
+  if (tag) tag.textContent = r.who;
+  // 이미 발언이 재생된 뒤라면 덮어쓰지 않습니다 — 사람이 읽던 것을 지우는
+  // 것이 "왜 비어 있는지" 를 알려 주는 것보다 나쁩니다.
+  if ((deskState?.deliberations || []).length) return;
+  ["analyst", "debate", "risk", "decision"].forEach(room => {
+    const box = document.getElementById("say-" + room);
+    if (!box) return;
+    box.className = "saybox idle" + (r.kind === "broken" ? " bad" : "");
+    box.querySelector(".who").textContent = r.who;
+    box.querySelector(".line").textContent = r.line;
+  });
 }
 
 function renderRunSummary(running) {

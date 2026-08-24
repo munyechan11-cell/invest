@@ -53,6 +53,22 @@ class MarketCalendar(ABC):
     tz: timezone | None = None
     #: date after which the holiday table is no longer trustworthy
     stale_after: date | None = None
+    #: 1년에 장이 몇 번 서는가.
+    #:
+    #: 봉 개수를 달력 시간으로 바꿀 때 씁니다. "일봉 260개" 를 달력 260일로
+    #: 읽으면 KRX 에서는 173개밖에 오지 않고, 200봉을 요구하는 필터가 유니버스를
+    #: 통째로 비웁니다 — 봇은 아무 종목도 없이 조용히 돌고, 화면에는 "대기 중"
+    #: 만 남습니다. 그 한 번의 혼동이 실제로 하루를 잡아먹었습니다.
+    sessions_per_year: float = 365.0
+
+    def calendar_span(self, sessions: float) -> timedelta:
+        """`sessions` 번의 장을 담으려면 달력으로 며칠이 필요한가.
+
+        넉넉한 쪽으로 올립니다. 모자라면 지표가 덜 데워진 채로 매매가 시작되고,
+        남으면 첫 조회가 조금 느려질 뿐입니다.
+        """
+        days = sessions * 365.0 / max(self.sessions_per_year, 1.0)
+        return timedelta(days=days)
 
     @abstractmethod
     def sessions_on(self, day: date) -> list[Session]:
@@ -122,6 +138,8 @@ class AlwaysOpen(MarketCalendar):
     """Crypto. No sessions, no holidays, no mercy."""
 
     name = "always_open"
+    #: 쉬는 날이 없습니다.
+    sessions_per_year = 365.0
 
     def sessions_on(self, day: date) -> list[Session]:
         return [Session(time(0, 0), time(23, 59, 59, 999999), "24h")]
@@ -178,6 +196,8 @@ class KrxCalendar(MarketCalendar):
 
     name = "krx"
     tz = KST
+    #: 주말·공휴일을 뺀 실제 개장일. 2020~2025 평균 246일입니다.
+    sessions_per_year = 246.0
     stale_after = date(max(KRX_HOLIDAYS), 12, 31)
 
     def __init__(self, extra_holidays: Iterable[date] = (),
@@ -231,6 +251,8 @@ class UsEquityCalendar(MarketCalendar):
     """NYSE / NASDAQ. Needs a timezone database for US daylight saving."""
 
     name = "us_equity"
+    #: NYSE·NASDAQ 는 해마다 252일 안팎입니다.
+    sessions_per_year = 252.0
     stale_after = date(max(US_HOLIDAYS), 12, 31)
 
     def __init__(self):

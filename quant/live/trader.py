@@ -201,6 +201,49 @@ class LiveTrader:
                   f"{cfg.data.timeframe} · {getattr(self.calendar, 'name', 'no calendar')}")
         log.warning(banner)
         await self.notifier.send(banner)
+        await self._opening_deliberation()
+
+    async def _opening_deliberation(self) -> None:
+        """시작하자마자 데스크를 한 번 돌린다 — 봉 하나를 더 기다리지 않고.
+
+        일봉 전략에서 "다음 봉" 은 다음 장 마감입니다. 시작 버튼을 누른
+        사람에게 그건 사실상 "내일 다시 오세요" 이고, 그동안 화면에는 "대기
+        중" 만 뜹니다. 열 분쯤 보고 나면 고장으로 읽는 것이 당연합니다 —
+        실제로 그렇게 읽혔습니다.
+
+        기다릴 이유가 없습니다. 워밍업이 끝났으니 지표는 이미 데워졌고 마지막
+        봉도 손에 있습니다. 데스크가 지금 무엇을 보는지는 **지금** 말할 수
+        있습니다.
+
+        돌려받은 인사이트는 **버립니다.** 주문은 봉이 닫힐 때 나가야 합니다 —
+        여기서 매매까지 시작하면 "시작 버튼이 곧 시장가 주문" 이 되고, 그건
+        사람이 누른 것과 다른 일입니다. 발언만 화면에 올립니다(그 발행은
+        `desk.update()` 가 스스로 버스에 실어 보냅니다).
+        """
+        desk = self.desk()
+        if desk is None:
+            return
+        ctx = self.engine.ctx
+        # 워밍업이 남긴 마지막 봉. 없으면 심의할 재료가 없는 것이고, 그건
+        # 유니버스가 비었다는 뜻이라 여기서 할 말이 없습니다.
+        last = {}
+        for symbol in ctx.universe:
+            history = ctx.history(symbol)
+            if history:
+                last[symbol.key] = history[-1]
+        if not last:
+            return
+        log.info("개장 전 심의 — 봉을 기다리지 않고 지금 상태로 한 번 봅니다")
+        try:
+            await desk.update(ctx, last)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 여기서 죽으면 봇이 아예 안 뜹니다. 첫인상보다 돌아가는 쪽이
+            # 중요하므로, 실패는 알리고 넘어갑니다.
+            log.warning("개장 전 심의 실패: %s", exc)
+            await ctx.bus.publish(EventType.ERROR,
+                                  {"error": f"개장 전 심의 실패: {exc}"})
 
     # ── stopping ─────────────────────────────────────────────────────────
     @property

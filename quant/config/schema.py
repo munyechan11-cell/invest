@@ -252,6 +252,43 @@ class StrategyConfig(ConfigBlock):
         return self
 
     @model_validator(mode="after")
+    def _warmup_must_cover_the_age_filter(self) -> StrategyConfig:
+        """워밍업이 age 필터가 요구하는 봉 수를 담는가.
+
+        담지 못하면 아무 오류 없이 유니버스가 비고, 봇은 종목 하나 없이 돌면서
+        화면에는 "대기 중" 만 남습니다. 실제로 그렇게 하루를 잃었습니다 —
+        키도 맞고 시세도 오는데 볼 종목이 없었습니다.
+
+        시작을 막는 이유는, 이 조합이 "덜 좋은 설정" 이 아니라 **절대 매매하지
+        않는 설정** 이기 때문입니다. 돌려 봐야 알 수 있는 것이 아닙니다.
+        """
+        wanted = max((int(f.params.get("min_bars", 0) or 0)
+                      for f in self.universe.filters if f.type == "age"), default=0)
+        if not wanted:
+            return self
+        span = self.warmup_delta
+        calendar = self._calendar()
+        sessions, day, last = 0, self.data.timeframe, None
+        if timeframe_seconds(last or day) >= 86400:
+            from datetime import date as _date
+            from datetime import timedelta as _td
+            cursor = _date(2025, 1, 1)
+            end = cursor + span
+            while cursor <= end:
+                sessions += bool(calendar.sessions_on(cursor))
+                cursor += _td(days=1)
+            if sessions < wanted:
+                raise ValueError(
+                    f"warmup_bars: {self.data.warmup_bars} 로는 {calendar.name} 에서 "
+                    f"약 {sessions}봉밖에 받지 못하는데 age 필터가 {wanted}봉을 "
+                    f"요구합니다 — 모든 종목이 걸러져 유니버스가 비고, 봇은 아무것도 "
+                    f"하지 않으면서 오류도 내지 않습니다. warmup_bars 를 "
+                    f"{int(wanted * 365 / calendar.sessions_per_year) + 20} 이상으로 "
+                    f"올리거나 age.min_bars 를 낮추세요."
+                )
+        return self
+
+    @model_validator(mode="after")
     def _backtest_needs_the_simulator(self) -> StrategyConfig:
         # A file that declares both is asking for something impossible: a venue
         # adapter has no fill simulation, so the run places orders that never
@@ -269,5 +306,31 @@ class StrategyConfig(ConfigBlock):
 
     @property
     def warmup_delta(self) -> timedelta:
-        return timedelta(seconds=timeframe_seconds(self.data.timeframe)
+        """워밍업에 필요한 **달력** 시간.
+
+        `warmup_bars` 는 봉 개수인데 시세 조회는 기간으로 합니다. 일봉에서 이
+        둘을 1:1 로 놓으면 조용히 모자랍니다 — KRX 는 달력 260일에 장이 173번
+        서므로, "260봉" 을 요청하면 173봉이 옵니다. 200봉을 요구하는 age 필터가
+        그 위에 있으면 유니버스가 통째로 비고, 봇은 종목 하나 없이 돌면서
+        화면에는 "대기 중" 만 띄웁니다. 아무 데도 오류가 안 뜹니다.
+
+        분봉은 다릅니다 — 하루에 몇 개가 들어오는지가 장 길이에 달려 있어서
+        같은 방식으로 나눌 수 없습니다. 그쪽은 지금처럼 두고, 실제로 물린
+        일봉만 캘린더로 환산합니다.
+        """
+        span = timedelta(seconds=timeframe_seconds(self.data.timeframe)
                          * self.data.warmup_bars)
+        if timeframe_seconds(self.data.timeframe) < 86400:
+            return span
+        return self._calendar().calendar_span(self.data.warmup_bars)
+
+    def _calendar(self):
+        """이 설정이 실제로 쓸 캘린더. `build_calendar` 과 같은 규칙입니다."""
+        from quant.data.calendar import calendar_for_venue, create_calendar
+
+        if self.data.calendar != "auto":
+            return create_calendar(self.data.calendar)
+        if not self.universe.symbols:
+            return create_calendar("always_open")
+        first = self.universe.symbols[0]
+        return calendar_for_venue(first.venue, getattr(first, "asset_class", "") or "")
