@@ -2272,10 +2272,17 @@ function renderVenues() {
         const steps = (res.steps || []).map(st =>
           `<div class="vstep ${st.ok ? "ok" : "bad"}">${st.ok ? "✅" : "❌"} ` +
           `${esc(st.step)}${st.detail ? " — " + esc(st.detail) : ""}</div>`).join("");
+        // 403 일 때 가장 필요한 값은 "이 서버가 어느 IP 로 나가는가" 입니다.
+        // 집에서 돌리면 집 IP, 배포하면 그 서버 IP 이고, 등록할 값은 후자입니다.
+        const ipRow = res.server_ip
+          ? `<div class="vsum bad">이 서버의 공인 IP: <b>${esc(res.server_ip)}</b>
+             — 토스·KIS 의 허용 IP 목록에 <b>이 값</b>이 있어야 합니다.
+             내 컴퓨터 IP 가 아니라 이 서버의 IP 입니다.</div>`
+          : "";
         out.innerHTML = steps +
           `<div class="vsum ${res.ok ? "ok" : "bad"}">` +
           `${res.ok ? "✅ " + esc(res.detail || "정상") : "❌ " + esc(res.error || "실패")}` +
-          `</div>`;
+          `</div>` + ipRow;
         out.className = "status " + (res.ok ? "up" : "down");
       } catch (e) {
         out.textContent = "❌ " + e.message;

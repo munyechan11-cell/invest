@@ -532,6 +532,32 @@ def _shape_problem(env: str, value: str) -> str:
     return ""
 
 
+async def _public_ip() -> str:
+    """이 서버가 바깥으로 나갈 때 쓰는 공인 IP.
+
+    토스는 허용 IP 목록에 없는 곳에서 부르면 키가 맞아도 403 입니다. 그런데
+    "이 서버의 IP" 를 사용자가 알 방법이 없습니다 — 집에서 돌리면 집 IP,
+    배포하면 그 플랫폼의 IP 이고, 화면에는 어느 쪽도 적혀 있지 않습니다.
+    그래서 등록해야 할 값을 우리가 직접 알아내서 보여줍니다.
+
+    조회 실패는 조용히 넘깁니다. IP 를 못 알아냈다고 설정 화면이 죽으면
+    그게 더 나쁩니다.
+    """
+    import httpx
+
+    for url in ("https://api.ipify.org", "https://ifconfig.me/ip"):
+        try:
+            async with httpx.AsyncClient(timeout=6) as c:
+                r = await c.get(url)
+            text = (r.text or "").strip()
+            # 아주 느슨한 확인 — 응답이 IP 처럼 생겼는지만 봅니다.
+            if r.status_code == 200 and 6 <= len(text) <= 45 and " " not in text:
+                return text
+        except Exception:                   # noqa: BLE001 — 다음 것을 시도
+            continue
+    return ""
+
+
 async def _verify_kis(values: dict[str, str]) -> dict:
     """토큰만 보지 않고 **봇이 실제로 밟는 길**을 밟아 봅니다.
 
@@ -1106,6 +1132,12 @@ class UserDesk(Desk):
         mine = {k: v for k, v in self.accounts.secrets_for(self.user.id).items()
                 if k in wanted}
         result = await verify_venue(venue_id, mine)
+        if not result.get("ok"):
+            # 실패했을 때만 알아봅니다. 잘 되는 사람에게 굳이 외부 조회를
+            # 붙일 이유가 없습니다.
+            ip = await _public_ip()
+            if ip:
+                result["server_ip"] = ip
         self.record("credentials_verified" if result.get("ok")
                     else "credentials_verify_failed", venue_id)
         return result
