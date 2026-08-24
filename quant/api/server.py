@@ -34,6 +34,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import math
@@ -494,6 +495,113 @@ def _scrub(text: str, secrets_used: dict[str, str]) -> str:
     return text
 
 
+async def _verify_kis(values: dict[str, str]) -> dict:
+    """토큰만 보지 않고 **봇이 실제로 밟는 길**을 밟아 봅니다.
+
+    토큰 발급만 확인하면 "검증 성공" 이 뜬 뒤에도 봇이 워밍업에서 죽습니다 —
+    시세 조회 권한은 토큰과 별개이고, 그 실패는 시작 버튼을 누른 다음에야
+    드러납니다. 여기서 현재가와 일봉까지 받아 보면, 어디서 막히는지 시작하기
+    전에 알 수 있습니다.
+
+    실전과 모의를 둘 다 시도합니다. 어느 쪽 키인지는 사용자도 헷갈리는
+    부분이고, 우리가 대신 알아봐 주면 되는 일입니다.
+    """
+    from quant.core.types import Symbol
+    from quant.data.providers.kis import KisProvider, kis_token
+
+    key, secret = values["KIS_APP_KEY"], values["KIS_APP_SECRET"]
+    steps: list[dict] = []
+    env_name = ""
+    for paper, label in ((False, "실전"), (True, "모의투자")):
+        try:
+            await kis_token(key, secret, paper=paper)
+            steps.append({"step": f"{label} 토큰 발급", "ok": True})
+            env_name = label
+            break
+        except Exception as exc:
+            steps.append({"step": f"{label} 토큰 발급", "ok": False,
+                          "detail": _short(exc)})
+    if not env_name:
+        return {"ok": False, "steps": steps,
+                "error": "앱 키·시크릿으로 토큰을 받지 못했습니다. 한국투자증권 "
+                         "개발자센터에서 발급한 값이 맞는지, 앞뒤 공백이 섞이지 "
+                         "않았는지 확인하세요."}
+
+    paper = env_name == "모의투자"
+    provider = KisProvider(app_key=key, app_secret=secret, paper=paper)
+    sample = Symbol("005930", venue="kis", quote_currency="KRW")
+    try:
+        quote = await provider.quote(sample)
+        if quote is None:
+            steps.append({"step": "현재가 조회 (삼성전자)", "ok": False,
+                          "detail": "응답에 가격이 없습니다"})
+            return {"ok": False, "steps": steps, "environment": env_name,
+                    "error": f"{env_name} 토큰은 받았는데 시세가 오지 않습니다. "
+                             f"해당 앱에 국내주식 시세 조회 권한이 있는지 "
+                             f"확인하세요 — 봇은 이 단계에서 멈춥니다."}
+        steps.append({"step": "현재가 조회 (삼성전자)", "ok": True,
+                      "detail": f"{quote.mid:,.0f}원"})
+
+        end = datetime.now(UTC)
+        bars = await provider.history(sample, "1d", end - timedelta(days=90), end)
+        if len(bars) < 10:
+            steps.append({"step": "일봉 조회 (90일)", "ok": False,
+                          "detail": f"{len(bars)}개만 왔습니다"})
+            return {"ok": False, "steps": steps, "environment": env_name,
+                    "error": "현재가는 오는데 과거 일봉이 부족합니다. 봇은 워밍업에 "
+                             "최소 10봉이 필요해서 이 상태로는 시작하지 못합니다."}
+        steps.append({"step": "일봉 조회 (90일)", "ok": True,
+                      "detail": f"{len(bars)}봉, 마지막 {bars[-1].ts.date()}"})
+    finally:
+        with contextlib.suppress(Exception):
+            await provider.close()
+
+    return {"ok": True, "environment": env_name, "steps": steps,
+            "detail": f"{env_name} 환경에서 토큰·현재가·일봉까지 확인했습니다."}
+
+
+async def _verify_toss(values: dict[str, str]) -> dict:
+    """토스도 같은 이유로 시세까지 봅니다."""
+    from quant.brokerage.toss_broker import TossProvider, toss_token
+    from quant.core.types import Symbol
+
+    cid, secret = values["TOSS_CLIENT_ID"], values["TOSS_CLIENT_SECRET"]
+    steps: list[dict] = []
+    try:
+        await toss_token(cid, secret)
+        steps.append({"step": "OAuth 토큰 발급", "ok": True})
+    except Exception as exc:
+        return {"ok": False, "steps": [{"step": "OAuth 토큰 발급", "ok": False,
+                                        "detail": _short(exc)}],
+                "error": "클라이언트 ID·시크릿으로 토큰을 받지 못했습니다. "
+                         "토스증권 Open API 콘솔에서 발급한 값이 맞는지 확인하세요."}
+
+    provider = TossProvider(client_id=cid, client_secret=secret,
+                            account_no=values.get("TOSS_ACCOUNT_NO", ""))
+    sample = Symbol("005930", venue="toss", quote_currency="KRW")
+    try:
+        quote = await provider.quote(sample)
+        if quote is None:
+            steps.append({"step": "현재가 조회 (삼성전자)", "ok": False})
+            return {"ok": False, "steps": steps,
+                    "error": "토큰은 받았는데 시세가 오지 않습니다. 해당 앱에 "
+                             "시세 조회 권한이 있는지 확인하세요 — 봇은 이 "
+                             "단계에서 멈춥니다."}
+        steps.append({"step": "현재가 조회 (삼성전자)", "ok": True,
+                      "detail": f"{quote.mid:,.0f}원"})
+    finally:
+        with contextlib.suppress(Exception):
+            await provider.close()
+    return {"ok": True, "steps": steps,
+            "detail": "토큰과 현재가까지 확인했습니다."}
+
+
+def _short(exc: Exception) -> str:
+    """예외를 한 줄로. 값이 아니라 무슨 일이 있었는지만 남깁니다."""
+    text = str(exc).replace("\n", " ")
+    return text[:160] if text else type(exc).__name__
+
+
 async def verify_venue(venue_id: str, values: dict[str, str]) -> dict:
     """거래소에 읽기 전용 호출 한 번. 값은 **인자로만** 흐릅니다.
 
@@ -511,16 +619,10 @@ async def verify_venue(venue_id: str, values: dict[str, str]) -> dict:
 
     try:
         if venue_id == "kis":
-            from quant.data.providers.kis import kis_token
-
-            await kis_token(values["KIS_APP_KEY"], values["KIS_APP_SECRET"], paper=True)
-            return {"ok": True, "detail": "모의투자 토큰 발급 성공"}
+            return await _verify_kis(values)
 
         if venue_id == "toss":
-            from quant.brokerage.toss_broker import toss_token
-
-            await toss_token(values["TOSS_CLIENT_ID"], values["TOSS_CLIENT_SECRET"])
-            return {"ok": True, "detail": "OAuth 토큰 발급 성공 (모의투자 환경 없음)"}
+            return await _verify_toss(values)
 
         if venue_id == "alpaca":
             import httpx
@@ -1886,6 +1988,12 @@ def create_app(config: StrategyConfig | None = None,
                 "mode_ko": glossary.MODE.get(cfg.mode.value, cfg.mode.value),
                 "broker_ko": glossary.BROKER.get(cfg.broker.type, cfg.broker.type),
                 "timeframe": cfg.data.timeframe,
+                # 시세가 실시간인지 지연인지는 전략을 고르기 전에 알아야 합니다.
+                # 지연 시세로 실시간 매매를 하면 화면에서 본 가격과 주문이 닿는
+                # 가격이 달라지고, 그 차이는 손실로만 나타납니다.
+                "feed": cfg.data.provider,
+                "feed_ko": glossary.PROVIDER.get(cfg.data.provider, cfg.data.provider),
+                "realtime": cfg.data.provider not in glossary.DELAYED_PROVIDERS,
                 # 장세 필터는 사는 쪽이 아니라 막는 쪽입니다. 섞어서 보여주면
                 # "이것만 켜면 알아서 산다" 로 읽힙니다.
                 "signals": [g for g in signals if g["kind"] == "signal"],

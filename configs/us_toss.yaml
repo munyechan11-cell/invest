@@ -1,0 +1,103 @@
+# 토스증권 미국주식 — 상대강도 상위 + 추세 확인.
+#
+#   python -m quant validate configs/us_toss.yaml
+#   python -m quant dryrun   configs/us_toss.yaml     ← 반드시 여기서 충분히 검증
+#
+# `us_equity.yaml` 과 같은 시장을 다루지만 **시세 출처가 다릅니다.** 그쪽은
+# 야후(15분 지연)라 백테스트용이고, 이건 토스 Open API 라 실시간입니다.
+# 지연 시세로 실시간 매매를 하면 화면에서 본 가격과 주문이 닿는 가격이
+# 달라지고, 그 차이는 손실로만 나타납니다.
+#
+# ⚠️ 토스 Open API 에는 모의투자 환경이 없습니다. KIS 와 달리 "실계좌와 분리된
+#    연습 계좌"가 존재하지 않으므로, dry_run(실시간 시세 + 가상 체결)이 유일한
+#    안전망입니다.
+#
+# ⚠️ 미국 시장은 한국 시간 밤에 열립니다(서머타임 22:30~05:00, 그 외 23:30~06:00).
+#    낮에 시작하면 봉이 갱신되지 않는 것이 정상이고, 봇은 다음 개장을 기다립니다.
+name: us-toss-momentum
+description: 미국 대형주 상대강도 상위 + 추세 확인, 실시간 시세(토스).
+mode: dry_run
+
+data:
+  provider: toss
+  params: {client_id: "${TOSS_CLIENT_ID}", client_secret: "${TOSS_CLIENT_SECRET}"}
+  timeframe: 1d
+  warmup_bars: 300
+  calendar: us_equity
+
+universe:
+  # 토스는 6자리 숫자가 아니면 미국 종목으로 봅니다. 호가단위 $0.01,
+  # 최소 1주 — 국내와 달리 상하한가가 없습니다.
+  benchmark: SPY
+  symbols:
+    - {ticker: AAPL,  venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: MSFT,  venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: NVDA,  venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: GOOGL, venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: AMZN,  venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: META,  venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: AVGO,  venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: LLY,   venue: toss, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+  refresh_every_bars: 21
+  filters:
+    - {type: age, params: {min_bars: 250}}
+    - {type: volatility, params: {lookback_bars: 60, min_annual_vol: 0.15, max_annual_vol: 0.9}}
+    - {type: limit, params: {max_symbols: 4}}
+
+alpha:
+  # 순위를 사는 방식입니다 — 개별 종목을 고르는 게 아니라, 같은 후보 중
+  # 지난 여섯 달 가장 많이 오른 넷만 들고 한 달에 한 번 갈아탑니다.
+  - {type: xs_momentum, params: {lookback: 126, skip: 21, top_n: 4, rebalance_every: 21, vol_adjust: true}}
+  - {type: ema_cross, params: {fast: 20, slow: 60, adx_min: 20, hold_bars: 20}}
+  - {type: regime_filter, params: {period: 200, max_annual_vol: 0.9}}
+
+portfolio:
+  starting_cash: 10000
+  base_currency: USD
+  model: {type: vol_target, params: {target_annual_vol: 0.18, lookback: 60}}
+  max_position_weight: 0.30
+  max_gross_leverage: 0.9
+  cash_reserve_pct: 0.05
+  allow_short: false
+
+risk:
+  models:
+    - {type: max_dd_per_security, params: {atr_multiple: 8.0, max_drawdown_pct: 0.22, lock_bars: 4}}
+    - {type: trailing_stop, params: {atr_multiple: 5.0, activate_at_pct: 0.08}}
+    - {type: max_positions, params: {max_positions: 4}}
+    - {type: max_dd_portfolio, params: {max_drawdown_pct: 0.20, halt_bars: 10}}
+  protections:
+    - {type: cooldown, params: {stop_bars: 2}}
+    - {type: stoploss_guard, params: {lookback_bars: 60, trade_limit: 3, stop_bars: 15}}
+
+execution:
+  # 미국 대형주는 호가가 촘촘해서 한 틱이 스프레드의 전부인 경우가 많습니다.
+  model: {type: limit, params: {offset_bps: 5, urgent_after_bars: 2}}
+  min_order_notional: 200
+
+costs:
+  preset: us_equity
+
+broker:
+  type: toss
+  params: {client_id: "${TOSS_CLIENT_ID}", client_secret: "${TOSS_CLIENT_SECRET}",
+           account_no: "${TOSS_ACCOUNT_NO}"}
+  max_order_notional: 2000
+  live_trading_confirmed: false
+
+# ── 하루 거래 한도 ────────────────────────────────────────────────────────
+# 전략이 고장났을 때를 가정하는 마지막 방어선입니다. 셋 중 하나만 걸려도
+# 신규 진입이 멈추고, 청산은 절대 막지 않습니다.
+limits:
+  max_daily_notional: 5000        # 하루 총 거래대금 $5,000
+  max_daily_orders: 20            # 하루 주문 20건
+  max_daily_loss: 200             # 하루 실현손실 $200
+  max_daily_loss_pct: 0.02        # 또는 자산의 2%
+  # 미국 시장이 대상이어도 경계는 한국시간 자정입니다 — 이 서비스를 쓰는
+  # 사람이 "오늘" 이라고 부르는 하루가 그쪽이기 때문입니다.
+  timezone_offset_hours: 9
+  halt_until_next_day: true
+
+notify:
+  telegram_bot_token: "${TELEGRAM_BOT_TOKEN}"
+  telegram_chat_id: "${TELEGRAM_CHAT_ID}"

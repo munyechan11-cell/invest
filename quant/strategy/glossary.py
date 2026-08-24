@@ -147,6 +147,20 @@ RISK: dict[str, Term] = {
         kind="risk"),
 }
 
+#: 시세 출처가 실시간인가. 지연 시세로 실시간 매매를 하면, 화면에서 본 가격과
+#: 주문이 닿는 가격이 다릅니다 — 그 차이는 손실로만 나타납니다.
+PROVIDER: dict[str, str] = {
+    "yahoo": "야후 — 15분 지연. 백테스트용이고 실시간 매매에는 쓰지 마세요",
+    "kis": "한국투자증권 — 실시간",
+    "toss": "토스증권 — 실시간 (국내·미국)",
+    "ccxt": "거래소 직접 — 실시간",
+    "synthetic": "합성 데이터 — 연습용, 실제 시장이 아닙니다",
+    "csv": "파일 — 과거 데이터",
+}
+
+#: 지연되거나 가짜인 시세. 실시간 매매에 쓰면 안 되는 것들.
+DELAYED_PROVIDERS = frozenset({"yahoo", "synthetic", "csv"})
+
 MODE: dict[str, str] = {
     "backtest": "과거 데이터 검증",
     "dry_run": "모의 매매 — 실시간 시세, 가상 체결",

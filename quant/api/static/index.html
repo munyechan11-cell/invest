@@ -55,6 +55,14 @@ body{font-family:var(--kr);font-size:14px;line-height:1.5;
 svg,canvas{image-rendering:pixelated;shape-rendering:crispEdges}
 .px{font-family:var(--px);letter-spacing:.04em}
 
+/* 연동 검증 결과 — 단계마다 한 줄. */
+.vstep{font-size:12px;line-height:1.7;color:var(--dim)}
+.vstep.ok{color:var(--ok)} .vstep.bad{color:var(--bad)}
+.vsum{margin-top:6px;font-size:12px;line-height:1.7;word-break:keep-all;
+  overflow-wrap:anywhere}
+.vsum.ok{color:var(--ok)} .vsum.bad{color:var(--bad)}
+[data-vres]{display:block;max-width:100%}
+
 /* ── 종목 찾기 ────────────────────────────────────────────────────── */
 .lkres{display:grid;gap:6px;margin-top:10px}
 .lkrow{display:flex;gap:10px;align-items:center;border:2px solid var(--line);
@@ -137,6 +145,7 @@ body.running #runner .runsum{display:block}
   display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .stmeta .tag{border:1px solid var(--gold-dim);padding:2px 7px;color:var(--ink)}
 .stmeta .tag.live{border-color:var(--red);color:#ff8a83}
+.stmeta .tag.delayed{border-color:var(--warn);color:var(--warn)}
 .stlist{margin-top:9px;display:grid;gap:7px}
 .stitem{display:flex;gap:9px;align-items:baseline}
 .stitem b{font-size:13px;color:var(--ink);flex:0 0 auto;font-weight:600}
@@ -2228,9 +2237,17 @@ function renderVenues() {
           }
           await loadSetup();
         }
-        out.textContent = "확인 중…";
+        out.textContent = "확인 중… (시세까지 받아 봅니다)";
         const res = await post("/api/setup/verify/" + id);
-        out.textContent = res.ok ? "✅ " + (res.detail || "정상") : "❌ " + res.error;
+        // 단계별로 보여줍니다. "실패" 한 줄로는 토큰이 안 된 것인지 시세가 안
+        // 오는 것인지 알 수 없고, 그 둘은 고치는 방법이 다릅니다.
+        const steps = (res.steps || []).map(st =>
+          `<div class="vstep ${st.ok ? "ok" : "bad"}">${st.ok ? "✅" : "❌"} ` +
+          `${esc(st.step)}${st.detail ? " — " + esc(st.detail) : ""}</div>`).join("");
+        out.innerHTML = steps +
+          `<div class="vsum ${res.ok ? "ok" : "bad"}">` +
+          `${res.ok ? "✅ " + esc(res.detail || "정상") : "❌ " + esc(res.error || "실패")}` +
+          `</div>`;
         out.className = "status " + (res.ok ? "up" : "down");
       } catch (e) {
         out.textContent = "❌ " + e.message;
@@ -2794,12 +2811,14 @@ function renderStrategyBrief() {
   $("#stMeta").innerHTML =
     `<span class="tag${live ? " live" : ""}">${esc(st.mode_ko || st.mode)}</span>` +
     `<span class="tag">${esc(st.broker_ko || st.broker)}</span>` +
+    `<span class="tag${st.realtime === false ? " delayed" : ""}">` +
+    `${st.realtime === false ? "지연 시세" : "실시간 시세"}</span>` +
     `<span class="tag">${esc(st.timeframe || "")} 봉</span>` +
     `<span class="tag">종목 ${st.symbols}개</span>`;
 
   const row = (g, cls) =>
     `<div class="stitem${cls}"><b>${esc(g.ko)}</b><span>${esc(g.what)}</span></div>`;
-  $("#stSignals").innerHTML =
+  $("#stSignals").innerHTML = feedWarn +
     (st.signals || []).map(g => row(g, "")).join("") +
     (st.guards || []).map(g => row(g, " guard")).join("");
 
@@ -2813,6 +2832,11 @@ function renderStrategyBrief() {
       ? "심의 1회는 서비스가 비용을 냅니다 — 요금제 한도 안에서 쓸 수 있습니다."
       : `'${st.name}' 에는 AI 데스크가 없습니다. 데스크가 있는 전략을 고르면 물어볼 수 있습니다.`;
   }
+
+  // 지연 시세로 실시간 매매를 하면 화면 가격과 체결 가격이 다릅니다.
+  const feedWarn = st.realtime === false
+    ? `<div class="stitem guard"><b>시세 주의</b><span>${esc(st.feed_ko || "")}</span></div>`
+    : "";
 
   const line = (label, value) =>
     `<div class="r"><b>${esc(label)}</b><span>${esc(value)}</span></div>`;
@@ -2906,6 +2930,7 @@ $("#strategyPick").onchange = () => {
   loadTradeLog();
   if (chart) loadChart();
 };
+
 
 /* ── 종목 찾기 ─────────────────────────────────────────────────────
    자동매매는 종목까지 봇이 고릅니다. 여기는 내가 고르는 쪽이라, 먼저
