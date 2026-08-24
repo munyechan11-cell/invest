@@ -20,7 +20,6 @@ surface covering KRX and US equities, quotes through orders.
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import os
 import time
@@ -51,15 +50,20 @@ log = logging.getLogger("quant.toss")
 
 HOST = "https://openapi.tossinvest.com"
 
-#: 공식 문서와 대조가 필요한 부분. 실거래 전 여기만 확인하면 됩니다.
+#: 토스 공식 OpenAPI 3.0 문서에서 확인한 값들입니다.
+#: https://openapi.tossinvest.com/openapi-docs/latest/openapi.json
+#:
+#: 이 표는 한때 **추정** 이었고 전부 틀렸습니다. 경로는 `/v1/market/...` 이
+#: 아니라 `/api/v1/...` 이고, 토큰은 Basic 헤더가 아니라 body 로 받습니다.
+#: 그래서 키가 맞아도 토큰 발급이 403 이었고, 그 위의 모든 것이 따라 죽었습니다.
 _FIELDS = {
     "token_path": "/oauth2/token",
-    "price_path": "/v1/market/price",
-    "candles_path": "/v1/market/candles",
-    "orderbook_path": "/v1/market/orderbook",
-    "accounts_path": "/v1/accounts",
-    "holdings_path": "/v1/accounts/holdings",
-    "orders_path": "/v1/orders",
+    "price_path": "/api/v1/prices",
+    "candles_path": "/api/v1/candles",
+    "orderbook_path": "/api/v1/orderbook",
+    "accounts_path": "/api/v1/accounts",
+    "holdings_path": "/api/v1/holdings",
+    "orders_path": "/api/v1/orders",
     "account_header": "X-Tossinvest-Account",
     # 주문 요청 본문
     "order_symbol": "symbol",
@@ -77,13 +81,46 @@ _FIELDS = {
     "avg_price": "averagePrice",
 }
 
+def _explain(response, what: str) -> str:
+    """HTTP 실패를 사람이 읽을 수 있는 한 문장으로.
+
+    `raise_for_status()` 의 메시지는 "403 Forbidden for url ..." 이 전부입니다.
+    그것으로는 키가 틀린 것인지, IP 가 막힌 것인지, 권한이 없는 것인지 알 수
+    없는데 셋은 고치는 방법이 완전히 다릅니다. 토스는 응답 본문에 이유를
+    적어 보내므로, 그걸 버리지 않고 그대로 전합니다.
+    """
+    body = ""
+    try:
+        data = response.json()
+        body = str(data.get("error") or data.get("message")
+                   or data.get("errorMessage") or data)[:220]
+    except Exception:                       # noqa: BLE001 — 본문이 JSON 이 아닐 때
+        body = (response.text or "")[:220]
+
+    if response.status_code == 403:
+        return (f"{what} 실패 (403) — {body}\n"
+                f"가장 흔한 원인은 **허용 IP** 입니다. 토스증권 앱의 설정 → "
+                f"Open API → 허용 IP 관리에 이 서버의 공인 IP 가 등록되어 있어야 "
+                f"합니다. 집에서 돌리면 집 IP, 서버에 올리면 그 서버 IP 입니다.")
+    if response.status_code == 401:
+        return (f"{what} 실패 (401) — {body}\n"
+                f"클라이언트 ID·시크릿이 맞는지 확인하세요.")
+    if response.status_code == 429:
+        return f"{what} 실패 (429) — 호출이 너무 잦습니다. 잠시 후 다시 시도하세요."
+    return f"{what} 실패 ({response.status_code}) — {body}"
+
+
 _TOKENS: dict[str, tuple[str, float]] = {}
 _TOKEN_LOCK = LazyLock()
 
 
 async def toss_token(client_id: str, client_secret: str,
                      timeout: float = 20.0) -> str:
-    """Fetch-or-reuse an OAuth 2.0 access token (client_credentials, Basic auth)."""
+    """OAuth 2.0 액세스 토큰을 받거나 캐시에서 재사용합니다.
+
+    `client_credentials` 그랜트이고, 자격증명은 **본문**으로 보냅니다 —
+    공식 문서의 요구사항입니다.
+    """
     cache_key = client_id[:10]
     cached = _TOKENS.get(cache_key)
     if cached and cached[1] > time.time() + 60:
@@ -92,15 +129,19 @@ async def toss_token(client_id: str, client_secret: str,
         cached = _TOKENS.get(cache_key)
         if cached and cached[1] > time.time() + 60:
             return cached[0]
-        basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        # 토스는 자격증명을 **본문**으로 받습니다. Basic 헤더로 보내고 본문에
+        # grant_type 만 넣으면 client_id 가 없다고 403 이 옵니다 — 키가 맞아도.
         async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.post(
                 f"{HOST}{_FIELDS['token_path']}",
-                headers={"Authorization": f"Basic {basic}",
-                         "Content-Type": "application/x-www-form-urlencoded"},
-                data={"grant_type": "client_credentials"},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data={"grant_type": "client_credentials",
+                      "client_id": client_id, "client_secret": client_secret},
             )
-            r.raise_for_status()
+            if r.status_code >= 400:
+                # 응답 본문을 버리면 "403 Forbidden" 만 남고, 그것으로는 키가
+                # 틀린 것인지 IP 가 막힌 것인지 알 수 없습니다.
+                raise BrokerageError(_explain(r, "토스 토큰 발급"))
             data = r.json()
         token = data.get("access_token")
         if not token:
@@ -146,8 +187,13 @@ class _TossClient:
             headers=await self._headers(account),
         )
         if r.status_code >= 400:
-            raise BrokerageError(f"토스 {method} {path} → {r.status_code}: {r.text[:300]}")
-        return r.json() if r.content else {}
+            raise BrokerageError(_explain(r, f"토스 {method} {path}"))
+        if not r.content:
+            return {}
+        body = r.json()
+        # 토스는 모든 응답을 `{"result": ...}` 로 감쌉니다. 호출부마다 벗기면
+        # 한 곳을 빠뜨리고, 빠뜨린 그곳은 빈 목록을 조용히 돌려줍니다.
+        return body.get("result", body) if isinstance(body, dict) else body
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -159,8 +205,10 @@ class TossProvider(DataProvider):
 
     name = "toss"
 
-    _INTERVAL = {"1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60",
-                 "1d": "D", "1w": "W"}
+    #: 토스가 실제로 받는 값은 둘뿐입니다(`1m`, `1d`). 예전 표에는 5m·1h·1w 가
+    #: 있었는데, 그런 주기를 요청하면 서버가 거절합니다 — 있지도 않은 주기를
+    #: 지원한다고 적어 두면 그 설정으로 만든 전략이 시작할 때 죽습니다.
+    _INTERVAL = {"1m": "1m", "1d": "1d"}
 
     def __init__(self, client_id: str = "", client_secret: str = "",
                  account_no: str = "", **kwargs):
@@ -171,50 +219,92 @@ class TossProvider(DataProvider):
         if interval is None:
             raise ValueError(
                 f"토스는 {sorted(self._INTERVAL)} 주기만 제공합니다 (요청: {timeframe})")
-        data = await self.client.request(
-            "GET", _FIELDS["candles_path"],
-            params={"symbol": symbol.ticker, "interval": interval,
-                    "from": start.strftime("%Y%m%d"), "to": end.strftime("%Y%m%d")},
-        )
-        rows = data.get("candles") or data.get("data") or []
-        _step = timeframe_seconds(timeframe)
+
+        # 토스 캔들은 기간이 아니라 **개수와 커서** 로 셉니다: 최근 것부터
+        # `count` 개를 주고, 더 받으려면 그 마지막 시각을 `before` 로 되돌려
+        # 보냅니다. `from`/`to` 는 애초에 받지 않습니다.
+        step = timeframe_seconds(timeframe)
+        want = max(1, int((end - start).total_seconds() // step) + 2)
         now = datetime.now(UTC)
+        seen: set[datetime] = set()
         bars: list[Bar] = []
-        for row in rows:
-            ts = _parse_ts(row.get("timestamp") or row.get("dateTime") or row.get("date"))
-            if ts is None or not (start <= ts < end):
-                continue
-            try:
-                bar = Bar(symbol, ts, float(row["open"]), float(row["high"]),
-                          float(row["low"]), float(row["close"]),
-                          float(row.get("volume") or 0), timeframe)
-            except (KeyError, TypeError, ValueError):
-                continue
-            # never hand back a candle that is still forming
-            if bar.end_ts > now:
-                continue
-            bars.append(bar)
+        before: str | None = None
+
+        while len(bars) < want:
+            params = {"symbol": symbol.ticker, "interval": interval,
+                      "count": min(200, want - len(bars) + 5), "adjusted": True}
+            if before:
+                params["before"] = before
+            data = await self.client.request("GET", _FIELDS["candles_path"],
+                                             params=params)
+            rows = data.get("candles") or []
+            if not rows:
+                break
+            for row in rows:
+                ts = _parse_ts(row.get("timestamp"))
+                if ts is None or ts in seen:
+                    continue
+                seen.add(ts)
+                if not (start <= ts < end):
+                    continue
+                try:
+                    bar = Bar(symbol, ts,
+                              float(row["openPrice"]), float(row["highPrice"]),
+                              float(row["lowPrice"]), float(row["closePrice"]),
+                              float(row.get("volume") or 0), timeframe)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                # 아직 닫히지 않은 봉은 돌려주지 않습니다 — 그걸로 계산한
+                # 지표는 다음 틱마다 값이 바뀝니다.
+                if bar.end_ts > now:
+                    continue
+                bars.append(bar)
+            nxt = data.get("nextBefore")
+            oldest = _parse_ts(rows[-1].get("timestamp"))
+            if not nxt or (oldest is not None and oldest < start):
+                break
+            before = nxt
         bars.sort(key=lambda b: b.ts)
         return bars
 
     async def quote(self, symbol):
+        """호가 최우선 한 단. 호가가 없으면 현재가로 물러섭니다.
+
+        장이 닫혀 있으면 호가가 비어 옵니다. 그때 None 을 돌려주면 봇이
+        "시세를 못 받았다" 로 읽고 멈추는데, 실제로는 마지막 체결가가 있고
+        그것으로 평가는 됩니다.
+        """
         try:
             data = await self.client.request(
                 "GET", _FIELDS["orderbook_path"], params={"symbol": symbol.ticker})
-        except Exception as exc:
+            bids, asks = data.get("bids") or [], data.get("asks") or []
+            if bids and asks:
+                return Quote(symbol, utcnow(),
+                             float(bids[0]["price"]), float(asks[0]["price"]),
+                             float(bids[0].get("volume") or 0),
+                             float(asks[0].get("volume") or 0))
+        except Exception as exc:            # noqa: BLE001 — 아래 현재가로 갑니다
             log.debug("토스 호가 조회 실패 %s: %s", symbol.ticker, exc)
+
+        try:
+            data = await self.client.request(
+                "GET", _FIELDS["price_path"], params={"symbols": symbol.ticker})
+        except Exception as exc:            # noqa: BLE001
+            log.debug("토스 현재가 조회 실패 %s: %s", symbol.ticker, exc)
             return None
-        bids = data.get("bids") or []
-        asks = data.get("asks") or []
-        if not bids or not asks:
+        rows = data if isinstance(data, list) else (data.get("prices") or [])
+        if not rows:
             return None
         try:
-            return Quote(symbol, utcnow(), float(bids[0]["price"]),
-                         float(asks[0]["price"]),
-                         float(bids[0].get("quantity") or 0),
-                         float(asks[0].get("quantity") or 0))
-        except (KeyError, TypeError, ValueError):
+            last = float(rows[0]["lastPrice"])
+        except (KeyError, TypeError, ValueError, IndexError):
             return None
+        if last <= 0:
+            return None
+        # 호가가 없으니 한 틱을 스프레드로 가정합니다. 실제 호가보다 넓거나
+        # 좁을 수 있지만, 가격이 아예 없는 것보다는 훨씬 낫습니다.
+        tick = float(symbol.tick_size) or last * 0.0005
+        return Quote(symbol, utcnow(), last - tick, last + tick)
 
     async def resolve(self, ticker: str):
         code = ticker.strip().upper()
