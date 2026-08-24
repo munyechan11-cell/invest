@@ -241,7 +241,8 @@ async def run_backtest(
     await engine.stop()
 
     report = analyze(portfolio, config.data.timeframe,
-                     config.backtest.risk_free_rate, config.backtest.trials)
+                     config.backtest.risk_free_rate, config.backtest.trials,
+                     config.backtest.variance_of_trials)
     if report.trades == 0:
         warnings.append("zero closed trades — check warm-up length and signal thresholds")
     if report.turnover > 50:

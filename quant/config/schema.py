@@ -198,6 +198,11 @@ class BacktestConfig(ConfigBlock):
     end: datetime | None = None
     #: how many parameter variants were evaluated — feeds the deflated Sharpe
     trials: int = 1
+    #: 시행별 1기간 샤프의 표본분산. Deflated Sharpe 의 기준선을 정합니다.
+    #: 탐색이 끝나야 알 수 있으므로 hyperopt 가 승자를 다시 돌릴 때 채웁니다.
+    #: 비어 있으면 Lo(2002) 의 점근분산으로 대신합니다 — 예전처럼 1.0 을
+    #: 가정하면 기준선이 연 샤프 49 가 되어 지표가 통째로 0 이 됩니다.
+    variance_of_trials: float | None = None
     risk_free_rate: float = 0.0
 
 

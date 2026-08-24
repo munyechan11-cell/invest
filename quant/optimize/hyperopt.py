@@ -14,7 +14,9 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import math
 import random
+import statistics
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -22,6 +24,7 @@ from typing import Any
 
 from quant.backtest.runner import BacktestResult, run_backtest
 from quant.config.schema import StrategyConfig
+from quant.core.types import periods_per_year
 from quant.optimize.losses import LOSS_FUNCTIONS
 
 log = logging.getLogger("quant.optimize")
@@ -110,6 +113,9 @@ class OptimizationResult:
     loss_name: str
     elapsed_s: float
     out_of_sample: dict | None = None
+    #: 시행별 1기간 샤프의 표본분산. Deflated Sharpe 의 기준선을 정하는 값이고,
+    #: 탐색이 끝나야 알 수 있습니다 — 그래서 결과에 실려 나옵니다.
+    variance_of_trials: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -120,6 +126,7 @@ class OptimizationResult:
             "trials_run": len(self.trials),
             "elapsed_s": round(self.elapsed_s, 1),
             "out_of_sample": self.out_of_sample,
+            "variance_of_trials": self.variance_of_trials,
             "trials": self.trials,
         }
 
@@ -142,6 +149,25 @@ class OptimizationResult:
                 print("  ⚠ out-of-sample Sharpe collapsed — this is overfitting, "
                       "not a strategy")
         print(f"{'=' * 68}\n")
+
+
+def _trial_sharpe_variance(history: list[dict], timeframe: str) -> float | None:
+    """탐색이 실제로 본 시행들의 1기간 샤프 분산.
+
+    Deflated Sharpe 가 빼내야 하는 것은 "무편향 후보 N개 중 최댓값의 기댓값"
+    이고, 그 크기는 후보들이 서로 얼마나 흩어져 있는지에 달려 있습니다. 그
+    흩어짐은 가정할 게 아니라 방금 돌린 시행들에서 재면 됩니다 — 이미 전부
+    `history` 에 들어 있습니다.
+
+    두 개 미만이면 분산이 정의되지 않습니다. 그때는 None 을 돌려주고
+    `deflated_sharpe` 가 Lo 의 점근분산으로 대신하게 둡니다.
+    """
+    ppy = math.sqrt(periods_per_year(timeframe))
+    sharpes = [t["report"]["sharpe"] / ppy for t in history
+               if t.get("report") and t["report"].get("sharpe") is not None]
+    if len(sharpes) < 2:
+        return None
+    return statistics.variance(sharpes)
 
 
 async def optimize(
@@ -212,10 +238,26 @@ async def optimize(
             if on_trial:
                 on_trial(i, value, params)
 
+    # 시행 분산은 탐색이 끝나야 알 수 있고, 승자의 Deflated Sharpe 는 그 값
+    # 아래에서 다시 재야 의미가 있습니다. 탐색 중에 계산된 값은 아직 분산을
+    # 몰랐던 값이라 그대로 쓰면 안 됩니다 — 백테스트 한 번을 더 돌립니다.
+    variance = _trial_sharpe_variance(history, config.data.timeframe)
+    if variance is not None and best_params:
+        winner = copy.deepcopy(config)
+        winner.backtest.trials = trials
+        winner.backtest.variance_of_trials = variance
+        for path, value in best_params.items():
+            set_by_path(winner, path, value)
+        try:
+            best_result = await run_backtest(winner)
+        except Exception as exc:            # noqa: BLE001 — 재계산 실패가 탐색
+            log.warning("승자 재계산 실패, 탐색 중 결과를 씁니다: %s", exc)
+
     return OptimizationResult(
         best_params=best_params,
         best_loss=best_loss,
         best_report=best_result.report.to_dict() if best_result else {},
+        variance_of_trials=variance,
         trials=history,
         loss_name=loss,
         elapsed_s=time.monotonic() - started,

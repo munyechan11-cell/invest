@@ -141,15 +141,33 @@ def probabilistic_sharpe(sharpe: float, n: int, skew: float, kurtosis: float,
 
 
 def deflated_sharpe(sharpe: float, n: int, skew: float, kurtosis: float,
-                    trials: int = 1, variance_of_trials: float = 1.0) -> float:
+                    trials: int = 1,
+                    variance_of_trials: float | None = None) -> float:
     """PSR against the Sharpe you would expect from `trials` random variants.
 
     This is the honest answer to "I tried 200 parameter sets and the best had a
     Sharpe of 2.1". The expected maximum of 200 draws from a zero-edge
     distribution is not zero, and this subtracts it.
+
+    `sharpe` and `variance_of_trials` are both in **per-period** units — the
+    caller divides an annual Sharpe by sqrt(periods per year) before calling.
+    Mixing the two units is not a rounding error: this used to default
+    `variance_of_trials` to 1.0, which in per-period units on daily bars means
+    the trial Sharpes had a standard deviation of 15.9 annualised. The hurdle
+    that produced was an annual Sharpe of **49**, so every strategy that will
+    ever exist scored exactly 0.000000 and the metric said nothing at all.
+
+    When the trial set is available, pass its actual variance — that is the
+    quantity Bailey & López de Prado define. When it is not, we fall back to
+    Lo (2002)'s asymptotic variance of the Sharpe estimator, (1 + SR²/2)/n,
+    which is the distribution the trials would have under the null of no edge.
+    It is an approximation, but it is the right order of magnitude, which the
+    old default was not.
     """
     if trials <= 1:
         return probabilistic_sharpe(sharpe, n, skew, kurtosis, 0.0)
+    if variance_of_trials is None:
+        variance_of_trials = (1.0 + sharpe * sharpe / 2.0) / max(n, 2)
     euler = 0.5772156649
     e = math.e
     # expected max of `trials` standard normals
@@ -191,6 +209,7 @@ def analyze(
     timeframe: str = "1d",
     risk_free_rate: float = 0.0,
     trials: int = 1,
+    variance_of_trials: float | None = None,
 ) -> PerformanceReport:
     curve = portfolio.equity_curve
     rep = PerformanceReport()
@@ -232,8 +251,11 @@ def analyze(
         )
         rep.psr = probabilistic_sharpe(rep.sharpe / math.sqrt(ppy), len(rets),
                                        rep.skew, rep.kurtosis)
+        # 시행별 샤프의 분산은 탐색이 끝나야 알 수 있습니다. 없으면
+        # deflated_sharpe 가 Lo 의 점근분산으로 대신합니다.
         rep.deflated_sharpe = deflated_sharpe(
-            rep.sharpe / math.sqrt(ppy), len(rets), rep.skew, rep.kurtosis, trials
+            rep.sharpe / math.sqrt(ppy), len(rets), rep.skew, rep.kurtosis, trials,
+            variance_of_trials
         )
 
     rep.max_drawdown, rep.max_drawdown_duration_days, rep.ulcer_index = _drawdown_stats(curve)
