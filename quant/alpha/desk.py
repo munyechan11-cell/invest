@@ -48,10 +48,12 @@ from datetime import datetime
 
 from quant.alpha.base import AlphaModel
 from quant.alpha.llm_client import (
+    CallMeter,
     LLMClient,
     LLMConfig,
     LLMError,
     QuotaExhausted,
+    metered,
 )
 from quant.alpha.seats import (
     BEAR_SEAT,
@@ -590,6 +592,27 @@ class TradingDesk(AlphaModel):
         self.warmup_bars = 210
         self._sets: dict[str, IndicatorSet] = {}
         self._disabled = ""
+        #: `quant.live.spend.SpendMeter` — `allow()` 와 `record()` 만 씁니다.
+        #: 타입으로 못 박지 않는 이유: 알파 계층이 라이브 계층을 import 하기
+        #: 시작하면, 백테스트와 CLI 가 쓰는 이 파일이 그쪽 의존성에 묶입니다.
+        self.meter = None
+        self._capped = ""
+
+    # ── 누가 내는가 ───────────────────────────────────────────────────────
+    def bind_meter(self, meter) -> None:
+        """이 데스크의 지출을 어느 계정에 달 것인가.
+
+        데스크는 계정 없이도 돕니다 — CLI 로 자기 컴퓨터에서 돌리면 키도 비용도
+        본인 것이라 잴 이유가 없습니다. 그래서 기본값은 묶이지 않음이고, 그때
+        `update()` 는 지금까지와 똑같이 동작합니다.
+
+        웹에서 뜬 봇만 `LiveTrader` 가 여기에 그 사람 계량기를 묶습니다. 이 한
+        줄이 없으면 봉마다 도는 심의가 요금제 상한도 원장도 통과하지 않고 —
+        사용량을 재는 자리가 사용자가 직접 누르는 `/api/evaluate` 와 개장 전
+        심의 한 번뿐이었습니다. 정작 돈이 나가는 쪽은 사람이 자는 동안 봉마다
+        16석을 돌리는 봇입니다.
+        """
+        self.meter = meter
 
     # ── lifecycle ────────────────────────────────────────────────────────
     async def on_start(self, ctx: Context) -> None:
@@ -941,8 +964,16 @@ class TradingDesk(AlphaModel):
         return n
 
     async def deliberate(self, ctx: Context, symbol: Symbol) -> DeskDecision | None:
+        # 이 심의가 쓴 호출만 셉니다. `_calls()` 의 before/after 로 재던 자리인데,
+        # 한 사이클의 종목들이 `gather` 로 동시에 도는 이상 그 차분에는 형제
+        # 종목의 호출이 통째로 섞입니다 — 화면의 "N calls" 가 종목 수만큼
+        # 부풀어 보이던 이유입니다.
+        with metered() as spend:
+            return await self._deliberate(ctx, symbol, spend)
+
+    async def _deliberate(self, ctx: Context, symbol: Symbol,
+                          spend: CallMeter) -> DeskDecision | None:
         started = time.monotonic()
-        calls_before = self._calls()
         brief = self.build_brief(ctx, symbol)
         if not brief:
             return None
@@ -1033,7 +1064,7 @@ class TradingDesk(AlphaModel):
             analysts=analysts, debate=debate, risk_debate=risk_debate, risk=risk,
             plan=plan, trade=trade, brief=brief, lessons_used=lessons,
             elapsed_s=time.monotonic() - started,
-            llm_calls=self._calls() - calls_before,
+            llm_calls=spend.calls,
             degraded=degraded,
         )
 
@@ -1101,6 +1132,8 @@ class TradingDesk(AlphaModel):
         if self.cost_limit_usd and self.estimated_cost_usd >= self.cost_limit_usd:
             log.warning("데스크 비용 한도 $%.2f 도달 — 심의 중단", self.cost_limit_usd)
             return []
+        if not self._within_plan():
+            return []
 
         if self.flow_feed is not None:
             await self.flow_feed.refresh([b.symbol for b in bars.values()])
@@ -1133,6 +1166,29 @@ class TradingDesk(AlphaModel):
             if insight is not None:
                 insights.append(insight)
         return insights
+
+    def _within_plan(self) -> bool:
+        """요금제 상한 안인가 — 계정에 묶여 있을 때만 물어봅니다.
+
+        사이클 시작에 한 번만 봅니다. 심의마다 다시 물으면 같은 봉 안에서 상한이
+        반쯤 걸려 어떤 종목은 심의되고 어떤 종목은 안 되는데, 그건 사용자에게
+        설명할 수 없는 상태입니다. 대신 마지막 사이클이 상한을 한 사이클치까지
+        넘길 수 있습니다 — 넘기는 쪽이 봉 하나를 반쯤 심의한 채로 두는 쪽보다
+        낫다고 봤습니다.
+
+        같은 사유는 한 번만 로그에 남깁니다. 상한은 하루 또는 한 달 단위라
+        봉마다 같은 줄을 찍으면 로그가 그 문장으로만 채워집니다.
+        """
+        if self.meter is None:
+            return True
+        allowed, why = self.meter.allow()
+        if allowed:
+            self._capped = ""
+            return True
+        if self._capped != why:
+            self._capped = why
+            log.warning("요금제 상한 — 데스크 심의를 멈춥니다: %s", why)
+        return False
 
     def _to_insight(self, ctx: Context, symbol: Symbol, d: DeskDecision) -> Insight | None:
         direction, strength = ACTION_TO_DIRECTION.get(d.action, (Direction.FLAT, 0.0))
@@ -1186,8 +1242,18 @@ class TradingDesk(AlphaModel):
         ).hexdigest()
         cached = self._cache.get(key)
         if cached is not None:
+            # 캐시로 답한 심의는 아무 호출도 하지 않았습니다 — 안 쓴 것을
+            # 청구하지 않으려면 계량기를 여는 것도 여기 뒤여야 합니다.
             return cached
-        decision = await self.deliberate(ctx, symbol)
+        with metered() as spend:
+            try:
+                decision = await self.deliberate(ctx, symbol)
+            finally:
+                # 실패했어도 부른 만큼은 이미 나갔습니다. 성공만 적으면 마감을
+                # 넘겨 버린 심의의 비용이 아무 계정에도 안 잡히고, 실패는 대개
+                # 몰려서 옵니다.
+                if self.meter is not None and spend.calls:
+                    self.meter.record(spend.calls, spend.cost_usd)
         if decision is not None:
             self._cache[key] = decision
             if len(self._cache) > 1000:

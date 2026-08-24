@@ -61,7 +61,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from starlette.concurrency import run_in_threadpool
 
-from quant.alpha.llm_client import LLMError
+from quant.alpha.llm_client import LLMError, metered
 from quant.config.loader import load_config
 from quant.config.schema import StrategyConfig
 from quant.core.events import Event
@@ -1801,28 +1801,31 @@ def create_app(config: StrategyConfig | None = None,
                      f"부족합니다(최소 60개). 상장 직후이거나 거래가 드문 종목일 수 있습니다.")
 
         ctx = _standalone_context(cfg, symbol, bars)
-        before_calls, before_cost = model.status()["llm_calls"], model.estimated_cost_usd
-        try:
-            decision = await model.deliberate(ctx, symbol)
-        except Exception as exc:
-            log.warning("심의 실패 %s: %s", ticker, exc)
-            raise HTTPException(502, f"심의 중 오류: {exc}") from None
-        finally:
-            # 실패했어도 부른 만큼은 청구됩니다. 성공만 계량하면 실패한
-            # 호출의 비용이 아무 계정에도 잡히지 않습니다.
-            after = model.status()
-            spent = max(0.0, model.estimated_cost_usd - before_cost)
-            calls = max(0, after["llm_calls"] - before_calls)
-            if calls:
-                await run_in_threadpool(
-                    usage.record_spend, seat.user.id, calls, spent, own_key)
+        # 봇이 돌고 있으면 이 `model` 은 봉마감 사이클이 쓰는 **같은 객체**입니다.
+        # 데스크 전역 카운터의 before/after 로 재면 그 사이 봇이 다른 종목을
+        # 심의한 호출까지 이 요청에 청구되고, 같은 호출이 봇 쪽에도 적혀 이중
+        # 청구가 됩니다. 이 요청이 연 계량기만 봅니다.
+        with metered() as spend:
+            try:
+                decision = await model.deliberate(ctx, symbol)
+            except Exception as exc:
+                log.warning("심의 실패 %s: %s", ticker, exc)
+                raise HTTPException(502, f"심의 중 오류: {exc}") from None
+            finally:
+                # 실패했어도 부른 만큼은 청구됩니다. 성공만 계량하면 실패한
+                # 호출의 비용이 아무 계정에도 잡히지 않습니다.
+                if spend.calls:
+                    await run_in_threadpool(
+                        usage.record_spend, seat.user.id, spend.calls,
+                        spend.cost_usd, own_key)
 
         if decision is None:
             raise HTTPException(
                 422, "심의가 결론에 이르지 못했습니다 — 마감 시간을 넘겼거나 "
                      "데스크 한도에 걸렸습니다. 잠시 후 다시 시도하세요.")
         out = decision.to_dict()
-        out["metered"] = {"llm_calls": calls, "cost_usd": round(spent, 4),
+        out["metered"] = {"llm_calls": spend.calls,
+                          "cost_usd": round(spend.cost_usd, 4),
                           "billed_to": "own_key" if own_key else "service"}
         return out
 

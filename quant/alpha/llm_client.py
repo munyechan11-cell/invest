@@ -9,11 +9,14 @@ to regex a JSON blob out of prose.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
 import re
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -66,6 +69,51 @@ def price_for(model: str) -> tuple[float, float]:
 
 
 @dataclass
+class CallMeter:
+    """이 블록 안에서 나간 호출만 담는 누산기 — `metered()` 가 만듭니다."""
+
+    calls: int = 0
+    cost_usd: float = 0.0
+    #: 바깥 계량기. 스코프가 겹칠 때 안쪽이 바깥을 가려 버리면 바깥은 자기 몫을
+    #: 통째로 놓칩니다. 청구가 걸린 자리라 과다보다 조용한 누락이 더 나쁩니다.
+    parent: CallMeter | None = None
+
+    def add(self, calls: int, cost_usd: float) -> None:
+        self.calls += calls
+        self.cost_usd += cost_usd
+        if self.parent is not None:
+            self.parent.add(calls, cost_usd)
+
+
+#: 지금 이 태스크의 LLM 호출을 누가 세고 있는가.
+#:
+#: 왜 클라이언트의 `usage` 차분이 아닌가: 데스크는 한 사이클의 종목들을
+#: `asyncio.gather` 로 동시에 심의하고, 한 심의 안에서도 좌석 여럿이 동시에
+#: 돕니다. `usage` 는 그 전부를 한 통에 담으므로 어느 한 심의의 before/after 를
+#: 떠도 그 사이에 낀 형제 심의의 호출이 통째로 섞여 들어옵니다 — 단조 증가
+#: 카운터라 과소가 아니라 **항상 과다**이고, 동시에 도는 종목 수만큼 부풉니다.
+#: contextvar 는 태스크를 만들 때 복사되므로, 좌석 호출이 자기 심의에만 쌓입니다.
+#:
+#: 언제 이게 안 통하는가: 계량 스코프 **밖에서** 만들어져 살아남는 태스크의
+#: 호출은 여기 안 잡힙니다. 지금 데스크·카운슬의 좌석 호출은 전부 심의를
+#: 기다리는 `gather` 안에서 나가므로 해당 사항이 없지만, 나중에 배경 워커가
+#: 대신 부르게 바뀌면 그 호출은 아무 계정에도 안 잡힙니다.
+_meter: contextvars.ContextVar[CallMeter | None] = contextvars.ContextVar(
+    "llm_call_meter", default=None)
+
+
+@contextmanager
+def metered() -> Iterator[CallMeter]:
+    """이 블록 안에서 나간 LLM 호출과 비용만 세는 계량기를 연다."""
+    meter = CallMeter(parent=_meter.get())
+    token = _meter.set(meter)
+    try:
+        yield meter
+    finally:
+        _meter.reset(token)
+
+
+@dataclass
 class LLMUsage:
     input_tokens: int = 0
     output_tokens: int = 0
@@ -79,6 +127,13 @@ class LLMUsage:
         self.input_tokens += i
         self.output_tokens += o
         self.calls += 1
+        meter = _meter.get()
+        if meter is not None:
+            # 비용은 호출 시점의 단가로 잽니다. 데스크는 분석석과 결정석에 다른
+            # 모델을 쓰므로, 나중에 합계 토큰을 한 단가로 환산하면 어느 쪽이든
+            # 틀립니다 — `record_spend` 가 생긴 이유와 같은 이유입니다.
+            pin, pout = price_for(self.model)
+            meter.add(1, i / 1e6 * pin + o / 1e6 * pout)
 
     @property
     def cost_usd(self) -> float:

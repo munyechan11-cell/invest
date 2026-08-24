@@ -30,7 +30,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 
 from quant.alpha.base import AlphaModel
-from quant.alpha.llm_client import LLMClient, LLMConfig, LLMError
+from quant.alpha.llm_client import LLMClient, LLMConfig, LLMError, metered
 from quant.core.aio import LazySemaphore
 from quant.core.context import Context
 from quant.core.types import Bar, Direction, Insight, Symbol, periods_per_year
@@ -171,6 +171,20 @@ class ResearchCouncilAlpha(AlphaModel):
         self.warmup_bars = 210
         self._sets: dict[str, IndicatorSet] = {}
         self._disabled_reason = ""
+        #: `TradingDesk.meter` 와 같습니다 — 타입을 안 박는 이유도 같습니다.
+        self.meter = None
+        self._capped = ""
+
+    # ── 누가 내는가 ───────────────────────────────────────────────────────
+    def bind_meter(self, meter) -> None:
+        """이 카운슬의 지출을 어느 계정에 달 것인가 — `TradingDesk.bind_meter` 와 같습니다.
+
+        데스크와 카운슬은 다른 알파지만 돈이 나가는 방식은 같습니다: 봉마다 여러
+        종목을 LLM 으로 심의하고, 웹에서 뜬 봇이면 그 비용은 운영자 카드로
+        나갑니다. 한쪽만 계량하면 계량되지 않는 쪽으로 옮겨 타면 그만이고,
+        카운슬은 데스크와 달리 자체 `cost_limit_usd` 조차 없습니다.
+        """
+        self.meter = meter
 
     # ── lifecycle ────────────────────────────────────────────────────────
     async def on_start(self, ctx: Context) -> None:
@@ -380,6 +394,8 @@ class ResearchCouncilAlpha(AlphaModel):
         self._bar_count += 1
         if (self._bar_count - 1) % self.cadence != 0:
             return []
+        if not self._within_plan():
+            return []
 
         targets = self._shortlist(ctx, bars)
         if not targets:
@@ -417,6 +433,19 @@ class ResearchCouncilAlpha(AlphaModel):
             ))
         return insights
 
+    def _within_plan(self) -> bool:
+        """요금제 상한 안인가 — `TradingDesk._within_plan` 과 같은 규칙, 같은 이유."""
+        if self.meter is None:
+            return True
+        allowed, why = self.meter.allow()
+        if allowed:
+            self._capped = ""
+            return True
+        if self._capped != why:
+            self._capped = why
+            log.warning("요금제 상한 — 카운슬 심의를 멈춥니다: %s", why)
+        return False
+
     async def _deliberate_cached(self, ctx: Context, symbol: Symbol) -> CouncilVerdict | None:
         last = ctx.latest(symbol)
         if last is None:
@@ -425,8 +454,18 @@ class ResearchCouncilAlpha(AlphaModel):
             f"{symbol.key}|{last.ts.isoformat()}|{ctx.timeframe}|{self.debate_rounds}".encode()
         ).hexdigest()
         if key in self._cache:
+            # 캐시로 답한 심의는 아무 호출도 하지 않았습니다 — 안 쓴 것을
+            # 청구하지 않으려면 계량기를 여는 것도 여기 뒤여야 합니다.
             return self._cache[key]
-        verdict = await self.deliberate(ctx, symbol)
+        # 이 심의가 쓴 것만 셉니다 — 종목들이 `gather` 로 동시에 도는 이상
+        # 클라이언트 전역 카운터의 차분에는 형제 종목의 호출이 섞입니다.
+        with metered() as spend:
+            try:
+                verdict = await self.deliberate(ctx, symbol)
+            finally:
+                # 실패했어도 부른 만큼은 이미 나갔습니다.
+                if self.meter is not None and spend.calls:
+                    self.meter.record(spend.calls, spend.cost_usd)
         if verdict is not None:
             self._cache[key] = verdict
             if len(self._cache) > 2000:

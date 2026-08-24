@@ -61,6 +61,7 @@ class LiveTrader:
         # 이 봇이 쓴 LLM 을 누구 앞으로 다는가. 단일 사용자 배포에서는 셀
         # 사람이 없으므로 None 입니다.
         self.meter = meter
+        self._bind_meter_to_llm_alphas()
         # 휴장 중 심의 주기. 데스크 설정에서 읽고, 없으면 한 시간에 한 번입니다.
         # 매번 돌면 밤새 열일곱 번이라 비용이 봉당 심의보다 커집니다.
         spec = next((m for m in config.alpha if m.type in ("desk", "council")), None)
@@ -84,6 +85,37 @@ class LiveTrader:
         self._stopped = False
 
     # ── wiring ───────────────────────────────────────────────────────────
+    def _bind_meter_to_llm_alphas(self) -> None:
+        """봉마다 도는 LLM 심의를 이 봇의 계량기에 묶는다.
+
+        `_deliberate_now` 만 계량하던 시절에는, 사람이 ▶ 를 누른 직후 한 번은
+        재고 그 뒤 몇 주간 봉마다 도는 심의는 요금제 상한도 원장도 통과하지
+        않았습니다. 돈은 후자에서 나갑니다.
+
+        알파 **이름**이 아니라 `bind_meter` 가 있는지로 찾습니다. `desk` 만
+        찾으면 `council` 이 그대로 빠져나가고 — 그쪽은 자체 비용 한도조차
+        없습니다 — 계량되지 않는 알파가 하나라도 있으면 그리로 옮겨 타면
+        그만입니다.
+
+        단일 사용자 CLI 에는 셀 사람이 없어 `None` 이 묶입니다 — 알파 쪽에서는
+        묶지 않은 것과 같은 뜻이고, 상한도 원장도 없이 지금까지처럼 돕니다.
+        """
+        alpha = getattr(self.engine, "alpha", None)
+        models = getattr(alpha, "models", [alpha]) if alpha is not None else []
+        bound = 0
+        for model in models:
+            bind = getattr(model, "bind_meter", None)
+            if bind is None:
+                continue
+            bind(self.meter)
+            bound += 1
+        if self.meter is not None and not bound and any(
+                m.type in ("desk", "council") for m in self.config.alpha):
+            # 조용히 안 묶이는 것이 제일 나쁜 실패입니다: 상한도 원장도 없이
+            # 운영자 카드로 나가는데 아무 흔적이 남지 않습니다.
+            log.error("LLM 알파에 계량기를 묶지 못했습니다 — 이 봇의 데스크 "
+                      "비용은 요금제 상한을 통과하지 않습니다")
+
     def _attach_observers(self) -> None:
         bus = self.engine.ctx.bus
 
@@ -303,7 +335,13 @@ class LiveTrader:
         finally:
             # 실패했어도 부른 만큼은 청구됩니다. 성공만 계량하면 실패한 호출의
             # 비용이 아무 계정에도 잡히지 않습니다.
-            if self.meter is not None:
+            #
+            # 단, 이 경로는 그 데스크의 `update()` 를 그대로 부릅니다. 데스크가
+            # 계정에 묶여 있으면 심의 한 건마다 자기가 이미 적었으므로, 여기서
+            # 또 적으면 개장 전 심의만 두 번 청구됩니다. 묶인 쪽이 정확합니다 —
+            # 여기 차분은 같은 데스크를 쓰는 `/api/evaluate` 의 호출까지 함께
+            # 셉니다.
+            if self.meter is not None and getattr(desk, "meter", None) is None:
                 calls = max(0, desk.status()["llm_calls"] - before[0])
                 spent = max(0.0, desk.estimated_cost_usd - before[1])
                 if calls:
