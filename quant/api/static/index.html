@@ -378,6 +378,12 @@ tr:last-child td{border-bottom:0}
 .playbar button.on{border-color:var(--gold);color:var(--gold)}
 .playbar button:hover:not(:disabled){border-color:var(--gold);color:var(--gold)}
 .playbar button:disabled{opacity:.4;cursor:default}
+table.acct{width:100%;border-collapse:collapse;font-size:12px}
+table.acct th{text-align:left;color:var(--muted);font-weight:400;
+  padding:5px 8px;border-bottom:1px solid var(--line)}
+table.acct td{padding:5px 8px;border-bottom:1px solid var(--line);
+  font-variant-numeric:tabular-nums}
+table.acct td:first-child{font-variant-numeric:normal}
 .saybox.bad{border-color:var(--bad)}
 .saybox.bad .who{color:var(--bad)}
 .saybox.bad .line{color:var(--ink)}
@@ -1072,9 +1078,17 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
     </div>
   </section>
 
+  <!-- 증권사 계좌 — 봇이 꺼져 있어도 보입니다. 아래 "보유 종목" 은 봇이
+       들고 있는 것이고, 이건 계좌에 실제로 있는 것입니다. 둘은 다를 수
+       있습니다: 다른 데서 산 종목, 봇을 켜기 전부터 있던 종목. -->
+  <section class="panel">
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 증권사 계좌 <span class="d" aria-hidden="true">◆</span></span>
+    <div class="body" id="brokerAcct"><div class="dim">불러오는 중…</div></div>
+  </section>
+
   <!-- positions -->
   <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 보유 종목 <span class="d" aria-hidden="true">◆</span></span>
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 봇이 들고 있는 것 <span class="d" aria-hidden="true">◆</span></span>
     <div class="body scroll"><table id="positions"><tbody></tbody></table></div>
   </section>
 
@@ -3340,6 +3354,73 @@ function hasDesk(st) {
   return (st.signals || []).some(g => g.id === "desk" || g.id === "council");
 }
 
+/* ── 증권사 계좌 ──────────────────────────────────────────────────
+   "내 계좌" 는 돌고 있는 봇의 장부가 아니라 **사람의 계좌** 입니다. 봇이
+   꺼져 있어도, 한 번도 안 돌았어도, 다른 데서 산 종목이어도 여기 나와야
+   합니다. 그러지 않으면 연동을 마친 사람이 빈 화면을 보고 "연동이 안 됐다"
+   로 읽습니다 — 실제로 그렇게 읽혔습니다. */
+async function loadBrokerAccount() {
+  const box = $("#brokerAcct");
+  if (!box) return;
+  let d;
+  try {
+    d = await api("/api/account/broker?strategy=" +
+                  encodeURIComponent(chartStrategy()));
+  } catch (e) {
+    box.innerHTML = `<div class="dim">계좌를 불러오지 못했습니다: ${esc(e.message)}</div>`;
+    return;
+  }
+  if (d.supported === false) {
+    box.innerHTML = `<div class="dim">${esc(d.message || "이 증권사는 계좌 조회를 지원하지 않습니다")}</div>`;
+    return;
+  }
+  if (d.error) {
+    box.innerHTML = `<div class="dim">${esc(d.error)}</div>`;
+    return;
+  }
+  // 통화별로 따로 옵니다. 증권사가 합쳐 주지 않는 것을 화면이 합치면 그
+  // 순간 환차손익이 매매 손익에 섞입니다 — 나란히 씁니다.
+  const money = (m) => Object.entries(m || {}).map(([cur, v]) =>
+    (cur === "USD" ? "$" : "") + Number(v).toLocaleString("ko-KR",
+      {maximumFractionDigits: cur === "USD" ? 2 : 0}) +
+    (cur === "KRW" ? "원" : "")).join("  ·  ") || "—";
+  const signed = (m) => Object.entries(m || {}).map(([cur, v]) => {
+    const cls = v > 0 ? "plus" : v < 0 ? "minus" : "";
+    const sign = v > 0 ? "+" : "";
+    return `<b class="${cls}">${sign}${(cur === "USD" ? "$" : "")}` +
+      `${Number(v).toLocaleString("ko-KR", {maximumFractionDigits: cur === "USD" ? 2 : 0})}` +
+      `${cur === "KRW" ? "원" : ""}</b>`;
+  }).join("  ·  ") || "—";
+  const pct = (v) => v == null ? "" : ` (${(v * 100).toFixed(2)}%)`;
+
+  // 종목마다 지금 얼마어치를 들고 있는지가 계좌를 볼 때 가장 먼저 찾는
+  // 숫자입니다. 수량과 현재가를 놓고 사람이 곱하게 두지 않습니다.
+  const rows = (d.items || []).map(x => `<tr>
+      <td class="gold">${esc(symLabel(x.ticker, x.name))}</td>
+      <td>${Number(x.quantity).toLocaleString("ko-KR")}</td>
+      <td>${x.avg_price == null ? "—" : Number(x.avg_price).toLocaleString("ko-KR")}</td>
+      <td>${x.last_price == null ? "—" : Number(x.last_price).toLocaleString("ko-KR")}</td>
+      <td>${esc(money(x.market_value))}</td>
+      <td>${signed(x.pnl)}${pct(x.pnl_pct)}</td>
+    </tr>`).join("");
+
+  box.innerHTML =
+    `<div class="r"><b>평가금액</b><span>${esc(money(d.market_value))}</span></div>` +
+    `<div class="r"><b>투자원금</b><span>${esc(money(d.invested))}</span></div>` +
+    `<div class="r"><b>평가손익</b><span>${signed(d.pnl)}${pct(d.pnl_pct)}</span></div>` +
+    `<div class="r"><b>오늘 손익</b><span>${signed(d.daily_pnl)}${pct(d.daily_pnl_pct)}</span></div>` +
+    // 토스는 예수금을 주지 않습니다. 0 으로 채우면 "돈이 없다" 로 읽힙니다.
+    (d.cash == null
+      ? `<div class="dim" style="margin-top:7px">예수금은 증권사 API 가 제공하지 않아 표시하지 않습니다.</div>`
+      : `<div class="r"><b>예수금</b><span>${esc(money(d.cash))}</span></div>`) +
+    (rows
+      ? `<table class="acct" style="margin-top:11px"><thead><tr>
+           <th>종목</th><th>수량</th><th>평단</th><th>현재가</th>
+           <th>평가금액</th><th>평가손익</th>
+         </tr></thead><tbody>${rows}</tbody></table>`
+      : `<div class="dim" style="margin-top:9px">보유 중인 종목이 없습니다.</div>`);
+}
+
 /* ── 기간별 실현손익 ─────────────────────────────────────────────── */
 const PNL_LABEL = {today: "오늘", week: "이번 주", month: "이번 달", year: "올해"};
 
@@ -3707,7 +3788,7 @@ function showPage(name) {
   scrollTo({top: 0, behavior: "instant"});
   // 계좌 화면은 열릴 때 숫자를 새로 받아야 합니다 — 몇 분 전 값을 보여주면
   // 그게 지금 잔고인지 알 수 없습니다.
-  if (page === "account") { loadPnl(); loadTradeLog(); }
+  if (page === "account") { loadPnl(); loadTradeLog(); loadBrokerAccount(); }
   if (page === "me") loadPlan();
   // 차트 캔버스는 숨어 있는 동안 폭이 0 입니다. 돌아오면 다시 재야 합니다.
   if (page === "trade" && chart) requestAnimationFrame(() => chart.resize());

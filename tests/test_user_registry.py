@@ -359,14 +359,40 @@ def test_daily_limits_belong_to_the_user(registry, accounts, build):
     assert build(b.id, kis_config()).engine.budget.max_orders == 0
 
 
-def test_a_saved_limit_can_only_tighten_the_configured_one(registry, accounts, build):
+def test_the_users_own_limit_wins_in_both_directions(registry, accounts, build):
+    """마이페이지에 적어 둔 값이 설정 파일을 이깁니다 — 양쪽 다.
+
+    전에는 둘 중 더 낮은 쪽을 골랐습니다. 설정 파일을 운영자가 쓰고 화면을
+    가입자가 쓰는 서비스라면 그게 맞습니다. 그런데 여기서 그 한도는 **자기
+    증권사 키로 자기 계좌에 내는 자기 봇** 의 것이고, 낮은 쪽을 고르면 설정
+    파일의 숫자가 천장이 되어 사용자가 자기 한도를 올릴 수 없습니다.
+
+    화면에서 100 을 적었는데 파일의 3 이 이기고, 왜 안 바뀌는지는 어디에도
+    안 뜹니다. 실제로 그렇게 물었습니다 — "내가 마이페이지에 다 넣어뒀는데
+    왜 고정으로 해둔 거야?"
+
+    설정 파일의 값은 **아무것도 안 적었을 때의 기본값** 으로 남습니다.
+    """
     person = user(accounts, secrets=A_KEYS)
     registry.save_limits(person.id, {"max_daily_orders": 5})
 
     loose = kis_config(limits={"max_daily_orders": 100})
     tight = kis_config(limits={"max_daily_orders": 3})
     assert build(person.id, loose).engine.budget.max_orders == 5
-    assert build(person.id, tight).engine.budget.max_orders == 3
+    # 파일이 더 낮아도 사용자가 적은 값이 이깁니다.
+    assert build(person.id, tight).engine.budget.max_orders == 5
+
+
+def test_the_configured_limit_still_applies_when_nothing_was_saved(registry, accounts,
+                                                                  build):
+    """아무것도 안 적은 사람에게는 설정 파일이 그대로 걸립니다.
+
+    빈 칸이 "한도 없음" 이 되면, 저장 화면을 한 번도 안 연 사람의 봇이 한도
+    없이 돌게 됩니다.
+    """
+    person = user(accounts, secrets=A_KEYS)
+    cfg = kis_config(limits={"max_daily_orders": 7})
+    assert build(person.id, cfg).engine.budget.max_orders == 7
 
 
 def test_partial_limit_updates_leave_the_others_alone(registry, accounts):

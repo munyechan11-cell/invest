@@ -2229,6 +2229,33 @@ def create_app(config: StrategyConfig | None = None,
             })
         return {"strategies": out}
 
+    @app.get("/api/account/broker")
+    async def broker_account(strategy: str | None = Query(None, max_length=120),
+                             seat: Desk = Depends(desk)):
+        """증권사가 말하는 계좌 — 봇이 꺼져 있어도.
+
+        "내 계좌" 탭은 돌고 있는 봇의 장부만 그렸습니다. 그래서 연동을 마친
+        사람이 봇을 켜기 전에 이 탭을 열면 통째로 비어 있었고, 그건 "연동이
+        안 됐다" 로 읽힙니다.
+
+        조회 전용입니다 — 이 경로로는 주문이 나가지 않습니다.
+        """
+        cfg = (seat.run_config() if seat.running()
+               else (_template_config(strategy) or seat.run_config()))
+        if cfg is None:
+            return {"supported": False, "message": "전략을 먼저 고르세요"}
+        try:
+            return await seat.registry.broker_account(seat.user.id, cfg)
+        except RuntimeProblem as exc:
+            # 자격증명이 없거나 설정이 거부된 경우 — 사용자가 무엇을 해야
+            # 하는지 그 문장이 이미 말해 줍니다.
+            return {"supported": False, "message": str(exc)}
+        except Exception as exc:                      # noqa: BLE001
+            log.warning("계좌 조회 실패: %s", exc)
+            # 증권사가 답을 안 준 것과 연동이 안 된 것은 다릅니다. 사용자가
+            # 무엇을 해야 하는지 갈리므로 문장을 그대로 넘깁니다.
+            return {"supported": True, "error": f"계좌를 불러오지 못했습니다: {exc}"}
+
     @app.get("/api/glossary")
     async def glossary_all(_: Desk = Depends(desk)):
         """부품 이름 사전 전체 — 화면이 어디서든 한국어로 쓸 수 있게."""

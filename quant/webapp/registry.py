@@ -34,6 +34,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -46,7 +47,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from quant.config.schema import StrategyConfig
-from quant.core.types import UTC
+from quant.core.types import UTC, RunMode
 from quant.live.credentials import VENUES_BY_ID
 from quant.live.profile import InvestorProfile, ProfileStore, apply_profile
 from quant.live.spend import SpendMeter
@@ -316,15 +317,23 @@ def _with_credentials(config: StrategyConfig, secrets: dict[str, str]) -> Strate
     return wired
 
 
-def _tighter(configured: float, saved: float) -> float:
-    """둘 중 더 낮은 한도. 0 은 "한도 없음" 이라 경쟁하지 않습니다.
+def _effective(configured: float, saved: float) -> float:
+    """이 사용자에게 실제로 걸리는 한도.
 
-    `builder._cap` 이 설정 파일과 설정 화면 사이에서 하는 것과 같은 규칙입니다.
-    양쪽 다 누군가 최대치로 적은 숫자이므로, 한쪽이 다른 쪽의 천장을 올리는
-    일은 없어야 합니다.
+    **사용자가 마이페이지에 적어 둔 값이 이깁니다.** 전에는 둘 중 더 낮은
+    쪽을 골랐는데, 그러면 설정 파일이 적어 둔 숫자가 천장이 되어 사용자가
+    자기 한도를 올릴 수 없습니다 — 화면에서 500만원을 적어도 파일의 50만원이
+    이기고, 왜 안 바뀌는지는 어디에도 안 뜹니다. 실제로 그렇게 물었습니다:
+    "내가 마이페이지에 다 넣어뒀는데 왜 고정으로 해둔 거야?"
+
+    이건 자기 증권사 키로 자기 계좌에 내는 자기 봇의 한도입니다. 그 숫자를
+    정하는 사람은 설정 파일을 쓴 사람이 아니라 돈을 넣는 사람입니다. 설정
+    파일의 값은 **아무것도 안 적었을 때의 기본값** 으로 남습니다.
+
+    0 은 "한도 없음" 이 아니라 "안 적었음" 입니다 — 그래야 빈 칸이 실수로
+    한도를 없애지 않습니다. 한도를 정말로 풀려면 화면에서 큰 수를 적으세요.
     """
-    candidates = [v for v in (configured, saved) if v]
-    return min(candidates) if candidates else 0.0
+    return saved if saved else configured
 
 
 # ── 실행 중인 봇 한 대 ───────────────────────────────────────────────────
@@ -551,7 +560,7 @@ class UserRegistry:
 
         saved = self.limits(user_id)
         for key in LIMIT_KEYS:
-            value = _tighter(float(getattr(cfg.limits, key)), saved[key])
+            value = _effective(float(getattr(cfg.limits, key)), saved[key])
             setattr(cfg.limits, key, int(value) if key == "max_daily_orders" else value)
 
         # 대입만으로는 pydantic 검증이 다시 돌지 않습니다. 성향이 채운 값이나
@@ -580,6 +589,42 @@ class UserRegistry:
         cfg = self.prepare(user_id, config)
         wired = _with_credentials(cfg, self.accounts.secrets_for(user_id))
         return build_data_provider(wired)
+
+    async def broker_account(self, user_id: int, config: StrategyConfig) -> dict:
+        """증권사가 말하는 계좌 상태 — 봇과 무관하게.
+
+        "내 계좌" 탭은 돌고 있는 봇의 장부를 그렸습니다. 봇이 꺼져 있으면
+        그릴 것이 없어 탭이 통째로 비었고, 연동해 둔 사람에게는 그게 "연동이
+        안 됐다" 로 읽힙니다. 계좌는 봇의 것이 아니라 사람의 것입니다.
+
+        **조회만 합니다.** 주문을 낼 수 있는 객체를 만들지만 `live=False` 로
+        세워서, 이 경로로 들어온 어떤 실수도 주문이 되지는 않습니다.
+        """
+        from quant.core.account import Portfolio
+        from quant.strategy.builder import build_brokerage, build_costs
+
+        cfg = self.prepare(user_id, config)
+        wired = _with_credentials(cfg, self.accounts.secrets_for(user_id))
+        # 조회 전용이므로 모드를 낮춰 세웁니다 — dry_run 어댑터는 네트워크로
+        # 주문을 보내지 않습니다.
+        wired = wired.model_copy(deep=True)
+        wired.mode = RunMode.DRY_RUN
+        fee, slip, fill = build_costs(wired)
+        portfolio = Portfolio(wired.portfolio.starting_cash,
+                              wired.portfolio.base_currency)
+        broker = build_brokerage(wired, portfolio, fee, slip, fill)
+        overview = getattr(broker, "account_overview", None)
+        if overview is None:
+            return {"supported": False,
+                    "message": f"{wired.broker.type} 은 계좌 조회를 지원하지 않습니다"}
+        try:
+            await broker.connect()
+            out = await overview()
+            out["supported"] = True
+            return out
+        finally:
+            with contextlib.suppress(Exception):
+                await broker.close()
 
     def desk_owns_key(self, user_id: int, config: StrategyConfig) -> bool:
         """이 사용자의 데스크가 **자기 키**로 도는가 — 데스크를 세우지 않고.

@@ -428,6 +428,41 @@ class TossProvider(DataProvider):
         await self.client.close()
 
 
+def _num(raw: object) -> float | None:
+    """문자열 십진수 → float. 못 읽으면 None — 0 으로 채우지 않습니다.
+
+    토스는 금액을 문자열로 줍니다. 못 읽은 값을 0 으로 두면 화면이 "0원" 을
+    자신 있게 그리는데, 그건 "공짜" 도 "없음" 도 아니고 "모름" 입니다.
+    """
+    if raw in (None, ""):
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _named(block: object, currency: object) -> dict:
+    """종목 하나의 금액 블록 → {통화: 숫자}.
+
+    합산 블록(`Price`)은 통화별 필드를 갖지만 종목 블록은 그 종목의 통화
+    하나뿐입니다. 통화 코드를 붙여 두지 않으면 화면이 원화인지 달러인지 모른
+    채로 숫자를 찍고, 미국 종목의 250 이 250원으로 보입니다.
+    """
+    cur = str(currency or "").upper() or "KRW"
+    if isinstance(block, dict):
+        # {"amount": ...} 로 한 겹 싸여 오는 경우.
+        block = block.get("amount", block)
+    if isinstance(block, dict):
+        for key, code in (("krw", "KRW"), ("usd", "USD")):
+            v = _num(block.get(key))
+            if v is not None:
+                return {code: v}
+        return {}
+    v = _num(block)
+    return {} if v is None else {cur: v}
+
+
 class TossBrokerage(LiveBrokerage):
     """토스증권 주문.
 
@@ -552,6 +587,87 @@ class TossBrokerage(LiveBrokerage):
         data = await self.client.request("GET", _FIELDS["orders_path"],
                                          params={"status": "OPEN"}, account=True)
         return data.get("orders") or data.get("data") or []
+
+    async def account_overview(self) -> dict:
+        """증권사가 말하는 계좌 상태 — 봇과 무관하게.
+
+        "내 계좌" 탭은 지금까지 **돌고 있는 봇의 장부**를 그렸습니다. 봇이
+        꺼져 있으면 그릴 것이 없어서 탭이 통째로 비었고, 토스를 연동해 둔
+        사람에게는 그게 "연동이 안 됐다" 로 읽힙니다. 실제로 그렇게 읽혔습니다.
+
+        계좌는 봇의 것이 아니라 사람의 것입니다. 봇이 꺼져 있어도, 봇이 한 번도
+        안 돌았어도, 다른 데서 산 종목이어도 여기 나와야 합니다.
+
+        **토스는 예수금을 주지 않습니다.** `/api/v1/accounts` 는 계좌번호와
+        식별키만 주고, 잔고 항목이 없습니다. 그래서 현금 자리는 만들지 않고
+        비워 둡니다 — 0 으로 채우면 "돈이 없다" 로 읽힙니다.
+
+        금액은 **통화별로 따로** 옵니다(원화 합, 달러 합). 토스가 환산해서
+        합쳐 주지 않으므로 여기서도 합치지 않습니다. 환율을 여기서 끌어와
+        더하면 그 순간 환차손익이 매매 손익에 섞입니다.
+        """
+        data = await self.client.request("GET", _FIELDS["holdings_path"], account=True)
+
+        def money(block: object) -> dict:
+            """통화별 금액 블록 → {"KRW": 숫자, "USD": 숫자}. 없는 통화는 뺍니다."""
+            if not isinstance(block, dict):
+                return {}
+            out = {}
+            for key, code in (("krw", "KRW"), ("usd", "USD")):
+                raw = block.get(key)
+                if raw in (None, ""):
+                    continue
+                try:
+                    out[code] = float(raw)
+                except (TypeError, ValueError):
+                    continue
+            return out
+
+        def rate(block: object, key: str = "rate") -> float | None:
+            if not isinstance(block, dict):
+                return None
+            try:
+                return float(block[key])
+            except (KeyError, TypeError, ValueError):
+                return None
+
+        value = data.get("marketValue") or {}
+        pnl = data.get("profitLoss") or {}
+        daily = data.get("dailyProfitLoss") or {}
+        items = []
+        for row in (data.get("items") or []):
+            try:
+                qty = float(row.get("quantity") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not qty:
+                continue
+            items.append({
+                "ticker": str(row.get("symbol") or ""),
+                # 토스가 종목명을 실어 줍니다 — 우리가 따로 찾을 필요가 없습니다.
+                "name": str(row.get("name") or "") or str(row.get("symbol") or ""),
+                "currency": str(row.get("currency") or ""),
+                "quantity": qty,
+                "last_price": _num(row.get("lastPrice")),
+                "avg_price": _num(row.get("averagePurchasePrice")),
+                # 종목 금액은 그 종목의 통화 하나뿐입니다. 통화 코드를 함께
+                # 넣어 두지 않으면 화면이 원화인지 달러인지 모른 채 찍습니다.
+                "market_value": _named(row.get("marketValue"), row.get("currency")),
+                "pnl": _named(row.get("profitLoss"), row.get("currency")),
+                "pnl_pct": rate(row.get("profitLoss")),
+            })
+        return {
+            "source": "toss",
+            "invested": money(data.get("totalPurchaseAmount")),
+            "market_value": money(value.get("amount")),
+            "pnl": money(pnl.get("amount")),
+            "pnl_pct": rate(pnl),
+            "daily_pnl": money(daily.get("amount")),
+            "daily_pnl_pct": rate(daily),
+            # 토스는 예수금을 주지 않습니다. 없는 것은 없다고 말합니다.
+            "cash": None,
+            "items": items,
+        }
 
     async def _venue_positions(self) -> dict[str, Decimal]:
         data = await self.client.request("GET", _FIELDS["holdings_path"], account=True)
