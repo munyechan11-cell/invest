@@ -82,10 +82,7 @@ _LATEST_TAX_YEAR = max(KRX_SELL_TAX_BPS)
 
 def krx_sell_tax_bps(when: datetime | date | None = None) -> float:
     """그 시점에 실제로 물린 세율. 모르는 미래는 마지막으로 아는 값."""
-    if when is None:
-        year = _LATEST_TAX_YEAR
-    else:
-        year = when.year
+    year = _LATEST_TAX_YEAR if when is None else when.year
     if year in KRX_SELL_TAX_BPS:
         return KRX_SELL_TAX_BPS[year]
     # 표보다 이전이면 가장 오래된 값, 이후면 가장 최근 값. 없는 해를 0 으로

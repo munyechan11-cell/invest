@@ -6,6 +6,7 @@ backtest paired with a venue adapter produced no fills, no cost and no warning.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -164,14 +165,24 @@ def test_sell_tax_rate_is_settable_on_the_preset():
     assert sell == pytest.approx(buy + notional * 0.0015)
 
 
-def test_sell_tax_default_is_unchanged_when_not_set():
+def test_sell_tax_defaults_to_the_rate_that_actually_applies():
+    """세율을 적지 않으면 그 해에 실제로 물리는 값을 씁니다.
+
+    예전에는 18bp 로 굳어 있었습니다 — 2024년에는 맞았지만 2025년에 15bp 로
+    내렸다가 2026년에 20bp 로 다시 올랐습니다. 숫자를 여기 박아두면 그 해가
+    지나는 순간 테스트가 틀린 값을 지키게 됩니다.
+    """
+    from quant.execution.costs import krx_sell_tax_bps
+
     cfg = StrategyConfig(name="t", alpha=[ModelSpec(type="ema_cross")],
                          costs=CostConfig(preset="kr_equity"))
     fee, _, _ = build_costs(cfg)
     notional = 100 * 70_000.0
-    sell = fee.for_side(OrderSide.SELL).fee(KRX, Decimal(100), 70_000.0, False)
-    buy = fee.for_side(OrderSide.BUY).fee(KRX, Decimal(100), 70_000.0, False)
-    assert sell == pytest.approx(buy + notional * 0.0018)
+    at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    sell = fee.for_side(OrderSide.SELL).fee(KRX, Decimal(100), 70_000.0, False, at)
+    buy = fee.for_side(OrderSide.BUY).fee(KRX, Decimal(100), 70_000.0, False, at)
+    expected = krx_sell_tax_bps(at) / 10_000.0
+    assert sell == pytest.approx(buy + notional * expected)
 
 
 def test_sell_tax_on_a_foreign_preset_is_refused():

@@ -61,7 +61,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from quant.config.loader import load_config
 from quant.config.schema import StrategyConfig
 from quant.core.events import Event
-from quant.core.types import UTC, RunMode
+from quant.core.types import UTC, RunMode, Symbol
 from quant.live.credentials import (
     OPERATOR_FIELDS,
     VENUES,
@@ -535,6 +535,17 @@ def strategy_catalog(root: str | Path | None = None) -> dict[str, Path]:
             if p.is_file() and p.suffix.lower() in (".yaml", ".yml", ".json")}
 
 
+def _config_symbols(config: StrategyConfig) -> list[Symbol]:
+    """이 전략이 다루는 종목들. 조회는 여기 있는 것만 허용합니다.
+
+    사용자가 임의의 티커를 물어볼 수 있으면 그것은 시세 조회가 아니라
+    이 서비스의 데이터 계약을 남의 종목으로 넓히는 일이 됩니다.
+    """
+    from quant.strategy.builder import build_symbol
+
+    return [build_symbol(spec) for spec in config.universe.symbols]
+
+
 def resolve_template(name: str) -> Path:
     catalog = strategy_catalog()
     # 경로처럼 생긴 것이 와도 이름만 뽑아 씁니다. `../../etc/passwd` 는
@@ -667,6 +678,10 @@ class Desk:
     @property
     def state_path(self) -> str:
         raise NotImplementedError
+
+    def data_provider(self, config: StrategyConfig):
+        """이 사용자의 키로 세운 시세 프로바이더."""
+        return self.registry.data_provider(self.user.id, config)
 
     def run_config(self) -> StrategyConfig | None:
         raise NotImplementedError
@@ -1077,6 +1092,82 @@ def create_app(config: StrategyConfig | None = None,
             return {"points": store.equity_curve(limit)}
         finally:
             store.close()
+
+    @app.get("/api/candles")
+    async def candles(ticker: str = Query(..., min_length=1, max_length=32),
+                      timeframe: str = Query("1d", max_length=8),
+                      count: int = Query(120, ge=20, le=500),
+                      strategy: str | None = Query(None, max_length=64),
+                      seat: Desk = Depends(desk)):
+        """봉 + 현재가 + 내 자리 + 미체결 + 체결 — 한 번에.
+
+        화면 오른쪽이 답해야 하는 질문은 셋입니다: 지금 얼마인가, 나는 얼마에
+        들어갔는가, 봇이 방금 무엇을 했는가. 세 번 나눠 부르면 서로 다른 순간의
+        답이 한 화면에 섞이므로 한 응답으로 묶습니다.
+        """
+        # 돌고 있는 봇의 설정을 먼저 쓰고, 없으면 화면이 고른 전략을 씁니다.
+        # 봇이 꺼져 있을 때 시세를 보는 것이 이 화면의 절반이라, 봇을 켜야만
+        # 호가를 볼 수 있으면 순서가 거꾸로입니다.
+        cfg = seat.run_config()
+        if cfg is None:
+            if not strategy:
+                raise HTTPException(
+                    400, "전략을 고르세요 — 어느 거래소에서 조회할지 알 수 없습니다.")
+            cfg = load_config(str(resolve_template(strategy)))
+
+        symbol = next((s for s in _config_symbols(cfg)
+                       if s.ticker.upper() == ticker.strip().upper()), None)
+        if symbol is None:
+            raise HTTPException(
+                404, f"{ticker} 는 이 전략의 종목이 아닙니다.")
+
+        bars, quote, stale = [], None, True
+        try:
+            provider = seat.data_provider(cfg)
+            bars = await provider.latest_bars(symbol, timeframe, count)
+            quote = await provider.quote(symbol)
+            stale = False
+        except Exception as exc:  # 시세가 없다고 화면 전체가 죽으면 안 됩니다.
+            log.warning("시세 조회 실패 %s: %s", symbol.key, exc)
+
+        store = StateStore(seat.state_path)
+        try:
+            store.resume_run(cfg.name, cfg.mode.value)
+            since = bars[0].end_ts.isoformat() if bars else ""
+            fills = store.fills_for(symbol.key, since=since)
+            position = store.position_for(symbol.key)
+        finally:
+            store.close()
+
+        last = quote.mid if quote and quote.mid else (bars[-1].close if bars else 0.0)
+        if position and position["avg_price"] > 0 and last > 0:
+            direction = 1.0 if position["quantity"] > 0 else -1.0
+            position["unrealized_pct"] = direction * (
+                last / position["avg_price"] - 1.0)
+
+        trader = seat.trader()
+        orders = []
+        if trader is not None:
+            for o in getattr(trader.engine, "orders", []) or []:
+                if o.symbol.key == symbol.key and o.status.is_open:
+                    orders.append({"side": o.side.value, "price": o.limit_price or 0.0,
+                                   "quantity": float(o.quantity), "status": o.status.value})
+
+        return {
+            "ticker": symbol.ticker,
+            "timeframe": timeframe,
+            "currency": symbol.quote_currency,
+            "tick_size": float(symbol.tick_size or 0),
+            "bars": [{"t": b.end_ts.isoformat(), "o": b.open, "h": b.high,
+                      "l": b.low, "c": b.close, "v": b.volume} for b in bars],
+            "quote": ({"price": last, "ts": quote.ts.isoformat()} if quote
+                      else ({"price": last, "ts": bars[-1].end_ts.isoformat()}
+                            if bars else None)),
+            "position": position,
+            "orders": orders,
+            "fills": fills,
+            "stale": stale,
+        }
 
     @app.get("/api/trades")
     async def trades(limit: int = Query(100, ge=1, le=2_000),

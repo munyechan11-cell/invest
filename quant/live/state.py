@@ -561,6 +561,33 @@ class StateStore:
         ).fetchall()
         return [dict(r) for r in reversed(rows)]
 
+    def fills_for(self, symbol_key: str, since: str = "", limit: int = 500) -> list[dict]:
+        """이 종목의 체결. 차트에 점을 찍기 위한 것입니다.
+
+        자동매매 중이어도 봇이 무엇을 했는지 눈으로 봐야 합니다 — 왼쪽에서
+        심의하고 낸 주문이 오른쪽 봉 위에 나타나야 "지금 뭘 하고 있는지"를
+        읽을 수 있습니다.
+        """
+        ticker, _, venue = symbol_key.partition(":")
+        if venue:
+            ticker, venue = venue, ticker
+        rows = self.conn.execute(
+            "SELECT ts, side, quantity, price, fee, liquidity FROM fills "
+            "WHERE run_id=? AND symbol=? AND ts>=? ORDER BY ts DESC LIMIT ?",
+            (self.run_id, ticker, since or "", limit)).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+    def position_for(self, symbol_key: str) -> dict | None:
+        """장부에 적힌 이 종목의 자리 — 수량과 평균단가."""
+        row = self.conn.execute(
+            "SELECT quantity, avg_price, opened_at FROM positions "
+            "WHERE run_id=? AND symbol_key=?", (self.run_id, symbol_key)).fetchone()
+        if row is None or not float(row["quantity"] or 0):
+            return None
+        return {"quantity": float(row["quantity"]),
+                "avg_price": row["avg_price"] or 0.0,
+                "opened_at": row["opened_at"]}
+
     def recent_trades(self, limit: int = 100) -> list[dict]:
         rows = self.conn.execute(
             "SELECT * FROM trades WHERE run_id=? ORDER BY id DESC LIMIT ?",

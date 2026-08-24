@@ -14,9 +14,9 @@ import pytest
 from quant.core.types import OrderSide, Symbol
 from quant.execution.costs import (
     KRX_SELL_TAX_BPS,
+    PRESETS,
     KoreanEquityFeeModel,
     KoreanEquitySellTax,
-    PRESETS,
     krx_sell_tax_bps,
 )
 
@@ -47,7 +47,8 @@ def test_the_2026_rise_is_not_missed():
 # ── 실제로 부과되는가 ────────────────────────────────────────────────────
 def test_the_sell_tax_is_charged_at_the_rate_of_the_fill():
     tax = KoreanEquitySellTax()
-    ten_million = dict(symbol=SYM, quantity=100, price=100_000, is_maker=False)
+    ten_million = {"symbol": SYM, "quantity": 100,
+                   "price": 100_000, "is_maker": False}
     assert tax.fee(when=datetime(2026, 6, 1, tzinfo=UTC), **ten_million) == 20_000
     assert tax.fee(when=datetime(2025, 6, 1, tzinfo=UTC), **ten_million) == 15_000
 

@@ -552,6 +552,22 @@ class UserRegistry:
             ) from exc
 
     # ── 봇 ───────────────────────────────────────────────────────────────
+    def data_provider(self, user_id: int, config: StrategyConfig):
+        """이 사용자의 키로 세운 시세 프로바이더 — 봇과 무관하게.
+
+        봇이 돌지 않아도 시세는 봐야 합니다. 화면 오른쪽에서 호가를 보고
+        그 자리에서 수동으로 사는 것이 이 서비스의 절반이고, 그때 봇은 대개
+        꺼져 있습니다.
+
+        브로커는 세우지 않습니다. 조회만 하는 경로가 주문을 낼 수 있는 객체를
+        들고 다닐 이유가 없습니다.
+        """
+        from quant.strategy.builder import build_data_provider
+
+        cfg = self.prepare(user_id, config)
+        wired = _with_credentials(cfg, self.accounts.secrets_for(user_id))
+        return build_data_provider(wired)
+
     def build_trader(self, user_id: int, config: StrategyConfig):
         """이 사용자의 키로 세운 `LiveTrader`. 아직 돌지는 않습니다.
 
