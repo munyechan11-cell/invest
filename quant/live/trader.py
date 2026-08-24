@@ -16,7 +16,7 @@ from datetime import datetime
 from quant.brokerage.live_base import LiveBrokerage
 from quant.config.schema import StrategyConfig
 from quant.core.clock import RealClock, next_candle_close
-from quant.core.engine import Engine
+from quant.core.engine import Engine, _insight_dict
 from quant.core.events import Event, EventType
 from quant.core.types import UTC, Bar, RunMode
 from quant.data.provider import DataProvider, gather_history
@@ -61,6 +61,12 @@ class LiveTrader:
         # 이 봇이 쓴 LLM 을 누구 앞으로 다는가. 단일 사용자 배포에서는 셀
         # 사람이 없으므로 None 입니다.
         self.meter = meter
+        # 휴장 중 심의 주기. 데스크 설정에서 읽고, 없으면 한 시간에 한 번입니다.
+        # 매번 돌면 밤새 열일곱 번이라 비용이 봉당 심의보다 커집니다.
+        spec = next((m for m in config.alpha if m.type in ("desk", "council")), None)
+        minutes = float((spec.params.get("closed_cadence_minutes", 60) if spec else 0) or 0)
+        self.closed_cadence_s = max(minutes, 5.0) * 60 if minutes else 0.0
+        self._last_closed_deliberation = 0.0
         self.notifier = TelegramNotifier(
             config.notify.telegram_bot_token, config.notify.telegram_chat_id,
             config.notify.on_events,
@@ -220,11 +226,37 @@ class LiveTrader:
         봉도 손에 있습니다. 데스크가 지금 무엇을 보는지는 **지금** 말할 수
         있습니다.
 
-        돌려받은 인사이트는 **버립니다.** 주문은 봉이 닫힐 때 나가야 합니다 —
-        여기서 매매까지 시작하면 "시작 버튼이 곧 시장가 주문" 이 되고, 그건
-        사람이 누른 것과 다른 일입니다. 발언만 화면에 올립니다(그 발행은
-        `desk.update()` 가 스스로 버스에 실어 보냅니다).
+        돌려받은 인사이트는 **장부에 넣되 주문은 내지 않습니다.** 인사이트는
+        "이렇게 보인다" 이고, 그것이 주문이 되려면 다음 `on_bars` 에서
+        포트폴리오 구성과 리스크를 한 번 더 거쳐야 합니다. 그 사이가 사람이
+        "예약" 이라고 부르는 구간입니다 — 지금 판단하고, 장이 열리면 나갑니다.
+
+        여기서 곧바로 매매까지 하면 "시작 버튼이 곧 시장가 주문" 이 되고,
+        그건 사람이 누른 것과 다른 일입니다.
         """
+        await self._deliberate_now("개장 전")
+
+    async def _closed_market_deliberation(self) -> None:
+        """장이 닫혀 있는 동안에도 주기적으로 심의한다.
+
+        정규장이 닫혔다고 판단할 것이 없어지지는 않습니다 — 소수점 주문이나
+        주간거래처럼 정규장 밖에서 도는 것도 있고, 무엇보다 "내일 무엇을 살
+        것인가" 는 밤에 정하는 것입니다. 장이 열릴 때까지 화면이 비어 있으면
+        사람은 봇이 고장 난 줄 압니다.
+
+        비용이 드는 일이라 시계로 제한합니다. 매번 도는 것이 아니라
+        `closed_cadence_minutes` 마다 한 번이고, 계량기가 거절하면 쉽니다.
+        """
+        if not self.closed_cadence_s:
+            return
+        now = time.monotonic()
+        if now - self._last_closed_deliberation < self.closed_cadence_s:
+            return
+        self._last_closed_deliberation = now
+        await self._deliberate_now("휴장 중")
+
+    async def _deliberate_now(self, reason: str) -> None:
+        """봉을 기다리지 않고 지금 한 번 심의한다. 주문은 내지 않는다."""
         desk = self.desk()
         if desk is None:
             return
@@ -236,7 +268,7 @@ class LiveTrader:
         if self.meter is not None:
             allowed, why = self.meter.allow()
             if not allowed:
-                log.info("개장 전 심의 건너뜀 — %s", why)
+                log.info("%s 심의 건너뜀 — %s", reason, why)
                 return
         ctx = self.engine.ctx
         # 워밍업이 남긴 마지막 봉. 없으면 심의할 재료가 없는 것이고, 그건
@@ -248,18 +280,26 @@ class LiveTrader:
                 last[symbol.key] = history[-1]
         if not last:
             return
-        log.info("개장 전 심의 — 봉을 기다리지 않고 지금 상태로 한 번 봅니다")
+        log.info("%s 심의 — 봉을 기다리지 않고 지금 상태로 한 번 봅니다", reason)
         before = desk.status()["llm_calls"], desk.estimated_cost_usd
         try:
-            await desk.update(ctx, last)
+            fresh = await desk.update(ctx, last)
+            if fresh:
+                # 장부에 넣습니다. 주문은 여기서 나가지 않습니다 — 다음
+                # `on_bars` 가 포트폴리오 구성과 리스크를 거쳐 만들어 냅니다.
+                # 그 사이가 사람이 "예약" 이라고 부르는 구간입니다.
+                self.engine.insights.add(fresh)
+                self.engine.ledger.record(ctx, fresh)
+                for ins in fresh:
+                    await ctx.bus.publish(EventType.INSIGHT, _insight_dict(ins))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             # 여기서 죽으면 봇이 아예 안 뜹니다. 첫인상보다 돌아가는 쪽이
             # 중요하므로, 실패는 알리고 넘어갑니다.
-            log.warning("개장 전 심의 실패: %s", exc)
+            log.warning("%s 심의 실패: %s", reason, exc)
             await ctx.bus.publish(EventType.ERROR,
-                                  {"error": f"개장 전 심의 실패: {exc}"})
+                                  {"error": f"{reason} 심의 실패: {exc}"})
         finally:
             # 실패했어도 부른 만큼은 청구됩니다. 성공만 계량하면 실패한 호출의
             # 비용이 아무 계정에도 잡히지 않습니다.
@@ -358,6 +398,9 @@ class LiveTrader:
             self._announced_closed = True
         # Wake periodically rather than sleeping for hours in one go, so a stop
         # signal is honoured promptly and a clock jump cannot strand the loop.
+        # 장이 닫혀 있어도 판단할 것은 남아 있습니다 — "내일 무엇을 살 것인가"
+        # 는 밤에 정하는 것이고, 그 결정이 장부에 있어야 개장하자마자 나갑니다.
+        await self._closed_market_deliberation()
         if not await self._sleep(min(wait_s + 2, 300)):
             return True
         if self.calendar.is_open(datetime.now(UTC)):
@@ -520,6 +563,22 @@ class LiveTrader:
                 return m
         return None
 
+    def _queued(self) -> list[dict]:
+        """개장하면 검토될 판단들. 장이 열려 있으면 빈 목록입니다."""
+        if self.calendar is None or self.calendar.is_open(datetime.now(UTC)):
+            return []
+        now = self.engine.ctx.now
+        out = []
+        for ins in self.engine.insights.active(now):
+            out.append({
+                "ticker": ins.symbol.ticker,
+                "direction": getattr(ins.direction, "value", str(ins.direction)),
+                "source": ins.source,
+                "confidence": round(float(ins.confidence or 0), 3),
+                "expires_at": ins.close_time.isoformat(),
+            })
+        return out
+
     def status(self) -> dict:
         pf = self.engine.ctx.portfolio
         desk = self.desk()
@@ -532,6 +591,11 @@ class LiveTrader:
             "last_bar": self.last_bar_ts.isoformat() if self.last_bar_ts else None,
             "consecutive_errors": self.errors,
             "universe": [s.ticker for s in self.engine.ctx.universe],
+            # 장이 닫혀 있는 동안 내려진 판단. 주문은 아직 아니고, 개장하면
+            # 포트폴리오 구성과 리스크를 거쳐 나갑니다 — 사람이 "예약" 이라고
+            # 부르는 것이 이것입니다. 무엇이 나갈지 미리 보여야, 밤새 쌓인
+            # 결정이 아침에 갑자기 체결되는 일이 없습니다.
+            "queued": self._queued(),
             "market": {
                 "calendar": getattr(self.calendar, "name", None),
                 "open": self.calendar.is_open(datetime.now(UTC)) if self.calendar else None,

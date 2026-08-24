@@ -20,15 +20,15 @@ REGISTRY = Path("quant/webapp/registry.py").read_text(encoding="utf-8")
 
 
 def _opening() -> str:
-    """개장 전 심의의 **코드**. docstring 은 뺍니다.
+    """지금 한 번 심의하는 코드. docstring 은 뺍니다.
 
     이 함수의 docstring 이 `desk.update()` 를 언급하는데, 그걸 코드로 세면
     "심의를 먼저 부르고 나중에 묻는다" 는 없는 결함이 잡힙니다. 실제로
     잡혔습니다.
     """
-    m = re.search(r"async def _opening_deliberation\(self\).*?\n    async def",
+    m = re.search(r"async def _deliberate_now\(self[^)]*\).*?\n\n    (?:async )?def",
                   TRADER, re.S)
-    assert m, "개장 전 심의 본문을 찾지 못했습니다"
+    assert m, "심의 본문을 찾지 못했습니다"
     return re.sub(r'"""..*?"""', "", m.group(0), count=1, flags=re.S)
 
 

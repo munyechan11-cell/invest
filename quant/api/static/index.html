@@ -349,6 +349,15 @@ tr:last-child td{border-bottom:0}
   border:2px solid var(--gold);background:none;color:var(--gold);cursor:pointer}
 .trynow button:hover:not(:disabled){background:var(--gold);color:#000}
 .trynow button:disabled{opacity:.55;cursor:default}
+.playbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:8px 12px;margin:0 0 10px;border:2px solid var(--line);
+  background:var(--plate);font-size:12px;color:var(--muted)}
+.playbar .grow{flex:1 0 6px}
+.playbar button{font-family:var(--px);font-size:11px;padding:5px 10px;
+  border:2px solid var(--line);background:none;color:var(--muted);cursor:pointer}
+.playbar button.on{border-color:var(--gold);color:var(--gold)}
+.playbar button:hover:not(:disabled){border-color:var(--gold);color:var(--gold)}
+.playbar button:disabled{opacity:.4;cursor:default}
 .saybox.bad{border-color:var(--bad)}
 .saybox.bad .who{color:var(--bad)}
 .saybox.bad .line{color:var(--ink)}
@@ -959,7 +968,18 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
 
   <!-- 데스크 — 로그인 전 데모에서도 이 묶음만 보여줍니다.
        #roomsHome 은 데모가 끝나고 되돌아올 자리입니다. -->
-  <div id="roomsHome"><div id="rooms">
+  <div id="roomsHome">
+  <!-- 사람이 읽는 속도로 나옵니다. 기본이 2배쯤으로 빨라서 발언이 눈에 담기기
+       전에 다음 줄로 넘어갔습니다 — 16명이 무슨 말을 했는지 보려고 켠 화면인데
+       그걸 못 읽으면 아무 의미가 없습니다. 다시 볼 수도 있어야 합니다. -->
+  <div class="playbar" id="playBar" hidden>
+    <span>재생 속도</span>
+    <button type="button" data-speed="1" class="on">1배</button>
+    <button type="button" data-speed="2">2배</button>
+    <span class="grow"></span>
+    <button type="button" id="replayBtn">↺ 다시 재생</button>
+  </div>
+  <div id="rooms">
   <!-- analyst room -->
   <section class="panel">
     <div class="room wood">
@@ -1462,12 +1482,25 @@ function resetFloor() {
 /* ── deliberation replay ─────────────────────────────────────────────── */
 const TONE = {bullish: "bull", bearish: "bear", neutral: "neutral"};
 let playing = false;
+/* 사람이 고른 재생 속도. 숫자가 클수록 빠릅니다 — `playDeliberation` 안에서는
+   기다리는 시간에 나누어 쓰므로 여기서 뒤집지 않습니다.
+
+   기본을 1배로 둡니다. 전에는 호출부마다 0.55·0.7 을 직접 넘겨서 어디서든
+   2배 가까이 돌았고, 발언이 눈에 담기기 전에 다음 줄로 넘어갔습니다. */
+let playSpeed = 1;
+/* 마지막으로 재생한 심의. 다시 보려면 이게 있어야 합니다 — 놓친 사람에게
+   "다음 심의를 기다리세요" 는 답이 아닙니다(일봉이면 내일입니다). */
+let lastPlayed = null;
 
 async function playDeliberation(d, opts) {
   if (playing) return;
   playing = true;
-  const speed = (opts && opts.speed) || 1;
+  // 호출부가 준 값은 그 심의의 성격(데모는 조금 빠르게)이고, 사람이 고른
+  // 배속은 그 위에 곱해집니다. 둘을 섞지 않으면 설정이 무시됩니다.
+  const speed = ((opts && opts.speed) || 1) / Math.max(playSpeed, 0.25);
   const wait = ms => sleep(ms * speed);
+  lastPlayed = (opts && opts.demo) ? null : d;
+  syncPlayBar();
   try {
     resetFloor();
     $("#verdict").classList.add("hidden");
@@ -1548,6 +1581,7 @@ async function playDeliberation(d, opts) {
       (d.symbol || "—") + " 결정 완료";
   } finally {
     playing = false;
+    syncPlayBar();
   }
 }
 
@@ -1774,7 +1808,7 @@ async function refresh() {
     const latest = (d.deliberations || [])[0];
     if (latest && latest.decided_at !== lastShown) {
       lastShown = latest.decided_at;
-      playDeliberation(latest, {speed: .55});
+      playDeliberation(latest);
     }
   } catch {}
 }
@@ -2853,7 +2887,12 @@ function syncChartSymbols(syms) {
   // 전략을 바꾸면 종목 목록이 통째로 바뀝니다. 옛 종목이 골라진 채로 남으면
   // "AAPL 는 이 전략의 종목이 아닙니다" 를 계속 보게 됩니다 — 사용자가
   // 고른 적도 없는 종목에 대해서.
-  if (sel.value && !names.includes(sel.value.split(":").pop())) sel.value = "";
+  if (sel.value && !names.includes(sel.value.split(":").pop())) {
+    sel.value = "";
+    // 방금 버린 종목에 대한 오류가 남아 있으면, 이제 보고 있지도 않은 종목
+    // 이야기를 계속 하게 됩니다.
+    note("#cMsg", "", "");
+  }
   const now = [...sel.options].map(o => o.value).join();
   if (names.join() === now) return;
   const keep = sel.value;
@@ -2875,6 +2914,10 @@ async function loadChart() {
     note("#cMsg", "시세를 불러오지 못했습니다: " + e.message, "err");
     return;
   }
+  // 성공했으면 옛 오류를 지웁니다. 안 지우면 "AAPL 는 이 전략의 종목이
+  // 아닙니다" 가 다른 종목을 보고 있는 동안에도 계속 서 있습니다 — 화면이
+  // 지금 상태가 아니라 과거 어느 시점을 말하게 됩니다.
+  note("#cMsg", "", "");
   const d = chartData;
   document.getElementById("cStale").hidden = !d.stale;
   const last = (d.quote || {}).price || 0;
@@ -3264,7 +3307,7 @@ async function askDeskFor(raw) {
     // 버렸습니다 — 데스크는 돌았는데 사람은 도는 걸 못 봤습니다.
     lastShown = d.decided_at;
     scrollToDesk();
-    playDeliberation(d, {speed: .7});
+    playDeliberation(d);
   } catch (e) {
     note("#mMsg", "심의 실패: " + e.message, "err");
   } finally {
@@ -3307,6 +3350,28 @@ function renderAsk(d, ticker) {
       — 이건 의견이고 주문이 아닙니다. 아래에서 직접 내야 나갑니다.</div>`;
   out.hidden = false;
 }
+
+/* 재생 줄 — 속도 고르기와 다시 보기. */
+function syncPlayBar() {
+  const bar = $("#playBar");
+  if (!bar) return;
+  bar.hidden = !lastPlayed;
+  const btn = $("#replayBtn");
+  if (btn) btn.disabled = !lastPlayed || playing;
+  bar.querySelectorAll("[data-speed]").forEach(b =>
+    b.classList.toggle("on", Number(b.dataset.speed) === playSpeed));
+}
+
+document.querySelectorAll("#playBar [data-speed]").forEach(b => {
+  b.onclick = () => { playSpeed = Number(b.dataset.speed) || 1; syncPlayBar(); };
+});
+$("#replayBtn").onclick = () => {
+  if (!lastPlayed || playing) return;
+  // 같은 심의를 다시 봅니다. `lastShown` 은 건드리지 않습니다 — 그건 "새
+  // 심의가 왔는가" 를 재는 값이라, 여기서 지우면 폴링이 같은 것을 또 재생합니다.
+  scrollToDesk();
+  playDeliberation(lastPlayed);
+};
 
 $("#lkGo").onclick = lookup;
 $("#lkQ").onkeydown = ev => { if (ev.key === "Enter") { ev.preventDefault(); lookup(); } };
@@ -3401,9 +3466,21 @@ function deskWaitReason() {
   if (mkt.open === false && mkt.minutes_to_open != null
       && isFinite(mkt.minutes_to_open)) {
     const h = Math.floor(mkt.minutes_to_open / 60), m = Math.round(mkt.minutes_to_open % 60);
-    return {kind: "closed", who: "휴장",
+    const left = h ? `${h}시간 ${m}분` : `${m}분`;
+    // 밤새 쌓인 판단이 아침에 갑자기 체결되면 안 됩니다. 무엇이 예약돼
+    // 있는지 자는 동안에도 보여야 합니다.
+    const q = (botState || {}).queued || [];
+    // 조사를 붙이면 앞말 받침에 따라 을/를 이 갈립니다. 목록이 무엇으로
+    // 끝날지 모르므로 조사가 필요 없는 어순으로 씁니다.
+    const plan = q.length
+      ? ` 개장하면 이것부터 검토합니다 — ${q.slice(0, 3).map(x =>
+          tickerLabel(x.ticker) + (x.direction === "up" ? " 매수" : " 매도")
+        ).join(", ")}` + (q.length > 3 ? ` 외 ${q.length - 3}건` : "") + "."
+      : " 그동안에도 데스크는 계속 심의합니다.";
+    return {kind: "closed", who: q.length ? `휴장 · 예약 ${q.length}건` : "휴장",
             line: `${mkt.calendar || "이 시장"} 이 닫혀 있습니다 — 개장까지 ` +
-                  (h ? `${h}시간 ${m}분` : `${m}분`) + ". 열리면 이어서 봅니다."};
+                  left + "." + plan,
+            try_now: true};
   }
   return {kind: "waiting", who: "대기 중",
           line: "다음 봉이 닫히면 심의가 시작되고, 발언은 여기 그대로 남습니다.",

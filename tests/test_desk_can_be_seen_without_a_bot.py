@@ -81,13 +81,14 @@ def test_the_desk_speaks_before_the_first_bar_closes():
     """봇을 켠 사람도 다음 봉까지 기다리면 안 됩니다."""
     trader = Path("quant/live/trader.py").read_text(encoding="utf-8")
     assert "_opening_deliberation" in trader
-    body = re.search(r"async def _opening_deliberation\(self\).*?\n    async def",
+    body = re.search(r"async def _deliberate_now\(self[^)]*\).*?\n\n    (?:async )?def",
                      trader, re.S)
-    assert body, "개장 전 심의 본문을 찾지 못했습니다"
+    assert body, "심의 본문을 찾지 못했습니다"
     src = body.group(0)
     assert "desk.update" in src, "데스크를 부르지 않습니다"
-    # 인사이트를 쓰면 시작 버튼이 곧 주문이 됩니다.
+    # 인사이트를 장부에 넣는 것은 "예약" 이고, 주문이 아닙니다. 주문은 다음
+    # on_bars 가 포트폴리오 구성과 리스크를 거쳐 만듭니다.
     assert "engine.on_bars" not in src, (
-        "개장 전 심의가 엔진을 돌립니다 — 시작 버튼이 곧 주문이 됩니다.")
-    assert "_submit" not in src and "execution" not in src, (
-        "개장 전 심의에서 주문 경로에 닿습니다")
+        "봉 없이 도는 심의가 엔진을 돌립니다 — 시작 버튼이 곧 주문이 됩니다.")
+    assert "_submit" not in src and "execution_model" not in src, (
+        "봉 없이 도는 심의에서 주문 경로에 닿습니다")
