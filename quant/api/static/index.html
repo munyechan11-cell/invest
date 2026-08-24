@@ -438,6 +438,19 @@ select,#mSymbol{min-height:44px}
 :focus-visible{outline:3px solid var(--gold);outline-offset:2px}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .actions .btn{min-width:44px}
+/* 대기 중인 수동 주문. 금색 테두리는 "아직 안 나갔다" 는 뜻으로만 씁니다 —
+   체결된 것과 같은 색이면 목록을 보는 이유가 사라집니다. */
+.pend{display:grid;gap:6px;margin-top:12px}
+.pend .hd{font-family:var(--px);font-size:11px;color:var(--muted)}
+.pend .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  border:2px solid var(--gold-dim);background:#0b0e16;padding:8px 10px;min-height:44px}
+.pend .what{flex:1;min-width:0;font-size:13px;color:var(--ink);
+  word-break:keep-all;overflow-wrap:anywhere}
+.pend .at{font-family:var(--px);font-size:11px;color:var(--faint);flex:0 0 auto}
+.pend .row button{cursor:pointer;font:inherit;font-size:12px;background:none;
+  border:2px solid var(--line);color:var(--muted);padding:4px 10px;min-height:32px}
+.pend .row button:hover:enabled{border-color:var(--gold-dim);color:var(--gold)}
+.pend .row button:disabled{opacity:.5;cursor:default}
 .pins{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
 .pin{font-family:var(--px);font-size:11px;border:2px solid var(--gold-dim);color:var(--gold);
   padding:3px 7px;display:flex;gap:6px;align-items:center}
@@ -956,6 +969,11 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
         <button class="btn" id="mPause">⏸ 자동매매 일시정지</button>
         <button class="btn warn" id="mCloseAll">⚠ 전체 청산</button>
       </div>
+      <!-- 접수는 됐는데 아직 안 나간 주문. 수동 주문은 즉시 발주가 아니라
+           대기열에 들어가는데, 화면에 그 흔적이 없으면 눌렸는지 확인할 길이
+           없어서 사람이 같은 주문을 한 번 더 냅니다. 비어 있으면 아무것도
+           그리지 않습니다 — 빈 상자는 "대기 없음" 이 아니라 고장으로 읽힙니다. -->
+      <div class="pend" id="mPending"></div>
       <div class="pins" id="mPins"></div>
       <div class="msg" id="mMsg">수동 주문은 알파·포트폴리오 계층을 건너뛰지만,
         주문 한도와 하루 한도 같은 브로커 안전장치는 그대로 적용됩니다.
@@ -2145,12 +2163,98 @@ function gauge(label, used, limit, unit) {
     <div class="track"><i style="width:${pctUsed}%"></i></div></div>`;
 }
 
+/* ── 대기 중인 수동 주문 ────────────────────────────────────────────
+   수동 주문은 즉시 발주가 아니라 대기열에 들어가고, 엔진이 다음 봉을 처리할
+   때 나갑니다. 그 사이에 화면이 아무 말도 안 하면 접수됐는지 확인할 방법이
+   없어서 사람은 같은 주문을 한 번 더 냅니다 — 이 목록이 그 원인을 없애는
+   자리입니다.
+
+   여기 뜨는 숫자는 **접수된 값 그대로**입니다. `num()` 으로 다듬지 않습니다:
+   0.0421 로 낸 지정가가 화면에 0.04 로 뜨면 그건 다른 주문이고, 확인하려고
+   보는 화면이 확인을 망칩니다. 모르는 값은 아예 적지 않습니다 — 청산 수량은
+   발주 시점의 보유량으로 정해지므로 지금은 알 수 없고, 처리 시각도 캘린더를
+   봐야 알 수 있어서 말하지 않습니다.
+
+   아래 표시는 `tests/test_manual_pending_is_visible.py` 가 이 자리에서 잘라내
+   실제로 실행합니다. 옮기거나 지우면 그 테스트가 먼저 깨집니다.
+   PENDING BLOCK START */
+const PENDING_WORD = {buy: "매수", sell: "매도", close: "청산", close_all: "전체 청산"};
+
+/* 취소 POST 가 아직 돌고 있는 주문 id.
+
+   취소 한 번에 왕복이 둘입니다 — POST 와 그 뒤의 새로고침. 그동안 버튼이
+   살아 있으면 사람은 한 번 더 누릅니다(화면이 안 바뀌면 다시 누른다는 것이
+   이 목록을 만든 이유 자체입니다). 두 번째 POST 는 첫 번째가 이미 성공시킨
+   주문을 찾지 못해 404 로 돌아오고, 그 응답이 늦게 도착해 초록 성공 문구를
+   빨간 "없는 주문" 으로 덮습니다. 취소는 됐는데 화면은 발주됐다고 말하는
+   셈이고, 그다음 사람이 하는 일은 반대매매입니다.
+
+   버튼이 아니라 id 를 기억하는 이유: 8초 주기 새로고침이 같은 줄을 새 버튼
+   으로 다시 그립니다. 그 버튼도 비활성으로 나와야 창이 닫힙니다. */
+const cancelling = new Set();
+
+function pendingText(r) {
+  const bits = [PENDING_WORD[r.action] || r.action];
+  if (r.symbol) bits.push(r.symbol_name ? `${r.symbol_name} (${r.symbol})` : r.symbol);
+  if (r.quantity != null) bits.push(`${r.quantity}주`);
+  else if (r.notional != null) bits.push(`금액 ${r.notional}`);
+  if (r.limit_price != null) bits.push(`지정가 ${r.limit_price}`);
+  else if (r.action === "buy" || r.action === "sell") bits.push("시장가");
+  return bits.join(" · ");
+}
+
+function pendingRow(r) {
+  const text = pendingText(r);
+  const busy = cancelling.has(r.id);
+  return `<div class="row">
+    <span class="what">${esc(text)}</span>
+    <span class="at">${esc(when(r.requested_at))} 접수</span>
+    <button type="button" data-cancel="${esc(r.id)}" aria-label="${esc(text)} 취소"
+      ${busy ? "disabled" : ""}>${busy ? "취소 중…" : "취소"}</button>
+  </div>`;
+}
+
+function renderPending(rows) {
+  const list = rows || [];
+  if (!list.length) return "";        // 빈 상자는 "없음" 이 아니라 고장으로 읽힙니다
+  return `<div class="hd">대기 중인 수동 주문 ${list.length}건 —
+    다음 봉 처리 시 브로커 안전장치를 거쳐 발주됩니다</div>`
+    + list.map(pendingRow).join("");
+}
+
+async function cancelPending(btn) {
+  const id = btn.dataset.cancel;
+  if (!id || cancelling.has(id)) return;   // 왕복 중의 두 번째 클릭은 보내지 않습니다
+  cancelling.add(id);
+  btn.disabled = true;
+  btn.textContent = "취소 중…";
+  try {
+    await post("/api/manual/cancel/" + encodeURIComponent(id));
+    note("#mMsg", "대기 주문을 취소했습니다 — 발주되지 않습니다", "ok");
+    // 성공한 id 는 집합에 남겨 둡니다. 새로고침이 늦게 와서 같은 줄을 다시
+    // 그리더라도 그 버튼은 눌리면 안 됩니다 — 그 주문은 이미 없습니다.
+    await refreshManual();
+  } catch (e) {
+    // 실패는 다시 누를 수 있어야 합니다. 잠가 두면 취소할 길이 사라집니다.
+    cancelling.delete(id);
+    btn.disabled = false;
+    btn.textContent = "취소";
+    note("#mMsg", "취소 실패: " + e.message, "err");
+  }
+}
+/* PENDING BLOCK END */
+
 async function refreshManual() {
   let data;
   try { data = await api("/api/manual"); } catch { return; }
   paused = !!data.paused;
   $("#mPause").textContent = paused ? "▶ 자동매매 재개" : "⏸ 자동매매 일시정지";
   $("#mPause").className = "btn" + (paused ? " warn" : "");
+
+  $("#mPending").innerHTML = renderPending(data.pending);
+  $("#mPending").querySelectorAll("[data-cancel]").forEach(el => {
+    el.onclick = () => cancelPending(el);
+  });
 
   const pins = Object.entries(data.pinned || {});
   $("#mPins").innerHTML = pins.length

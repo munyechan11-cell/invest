@@ -2035,6 +2035,28 @@ def create_app(config: StrategyConfig | None = None,
         seat.record("manual_resume")
         return {"paused": False}
 
+    @app.post("/api/manual/cancel/{request_id}")
+    async def manual_cancel(request_id: str, seat: Desk = Depends(desk)):
+        """접수만 되고 아직 발주되지 않은 수동 주문을 대기열에서 뺍니다.
+
+        되돌리기가 아닙니다. 엔진이 봉을 처리하면서 대기열을 비우고 나면 그
+        주문은 이미 브로커로 갔고, 그때 남은 방법은 반대매매뿐입니다 — 그건
+        수수료와 세금이 붙는 새 거래라 서버가 대신 판단할 일이 아닙니다.
+        그래서 대기열에 없으면 조용히 성공하는 대신 404 로 **취소된 것이
+        아니다**를 분명히 말합니다.
+
+        404 문구가 "이미 처리됨" 이 아닌 이유: 같은 계정을 두 창에서 열어
+        두면 한쪽에서 취소한 주문을 다른 쪽이 아직 목록에 들고 있습니다.
+        그 클릭에 "이미 처리됐다"고 답하면 발주된 줄 알고 반대매매를 냅니다.
+        여기서는 어느 쪽인지 모르므로 둘 다 말합니다.
+        """
+        trader = seat.require_trader()
+        if not trader.engine.manual.cancel(request_id):
+            raise HTTPException(
+                404, "대기 목록에 없는 주문입니다 — 이미 발주됐거나 취소된 주문입니다")
+        seat.record("manual_cancel", request_id)
+        return {"cancelled": request_id}
+
     @app.post("/api/manual/unpin/{ticker}")
     async def manual_unpin(ticker: str, seat: Desk = Depends(desk)):
         trader = seat.require_trader()
