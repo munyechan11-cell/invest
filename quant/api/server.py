@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import sqlite3
 from contextlib import asynccontextmanager
@@ -59,6 +60,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from starlette.concurrency import run_in_threadpool
 
+from quant.alpha.llm_client import LLMError
 from quant.config.loader import load_config
 from quant.config.schema import StrategyConfig
 from quant.core.events import Event
@@ -115,7 +117,7 @@ class Hub:
             del self.ring[: len(self.ring) - self.ring_size]
         if not self.clients:
             return
-        text = json.dumps(payload, ensure_ascii=False, default=str)
+        text = json.dumps(finite(payload), ensure_ascii=False, default=str)
         for ws in list(self.clients):
             try:
                 await ws.send_text(text)
@@ -614,6 +616,38 @@ def _standalone_context(cfg, symbol, bars):
     return ctx
 
 
+def finite(value):
+    """NaN·무한대를 None 으로 바꾼 사본. 중첩 dict/list 를 따라 들어갑니다.
+
+    JSON 에는 NaN 이 없습니다. FastAPI 의 인코더는 그것을 만나면 응답 전체를
+    500 으로 바꾸고 — 실제로 그랬습니다 — 화면에는 "서버 오류" 만 뜹니다.
+    직렬화를 느슨하게 풀면 이번엔 브라우저의 `JSON.parse` 가 죽습니다.
+
+    NaN 이 나오는 자리는 대개 나눗셈의 분모가 0 인 곳입니다: 거래가 없는데
+    승률, 변동성이 0 인데 샤프. 그 자리의 정직한 값은 0 이 아니라 "없음"
+    이고, 화면은 None 을 "—" 로 그립니다. 0 으로 바꾸면 "계산해 봤더니
+    0" 처럼 보여서 더 나쁩니다.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [finite(v) for v in value]
+    return value
+
+
+class SafeJSONResponse(JSONResponse):
+    """NaN 을 지나보내지 않는 응답.
+
+    한 자리에서 막습니다. 엔드포인트마다 기억해서 거르게 하면 반드시 한 곳을
+    빠뜨리고, 빠뜨린 그곳은 평소에 잘 돌다가 거래가 0건인 날에만 터집니다.
+    """
+
+    def render(self, content) -> bytes:
+        return super().render(finite(content))
+
+
 def resolve_template(name: str) -> Path:
     catalog = strategy_catalog()
     # 경로처럼 생긴 것이 와도 이름만 뽑아 씁니다. `../../etc/passwd` 는
@@ -950,7 +984,22 @@ class UserDesk(Desk):
             # 사람마다 다시 겁니다 — 남이 확인했다고 내 실거래가 열리지 않습니다.
             assert_live_start_allowed(cfg, req.confirm)
         cfg = _with_mode(cfg, mode)
-        return await self.registry.start(self.user.id, cfg, on_event=self.hub.publish)
+        try:
+            return await self.registry.start(self.user.id, cfg,
+                                             on_event=self.hub.publish)
+        except LLMError as exc:
+            # 봇을 세우다 LLM 클라이언트에서 죽었습니다. 그대로 500 을 내면
+            # 화면에는 "서버 오류 — 로그를 확인하세요" 만 뜨고, 사용자는 무엇을
+            # 해야 하는지 알 방법이 없습니다. 실제로 이것 때문에 "왜 안 되는지
+            # 모르겠다" 가 반복됐습니다.
+            log.warning("봇 시작 실패(LLM): %s", exc)
+            has_desk = any(m.type in ("desk", "council") for m in cfg.alpha)
+            raise HTTPException(
+                503,
+                f"'{cfg.name}' 은 AI 데스크를 쓰는 전략인데 쓸 수 있는 LLM 키가 "
+                f"없습니다. 마이페이지에서 본인 Gemini 키를 넣거나, 데스크가 없는 "
+                f"전략을 고르세요."
+                if has_desk else f"모델을 준비하지 못했습니다: {exc}") from None
 
     async def stop(self) -> dict:
         return await self.registry.stop(self.user.id)
@@ -1074,7 +1123,8 @@ def create_app(config: StrategyConfig | None = None,
         if accounts is not None:
             accounts.close()
 
-    app = FastAPI(title="Quant Engine", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(title="Quant Engine", version="1.0.0", lifespan=lifespan,
+                  default_response_class=SafeJSONResponse)
     app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(
         CORSMiddleware,
@@ -1117,15 +1167,30 @@ def create_app(config: StrategyConfig | None = None,
     # ── read-only ────────────────────────────────────────────────────────
     @app.get("/api/health")
     async def health(seat: Desk | None = Depends(maybe_desk)):
-        return {
+        running = bool(seat is not None and seat.running())
+        out = {
             "ok": True,
             "version": "1.0.0",
             "uptime_s": round((datetime.now(UTC) - state.started_at).total_seconds(), 1),
             # 자기 봇만 봅니다. 로그인하지 않았으면 볼 봇이 없습니다.
-            "trader_running": bool(seat is not None and seat.running()),
+            "trader_running": running,
             "authenticated": registry is not None,
             "multiuser": registry is not None,
         }
+        # 봇이 **죽었으면** 왜 죽었는지 함께 보냅니다. 이게 없으면 화면은
+        # "시작됨" 을 띄운 뒤 조용히 정지 상태로 돌아가고, 사용자는 봇이 돌고
+        # 있다고 믿은 채로 기다립니다. 실제로 그랬습니다 — 워밍업에서 시세를
+        # 못 받아 죽은 봇이 화면에서는 그냥 "오프라인" 이었습니다.
+        if seat is not None and not running:
+            try:
+                st = seat.status()
+            except Exception:                    # noqa: BLE001 — 상태 조회 실패로
+                st = {}                          # health 가 죽으면 안 됩니다
+            if st.get("error") or st.get("stopped_at"):
+                out["last_error"] = st.get("error")
+                out["last_strategy"] = st.get("strategy")
+                out["stopped_at"] = st.get("stopped_at")
+        return out
 
     @app.get("/api/config")
     async def get_config(seat: Desk = Depends(desk)):
@@ -1975,7 +2040,7 @@ def create_app(config: StrategyConfig | None = None,
         hub.clients.add(ws)
         try:
             for item in hub.recent(50):
-                await ws.send_text(json.dumps(item, default=str))
+                await ws.send_text(json.dumps(finite(item), default=str))
             while True:
                 await ws.receive_text()          # keep-alive / client pings
         except WebSocketDisconnect:

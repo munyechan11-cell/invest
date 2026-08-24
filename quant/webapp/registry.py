@@ -705,7 +705,13 @@ class UserRegistry:
             return
         # 어댑터 예외 메시지에는 값이 아니라 이름만 들어갑니다(예: "KIS brokerage
         # needs KIS_APP_KEY"). 그래도 길이는 잘라서 남깁니다.
-        bot.error = f"{type(exc).__name__}: {str(exc)[:300]}"
+        #
+        # 이미 사람에게 할 말로 쓰인 메시지에는 예외 이름을 붙이지 않습니다.
+        # "RuntimeError: 시세를 받지 못해…" 는 앞의 여덟 글자가 읽는 사람을
+        # 멈추게 하고, 그 자리에서 알 수 있는 것은 아무것도 없습니다.
+        text = str(exc)[:300]
+        speaks_korean = any("\uac00" <= ch <= "\ud7a3" for ch in text[:40])
+        bot.error = text if speaks_korean else f"{type(exc).__name__}: {text}"
         log.error("사용자 %s 봇 중단: %s", uid, bot.error)
         self._note(uid, "bot_failed", type(exc).__name__)
 

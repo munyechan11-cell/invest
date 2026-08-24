@@ -21,7 +21,7 @@ def test_the_tour_exists_in_the_markup():
 
 
 @pytest.mark.parametrize("anchor", ["#setupBtn", "#runner", "#analystSeats",
-                                    ".deck-r", "#meBtn"])
+                                    ".deck-r", "#pageTabs"])
 def test_every_step_points_at_something_that_exists(anchor):
     """안내가 가리키는 곳이 없으면 링만 사라지고 설명은 남습니다 — 최악의 조합."""
     assert anchor in SCRIPT, f"{anchor} 단계가 사라졌습니다"

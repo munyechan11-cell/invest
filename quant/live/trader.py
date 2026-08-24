@@ -131,7 +131,14 @@ class LiveTrader:
             self._seen[sym.key] = bars[-1].ts
             usable.append(sym)
         if not usable:
-            raise RuntimeError("no symbol produced usable warm-up data")
+            # 사용자가 읽는 문장입니다. 영어 한 줄이면 "왜 안 되는지 모르겠다"
+            # 로 끝나고, 실제로 그렇게 끝났습니다.
+            names = ", ".join(s.ticker for s in symbols[:6])
+            raise RuntimeError(
+                f"시세를 받지 못해 시작할 수 없습니다 ({names}). "
+                f"증권사 키가 맞는지, 그 계좌로 시세 조회 권한이 있는지 "
+                f"확인하세요. 장 시간이 아니거나 거래소가 응답하지 않을 때도 "
+                f"이렇게 됩니다 — 잠시 후 다시 시도해 보세요.")
         self.engine.set_universe(usable)
 
         if bench is not None and bench.key not in {s.key for s in usable}:

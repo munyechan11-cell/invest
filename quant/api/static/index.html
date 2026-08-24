@@ -84,6 +84,51 @@ svg,canvas{image-rendering:pixelated;shape-rendering:crispEdges}
 .askout.veto{border-color:var(--red)}
 .askout.veto .act{color:#ff8a83}
 
+/* ── 화면 나누기 ──────────────────────────────────────────────────────
+   매매 / 내 계좌 / 마이페이지. 한 기둥에 전부 쌓아 두면 매매하러 온 사람이
+   잔고와 설정을 스크롤로 통과해야 합니다. 로그인 전후가 다른 화면이듯,
+   하는 일이 다르면 화면도 다릅니다. */
+.page{display:none}
+.page[hidden]{display:none}
+body[data-page="trade"] #pageTrade,
+body[data-page="account"] #pageAccount,
+body[data-page="me"] #pageMe{display:block}
+/* 마이페이지는 넓게 씁니다 — 옆에 시세가 붙어 있을 이유가 없습니다. */
+body[data-page="me"] .deck{grid-template-columns:minmax(0,1fr)}
+body[data-page="me"] .deck-r,
+body[data-page="account"] .deck-r{display:none}
+body[data-page="me"] .viewtabs,
+body[data-page="account"] .viewtabs{display:none}
+
+.pagetabs{display:flex;gap:0;border:2px solid var(--line);flex:0 0 auto}
+.pagetabs button{font-family:var(--px);font-size:11px;min-height:40px;padding:0 13px;
+  background:transparent;border:0;border-right:1px solid var(--rule);
+  color:var(--dim);cursor:pointer}
+.pagetabs button:last-child{border-right:0}
+.pagetabs button[aria-selected="true"]{color:var(--gold);background:rgba(240,192,64,.10)}
+@media(max-width:640px){.pagetabs button{padding:0 10px;font-size:11px}}
+
+/* 잔고 미니 표시 — 어느 화면에 있든 보입니다. */
+.mini{display:inline-flex;gap:8px;align-items:baseline;flex:0 0 auto;
+  border:1px solid var(--rule);padding:4px 9px;background:#0b0e16}
+.mini b{font-family:var(--mono);font-size:14px;font-weight:700;
+  font-variant-numeric:tabular-nums;color:var(--ink)}
+.mini i{font-style:normal;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.mini i.up{color:var(--up)} .mini i.down{color:var(--down)}
+@media(max-width:520px){.mini b{font-size:12px}.mini i{font-size:11px}}
+
+.backrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+  padding:4px 0 14px}
+.backrow .dim{font-size:12px;line-height:1.6}
+
+/* 자동매매가 돌기 시작하면 설정 부분을 접습니다 — 돌고 있는 동안 가장
+   중요한 것은 아래 심의이지, 이미 고른 전략의 설명이 아닙니다. */
+body.running #runner .stbrief,
+body.running #runner .runbar select{display:none}
+#runner .runsum{display:none;font-size:13px;color:var(--dim);line-height:1.7;
+  margin-top:10px}
+body.running #runner .runsum{display:block}
+
 /* ── 전략 설명 ────────────────────────────────────────────────────────
    드롭다운의 이름만으로는 그 전략이 무엇을 하는지 알 수 없습니다. 고른
    즉시 아래에 한국어로 펼칩니다 — 시작 버튼을 누르기 전에 읽어야 하는 것. */
@@ -762,10 +807,18 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
     <span class="conn" id="conn" role="img" aria-label="연결 상태 확인 중"></span>
     <span class="brand"><i aria-hidden="true">◆</i> QUANT TRADING FLOOR <i aria-hidden="true">◆</i></span>
     <span class="mode backtest px" id="mode">OFFLINE</span>
+    <!-- 잔고와 오늘 손익은 어느 화면에 있든 보여야 합니다. 계좌 탭에 있는
+         숫자를 보려고 탭을 옮기면, 매매하다 말고 자리를 뜨게 됩니다. -->
+    <span class="mini" id="miniAcct" hidden>
+      <b id="miniEquity">—</b><i id="miniChange">—</i></span>
     <span class="grow"></span>
+    <nav class="pagetabs" id="pageTabs" role="tablist">
+      <button role="tab" data-page="trade" aria-selected="true">매매</button>
+      <button role="tab" data-page="account" aria-selected="false">내 계좌</button>
+      <button role="tab" data-page="me" aria-selected="false">마이페이지</button>
+    </nav>
     <button class="btn" id="setupBtn">⚙ 설정</button>
-    <button class="btn" id="demoBtn">▶ 데모 재생</button>
-    <button class="btn" id="meBtn" aria-expanded="false">◉ 마이페이지</button>
+    <button class="btn" id="demoBtn">▶ 데모</button>
     <button class="btn" id="tourBtn" title="첫 화면 안내를 다시 봅니다">? 안내</button>
     <span class="tab on px" id="strategy">—</span>
   </div>
@@ -779,7 +832,9 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
   <div class="deck">
   <div class="deck-l">
 
-  <!-- 봇 -->
+  <div class="page" id="pageTrade">
+
+  <!-- 자동매매 — 종목까지 봇이 고릅니다. -->
   <section class="panel" id="runner">
     <span class="plate"><span class="d" aria-hidden="true">◆</span> 자동매매 <span class="d" aria-hidden="true">◆</span></span>
     <div class="body">
@@ -798,52 +853,62 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
           <div id="stDetail"></div>
         </details>
       </div>
+      <div class="runsum" id="runSum"></div>
       <div class="msg" id="runMsg"></div>
     </div>
   </section>
 
-  <!-- HUD -->
-  <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 계좌 <span class="d" aria-hidden="true">◆</span></span>
-    <div class="hud">
-      <div class="hud-l">
-        <div class="sym" id="hudSym">PORTFOLIO</div>
-        <div class="big" id="hudEquity">—</div>
-        <div class="chg" id="hudChange">—</div>
-        <div class="kpis" id="hudKpis"></div>
-      </div>
-      <div class="hud-r"><canvas id="equity"></canvas></div>
-    </div>
-  </section>
 
-  <!-- positions -->
-  <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 보유 종목 <span class="d" aria-hidden="true">◆</span></span>
-    <div class="body scroll"><table id="positions"><tbody></tbody></table></div>
-  </section>
-
-  <!-- 기간별 실현손익. 봇을 껐다 켜도 이어집니다 — 재시작마다 0 으로
-       돌아가는 숫자는 수익이 아니라 실행 시간입니다. -->
-  <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 실현 수익 <span class="d" aria-hidden="true">◆</span></span>
+  <!-- ── 매매 (기본 화면) ────────────────────────────────────────────
+       위에서부터: 자동매매 → 수동매매 → 데스크 심의 → 이벤트.
+       계좌·보유·수익은 '내 계좌' 탭으로 옮겼습니다 — 매매하러 온 사람이
+       잔고를 스크롤로 통과해야 할 이유가 없습니다. -->
+  <!-- 수동 매매 — 내가 고른 종목을 내가 물어보고 내가 냅니다.
+       자동매매는 봇이 종목까지 고르고, 여기는 종목을 내가 고릅니다. -->
+  <section class="panel" id="manualPanel">
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 수동 매매 <span class="d" aria-hidden="true">◆</span></span>
     <div class="body">
-      <div class="pnlgrid" id="pnlGrid"></div>
-      <div class="msg">확정된 손익만 셉니다 — 아직 들고 있는 종목의 평가손익은
-        위 계좌 칸에 있습니다. 수수료와 세금을 뺀 값입니다.</div>
+      <p class="msg" style="margin-top:0">종목을 직접 찾아 <b>16명에게 물어본 뒤</b>
+        사고팝니다. 자동매매는 종목까지 봇이 고르고, 여기는 내가 고릅니다.
+        자동매매가 돌고 있어도 여기서 개입할 수 있습니다.</p>
+
+      <!-- 검색 -->
+      <div class="pwform" style="margin-top:12px">
+        <div class="fld"><label for="lkQ">종목 찾기</label>
+          <input id="lkQ" type="search" autocomplete="off"
+                 placeholder="종목코드 6자리 또는 이름"></div>
+        <div style="align-self:end"><button class="btn tap" id="lkGo">찾기</button></div>
+      </div>
+      <div class="lkres" id="lkRes"></div>
+      <div class="msg" id="lkMsg" hidden></div>
+
+      <div class="manual" style="margin-top:14px">
+        <div class="fld"><label for="mSymbol">종목</label>
+          <select id="mSymbol"><option value="">— 실행 중인 봇 없음 —</option></select></div>
+        <div class="fld"><label for="mQty">수량 (비우면 금액 사용)</label>
+          <input id="mQty" type="number" step="any" placeholder="주"></div>
+        <div class="fld"><label for="mNotional">금액</label>
+          <input id="mNotional" type="number" step="any" placeholder="예: 500000"></div>
+        <div class="fld"><label for="mLimit">지정가 (비우면 시장가)</label>
+          <input id="mLimit" type="number" step="any" placeholder="시장가"></div>
+      </div>
+      <div class="actions">
+        <button class="btn buy"  id="mBuy">매수</button>
+        <button class="btn sell" id="mSell">매도</button>
+        <button class="btn sell" id="mClose">이 종목 청산</button>
+        <span style="flex:1"></span>
+        <button class="btn" id="mPause">⏸ 자동매매 일시정지</button>
+        <button class="btn warn" id="mCloseAll">⚠ 전체 청산</button>
+      </div>
+      <div class="pins" id="mPins"></div>
+      <div class="msg" id="mMsg">수동 주문은 알파·포트폴리오 계층을 건너뛰지만,
+        주문 한도와 하루 한도 같은 브로커 안전장치는 그대로 적용됩니다.
+        수동 매수한 종목은 전략이 되팔지 않도록 자동으로 고정(pin)됩니다.</div>
+
+      <div style="margin-top:14px" id="mBudget"></div>
     </div>
   </section>
 
-  <!-- 매매 기록 -->
-  <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 매매 기록 <span class="d" aria-hidden="true">◆</span></span>
-    <div class="body">
-      <div class="scroll"><table class="tradelog"><tbody id="tradeLog"></tbody></table></div>
-      <div class="row" style="margin-top:10px">
-        <button class="btn" id="tradeMore" hidden>더 보기</button>
-        <span class="dim" id="tradeCount"></span>
-      </div>
-    </div>
-  </section>
 
   <!-- 데스크 — 로그인 전 데모에서도 이 묶음만 보여줍니다.
        #roomsHome 은 데모가 끝나고 되돌아올 자리입니다. -->
@@ -891,9 +956,71 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
   </section>
   </div></div><!-- /#rooms /#roomsHome -->
 
+  <!-- feed -->
+  <section class="panel">
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 이벤트 로그 <span class="d" aria-hidden="true">◆</span></span>
+    <div class="body"><div class="feed" id="feed"></div></div>
+  </section>
+
+  </div><!-- /page-trade -->
+
+  <!-- ── 내 계좌 ──────────────────────────────────────────────────── -->
+  <div class="page" id="pageAccount" hidden>
+  <!-- HUD -->
+  <section class="panel">
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 계좌 <span class="d" aria-hidden="true">◆</span></span>
+    <div class="hud">
+      <div class="hud-l">
+        <div class="sym" id="hudSym">PORTFOLIO</div>
+        <div class="big" id="hudEquity">—</div>
+        <div class="chg" id="hudChange">—</div>
+        <div class="kpis" id="hudKpis"></div>
+      </div>
+      <div class="hud-r"><canvas id="equity"></canvas></div>
+    </div>
+  </section>
+
+  <!-- positions -->
+  <section class="panel">
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 보유 종목 <span class="d" aria-hidden="true">◆</span></span>
+    <div class="body scroll"><table id="positions"><tbody></tbody></table></div>
+  </section>
+
+  <!-- 기간별 실현손익. 봇을 껐다 켜도 이어집니다 — 재시작마다 0 으로
+       돌아가는 숫자는 수익이 아니라 실행 시간입니다. -->
+  <section class="panel">
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 실현 수익 <span class="d" aria-hidden="true">◆</span></span>
+    <div class="body">
+      <div class="pnlgrid" id="pnlGrid"></div>
+      <div class="msg">확정된 손익만 셉니다 — 아직 들고 있는 종목의 평가손익은
+        위 계좌 칸에 있습니다. 수수료와 세금을 뺀 값입니다.</div>
+    </div>
+  </section>
+
+  <!-- 매매 기록 -->
+  <section class="panel">
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 매매 기록 <span class="d" aria-hidden="true">◆</span></span>
+    <div class="body">
+      <div class="scroll"><table class="tradelog"><tbody id="tradeLog"></tbody></table></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="tradeMore" hidden>더 보기</button>
+        <span class="dim" id="tradeCount"></span>
+      </div>
+    </div>
+  </section>
+
+  </div><!-- /page-account -->
+
+  <!-- ── 마이페이지 ───────────────────────────────────────────────── -->
+  <div class="page" id="pageMe" hidden>
+    <div class="backrow">
+      <button class="btn tap" id="meBack">← 돌아가기</button>
+      <span class="dim">설정과 요금제는 여기 있습니다. 매매 화면으로 돌아가면
+        하던 것이 그대로 있습니다.</span>
+    </div>
   <!-- 마이페이지 — 버튼을 눌렀을 때만 펼칩니다. 왼쪽에 늘 세워 두면
        심의를 읽으러 온 사람이 설정 화면을 스크롤로 통과해야 합니다. -->
-  <div id="mypage" hidden>
+  <div id="mypage">
   <section class="panel" id="planPanel">
     <span class="plate"><span class="d" aria-hidden="true">◆</span> 요금제 <span class="d" aria-hidden="true">◆</span></span>
     <div class="body">
@@ -978,58 +1105,7 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
 
   </div><!-- /mypage -->
 
-  <!-- 수동 매매 — 내가 고른 종목을 내가 물어보고 내가 냅니다.
-       자동매매는 봇이 종목까지 고르고, 여기는 종목을 내가 고릅니다. -->
-  <section class="panel" id="manualPanel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 수동 매매 <span class="d" aria-hidden="true">◆</span></span>
-    <div class="body">
-      <p class="msg" style="margin-top:0">종목을 직접 찾아 <b>16명에게 물어본 뒤</b>
-        사고팝니다. 자동매매는 종목까지 봇이 고르고, 여기는 내가 고릅니다.
-        자동매매가 돌고 있어도 여기서 개입할 수 있습니다.</p>
-
-      <!-- 검색 -->
-      <div class="pwform" style="margin-top:12px">
-        <div class="fld"><label for="lkQ">종목 찾기</label>
-          <input id="lkQ" type="search" autocomplete="off"
-                 placeholder="종목코드 6자리 또는 이름"></div>
-        <div style="align-self:end"><button class="btn tap" id="lkGo">찾기</button></div>
-      </div>
-      <div class="lkres" id="lkRes"></div>
-      <div class="msg" id="lkMsg" hidden></div>
-
-      <div class="manual" style="margin-top:14px">
-        <div class="fld"><label for="mSymbol">종목</label>
-          <select id="mSymbol"><option value="">— 실행 중인 봇 없음 —</option></select></div>
-        <div class="fld"><label for="mQty">수량 (비우면 금액 사용)</label>
-          <input id="mQty" type="number" step="any" placeholder="주"></div>
-        <div class="fld"><label for="mNotional">금액</label>
-          <input id="mNotional" type="number" step="any" placeholder="예: 500000"></div>
-        <div class="fld"><label for="mLimit">지정가 (비우면 시장가)</label>
-          <input id="mLimit" type="number" step="any" placeholder="시장가"></div>
-      </div>
-      <div class="actions">
-        <button class="btn buy"  id="mBuy">매수</button>
-        <button class="btn sell" id="mSell">매도</button>
-        <button class="btn sell" id="mClose">이 종목 청산</button>
-        <span style="flex:1"></span>
-        <button class="btn" id="mPause">⏸ 자동매매 일시정지</button>
-        <button class="btn warn" id="mCloseAll">⚠ 전체 청산</button>
-      </div>
-      <div class="pins" id="mPins"></div>
-      <div class="msg" id="mMsg">수동 주문은 알파·포트폴리오 계층을 건너뛰지만,
-        주문 한도와 하루 한도 같은 브로커 안전장치는 그대로 적용됩니다.
-        수동 매수한 종목은 전략이 되팔지 않도록 자동으로 고정(pin)됩니다.</div>
-
-      <div style="margin-top:14px" id="mBudget"></div>
-    </div>
-  </section>
-
-
-  <!-- feed -->
-  <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 이벤트 로그 <span class="d" aria-hidden="true">◆</span></span>
-    <div class="body"><div class="feed" id="feed"></div></div>
-  </section>
+  </div><!-- /page-me -->
 
   </div><!-- /deck-l -->
 
@@ -1456,7 +1532,13 @@ function renderVerdict(d, demo) {
 async function api(path) {
   const r = await fetch(path, {credentials: "same-origin"});
   if (r.status === 401) { signedOut(); throw new Error("로그인이 필요합니다"); }
-  if (!r.ok) throw new Error(r.status + " " + path);
+  if (!r.ok) {
+    // 서버는 무엇이 잘못됐는지 한국어로 말해 줍니다. 그걸 버리고 "404
+    // /api/candles" 만 보여주면, 사용자는 자기가 무엇을 해야 하는지 알 수
+    // 없습니다 — 주소는 사용자가 고칠 수 있는 것이 아닙니다.
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.detail || body.error || `${r.status} ${path}`);
+  }
   return r.json();
 }
 
@@ -1490,6 +1572,9 @@ function drawEquity() {
 
 function renderHud(p) {
   if (!p) return;
+  // 잔고는 어느 화면에 있든 보여야 합니다 — 계좌 탭에 있는 숫자를 보려고
+  // 탭을 옮기면 매매하다 말고 자리를 뜨게 됩니다.
+  renderMini({equity: p.equity, change_pct: p.total_return_pct});
   $("#hudEquity").textContent = num(p.equity, 0) + (p.currency === "KRW" ? "" : "");
   const ch = $("#hudChange");
   ch.textContent = pct(p.total_return_pct);
@@ -1590,6 +1675,13 @@ async function refresh() {
     // 버튼이 실제 상태를 따라가야 합니다 — 봇이 스스로 멈췄는데 화면에
     // "정지" 만 서 있으면 사용자는 돌고 있다고 믿습니다.
     if (typeof runnerState === "function") runnerState(!!h.trader_running);
+    // 죽었으면 그 사실을 말합니다. 조용히 정지 상태로 돌아가면 사용자는
+    // 봇이 돌고 있다고 믿은 채로 기다립니다.
+    if (!h.trader_running && h.last_error && h.last_error !== lastBotError) {
+      lastBotError = h.last_error;
+      note("#runMsg", "봇이 멈췄습니다 — " + h.last_error, "err");
+    }
+    if (h.trader_running) lastBotError = "";
   } catch { setConn(false); }
 
   try {
@@ -2196,15 +2288,7 @@ $("#setupClose").onclick = () => {
   // 그 사이에 빈 화면을 혼자 헤매게 됩니다.
   maybeTour(me);
 };
-$("#meBtn").onclick = () => {
-  const page = $("#mypage");
-  page.hidden = !page.hidden;
-  $("#meBtn").setAttribute("aria-expanded", String(!page.hidden));
-  if (!page.hidden) {
-    loadPlan();
-    page.scrollIntoView({behavior: "smooth", block: "start"});
-  }
-};
+
 
 /* 성향 진단은 건너뛸 수 있습니다. 건너뛰면 서버가 진단 전에 쓰는 중립 프로필로
    그대로 돌고, 마이페이지에서 언제든 다시 할 수 있습니다. */
@@ -2353,6 +2437,8 @@ $("#logoutBtn").onclick = async () => {
 let me = null;
 let started = false;
 let timers = [];
+//: 같은 실패를 폴링마다 다시 띄우지 않기 위한 표시.
+let lastBotError = "";
 
 function showTab(which) {
   const login = which !== "register";
@@ -2521,6 +2607,7 @@ $("#registerForm").addEventListener("submit", async ev => {
    나가면 남의 화면을 잠깐 보여주는 게 아니라, 401 을 뿌리며 로그인 화면을
    깜빡이게 만듭니다. */
 function start() {
+  showPage("trade");
   loadStrategies();
   loadPlan();
   loadPnl();
@@ -2939,9 +3026,62 @@ $("#lkGo").onclick = lookup;
 $("#lkQ").onkeydown = ev => { if (ev.key === "Enter") { ev.preventDefault(); lookup(); } };
 $("#mAsk").onclick = askDesk;
 
+/* ── 화면 나누기 ───────────────────────────────────────────────────
+   매매 / 내 계좌 / 마이페이지. 한 기둥에 전부 쌓으면 매매하러 온 사람이
+   잔고와 설정을 스크롤로 통과해야 합니다. */
+function showPage(name) {
+  const known = ["trade", "account", "me"];
+  const page = known.includes(name) ? name : "trade";
+  document.body.dataset.page = page;
+  $("#pageTabs").querySelectorAll("[data-page]").forEach(b =>
+    b.setAttribute("aria-selected", String(b.dataset.page === page)));
+  ["Trade", "Account", "Me"].forEach(id => {
+    const el = document.getElementById("page" + id);
+    if (el) el.hidden = id.toLowerCase() !== page;
+  });
+  scrollTo({top: 0, behavior: "instant"});
+  // 계좌 화면은 열릴 때 숫자를 새로 받아야 합니다 — 몇 분 전 값을 보여주면
+  // 그게 지금 잔고인지 알 수 없습니다.
+  if (page === "account") { loadPnl(); loadTradeLog(); }
+  if (page === "me") loadPlan();
+  // 차트 캔버스는 숨어 있는 동안 폭이 0 입니다. 돌아오면 다시 재야 합니다.
+  if (page === "trade" && chart) requestAnimationFrame(() => chart.resize());
+}
+
+$("#pageTabs").querySelectorAll("[data-page]").forEach(b => {
+  b.onclick = () => showPage(b.dataset.page);
+});
+$("#meBack").onclick = () => showPage("trade");
+
+/* 잔고와 오늘 손익은 어느 화면에 있든 보입니다. */
+function renderMini(payload) {
+  const box = $("#miniAcct");
+  if (!payload || !(payload.equity > 0)) { box.hidden = true; return; }
+  box.hidden = false;
+  $("#miniEquity").textContent = num(payload.equity);
+  const el = $("#miniChange");
+  const pc = payload.change_pct;
+  el.className = pc > 0 ? "up" : pc < 0 ? "down" : "";
+  el.textContent = pc == null || !isFinite(pc) ? "—"
+    : (pc >= 0 ? "+" : "") + Number(pc).toFixed(2) + "%";
+}
+
+/* 봇이 돌면 설정 부분을 접고 한 줄로 줄입니다 — 돌고 있는 동안 중요한 것은
+   아래 심의이지, 이미 고른 전략의 설명이 아닙니다. */
+function renderRunSummary(running) {
+  document.body.classList.toggle("running", !!running);
+  const st = strategies.find(x => x.id === chartStrategy());
+  $("#runSum").textContent = running && st
+    ? `${st.name} · ${st.mode_ko || st.mode} · ${st.broker_ko || st.broker} — 돌고 있습니다.`
+    : "";
+}
+
 function runnerState(running) {
   document.getElementById("runStart").hidden = running;
   document.getElementById("runStop").hidden = !running;
+  // 돌기 시작하면 전략 설명과 선택기를 접습니다 — 이미 고른 것을 계속
+  // 펼쳐 두면 아래 심의가 화면 밖으로 밀립니다.
+  renderRunSummary(running);
 }
 
 document.getElementById("runStart").onclick = async () => {
@@ -3021,8 +3161,9 @@ const TOUR = [
    text: "오른쪽에 봉과 현재가가 뜹니다. 내 진입가는 금색 점선, 봇이 낸 체결은 봉 " +
          "위의 점입니다. 차트를 누르면 그 가격이 지정가로 들어가서, 보면서 바로 " +
          "사고팔 수 있습니다."},
-  {el: "#meBtn", title: "5 · 마이페이지", loose: true,
-   text: "하루 거래 한도, 투자 성향, 요금제, 연동 해제가 여기 있습니다. 하루 한도는 " +
+  {el: "#pageTabs", title: "5 · 화면 나누기", loose: true,
+   text: "화면은 셋으로 나뉩니다. 매매는 여기, 잔고와 매매 기록은 '내 계좌', " +
+         "하루 한도·투자 성향·요금제·연동은 '마이페이지' 입니다. 하루 한도는 " +
          "전략이 고장났을 때를 가정한 마지막 방어선이라, 실거래 전에 꼭 채우세요."},
 ];
 
@@ -3137,7 +3278,7 @@ function tourEnd() {
   tourInerted.forEach(el => { el.inert = false; });
   tourInerted = [];
   const back = [tourReturnFocus, document.getElementById("tourBtn"),
-                document.getElementById("meBtn")]
+                document.getElementById("pageTabs")]
     .find(el => el && el.focus && el.getClientRects().length);
   if (back) back.focus();
   tourReturnFocus = null;
