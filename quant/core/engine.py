@@ -369,4 +369,7 @@ def _trade_dict(t: ClosedTrade) -> dict:
         "exit_ts": t.exit_ts.isoformat(), "duration_hours": round(
             t.duration.total_seconds() / 3600, 2),
         "exit_tag": t.exit_tag,
+        # 분할매도는 손익을 확정하지만 포지션을 닫지는 않습니다. 이걸 구분하지
+        # 않으면 "거래 12건" 이 실제로는 진입 셋을 나눠 판 것이 됩니다.
+        "closes_position": t.closes_position,
     }

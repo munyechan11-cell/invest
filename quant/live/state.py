@@ -83,7 +83,8 @@ CREATE TABLE IF NOT EXISTS trades (
   symbol TEXT NOT NULL, side TEXT NOT NULL,
   quantity TEXT NOT NULL, entry_price REAL, exit_price REAL,
   entry_ts TEXT, exit_ts TEXT, pnl REAL, pnl_pct REAL, fees REAL,
-  exit_tag TEXT
+  exit_tag TEXT,
+  closes_position INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS known_symbols (
   ticker TEXT NOT NULL, venue TEXT NOT NULL DEFAULT '',
@@ -202,6 +203,13 @@ class StateStore:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        # 이 컬럼보다 먼저 만들어진 상태 DB 에도 붙입니다. 없으면 재배포 뒤
+        # 첫 체결에서 INSERT 가 죽고, 그 예외가 관측자 안에서 터져 봇이
+        # 체결을 못 적는 채로 계속 돕니다.
+        have = {r["name"] for r in self.conn.execute("PRAGMA table_info(trades)")}
+        if "closes_position" not in have:
+            self.conn.execute(
+                "ALTER TABLE trades ADD COLUMN closes_position INTEGER NOT NULL DEFAULT 1")
         self.conn.commit()
         self.run_id: int | None = None
         self._owns = False
@@ -406,14 +414,38 @@ class StateStore:
         self.conn.commit()
 
     def record_trade(self, trade: ClosedTrade) -> None:
+        self.record_closed_trade({
+            "symbol": trade.symbol.ticker, "side": trade.side.value,
+            "quantity": float(trade.quantity), "entry_price": trade.entry_price,
+            "exit_price": trade.exit_price, "entry_ts": trade.entry_ts.isoformat(),
+            "exit_ts": trade.exit_ts.isoformat(), "pnl": trade.pnl,
+            "pnl_pct": trade.pnl_pct * 100, "fees": trade.fees,
+            "exit_tag": trade.exit_tag, "closes_position": trade.closes_position,
+        })
+
+    def record_closed_trade(self, payload: dict) -> None:
+        """확정된 손익 한 건을 남깁니다.
+
+        이벤트 버스가 넘겨주는 dict 를 그대로 받습니다. `ClosedTrade` 를
+        되살리려면 Symbol 객체가 필요한데, 관측자가 가진 것은 payload 뿐입니다.
+
+        이 함수가 없어서 `trades` 테이블이 **한 줄도 채워지지 않았습니다** —
+        `record_trade` 는 있었지만 아무도 부르지 않았고, 매매 기록과 기간별
+        실현손익이 영구히 비어 있었습니다. 화면은 "아직 완료된 매매가
+        없습니다" 를 계속 보여줬고, 그게 사실처럼 보여서 아무도 이상하게
+        여기지 않았습니다.
+        """
         self._claim()
         self.conn.execute(
-            "INSERT INTO trades(run_id, symbol, side, quantity, entry_price, exit_price, "
-            "entry_ts, exit_ts, pnl, pnl_pct, fees, exit_tag) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-            (self.run_id, trade.symbol.ticker, trade.side.value, str(trade.quantity),
-             trade.entry_price, trade.exit_price, trade.entry_ts.isoformat(),
-             trade.exit_ts.isoformat(), trade.pnl, trade.pnl_pct, trade.fees,
-             trade.exit_tag),
+            "INSERT INTO trades(run_id, symbol, side, quantity, entry_price, "
+            "exit_price, entry_ts, exit_ts, pnl, pnl_pct, fees, exit_tag, "
+            "closes_position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (self.run_id, str(payload.get("symbol", "")), str(payload.get("side", "")),
+             str(payload.get("quantity", 0)), payload.get("entry_price"),
+             payload.get("exit_price"), payload.get("entry_ts"),
+             payload.get("exit_ts"), payload.get("pnl"), payload.get("pnl_pct"),
+             payload.get("fees"), payload.get("exit_tag", ""),
+             1 if payload.get("closes_position", True) else 0),
         )
         self.conn.commit()
 
@@ -981,7 +1013,8 @@ class StateStore:
         return [dict(r) for r in rows]
 
     def pnl_by_period(self, now: datetime | None = None,
-                      strategy: str | None = None) -> dict:
+                      strategy: str | None = None,
+                      mode: str | None = None) -> dict:
         """오늘·이번주·이번달·올해 실현손익.
 
         **run 을 가로질러 셉니다.** 봇을 멈추고 다시 켜면 새 run 이 열리는데,
@@ -996,6 +1029,11 @@ class StateStore:
         시작 주로 자르면 주말 하나를 사이에 두고 같은 주의 거래가 갈립니다.
 
         `strategy` 를 주면 그 전략의 run 만 셉니다. 안 주면 이 계정의 전부.
+
+        `mode` 는 모의(dry_run)와 실거래(live)를 가릅니다. **섞으면 안 됩니다** —
+        모의로 번 돈은 실제로 번 돈이 아닌데, 한 숫자로 합치면 화면은 그것을
+        "실현 수익" 이라고 부릅니다. 모의에서 크게 벌고 실거래에서 잃은 사람이
+        자기가 벌고 있다고 믿게 됩니다.
         """
         now = (now or datetime.now(UTC)).astimezone(UTC)
         kst = now + _KST_OFFSET
@@ -1007,10 +1045,15 @@ class StateStore:
             "year": day.replace(month=1, day=1),
         }
 
-        run_filter, run_args = "", []
+        conds, run_args = [], []
         if strategy:
-            run_filter = " AND t.run_id IN (SELECT id FROM runs WHERE strategy=?)"
-            run_args = [strategy]
+            conds.append("strategy=?")
+            run_args.append(strategy)
+        if mode:
+            conds.append("mode=?")
+            run_args.append(mode)
+        run_filter = (f" AND t.run_id IN (SELECT id FROM runs WHERE {' AND '.join(conds)})"
+                      if conds else "")
 
         out: dict[str, dict] = {}
         for label, start in bounds.items():
@@ -1035,17 +1078,22 @@ class StateStore:
         return out
 
     def trade_log(self, limit: int = 200, offset: int = 0,
-                  strategy: str | None = None) -> dict:
+                  strategy: str | None = None, mode: str | None = None) -> dict:
         """매매 기록 — run 을 가로질러, 최근 것부터.
 
         `recent_trades` 는 지금 돌고 있는 run 만 봅니다. 그건 화면 상단의
         "이번 실행" 요약에는 맞지만, "내가 지금까지 뭘 사고팔았나" 라는
         질문에는 답하지 못합니다. 봇을 어제 껐다 켰으면 어제 거래가 사라집니다.
         """
-        where, args = "", []
+        conds, args = [], []
         if strategy:
-            where = " WHERE t.run_id IN (SELECT id FROM runs WHERE strategy=?)"
-            args = [strategy]
+            conds.append("strategy=?")
+            args.append(strategy)
+        if mode:
+            conds.append("mode=?")
+            args.append(mode)
+        where = (f" WHERE t.run_id IN (SELECT id FROM runs WHERE {' AND '.join(conds)})"
+                 if conds else "")
         total = self.conn.execute(
             f"SELECT COUNT(*) n FROM trades t{where}", args).fetchone()["n"]
         rows = self.conn.execute(
@@ -1087,6 +1135,18 @@ class StateStore:
             "SELECT ticker, venue, name, currency FROM known_symbols "
             "ORDER BY seen_at DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
+
+    def modes_with_trades(self) -> list[str]:
+        """이 계정에 실제로 거래가 남은 모드들 — 모의만 했으면 ["dry_run"].
+
+        화면이 "모의 / 실거래" 를 나눠 보여줄지 정하는 데 씁니다. 실거래를
+        한 적도 없는데 빈 실거래 탭을 세우면, 거기 0 이 떠 있는 것이 "실거래
+        에서 본전" 처럼 읽힙니다.
+        """
+        rows = self.conn.execute(
+            "SELECT DISTINCT r.mode FROM trades t JOIN runs r ON r.id = t.run_id "
+            "ORDER BY r.mode").fetchall()
+        return [r["mode"] for r in rows]
 
     def recent_events(self, limit: int = 200, event_type: str | None = None) -> list[dict]:
         sql = "SELECT ts, type, payload FROM events WHERE run_id=?"

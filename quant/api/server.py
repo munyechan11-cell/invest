@@ -1288,6 +1288,7 @@ def create_app(config: StrategyConfig | None = None,
 
     @app.get("/api/pnl")
     async def pnl(strategy: str | None = Query(None, max_length=80),
+                  mode: str | None = Query(None, max_length=16),
                   seat: Desk = Depends(desk)):
         """오늘·이번주·이번달·올해 실현손익.
 
@@ -1296,7 +1297,10 @@ def create_app(config: StrategyConfig | None = None,
         """
         store = StateStore(seat.state_path)
         try:
-            return {"periods": store.pnl_by_period(strategy=strategy)}
+            return {"periods": store.pnl_by_period(strategy=strategy, mode=mode),
+                    # 모의로 번 돈은 실제로 번 돈이 아닙니다. 화면이 그 둘을
+                    # 나눠 보여줄 수 있게 어느 모드에 거래가 있는지 알려줍니다.
+                    "modes": store.modes_with_trades()}
         finally:
             store.close()
 
@@ -1304,6 +1308,7 @@ def create_app(config: StrategyConfig | None = None,
     async def tradelog(limit: int = Query(100, ge=1, le=500),
                        offset: int = Query(0, ge=0),
                        strategy: str | None = Query(None, max_length=80),
+                       mode: str | None = Query(None, max_length=16),
                        seat: Desk = Depends(desk)):
         """매매 기록 — 지금 돌고 있는 run 만이 아니라 전부.
 
@@ -1312,7 +1317,8 @@ def create_app(config: StrategyConfig | None = None,
         """
         store = StateStore(seat.state_path)
         try:
-            return store.trade_log(limit=limit, offset=offset, strategy=strategy)
+            return store.trade_log(limit=limit, offset=offset,
+                                   strategy=strategy, mode=mode)
         finally:
             store.close()
 

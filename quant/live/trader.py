@@ -82,6 +82,9 @@ class LiveTrader:
                 self.state.record_event("order_filled", payload)
             elif event.type is EventType.TRADE_CLOSED:
                 self.state.record_event("trade_closed", payload)
+                # 이벤트만 남기면 매매 기록과 기간별 실현손익이 영원히 빕니다 —
+                # 그쪽은 events 가 아니라 trades 테이블을 읽습니다.
+                self.state.record_closed_trade(payload)
             elif event.type is EventType.EQUITY:
                 self.state.record_equity(
                     datetime.now(UTC), payload.get("equity", 0.0),
