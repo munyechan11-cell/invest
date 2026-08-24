@@ -29,11 +29,11 @@ from pathlib import Path
 
 from quant.core.account import Portfolio
 from quant.core.context import Context
-from quant.core.types import UTC, ClosedTrade, Fill, Order, Symbol
+from quant.core.types import UTC, ClosedTrade, Fill, Symbol
 from quant.live.limits import TradingBudget
 
 try:                                    # POSIX only; Windows falls back to the
-    import fcntl                        # owner row alone.
+    import fcntl  # owner row alone.
 except ImportError:                     # pragma: no cover - platform dependent
     fcntl = None                        # type: ignore[assignment]
 

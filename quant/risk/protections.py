@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from datetime import timedelta
 
 from quant.core.context import Context
 from quant.core.types import ClosedTrade, Symbol

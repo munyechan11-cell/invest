@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from typing import Iterable
+from collections.abc import Iterable
 
 from quant.core.types import Bar
 
@@ -44,7 +44,7 @@ class Indicator:
     def _compute(self, value: float) -> float | None:  # pragma: no cover - abstract
         raise NotImplementedError
 
-    def prime(self, values: Iterable[float]) -> "Indicator":
+    def prime(self, values: Iterable[float]) -> Indicator:
         """Warm the indicator from historical values before going live."""
         for v in values:
             self.update(v)
@@ -215,7 +215,7 @@ class BarIndicator(Indicator):
     def _compute_bar(self, bar: Bar) -> float | None:  # pragma: no cover - abstract
         raise NotImplementedError
 
-    def prime_bars(self, bars: Iterable[Bar]) -> "BarIndicator":
+    def prime_bars(self, bars: Iterable[Bar]) -> BarIndicator:
         for b in bars:
             self.update_bar(b)
         return self
@@ -400,7 +400,7 @@ class IndicatorSet:
             else:
                 ind.update(bar.close)
 
-    def prime(self, bars: Iterable[Bar]) -> "IndicatorSet":
+    def prime(self, bars: Iterable[Bar]) -> IndicatorSet:
         for bar in bars:
             self.update(bar)
         return self

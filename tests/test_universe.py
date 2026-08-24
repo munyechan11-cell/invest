@@ -10,8 +10,6 @@ import asyncio
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-import pytest
-
 from quant.core.account import Portfolio
 from quant.core.clock import SimClock
 from quant.core.context import Context
@@ -19,9 +17,18 @@ from quant.core.events import EventBus
 from quant.core.types import UTC, Bar, Symbol
 from quant.data.provider import DataProvider
 from quant.data.universe import (
-    AgeFilter, CorrelationFilter, HeldPositionFilter, LimitFilter,
-    PerformanceFilter, PriceFilter, RangeStabilityFilter, SelectionReport,
-    ShuffleFilter, StaticSource, UniverseSelector, VolatilityFilter, VolumeFilter,
+    AgeFilter,
+    CorrelationFilter,
+    HeldPositionFilter,
+    LimitFilter,
+    PriceFilter,
+    RangeStabilityFilter,
+    SelectionReport,
+    ShuffleFilter,
+    StaticSource,
+    UniverseSelector,
+    VolatilityFilter,
+    VolumeFilter,
 )
 
 T0 = datetime(2024, 1, 1, tzinfo=UTC)
@@ -106,7 +113,6 @@ def test_price_filter_bounds():
 # ── volatility / range ───────────────────────────────────────────────────
 def test_volatility_filter_rejects_both_ends():
     flat, wild, ok = sym("FLAT"), sym("WILD"), sym("OK")
-    import math
     ctx = ctx_with({
         flat: [(100 + i * 1e-6, 1e6) for i in range(80)],
         wild: [(100 * (1.4 if i % 2 else 0.6) ** 1, 1e6) for i in range(80)],

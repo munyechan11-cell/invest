@@ -18,7 +18,6 @@ large cap and a small cap.
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 
 from quant.alpha.base import AlphaModel
 from quant.core.context import Context

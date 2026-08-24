@@ -6,7 +6,6 @@ least once: a stop-loss that fired on paper while the position quietly rode to
 that cannot actually close a position is worse than no risk model, because it
 reports safety it is not providing.
 """
-import asyncio
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -19,8 +18,11 @@ from quant.core.events import EventBus
 from quant.core.types import UTC, Bar, PortfolioTarget, Symbol
 from quant.execution.models import ImmediateExecution, LimitExecution, TwapExecution
 from quant.risk.models import (
-    MaxPositionCount, MaximumDrawdownPerSecurity, MaximumDrawdownPortfolio,
-    TradingLockGate, TrailingStopRiskModel,
+    MaximumDrawdownPerSecurity,
+    MaximumDrawdownPortfolio,
+    MaxPositionCount,
+    TradingLockGate,
+    TrailingStopRiskModel,
 )
 
 SYM = Symbol("AAA", venue="SIM", tick_size=Decimal("0.01"), lot_size=Decimal("1"))

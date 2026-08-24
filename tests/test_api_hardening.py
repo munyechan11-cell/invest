@@ -1,5 +1,8 @@
 """제어 API 가 주인에게 겨눠지지 않도록.
 
+이 파일은 **로그인한 사용자**로 요청합니다. 예전에는 계정 없이 열려 있어서
+같은 검사를 인증 없이 통과했는데, 그 상태 자체가 결함이었습니다.
+
 세 가지를 고정합니다.
 
 * **`/api/setup` 은 설정 화면이 가진 키만 쓴다.** 예전에는 대문자면 무엇이든
@@ -18,9 +21,12 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-from quant.api.server import create_app
+from quant.api.server import ACCOUNT_OPERATOR_FIELDS, create_app
 from quant.live.credentials import (
-    OPERATOR_FIELDS, VENUES, CredentialStore, WRITABLE_KEYS, rejection_reason,
+    VENUES,
+    WRITABLE_KEYS,
+    CredentialStore,
+    rejection_reason,
 )
 from quant.live.limits import TradingBudget
 
@@ -50,8 +56,29 @@ def env_file(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def client(env_file, tmp_path):
-    return TestClient(create_app(None, state_path=str(tmp_path / "state.db")))
+def client(env_file, tmp_path, monkeypatch):
+    """가입하고 로그인까지 마친 클라이언트.
+
+    이 API 에는 익명 자리가 없습니다. 세션 쿠키가 사람을 정하는 유일한
+    수단이므로, 검사도 사람이 된 뒤부터 시작해야 실제와 같습니다.
+    """
+    monkeypatch.setenv("QUANT_SECRET_KEY", "t" * 48)
+    monkeypatch.setenv("QUANT_USERS_DB", str(tmp_path / "users.db"))
+    c = TestClient(create_app(None, state_path=str(tmp_path / "state.db")))
+    r = c.post("/api/auth/register", json={
+        "email": "operator@example.com", "password": "correct-horse-9",
+        "display_name": "운영자"})
+    assert r.status_code == 201, r.text
+    return c
+
+
+def stored(client) -> dict:
+    """이 사용자에게 저장된 자격증명 이름 → 끝 4자리.
+
+    값은 어떤 경로로도 돌아오지 않으므로 이름만 확인할 수 있습니다.
+    """
+    body = client.get("/api/setup").json()
+    return body.get("configured", body.get("state", {}).get("configured", {})) or {}
 
 
 def env_keys(path) -> dict:
@@ -72,17 +99,19 @@ def test_process_control_variables_never_reach_the_env_file(client, env_file, ke
 
     assert key in body["rejected"]
     assert key not in body["written"]
-    assert key not in env_keys(env_file)
+    assert key not in stored(client)
+    # 프로세스 환경에도 절대 올라가지 않습니다 — 거기 올리면 같은 서버의
+    # 다른 사용자 봇이 그것을 읽습니다.
     assert os.environ.get(key) != "http://127.0.0.1:8899"
     # 나머지 값은 그대로 저장됩니다 — 한 줄 때문에 폼 전체를 잃지 않습니다.
-    assert env_keys(env_file)["KIS_APP_KEY"] == "real-key"
+    assert "KIS_APP_KEY" in stored(client)
 
 
 def test_an_unknown_key_is_refused_even_when_it_looks_harmless(client, env_file):
     body = client.post("/api/setup", json={"values": {"MY_OWN_SETTING": "1"}}).json()
     assert body["written"] == []
     assert "MY_OWN_SETTING" in body["rejected"]
-    assert env_keys(env_file) == {}
+    assert stored(client) == {}
 
 
 def test_rejections_are_reported_to_the_caller(client):
@@ -94,8 +123,10 @@ def test_rejections_are_reported_to_the_caller(client):
 
 def test_every_field_the_setup_screen_shows_is_writable(client, env_file):
     """허용 목록이 화면과 어긋나면 운영자가 입력한 키가 조용히 사라집니다."""
+    # 계정 화면이 실제로 보여주는 것만. 운영자 이름과 대시보드 토큰은 계정이
+    # 대신하므로 화면에서 빠졌고, 하루 한도는 /api/limits 가 따로 받습니다.
     advertised = [env for venue in VENUES for env, _, _ in venue.fields] + \
-                 [env for env, _, _ in OPERATOR_FIELDS]
+                 [env for env, _, _ in ACCOUNT_OPERATOR_FIELDS]
     body = client.post("/api/setup",
                        json={"values": {env: "v-" + env for env in advertised}}).json()
     assert body["rejected"] == {}
@@ -159,11 +190,19 @@ LIMITS_BLOCK = "limits:\n  max_daily_orders: 5\n"
 
 def write_config(tmp_path, name="c.yaml", *, mode="live", broker="alpaca",
                  confirmed="true", limits=LIMITS_BLOCK):
-    path = tmp_path / name
+    """템플릿을 하나 놓고 **이름**을 돌려줍니다.
+
+    API 는 서버 경로를 받지 않습니다 — 가입자가 경로를 지정할 수 있으면 그것은
+    전략 선택이 아니라 파일 열람입니다. 그래서 테스트도 이름으로 부릅니다.
+    """
+    root = tmp_path / "templates"
+    root.mkdir(exist_ok=True)
+    path = root / name
     path.write_text(LIVE_YAML.format(mode=mode, broker=broker,
                                      confirmed=confirmed, limits=limits),
                     encoding="utf-8")
-    return str(path)
+    os.environ["QUANT_CONFIG_DIR"] = str(root)
+    return path.stem
 
 
 class _Bus:
@@ -190,8 +229,11 @@ class _ConfigStub:
 class FakeLiveTrader:
     """브로커에 닿지 않는 대역. 실주문은 테스트에서 절대 내지 않습니다."""
 
-    def __init__(self, config, state_path):
+    def __init__(self, config, state_path, *, profile_path=None, **kwargs):
+        # 실물 `LiveTrader` 는 사용자별 성향 파일 경로를 받습니다. 대역이 그것을
+        # 안 받으면, 시그니처가 갈라졌다는 사실이 테스트 실패로만 드러납니다.
         self.config, self.state_path = config, state_path
+        self.profile_path = profile_path
         self.engine = _Engine()
         self.running = True
 
@@ -211,6 +253,19 @@ def no_real_broker(monkeypatch):
 
 def started(client):
     return bool(client.get("/api/health").json()["trader_running"])
+
+
+@pytest.fixture
+def linked(client):
+    """브로커가 연결된 상태.
+
+    자격증명 없이 봇을 띄우려 하면 서비스가 거부합니다 — 그것도 잠금 중
+    하나라서, 다른 잠금을 시험하려면 먼저 이걸 통과해야 합니다.
+    """
+    r = client.post("/api/setup", json={"values": {
+        "ALPACA_API_KEY": "test-key-aaaa", "ALPACA_SECRET_KEY": "test-secret-bbbb"}})
+    assert r.status_code == 200, r.text
+    return client
 
 
 def test_live_is_refused_when_the_config_file_does_not_ask_for_it(
@@ -264,9 +319,9 @@ def test_live_needs_the_strategy_name_typed_back(client, tmp_path, no_real_broke
     assert not started(client)
 
 
-def test_a_fully_confirmed_live_config_still_starts(client, tmp_path, no_real_broker):
+def test_a_fully_confirmed_live_config_still_starts(linked, tmp_path, no_real_broker):
     """잠금이 영영 닫혀 있으면 그것도 버그입니다."""
-    path = write_config(tmp_path)
+    client, path = linked, write_config(tmp_path)
     r = client.post("/api/trader/start",
                     json={"config_path": path, "mode": "live", "confirm": "live-probe"})
     assert r.status_code == 200, r.text
@@ -274,6 +329,7 @@ def test_a_fully_confirmed_live_config_still_starts(client, tmp_path, no_real_br
 
 
 def test_dry_run_still_starts_without_a_confirmation(client, tmp_path, no_real_broker):
+    """paper 브로커는 아무 계좌에도 닿지 않으므로 자격증명 없이 떠야 합니다."""
     path = write_config(tmp_path, mode="dry_run", broker="paper", confirmed="false",
                         limits="")
     r = client.post("/api/trader/start", json={"config_path": path})
@@ -287,83 +343,84 @@ def test_a_missing_config_is_a_bad_request_not_a_crash(client, tmp_path):
     assert r.status_code == 400
 
 
-# ── (c) 한도는 부분 수정 ──────────────────────────────────────────────────
-@pytest.fixture
-def running(client, tmp_path):
-    """예산이 붙은 봇이 돌고 있는 상태."""
-    trader = FakeLiveTrader(_ConfigStub(), str(tmp_path / "state.db"))
-    client.app.state.quant.trader = trader
-    return trader
+def test_a_bot_without_credentials_is_refused_before_it_reaches_a_broker(
+        client, tmp_path, no_real_broker):
+    """연결도 안 한 채 봇이 뜨면, 실패는 브로커 앞에서 납니다 — 그때는 늦습니다."""
+    path = write_config(tmp_path, mode="dry_run", confirmed="false", limits="")
+    r = client.post("/api/trader/start", json={"config_path": path})
+    assert r.status_code == 400
+    body = r.json()
+    assert body["code"] == "credentials_missing"
+    # 무엇이 없는지 화면이 그대로 안내할 수 있어야 합니다.
+    assert [m["name"] for m in body["missing"]] == ["ALPACA_API_KEY", "ALPACA_SECRET_KEY"]
 
+
+# ── (c) 한도는 부분 수정 ──────────────────────────────────────────────────
+#
+# 한도는 이제 사용자의 것입니다. 프로세스 하나에 하나가 아니라 계정마다 하나이고,
+# `.env` 가 아니라 그 사용자의 저장소에 남습니다. 지켜야 할 성질은 그대로입니다:
+# 한 필드만 보낸 호출이 나머지 한도를 조용히 지우면 안 되고, 저장된 값과 돌고
+# 있는 값이 갈라지면 안 됩니다.
 
 ALL_FOUR = {"max_daily_notional": 50000, "max_daily_orders": 20,
             "max_daily_loss": 2000, "max_daily_loss_pct": 0.03}
 
 
-def test_sending_one_cap_leaves_the_others_alone(client, running, env_file):
+def caps(client) -> dict:
+    return client.get("/api/limits").json()["configured"]
+
+
+def test_sending_one_cap_leaves_the_others_alone(client):
     """감사 재현: {max_daily_orders: 25} 하나에 나머지 세 한도가 사라졌습니다."""
     client.post("/api/limits", json=ALL_FOUR)
     body = client.post("/api/limits", json={"max_daily_orders": 25}).json()
 
-    budget = running.engine.budget
-    assert budget.max_orders == 25
-    assert budget.max_notional == 50000
-    assert budget.max_loss == 2000
-    assert budget.max_loss_pct == 0.03
     assert body["updated"] == ["max_daily_orders"]
     assert body["removed"] == []
-
-    live = client.get("/api/limits").json()
-    assert live["notional"]["limit"] == 50000
-    assert live["loss"]["limit"] == 2000
-    assert live["orders"]["limit"] == 25
+    assert caps(client) == {"max_daily_notional": 50000, "max_daily_orders": 25,
+                            "max_daily_loss": 2000, "max_daily_loss_pct": 0.03}
 
 
-def test_the_persisted_file_matches_what_is_running(client, running, env_file):
-    """재시작 뒤에 한도가 되살아나면 사고가 스스로 증거를 지웁니다."""
-    client.post("/api/limits", json=ALL_FOUR)
-    client.post("/api/limits", json={"max_daily_orders": 25})
-
-    stored = env_keys(env_file)
-    assert stored["QUANT_LIMIT_DAILY_ORDERS"] == "25"
-    assert stored["QUANT_LIMIT_DAILY_NOTIONAL"] == "50000.0"
-    assert stored["QUANT_LIMIT_DAILY_LOSS"] == "2000.0"
-    assert stored["QUANT_LIMIT_DAILY_LOSS_PCT"] == "0.03"
-
-
-def test_an_explicit_zero_removes_a_cap_and_says_so(client, running, env_file):
+def test_an_explicit_zero_removes_a_cap_and_says_so(client):
+    """0 은 "한도 없음" 입니다 — 그런데 조용히 그러면 안 됩니다."""
     client.post("/api/limits", json=ALL_FOUR)
     body = client.post("/api/limits", json={"max_daily_loss": 0}).json()
 
-    assert running.engine.budget.max_loss == 0
-    assert running.engine.budget.max_notional == 50000
     assert body["removed"] == ["max_daily_loss"]
     assert "해제" in body["note"]
-    # 살아 있는 값과 저장된 값이 갈라지면 다음 아침에 아무도 진실을 못 봅니다.
-    assert "QUANT_LIMIT_DAILY_LOSS" not in env_keys(env_file)
+    assert caps(client)["max_daily_loss"] == 0
+    assert caps(client)["max_daily_notional"] == 50000
 
 
-def test_zeroing_a_cap_that_was_never_set_is_not_reported_as_a_release(
-        client, running, env_file):
+def test_zeroing_a_cap_that_was_never_set_is_not_reported_as_a_release(client):
     body = client.post("/api/limits", json={"max_daily_loss": 0}).json()
     assert body["removed"] == []
 
 
-def test_partial_updates_work_before_a_bot_is_running(client, env_file):
-    client.post("/api/limits", json=ALL_FOUR)
-    body = client.post("/api/limits", json={"max_daily_orders": 25}).json()
-
-    assert body["applied_now"] is None
-    stored = env_keys(env_file)
-    assert stored["QUANT_LIMIT_DAILY_ORDERS"] == "25"
-    assert stored["QUANT_LIMIT_DAILY_NOTIONAL"] == "50000.0"
-    configured = client.get("/api/limits").json()["configured"]
-    assert configured["max_daily_notional"] == 50000
-    assert configured["max_daily_loss"] == 2000
-
-
-def test_a_loss_cap_is_stored_as_a_magnitude(client, running, env_file):
+def test_a_loss_cap_is_stored_as_a_magnitude(client):
     """음수로 적어도 같은 뜻입니다 — 부호 때문에 한도가 꺼지면 안 됩니다."""
     client.post("/api/limits", json={"max_daily_loss": -2000})
-    assert running.engine.budget.max_loss == 2000
-    assert env_keys(env_file)["QUANT_LIMIT_DAILY_LOSS"] == "2000.0"
+    assert caps(client)["max_daily_loss"] == 2000
+
+
+def test_the_caps_survive_a_restart(client, tmp_path, monkeypatch):
+    """재시작 뒤에 한도가 되살아나면 사고가 스스로 증거를 지웁니다."""
+    client.post("/api/limits", json=ALL_FOUR)
+    cookie = client.cookies
+
+    fresh = TestClient(create_app(None, state_path=str(tmp_path / "state.db")))
+    fresh.cookies = cookie
+    assert fresh.get("/api/limits").json()["configured"] == {
+        "max_daily_notional": 50000, "max_daily_orders": 20,
+        "max_daily_loss": 2000, "max_daily_loss_pct": 0.03}
+
+
+def test_one_users_caps_are_not_anothers(client, tmp_path):
+    """한도는 사람의 것입니다. 남의 한도가 내 봇을 묶으면 안 됩니다."""
+    client.post("/api/limits", json=ALL_FOUR)
+
+    other = TestClient(client.app)
+    other.post("/api/auth/register", json={
+        "email": "second@example.com", "password": "correct-horse-9",
+        "display_name": "둘째"})
+    assert other.get("/api/limits").json()["configured"]["max_daily_orders"] == 0

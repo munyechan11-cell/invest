@@ -24,10 +24,9 @@ import random
 import statistics
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 
 from quant.core.context import Context
-from quant.core.types import Bar, Symbol, periods_per_year, timeframe_delta
+from quant.core.types import Bar, Symbol, periods_per_year
 from quant.data.provider import DataProvider
 
 log = logging.getLogger("quant.universe")

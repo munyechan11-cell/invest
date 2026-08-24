@@ -250,11 +250,118 @@ tr:last-child td{border-bottom:0}
 .demo-tag{font-family:var(--px);font-size:9px;color:#000;background:var(--gold);padding:2px 6px}
 .empty{font-family:var(--px);font-size:10px;color:var(--muted);text-align:center;padding:18px}
 footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-size:11px}
+
+/* ── 로그인 게이트 ─────────────────────────────────────────────────── */
+/* The floor belongs to a signed-in operator. Everything else is hidden by
+   default rather than hidden by script, so a slow /api/auth/me — or a script
+   error — can never flash somebody else's desk before the check lands. */
+.app-only{display:none}
+body.authed .app-only{display:block}
+body:not(.authed) .overlay{display:none}
+.boot,.gate{display:none;min-height:70vh;align-items:center;justify-content:center;
+  padding:24px 12px}
+body.booting .boot{display:flex}
+body.anon .gate{display:flex}
+.boot{font-family:var(--px);font-size:11px;color:var(--muted)}
+.card{width:100%;max-width:420px;background:var(--panel);border:3px solid var(--gold-dim)}
+.card .cap{padding:16px;border-bottom:2px solid var(--line)}
+.card .cap h1{font-family:var(--px);font-size:15px;color:var(--gold);text-shadow:2px 2px 0 #000;
+  line-height:1.5}
+.card .cap p{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.7}
+.tabs{display:flex;gap:6px;padding:12px 12px 0}
+.tabs .tab{flex:1;text-align:center;min-height:44px;display:flex;align-items:center;
+  justify-content:center;border-bottom:2px solid var(--line);cursor:pointer;
+  user-select:none;-webkit-user-select:none}
+.tabs .tab.on{border-bottom-color:var(--gold)}
+form.auth{display:grid;gap:12px;padding:14px 12px 16px}
+form.auth[hidden]{display:none}
+form.auth .fld input{min-height:44px}
+form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
+/* Fingers, not mice: every control a new screen adds is at least 44px tall. */
+.btn.tap{min-height:44px;padding:10px 14px;font-size:11px}
+
+/* ── 마이페이지 · 계정 ─────────────────────────────────────────────── */
+/* 머리글이 sticky 라서, 그냥 스크롤하면 패널 이름표가 그 밑으로 들어갑니다.
+   휴대폰에서는 머리글이 두 줄로 접혀 더 두꺼워집니다. */
+#account{scroll-margin-top:150px}
+.acct{display:grid;gap:14px}
+.acct .who{font-family:var(--px);font-size:12px;color:var(--gold);word-break:break-all}
+.acct .who small{display:block;font-size:9px;color:var(--muted);margin-top:4px}
+.acct h4{font-family:var(--px);font-size:10px;color:var(--muted);letter-spacing:.06em;
+  font-weight:400}
+.links{display:grid;gap:6px;margin-top:8px}
+.link{display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  border:2px solid var(--line);padding:8px 10px}
+.link .nm{font-family:var(--px);font-size:11px;color:var(--ink)}
+.link .hint{font-family:var(--px);font-size:9px;color:var(--muted);word-break:break-all}
+.link .btn{margin-left:auto}
+.pwform{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;
+  align-items:end;margin-top:8px}
+.pwform .fld input{min-height:44px}
+
+/* ── 설정 진행 상태 ────────────────────────────────────────────────── */
+.steps{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+.steps span{font-family:var(--px);font-size:9px;border:2px solid var(--line);
+  padding:5px 8px;color:var(--muted)}
+.steps span.done{border-color:var(--up);color:var(--up)}
+.steps span.now{border-color:var(--gold);color:var(--gold)}
+.steps span.skipped{border-color:var(--gold-dim);color:var(--gold-dim)}
+.step .head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.step .head .mark{font-family:var(--px);font-size:9px;color:var(--muted);margin-left:auto}
+.step .head .mark.done{color:var(--up)}
+.venue .head{min-height:44px}
 </style>
 </head>
-<body>
+<body class="booting">
 
-<header class="top">
+<div class="boot" id="boot"><span>◆ 확인 중 …</span></div>
+
+<!-- 로그인 · 회원가입 — 사용자가 정해지기 전에는 이 화면만 존재합니다 -->
+<div class="gate" id="gate">
+  <div class="card">
+    <div class="cap">
+      <h1>◆ QUANT TRADING FLOOR ◆</h1>
+      <p>내 증권사·거래소 키로, 내 봇만 돌립니다.
+         키는 암호화해 보관하고 다시 보여주지 않으며, 다른 사용자의 봇은
+         내 키를 읽을 수 없습니다.</p>
+    </div>
+
+    <div class="tabs">
+      <div class="tab px on" id="tabLogin" role="button" tabindex="0">로그인</div>
+      <div class="tab px" id="tabRegister" role="button" tabindex="0">회원가입</div>
+    </div>
+
+    <form class="auth" id="loginForm" autocomplete="on">
+      <div class="fld"><label for="liEmail">이메일</label>
+        <input id="liEmail" name="email" type="email" autocomplete="username"
+               inputmode="email" required></div>
+      <div class="fld"><label for="liPassword">비밀번호</label>
+        <input id="liPassword" name="password" type="password"
+               autocomplete="current-password" required></div>
+      <button class="btn tap" type="submit" id="loginSubmit">로그인</button>
+    </form>
+
+    <form class="auth" id="registerForm" autocomplete="on" hidden>
+      <div class="fld"><label for="rgName">표시 이름</label>
+        <input id="rgName" name="display_name" type="text" autocomplete="nickname"></div>
+      <div class="fld"><label for="rgEmail">이메일</label>
+        <input id="rgEmail" name="email" type="email" autocomplete="username"
+               inputmode="email" required></div>
+      <div class="fld"><label for="rgPassword">비밀번호</label>
+        <input id="rgPassword" name="password" type="password"
+               autocomplete="new-password" required></div>
+      <div class="hint">10자 이상, 숫자와 문자를 함께 쓰세요.
+        가입 뒤에 증권사·거래소 키를 연결하면 봇을 돌릴 수 있습니다.</div>
+      <button class="btn tap" type="submit" id="registerSubmit">회원가입</button>
+    </form>
+
+    <div class="msg" id="gateMsg" style="margin:0 12px 16px">
+      실거래에는 원금 손실 위험이 있습니다. 모의·dry_run 으로 먼저 확인하세요.
+    </div>
+  </div>
+</div>
+
+<header class="top app-only">
   <div class="top-in">
     <span class="conn" id="conn"></span>
     <span class="brand"><i>◆</i> QUANT TRADING FLOOR <i>◆</i></span>
@@ -262,11 +369,12 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
     <span class="grow"></span>
     <button class="btn" id="setupBtn">⚙ 설정</button>
     <button class="btn" id="demoBtn">▶ 데모 재생</button>
+    <button class="btn" id="meBtn">◉ 마이페이지</button>
     <span class="tab on px" id="strategy">—</span>
   </div>
 </header>
 
-<div class="wrap">
+<div class="wrap app-only">
 
   <!-- HUD -->
   <section class="panel">
@@ -323,6 +431,49 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
     </div>
     <div class="body">
       <div class="verdict hidden" id="verdict"></div>
+    </div>
+  </section>
+
+  <!-- 마이페이지 · 계정 -->
+  <section class="panel" id="account">
+    <span class="plate"><span class="d">◆</span> 마이페이지 · 계정 <span class="d">◆</span></span>
+    <div class="body">
+      <div class="acct">
+        <div>
+          <div class="who" id="acctWho">—</div>
+          <div class="actions">
+            <button class="btn tap" id="logoutBtn">로그아웃</button>
+            <button class="btn tap" id="acctSetupBtn">⚙ 초기 설정 열기</button>
+          </div>
+        </div>
+
+        <div>
+          <h4>연동된 증권사 · 거래소</h4>
+          <div class="links" id="venueLinks">
+            <div class="empty">아직 연동된 곳이 없습니다 — 초기 설정에서 연결하세요</div>
+          </div>
+          <div class="msg" id="linkMsg">저장된 키는 다시 조회할 수 없습니다.
+            화면에는 서버가 알려주는 마지막 네 자리만 표시됩니다.
+            연동을 해제하면 그 거래소 키는 삭제되고, 다시 쓰려면 새로 입력해야 합니다.</div>
+        </div>
+
+        <div>
+          <h4>비밀번호 변경</h4>
+          <form class="pwform" id="passwordForm" autocomplete="off">
+            <div class="fld"><label for="pwCurrent">현재 비밀번호</label>
+              <input id="pwCurrent" name="current_password" type="password"
+                     autocomplete="current-password" required></div>
+            <div class="fld"><label for="pwNew">새 비밀번호 (10자 이상, 숫자+문자)</label>
+              <input id="pwNew" name="new_password" type="password"
+                     autocomplete="new-password" required></div>
+            <div class="fld"><label for="pwConfirm">새 비밀번호 확인</label>
+              <input id="pwConfirm" type="password" autocomplete="new-password" required></div>
+            <button class="btn tap" type="submit" id="pwSubmit">변경</button>
+          </form>
+          <div class="msg" id="pwMsg">비밀번호를 바꾸면 모든 기기의 로그인이 해제됩니다 —
+            바꾼 뒤에는 다시 로그인해야 합니다.</div>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -390,7 +541,7 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
 
 </div>
 
-<footer>
+<footer class="app-only">
   읽기 전용 화면입니다. 시작·정지는 CLI 전용.
   과거 성과는 예측이 아니며, 매매에는 원금 손실 위험이 있습니다.
 </footer>
@@ -400,37 +551,25 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
     <header>
       <h2>◆ 초기 설정 ◆</h2>
       <span style="flex:1"></span>
-      <button class="btn" id="setupClose">닫기</button>
+      <button class="btn tap" id="setupClose">닫기</button>
     </header>
     <div class="body">
-      <div class="step">
-        <h3>0 · 투자 성향</h3>
-        <p>여덟 문항으로 <b>시작 설정</b>을 잡습니다. 과학적 진단이 아니라 출발점이고,
-           언제든 마이페이지에서 바꿀 수 있습니다.
-           <b>공격형으로 나와도 손절이 사라지거나 하루 손실 한도가 0이 되지는 않습니다</b> —
-           성향은 "같은 규칙 안에서 더 크게"까지만 바꿉니다.</p>
-        <div class="qprog" id="quizProg"></div>
-        <div class="quiz" id="quiz"></div>
-        <div id="quizResult" style="margin-top:12px"></div>
-      </div>
+      <!-- 남은 단계를 먼저 보여줍니다 — 무엇이 끝났고 무엇이 남았는지 -->
+      <div class="steps" id="setupSteps"></div>
 
-      <div class="step">
-        <h3>1 · 운영자</h3>
-        <p>계정 시스템은 없습니다. 이 봇은 본인 컴퓨터에서 본인 키로만 돕니다.
-           입력값은 <code>.env</code>(권한 0600, git 제외)에만 저장되며,
-           저장된 비밀값은 다시 조회할 수 없습니다.</p>
-        <div id="setupOperator" style="display:grid;gap:8px"></div>
-      </div>
-
-      <div class="step">
-        <h3>2 · 증권사 · 거래소</h3>
-        <p>쓰실 곳만 켜서 입력하세요. 저장 후 <b>검증</b>을 누르면 실제로
-           읽기 전용 호출을 한 번 해서 키가 진짜 동작하는지 확인합니다.</p>
+      <div class="step" id="stepVenues">
+        <div class="head"><h3>1 · 증권사 · 거래소 연동</h3>
+          <span class="mark" id="markVenues">남음</span></div>
+        <p>이게 첫 단계인 이유는 하나입니다 — <b>여기가 연결되기 전에는 봇이 아무것도
+           하지 못합니다.</b> 쓰실 곳만 켜서 입력하세요. 저장 후 <b>키 검증</b>을 누르면
+           읽기 전용 호출을 한 번 해서 키가 진짜 동작하는지 확인합니다.
+           키는 암호화해 내 계정에만 저장되고, 저장 후에는 다시 조회할 수 없습니다.</p>
         <div id="setupVenues"></div>
       </div>
 
-      <div class="step">
-        <h3>3 · 하루 거래 한도</h3>
+      <div class="step" id="stepLimits">
+        <div class="head"><h3>2 · 하루 거래 한도</h3>
+          <span class="mark" id="markLimits">남음</span></div>
         <p>다른 한도들은 전략이 정상일 때를 가정합니다. 이건 <b>고장났을 때</b>를
            가정하는 한도라, 브로커 바로 앞에서 실제 주문을 보고 막습니다.
            하나만 걸려도 <b>신규 진입</b>이 멈추고, <b>청산은 절대 막지 않습니다.</b>
@@ -447,8 +586,31 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
         </div>
       </div>
 
+      <div class="step" id="stepOperator">
+        <div class="head"><h3>3 · 운영자 정보</h3>
+          <span class="mark" id="markOperator">남음</span></div>
+        <p>알림과 AI 데스크에만 쓰는 선택 항목입니다. 비워도 매매는 돕니다.</p>
+        <div class="who" id="setupWho" style="margin-bottom:10px"></div>
+        <div id="setupOperator" style="display:grid;gap:8px"></div>
+      </div>
+
+      <div class="step" id="stepProfile">
+        <div class="head"><h3>4 · 투자 성향 <span class="dim">(선택)</span></h3>
+          <span class="mark" id="markProfile">남음</span></div>
+        <p>여덟 문항으로 <b>시작 설정</b>을 잡습니다. 과학적 진단이 아니라 출발점이고,
+           언제든 마이페이지에서 바꿀 수 있습니다.
+           <b>공격형으로 나와도 손절이 사라지거나 하루 손실 한도가 0이 되지는 않습니다</b> —
+           성향은 "같은 규칙 안에서 더 크게"까지만 바꿉니다.</p>
+        <div class="actions" style="margin:0 0 10px">
+          <button class="btn tap" id="quizSkip">건너뛰기 — 중립 성향으로 시작</button>
+        </div>
+        <div class="qprog" id="quizProg"></div>
+        <div class="quiz" id="quiz"></div>
+        <div id="quizResult" style="margin-top:12px"></div>
+      </div>
+
       <div class="actions">
-        <button class="btn" id="setupSave">저장</button>
+        <button class="btn tap" id="setupSave">저장</button>
         <span style="flex:1"></span>
       </div>
       <div class="msg" id="setupMsg"></div>
@@ -456,7 +618,7 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
   </div>
 </div>
 
-<div class="tape"><div class="tape-in" id="tape"></div></div>
+<div class="tape app-only"><div class="tape-in" id="tape"></div></div>
 
 <script>
 "use strict";
@@ -700,8 +862,11 @@ function renderVerdict(d, demo) {
 }
 
 /* ── data plumbing ───────────────────────────────────────────────────── */
+/* The session lives in an HttpOnly cookie, so the browser must be told to
+   send it — and nothing here ever holds a token, which is the point. */
 async function api(path) {
-  const r = await fetch(path, {headers: auth});
+  const r = await fetch(path, {headers: auth, credentials: "same-origin"});
+  if (r.status === 401) { signedOut(); throw new Error("로그인이 필요합니다"); }
   if (!r.ok) throw new Error(r.status + " " + path);
   return r.json();
 }
@@ -861,9 +1026,11 @@ async function refresh() {
 }
 let lastShown = null;
 
+let socket = null, ping = null;
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws${token ? "?token=" + token : ""}`);
+  socket = ws;
   ws.onmessage = m => {
     let e; try { e = JSON.parse(m.data); } catch { return; }
     if (e.type === "equity") { renderHud(e.payload); return; }
@@ -874,8 +1041,16 @@ function connect() {
     pushEvent(e);
   };
   // A dashboard that silently goes stale is worse than one that says it is offline.
-  ws.onclose = () => { $("#conn").className = "conn off"; setTimeout(connect, 4000); };
-  ws.onopen = () => setInterval(() => ws.readyState === 1 && ws.send("ping"), 25000);
+  // But a *signed-out* dashboard must not keep knocking, so the retry asks first.
+  ws.onclose = () => {
+    clearInterval(ping);
+    $("#conn").className = "conn off";
+    if (me) setTimeout(() => { if (me && socket === ws) connect(); }, 4000);
+  };
+  ws.onopen = () => {
+    clearInterval(ping);
+    ping = setInterval(() => ws.readyState === 1 && ws.send("ping"), 25000);
+  };
 }
 
 /* ── demo replay (clearly labelled — not market data) ─────────────────── */
@@ -935,10 +1110,17 @@ async function post(path, body) {
   const r = await fetch(path, {
     method: "POST",
     headers: {...auth, "Content-Type": "application/json"},
+    credentials: "same-origin",
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.detail || data.error || `${r.status} ${path}`);
+  if (!r.ok) {
+    // A 401 on the login form itself is "wrong password", not "session gone" —
+    // dropping the user to the gate they are already standing on would just
+    // erase what they typed.
+    if (r.status === 401 && !path.startsWith("/api/auth/")) signedOut();
+    throw new Error(data.detail || data.error || `${r.status} ${path}`);
+  }
   return data;
 }
 
@@ -1109,6 +1291,9 @@ async function submitQuiz() {
        종목당 최대 ${(res.settings.max_position_weight * 100).toFixed(0)}% ·
        최대 ${res.settings.max_positions}종목 ·
        하루 손실 한도 ${(res.settings.max_daily_loss_pct * 100).toFixed(2)}%</div>`;
+    profileDone = true;
+    profileSkipped = false;
+    renderSteps();
     renderProfile(res);
   } catch (e) {
     $("#quizResult").innerHTML = `<div class="msg err">저장 실패: ${esc(e.message)}</div>`;
@@ -1161,6 +1346,7 @@ $("#pApply").onclick = async () => {
     const res = await fetch("/api/profile", {
       method: "PATCH",
       headers: {...auth, "Content-Type": "application/json"},
+      credentials: "same-origin",
       body: JSON.stringify({overrides}),
     }).then(r => r.json());
     renderProfile(res);
@@ -1175,9 +1361,10 @@ $("#pApply").onclick = async () => {
 $("#pRetake").onclick = async () => {
   quizAnswers = {};
   quizInteractive = false;
-  $("#setup").classList.add("on");
-  await loadQuiz();
-  $("#quiz").scrollIntoView({behavior: "smooth", block: "start"});
+  profileSkipped = false;
+  $("#quiz").style.display = "";
+  await openSetup();
+  $("#stepProfile").scrollIntoView({behavior: "smooth", block: "start"});
 };
 
 async function loadQuiz() {
@@ -1191,6 +1378,7 @@ async function loadQuiz() {
 async function loadProfile() {
   try {
     const p = await api("/api/profile");
+    profileDone = !!p.completed;
     renderProfile(p);
     if (p.completed && quizQuestions.length) {
       quizAnswers = {...p.answers};
@@ -1204,40 +1392,104 @@ async function loadProfile() {
 }
 
 /* ── 초기 설정 ───────────────────────────────────────────────────────── */
+/* 순서가 곧 우선순위입니다. 예전에는 여덟 문항짜리 성향 진단이 첫 화면이었고,
+   정작 그것 없이는 봇이 한 주도 못 사는 증권사 연동이 아래에 묻혀 있었습니다.
+   1) 증권사·거래소 연동  2) 하루 거래 한도  3) 운영자 정보  4) 투자 성향(선택). */
 let setupCatalog = null;
+/* env 이름 → 서버가 준 힌트. 값이 아니라 힌트입니다. */
+let configuredKeys = {};
+let linkedVenues = [];
+let limitsSet = false;
+let profileDone = false;
+let profileSkipped = false;
 
-function fieldRow(env, label, value) {
-  const isSecret = /key|secret|token|password/i.test(env);
-  return `<div class="fld"><label>${esc(label)}${value ? " · " + esc(value) : ""}</label>
-    <input data-env="${esc(env)}" type="${isSecret ? "password" : "text"}"
-      autocomplete="off" placeholder="${value ? "변경할 때만 입력" : ""}"></div>`;
+const STEP_NAMES = [
+  ["venues",   "1 증권사 · 거래소 연동"],
+  ["limits",   "2 하루 거래 한도"],
+  ["operator", "3 운영자 정보"],
+  ["profile",  "4 투자 성향"],
+];
+
+/* 서버는 마지막 네 자리만 돌려주지만, 화면도 마지막 네 자리까지만 그립니다.
+   네 자를 넘겨 찍는 코드 경로가 아예 없으면 실수로 흘릴 경로도 없습니다. */
+function keyHint(env) {
+  if (!(env in configuredKeys)) return "";
+  const hint = String(configuredKeys[env] ?? "").trim();
+  return hint ? "설정됨 ••••" + hint.slice(-4) : "설정됨";
 }
 
-async function openSetup() {
-  $("#setup").classList.add("on");
-  await loadQuiz();
-  await loadProfile();
-  try {
-    setupCatalog = await api("/api/setup");
-  } catch (e) {
-    note("#setupMsg", "설정을 불러오지 못했습니다: " + e.message, "err");
-    return;
-  }
-  const configured = setupCatalog.configured_keys || {};
+/* 입력칸에는 `value` 를 절대 넣지 않습니다. 저장된 비밀은 다시 조회되지 않고,
+   화면에 되돌려 놓는 순간 유출될 사본이 하나 더 생깁니다. */
+function fieldRow(env, label, hint) {
+  const isSecret = /key|secret|token|password/i.test(env);
+  return `<div class="fld"><label>${esc(label)}${hint ? " · " + esc(hint) : ""}</label>
+    <input data-env="${esc(env)}" type="${isSecret ? "password" : "text"}"
+      autocomplete="off" placeholder="${hint ? "변경할 때만 입력" : ""}"></div>`;
+}
 
-  $("#setupOperator").innerHTML = (setupCatalog.operator_fields || [])
-    .map(f => fieldRow(f.env, f.label, configured[f.env])).join("");
+/* 필수 항목이 다 있어야 "연동됨"입니다 — 앱 키만 있고 계좌번호가 없으면
+   화면만 초록색이고 주문은 나가지 않습니다. */
+function venueLinked(v) {
+  const required = (v.fields || []).filter(f => f.required);
+  return required.length > 0 && required.every(f => f.env in configuredKeys);
+}
+/* 반대로 "해제"는 한 조각이라도 남아 있으면 보여줘야 합니다. 반쯤 입력하다 만
+   키를 지울 방법이 없으면 그건 지울 수 없는 키입니다. */
+function venueTouched(v) {
+  return (v.fields || []).some(f => f.env in configuredKeys);
+}
 
+async function loadSetup() {
+  setupCatalog = await api("/api/setup");
+  configuredKeys = setupCatalog.configured || setupCatalog.configured_keys || {};
+  linkedVenues = (setupCatalog.venues || []).filter(venueLinked).map(v => v.id);
+  return setupCatalog;
+}
+
+function renderSteps() {
+  const done = {
+    venues: linkedVenues.length > 0,
+    limits: limitsSet,
+    // 운영자 정보는 알림·AI 데스크용 선택 항목입니다.
+    operator: (setupCatalog?.operator_fields || []).some(f => f.env in configuredKeys),
+    profile: profileDone,
+  };
+  const optional = {operator: true, profile: true};
+  const remaining = STEP_NAMES.filter(([k]) => !done[k] && !optional[k]).length;
+
+  const chips = STEP_NAMES.map(([key, name]) => {
+    if (done[key]) return `<span class="done">${esc(name)} ✓</span>`;
+    if (key === "profile" && profileSkipped) return `<span class="skipped">${esc(name)} · 건너뜀</span>`;
+    if (optional[key]) return `<span>${esc(name)} · 선택</span>`;
+    return `<span class="now">${esc(name)} · 남음</span>`;
+  });
+  const head = remaining
+    ? `<span class="now">남은 필수 단계 ${remaining}개</span>`
+    : `<span class="done">필수 단계 완료</span>`;
+  $("#setupSteps").innerHTML = head + chips.join("");
+
+  const mark = (id, ok, text) => {
+    const el = $(id);
+    el.className = "mark" + (ok ? " done" : "");
+    el.textContent = ok ? "완료" : text;
+  };
+  mark("#markVenues", done.venues, "남음");
+  mark("#markLimits", done.limits, "남음");
+  mark("#markOperator", done.operator, "선택");
+  mark("#markProfile", done.profile, profileSkipped ? "건너뜀" : "선택");
+}
+
+function renderVenues() {
   $("#setupVenues").innerHTML = (setupCatalog.venues || []).map(v => {
-    const on = (setupCatalog.state.venues || []).includes(v.id);
+    const on = venueLinked(v);
     return `<div class="venue ${on ? "on" : ""}" data-venue="${esc(v.id)}">
       <div class="head"><span>${on ? "☑" : "☐"} ${esc(v.label)}</span>
-        <span class="status ${on ? "up" : "dim"}">${on ? "설정됨" : "미설정"}</span></div>
+        <span class="status ${on ? "up" : "dim"}">${on ? "연동됨" : "미연동"}</span></div>
       ${v.note ? `<p class="note">${esc(v.note)}</p>` : ""}
       <div class="fields">
         ${v.fields.map(f => fieldRow(f.env, f.label + (f.required ? " *" : ""),
-                                     configured[f.env])).join("")}
-        <div><button class="btn" data-verify="${esc(v.id)}">키 검증</button>
+                                     keyHint(f.env))).join("")}
+        <div><button class="btn tap" data-verify="${esc(v.id)}">키 검증</button>
           <span class="status" data-vres="${esc(v.id)}"></span></div>
       </div></div>`;
   }).join("");
@@ -1262,7 +1514,16 @@ async function openSetup() {
       }
     };
   });
+}
 
+function renderOperator() {
+  $("#setupWho").innerHTML = me
+    ? `${esc(me.display_name || me.email)}<small>${esc(me.email)}</small>` : "";
+  $("#setupOperator").innerHTML = (setupCatalog.operator_fields || [])
+    .map(f => fieldRow(f.env, f.label, keyHint(f.env))).join("");
+}
+
+async function loadLimits() {
   try {
     const lim = await api("/api/limits");
     const cfg = lim.configured || {
@@ -1273,11 +1534,45 @@ async function openSetup() {
     $("#lOrders").value = cfg.max_daily_orders || "";
     $("#lLoss").value = cfg.max_daily_loss || "";
     $("#lLossPct").value = cfg.max_daily_loss_pct ? cfg.max_daily_loss_pct * 100 : "";
+    limitsSet = [cfg.max_daily_notional, cfg.max_daily_orders,
+                 cfg.max_daily_loss, cfg.max_daily_loss_pct].some(v => Number(v) > 0);
   } catch {}
 }
 
+async function openSetup() {
+  $("#setup").classList.add("on");
+  try {
+    await loadSetup();
+  } catch (e) {
+    note("#setupMsg", "설정을 불러오지 못했습니다: " + e.message, "err");
+    return;
+  }
+  renderVenues();
+  renderOperator();
+  renderLinks();
+  await loadLimits();
+  await loadQuiz();
+  await loadProfile();
+  renderSteps();
+}
+
 $("#setupBtn").onclick = openSetup;
+$("#acctSetupBtn").onclick = openSetup;
 $("#setupClose").onclick = () => $("#setup").classList.remove("on");
+$("#meBtn").onclick = () =>
+  $("#account").scrollIntoView({behavior: "smooth", block: "start"});
+
+/* 성향 진단은 건너뛸 수 있습니다. 건너뛰면 서버가 진단 전에 쓰는 중립 프로필로
+   그대로 돌고, 마이페이지에서 언제든 다시 할 수 있습니다. */
+$("#quizSkip").onclick = () => {
+  profileSkipped = true;
+  $("#quiz").style.display = "none";
+  $("#quizProg").textContent = "건너뜀";
+  $("#quizResult").innerHTML =
+    `<div class="msg ok">중립 성향으로 시작합니다 — 마이페이지 · 투자 성향에서
+     언제든 진단할 수 있습니다.</div>`;
+  renderSteps();
+};
 
 $("#setupSave").onclick = async () => {
   const values = {};
@@ -1296,8 +1591,14 @@ $("#setupSave").onclick = async () => {
     // Clear the inputs: the values are stored and can never be read back,
     // so leaving them on screen only creates a second copy to leak.
     $("#setup").querySelectorAll("input[data-env]").forEach(el => (el.value = ""));
+    await loadSetup();
+    renderVenues();
+    renderOperator();
+    renderLinks();
+    await loadLimits();
+    renderSteps();
     note("#setupMsg",
-      `저장 완료 — 자격증명 ${saved.written.length}건, 하루 한도 적용됨. ` +
+      `저장 완료 — 자격증명 ${(saved.written || []).length}건, 하루 한도 적용됨. ` +
       `저장된 비밀값은 다시 조회할 수 없습니다.`, "ok");
     refreshManual();
   } catch (e) {
@@ -1305,20 +1606,244 @@ $("#setupSave").onclick = async () => {
   }
 };
 
-/* 처음 실행이고 아직 아무것도 설정되지 않았으면 설정 화면을 먼저 띄운다 */
-(async () => {
+/* ── 마이페이지 · 계정 ───────────────────────────────────────────────── */
+function renderAccount() {
+  $("#acctWho").innerHTML = me
+    ? `${esc(me.display_name || me.email)}<small>${esc(me.email)}` +
+      `${me.is_admin ? " · 관리자" : ""}</small>`
+    : "—";
+}
+
+function renderLinks() {
+  const venues = (setupCatalog?.venues || []).filter(venueTouched);
+  if (!venues.length) {
+    $("#venueLinks").innerHTML =
+      `<div class="empty">아직 연동된 곳이 없습니다 — 초기 설정에서 연결하세요</div>`;
+    return;
+  }
+  $("#venueLinks").innerHTML = venues.map(v => {
+    const hints = v.fields.filter(f => f.env in configuredKeys)
+      .map(f => `${esc(f.label)} ${esc(keyHint(f.env))}`).join(" · ");
+    return `<div class="link" data-link="${esc(v.id)}">
+      <span class="nm">${venueLinked(v) ? "☑" : "◐"} ${esc(v.label)}</span>
+      <span class="hint">${hints}</span>
+      <button class="btn tap warn" data-unlink="${esc(v.id)}">연동 해제</button>
+    </div>`;
+  }).join("");
+
+  $("#venueLinks").querySelectorAll("[data-unlink]").forEach(btn => {
+    btn.onclick = () => unlink(btn);
+  });
+}
+
+/* 두 번 눌러야 지워집니다. 되돌릴 수 없는 버튼을 손가락 하나로 스치듯 누를 수
+   있게 두지 않기 위해서고, 브라우저 confirm 창은 이 화면의 언어가 아닙니다. */
+async function unlink(btn) {
+  const id = btn.dataset.unlink;
+  if (btn.dataset.armed !== "1") {
+    btn.dataset.armed = "1";
+    btn.textContent = "한 번 더 누르면 해제";
+    setTimeout(() => {
+      if (!btn.isConnected) return;
+      btn.dataset.armed = "";
+      btn.textContent = "연동 해제";
+    }, 4000);
+    return;
+  }
+  btn.disabled = true;
   try {
-    const st = await api("/api/setup");
-    if (!st.state.configured) openSetup();
-  } catch {}
+    await post("/api/setup/disconnect/" + id);
+    await loadSetup();
+    renderLinks();
+    if ($("#setup").classList.contains("on")) renderVenues();
+    renderSteps();
+    note("#linkMsg", "연동을 해제하고 저장된 키를 지웠습니다. " +
+                     "다시 쓰려면 새로 발급받아 입력하세요.", "ok");
+  } catch (e) {
+    btn.disabled = false;
+    note("#linkMsg", "해제 실패: " + e.message, "err");
+  }
+}
+
+/* 서버 규칙(quant/webapp/accounts.py)과 같은 규칙을 화면에서도 한 번 봅니다.
+   판정은 서버가 하고, 이건 왕복 한 번을 아껴줄 뿐입니다. */
+function passwordProblem(pw) {
+  if (pw.length < 10) return "비밀번호는 10자 이상이어야 합니다";
+  if (/^[0-9]+$/.test(pw) || /^[A-Za-z]+$/.test(pw)) return "숫자와 문자를 함께 쓰세요";
+  return "";
+}
+
+$("#passwordForm").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const current = $("#pwCurrent").value;
+  const next = $("#pwNew").value;
+  if (next !== $("#pwConfirm").value) {
+    note("#pwMsg", "새 비밀번호 두 칸이 서로 다릅니다", "err");
+    return;
+  }
+  const problem = passwordProblem(next);
+  if (problem) { note("#pwMsg", problem, "err"); return; }
+
+  $("#pwSubmit").disabled = true;
+  try {
+    await post("/api/auth/password", {current_password: current, new_password: next});
+    // 비밀번호를 바꾸면 서버가 모든 세션을 끊습니다. 화면도 그 사실대로 굴어야
+    // 하고, 입력칸은 더 이상 쓸 데가 없으니 바로 비웁니다.
+    ["#pwCurrent", "#pwNew", "#pwConfirm"].forEach(s => ($(s).value = ""));
+    signedOut();
+    note("#gateMsg", "비밀번호를 바꿨습니다 — 새 비밀번호로 다시 로그인하세요.", "ok");
+  } catch (e) {
+    note("#pwMsg", "변경 실패: " + e.message, "err");
+  } finally {
+    $("#pwSubmit").disabled = false;
+  }
+});
+
+$("#logoutBtn").onclick = async () => {
+  try { await post("/api/auth/logout"); } catch {}
+  signedOut();
+  note("#gateMsg", "로그아웃했습니다.", "ok");
+};
+
+/* ── 로그인 · 회원가입 ───────────────────────────────────────────────── */
+let me = null;
+let started = false;
+let timers = [];
+
+function showTab(which) {
+  const login = which !== "register";
+  $("#tabLogin").classList.toggle("on", login);
+  $("#tabRegister").classList.toggle("on", !login);
+  $("#loginForm").hidden = !login;
+  $("#registerForm").hidden = login;
+}
+["#tabLogin", "#tabRegister"].forEach(sel => {
+  const el = $(sel), which = sel === "#tabLogin" ? "login" : "register";
+  el.onclick = () => showTab(which);
+  el.onkeydown = ev => {
+    if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showTab(which); }
+  };
+});
+
+/* 세션은 HttpOnly 쿠키에 있습니다. 여기서 토큰을 읽거나 저장하지 않는 것이
+   요점이라, 로그인 여부는 서버에 물어보는 것 말고는 알 방법이 없습니다. */
+async function whoami() {
+  try {
+    const r = await fetch("/api/auth/me", {headers: auth, credentials: "same-origin"});
+    if (!r.ok) return null;
+    const data = await r.json();
+    const user = data && data.user ? data.user : data;
+    return user && user.email ? user : null;
+  } catch {
+    return null;
+  }
+}
+
+function signedIn(user) {
+  me = user;
+  document.body.className = "authed";
+  renderAccount();
+  if (!started) { started = true; start(); }
+}
+
+function signedOut() {
+  if (!me && document.body.classList.contains("anon")) return;
+  me = null;
+  started = false;
+  // 폴링과 소켓을 실제로 멈춥니다. 세션이 끊긴 화면이 8초마다 401 을 두드리면
+  // 로그인 화면 뒤에서 서버를 때리는 유령이 됩니다.
+  timers.forEach(clearInterval);
+  timers = [];
+  clearInterval(ping);
+  if (socket) { const s = socket; socket = null; s.close(); }
+  setupCatalog = null;
+  configuredKeys = {};
+  linkedVenues = [];
+  $("#setup").classList.remove("on");
+  $("#venueLinks").innerHTML = "";
+  $("#acctWho").textContent = "—";
+  document.body.className = "anon";
+  showTab("login");
+}
+
+$("#loginForm").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const email = $("#liEmail").value.trim();
+  const password = $("#liPassword").value;
+  if (!email || !password) {
+    note("#gateMsg", "이메일과 비밀번호를 입력하세요", "err");
+    return;
+  }
+  $("#loginSubmit").disabled = true;
+  try {
+    const res = await post("/api/auth/login", {email, password});
+    $("#liPassword").value = "";
+    const user = res && res.user && res.user.email ? res.user : await whoami();
+    if (!user) throw new Error("세션을 만들지 못했습니다");
+    note("#gateMsg", "", "");
+    signedIn(user);
+  } catch (e) {
+    note("#gateMsg", "로그인 실패: " + e.message, "err");
+  } finally {
+    $("#loginSubmit").disabled = false;
+  }
+});
+
+$("#registerForm").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const email = $("#rgEmail").value.trim();
+  const password = $("#rgPassword").value;
+  const display_name = $("#rgName").value.trim();
+  const problem = passwordProblem(password);
+  if (problem) { note("#gateMsg", problem, "err"); return; }
+
+  $("#registerSubmit").disabled = true;
+  try {
+    const res = await post("/api/auth/register", {email, password, display_name});
+    $("#rgPassword").value = "";
+    const user = res && res.user && res.user.email ? res.user : await whoami();
+    if (user) {
+      note("#gateMsg", "", "");
+      signedIn(user);
+    } else {
+      // 가입은 됐는데 세션이 안 붙는 서버 설정도 있습니다. 그때는 실패가 아니라
+      // "이제 로그인하세요" 입니다.
+      showTab("login");
+      $("#liEmail").value = email;
+      note("#gateMsg", "가입 완료 — 로그인하세요.", "ok");
+    }
+  } catch (e) {
+    note("#gateMsg", "가입 실패: " + e.message, "err");
+  } finally {
+    $("#registerSubmit").disabled = false;
+  }
+});
+
+/* ── 부팅 ────────────────────────────────────────────────────────────── */
+/* 사용자가 정해지기 전에는 아무것도 부르지 않습니다. 대시보드 폴링이 먼저
+   나가면 남의 화면을 잠깐 보여주는 게 아니라, 401 을 뿌리며 로그인 화면을
+   깜빡이게 만듭니다. */
+function start() {
+  refreshManual();
+  refreshSymbols();
+  timers.push(setInterval(() => { refreshManual(); refreshSymbols(); }, 8000));
+  refresh();
+  connect();
+  timers.push(setInterval(refresh, 15000));
+  loadQuiz().then(loadProfile);
+  // 아직 아무 곳도 연동되지 않았으면 설정부터 — 그 전에는 봇이 돌 수 없습니다.
+  loadSetup().then(() => {
+    renderLinks();
+    renderSteps();
+    if (!linkedVenues.length) openSetup();
+  }).catch(() => {});
+}
+
+(async () => {
+  const user = await whoami();
+  if (user) signedIn(user); else signedOut();
 })();
 
-setInterval(() => { refreshManual(); refreshSymbols(); }, 8000);
-refreshManual(); refreshSymbols();
-loadQuiz().then(loadProfile);
-
-refresh(); connect();
-setInterval(refresh, 15000);
 addEventListener("resize", drawEquity);
 </script>
 </body>

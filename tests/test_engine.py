@@ -9,8 +9,17 @@ from quant.alpha.base import AlphaModel
 from quant.backtest.runner import run_backtest
 from quant.config.loader import load_config
 from quant.config.schema import (
-    BacktestConfig, BrokerConfig, CostConfig, DataConfig, ExecutionConfig,
-    ModelSpec, PortfolioConfig, RiskConfig, StrategyConfig, SymbolSpec, UniverseConfig,
+    BacktestConfig,
+    BrokerConfig,
+    CostConfig,
+    DataConfig,
+    ExecutionConfig,
+    ModelSpec,
+    PortfolioConfig,
+    RiskConfig,
+    StrategyConfig,
+    SymbolSpec,
+    UniverseConfig,
 )
 from quant.core.account import Portfolio
 from quant.core.clock import SimClock
@@ -145,8 +154,8 @@ def test_stop_loss_closes_the_position():
 
 def test_protection_lock_never_blocks_an_exit():
     """A lock must stop entries and let exits through — the inverse is a trap."""
-    from quant.risk.models import TradingLockGate
     from quant.core.types import PortfolioTarget
+    from quant.risk.models import TradingLockGate
 
     pf = Portfolio(10_000)
     clock = SimClock(datetime(2024, 1, 1, tzinfo=UTC))

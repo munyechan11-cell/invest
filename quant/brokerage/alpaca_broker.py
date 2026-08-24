@@ -9,7 +9,7 @@ import httpx
 
 from quant.brokerage.base import BrokerageError
 from quant.brokerage.live_base import LiveBrokerage
-from quant.core.types import Fill, Order, OrderSide, OrderType, TimeInForce, utcnow
+from quant.core.types import Fill, Order, utcnow
 
 log = logging.getLogger("quant.brokerage.alpaca")
 

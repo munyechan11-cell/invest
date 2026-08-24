@@ -16,8 +16,18 @@ import pytest
 
 from quant.backtest.runner import run_backtest
 from quant.config.schema import (
-    BacktestConfig, BrokerConfig, CostConfig, DataConfig, ExecutionConfig, FlowConfig,
-    ModelSpec, PortfolioConfig, RiskConfig, StrategyConfig, SymbolSpec, UniverseConfig,
+    BacktestConfig,
+    BrokerConfig,
+    CostConfig,
+    DataConfig,
+    ExecutionConfig,
+    FlowConfig,
+    ModelSpec,
+    PortfolioConfig,
+    RiskConfig,
+    StrategyConfig,
+    SymbolSpec,
+    UniverseConfig,
 )
 from quant.core.clock import next_candle_close
 from quant.core.types import UTC, RunMode

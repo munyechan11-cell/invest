@@ -7,7 +7,6 @@ Follows freqtrade's hard-won operational rules:
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime
 from decimal import Decimal

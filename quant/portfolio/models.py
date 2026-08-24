@@ -281,7 +281,7 @@ class FixedStakePortfolio(PortfolioConstructionModel):
         )[: self.max_open]
         if not ranked:
             return {}
-        out: dict[str, float] = {k: 0.0 for k in scores}
+        out: dict[str, float] = dict.fromkeys(scores, 0.0)
         for key, symbol, score in ranked:
             if self.stake_amount is not None:
                 w = self.stake_amount / max(ctx.equity, 1e-9)

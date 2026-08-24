@@ -1,14 +1,22 @@
 """Indicator correctness and the warm-up contract."""
 import math
+from datetime import datetime, timedelta
 
 import pytest
 
 from quant.core.types import UTC, Bar, Symbol
 from quant.indicators.streaming import (
-    ATR, EMA, MACD, RSI, SMA, BollingerBands, Donchian, IndicatorSet,
-    RollingReturn, StdDev,
+    ATR,
+    EMA,
+    MACD,
+    RSI,
+    SMA,
+    BollingerBands,
+    Donchian,
+    IndicatorSet,
+    RollingReturn,
+    StdDev,
 )
-from datetime import datetime, timedelta
 
 SYM = Symbol("T", venue="SIM")
 
@@ -89,7 +97,7 @@ def test_donchian_channel_excludes_the_current_bar():
         don.update_bar(b)
     # the 20-close bar must be compared against the previous five bars only
     assert don.upper == pytest.approx(14 * 1.01)
-    assert 20 > don.upper
+    assert don.upper < 20
 
 
 def test_bollinger_percent_b_bounds():

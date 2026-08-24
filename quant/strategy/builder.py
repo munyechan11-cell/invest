@@ -33,11 +33,16 @@ from quant.core.events import EventBus
 from quant.core.types import UTC, AssetClass, RunMode, Symbol
 from quant.data.calendar import calendar_for_venue, create_calendar
 from quant.data.flow import FlowFeed, NullFlowProvider, create_flow_provider
+from quant.data.provider import CachingProvider, DataProvider, create_provider
+
+# import for side effects: each module registers its providers
+from quant.data.providers import local as _local_providers  # noqa: F401
 from quant.data.universe import (
-    BUILTIN_UNIVERSE_FILTERS, BUILTIN_UNIVERSE_SOURCES, StaticSource,
+    BUILTIN_UNIVERSE_FILTERS,
+    BUILTIN_UNIVERSE_SOURCES,
+    StaticSource,
     UniverseSelector,
 )
-from quant.data.provider import CachingProvider, DataProvider, create_provider
 from quant.execution.costs import PRESETS, FeeModel, FillModel, SlippageModel
 from quant.execution.models import BUILTIN_EXECUTION_MODELS
 from quant.live.limits import TradingBudget
@@ -47,9 +52,6 @@ from quant.portfolio.models import BUILTIN_PORTFOLIO_MODELS
 from quant.risk.base import RiskManagementModel
 from quant.risk.models import BUILTIN_RISK_MODELS, TradingLockGate
 from quant.risk.protections import BUILTIN_PROTECTIONS, ProtectionManager
-
-# import for side effects: each module registers its providers
-from quant.data.providers import local as _local_providers  # noqa: F401
 
 log = logging.getLogger("quant.builder")
 
@@ -377,15 +379,21 @@ def build_brokerage(config: StrategyConfig, portfolio: Portfolio,
 
 
 def apply_investor_profile(config: StrategyConfig,
-                           path: str = "investor_profile.json") -> StrategyConfig:
+                           path: str | None = None) -> StrategyConfig:
     """Fill in whatever the config left at its defaults from the saved profile.
 
     Explicit config always wins. A questionnaire quietly overwriting a value the
     operator chose deliberately is not help, it is a bug with a friendly face.
+
+    A caller that names a path gets that path. The environment is only consulted
+    when nobody named one — the profile belongs to a person, and once several
+    people share a process, a process-global pointer to "the profile" is one
+    interleaving away from sizing one user's positions off another's answers.
     """
     from quant.live.profile import ProfileStore, apply_profile
 
-    store = ProfileStore(os.environ.get("QUANT_PROFILE_FILE", path))
+    store = ProfileStore(path or os.environ.get("QUANT_PROFILE_FILE",
+                                                "investor_profile.json"))
     profile = store.load()
     if not profile.completed:
         return config

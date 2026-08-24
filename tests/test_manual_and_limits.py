@@ -23,7 +23,14 @@ from quant.core.context import Context
 from quant.core.engine import Engine
 from quant.core.events import EventBus
 from quant.core.types import (
-    UTC, Bar, Direction, Insight, Order, OrderSide, OrderType, Symbol,
+    UTC,
+    Bar,
+    Direction,
+    Insight,
+    Order,
+    OrderSide,
+    OrderType,
+    Symbol,
 )
 from quant.execution.models import ImmediateExecution
 from quant.live.limits import TradingBudget

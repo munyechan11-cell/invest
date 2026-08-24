@@ -42,33 +42,42 @@ import json
 import logging
 import statistics
 import time
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Awaitable, Callable, Sequence
+from datetime import datetime
 
-from quant.core.aio import LazySemaphore
 from quant.alpha.base import AlphaModel
 from quant.alpha.llm_client import (
-    LLMClient, LLMConfig, LLMError, QuotaExhausted,
+    LLMClient,
+    LLMConfig,
+    LLMError,
+    QuotaExhausted,
 )
 from quant.alpha.seats import (
-    ANALYST_SEATS,
     BEAR_SEAT,
     BULL_SEAT,
     HEAD_SEAT,
     RESEARCH_MANAGER_SEAT,
     RISK_SEATS,
     SPRITE_NAMES,
-    Seat,
     TRADER_SEAT,
+    Seat,
     roster,
 )
+from quant.core.aio import LazySemaphore
 from quant.core.context import Context
 from quant.core.events import EventType
-from quant.core.types import UTC, Bar, Direction, Insight, RunMode, Symbol, periods_per_year
+from quant.core.types import Bar, Direction, Insight, RunMode, Symbol, periods_per_year
 from quant.data.flow import FlowFeed
 from quant.indicators.streaming import (
-    ADX, ATR, MACD, RSI, SMA, BollingerBands, IndicatorSet, RollingReturn,
+    ADX,
+    ATR,
+    MACD,
+    RSI,
+    SMA,
+    BollingerBands,
+    IndicatorSet,
+    RollingReturn,
     RollingVolatility,
 )
 

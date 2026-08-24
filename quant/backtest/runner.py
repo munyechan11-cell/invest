@@ -10,17 +10,17 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Callable
 
 from quant.backtest.metrics import PerformanceReport, analyze, monthly_returns
 from quant.config.schema import StrategyConfig
 from quant.core.account import Portfolio
 from quant.core.clock import SimClock
-from quant.core.engine import Engine, _trade_dict
+from quant.core.engine import _trade_dict
 from quant.core.events import EventBus
-from quant.core.types import UTC, Bar, RunMode, Symbol, timeframe_delta
+from quant.core.types import UTC, Bar, Symbol, timeframe_delta
 from quant.data.flow import NullFlowProvider
 from quant.data.provider import DataProvider, gather_history
 from quant.strategy.builder import build_engine

@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import statistics
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from quant.core.context import Context
 from quant.core.types import Direction, Insight, Symbol

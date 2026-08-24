@@ -13,7 +13,7 @@ from decimal import Decimal
 
 import pytest
 
-from quant.alpha.desk import ACTION_TO_DIRECTION, DeskDecision, DeskMemory, TradingDesk
+from quant.alpha.desk import DeskDecision, DeskMemory, TradingDesk
 from quant.alpha.llm_client import LLMError, LLMUsage
 from quant.alpha.seats import ALL_SEATS, ANALYST_SEATS, roster
 from quant.core.account import Portfolio
@@ -324,6 +324,7 @@ def test_a_truncated_response_retries_with_a_bigger_budget():
     요청을 세 번 반복했습니다 — 비용은 3배, 좌석은 그대로 실패.
     """
     import httpx
+
     from quant.alpha.llm_client import LLMClient, LLMConfig
 
     budgets: list[int] = []
@@ -354,7 +355,8 @@ def test_a_truncated_response_retries_with_a_bigger_budget():
 def test_truncation_gives_up_rather_than_growing_without_bound():
     """4배까지 키워도 안 끝나면 포기합니다. 8배도 안 끝날 테니까요."""
     import httpx
-    from quant.alpha.llm_client import LLMConfig, LLMClient, Truncated
+
+    from quant.alpha.llm_client import LLMClient, LLMConfig, Truncated
 
     seen: list[int] = []
 

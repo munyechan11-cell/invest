@@ -8,19 +8,17 @@ graceful shutdown — lives here so the strategy layer stays identical.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import signal
 import time
-from datetime import datetime, timedelta
-from typing import Callable
+from datetime import datetime
 
 from quant.brokerage.live_base import LiveBrokerage
 from quant.config.schema import StrategyConfig
 from quant.core.clock import RealClock, next_candle_close
 from quant.core.engine import Engine
 from quant.core.events import Event, EventType
-from quant.core.types import UTC, Bar, RunMode, Symbol, timeframe_delta
+from quant.core.types import UTC, Bar, RunMode
 from quant.data.provider import DataProvider, gather_history
 from quant.live.notifier import TelegramNotifier
 from quant.live.state import StateStore
@@ -41,6 +39,7 @@ class LiveTrader:
         state_path: str = "quant_state.db",
         resume: bool = True,
         max_consecutive_errors: int = 10,
+        profile_path: str | None = None,
     ):
         if config.mode is RunMode.BACKTEST:
             raise ValueError("LiveTrader needs mode: dry_run or live")
@@ -48,7 +47,7 @@ class LiveTrader:
 
         # The saved investor profile fills in anything the config left at its
         # defaults — sizing, stops, daily caps — before the engine is built.
-        config = apply_investor_profile(config)
+        config = apply_investor_profile(config, profile_path)
         self.config = config
         self.engine: Engine
         self.provider: DataProvider

@@ -1,9 +1,35 @@
 """REST + WebSocket control plane and dashboard.
 
-Deliberately not a user system: there are no accounts, plans, or tiers. There
-is exactly one optional shared token (`QUANT_API_TOKEN`) because this API can
-start and stop a live trading bot, and an unauthenticated endpoint that can do
-that should not be reachable from the internet.
+이 API 는 매수·매도·전량청산·자격증명 저장을 수행합니다. 1인용일 때 그것을
+지키는 것은 공유 토큰 하나(`QUANT_API_TOKEN`)면 됐습니다 — 서버 주인과 계좌
+주인이 같은 사람이었으니까요. 여러 사람이 가입하는 순간 그 전제가 깨지고,
+질문이 "들어올 수 있는가"에서 **"누구의 것을 만지는가"**로 바뀝니다.
+
+그래서 이 파일의 모든 엔드포인트는 프로세스 전역 상태가 아니라 `Desk` 하나를
+받습니다. 데스크는 요청 하나가 만질 수 있는 전부입니다 — 그 사람의 봇, 그
+사람의 상태 파일, 그 사람의 성향과 한도와 자격증명. 데스크를 고르는 일은
+`_desk` 한 곳에서만 일어나고, 거기서 세션 쿠키가 사람을 정합니다. 엔드포인트가
+`state.trader` 를 직접 만지면 그 한 줄이 곧 남의 봇을 조종하는 길이라,
+그런 줄은 이 파일에 하나도 없어야 합니다.
+
+인증은 **세션 쿠키 하나**입니다. 가입한 사람이 자기 데스크에 앉는 길이고,
+가입자가 있는 배포에서 그것을 대신할 수 있는 것은 없습니다.
+
+`QUANT_API_TOKEN` 은 한때 그 자리를 대신했습니다 — 이 토큰을 든 요청은
+관리자 계정으로 동작했습니다. 여러 사람이 쓰는 서비스에서 그것은 공유
+마스터 키입니다. 모두가 통과해야 하는 로그인을 혼자 건너뛰고, URL 에 실려
+프록시 접근 로그와 브라우저 히스토리와 `Referer` 로 흘러 나가고, 그 한 줄을
+주운 사람은 관리자의 봇과 장부와 자격증명 앞에 앉습니다. **계정이 하나라도
+있으면 이 토큰은 아무도 인증하지 않습니다.**
+
+토큰이 아직 무언가를 지키는 곳은 계정이 없는 배포 하나뿐입니다
+(`OperatorDesk`) — 거기서는 서버 주인과 계좌 주인이 같은 사람이고 로그인이라는
+개념 자체가 없습니다. 그 길은 누군가 가입하는 순간 닫힙니다.
+
+자격증명은 `os.environ` 에 올리지 않습니다. 환경변수는 프로세스 전역이라 한
+사람의 한투 키를 올리는 순간 같은 프로세스의 다른 사람 봇이 그것으로 주문을
+냅니다. 사용자 자격증명은 `Accounts` 안에서 암호화된 채로 살고, 복호화된 값이
+가는 곳은 `UserRegistry` 가 어댑터 생성자를 부르는 자리뿐입니다.
 """
 from __future__ import annotations
 
@@ -11,36 +37,64 @@ import asyncio
 import json
 import logging
 import os
-import secrets
+import sqlite3
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from quant.config.loader import load_config
 from quant.config.schema import StrategyConfig
-from quant.core.events import Event, EventType
+from quant.core.events import Event
 from quant.core.types import UTC, RunMode
 from quant.live.credentials import (
-    CredentialStore, OPERATOR_FIELDS, VENUES_BY_ID, load_env_file,
+    OPERATOR_FIELDS,
+    VENUES,
+    VENUES_BY_ID,
+    WRITABLE_KEYS,
+    load_env_file,
+    rejection_reason,
     venue_catalog,
 )
 from quant.live.profile import ProfileStore, questionnaire, score_answers
 from quant.live.state import StateStore
+from quant.webapp.accounts import Accounts, SecretKeyMissing, User
+from quant.webapp.auth_api import SESSION_COOKIE, build_auth, public_user
+from quant.webapp.registry import (
+    RuntimeProblem,
+    UserRegistry,
+    required_secrets,
+)
+from quant.webapp.registry import (
+    _targets as credential_targets,
+)
 
 log = logging.getLogger("quant.api")
 STATIC_DIR = Path(__file__).parent / "static"
 
 
 class Hub:
-    """Fan-out of engine events to connected WebSocket clients."""
+    """Fan-out of engine events to connected WebSocket clients.
+
+    한 사람당 하나입니다. 하나를 공유하면 A 의 체결과 보유 평가가 B 의 화면에
+    그대로 흐릅니다 — 조작이 아니라 **관람**이지만, 남의 계좌를 들여다보는
+    것은 조작만큼이나 이 서비스가 존재하면 안 되는 이유입니다.
+    """
 
     def __init__(self, ring_size: int = 500):
         self.clients: set[WebSocket] = set()
@@ -75,26 +129,47 @@ class AppState:
     def __init__(self, config: StrategyConfig | None, state_path: str):
         self.config = config
         self.state_path = state_path
+        #: 1인용 배포의 이벤트 링. 여러 사람일 때는 `hubs` 만 씁니다.
         self.hub = Hub()
+        self.hubs: dict[int, Hub] = {}
         self.trader: Any = None
         self.trader_task: asyncio.Task | None = None
         self.backtests: dict[str, dict] = {}
+        #: 지금 백테스트를 돌리고 있는 사람들. 한 사람당 하나까지입니다.
+        self.backtests_running: set[str] = set()
         self.started_at = datetime.now(UTC)
+
+    def hub_for(self, user_id: int) -> Hub:
+        """사용자별 이벤트 링. 봇을 한 번이라도 띄운 사람 수만큼만 생깁니다."""
+        hub = self.hubs.get(user_id)
+        if hub is None:
+            hub = self.hubs[user_id] = Hub()
+        return hub
+
+
+#: 호출자가 요청할 수 있는 최대 백테스트 기간. 템플릿이 스스로 선언한 창은
+#: 이 서비스가 고른 것이라 그대로 두고, 요청이 밀어 넣는 창만 묶습니다.
+MAX_BACKTEST_DAYS = 3660
+
+#: 동시에 도는 백테스트 — 한 사람은 하나, 프로세스 전체로는 이만큼. 스레드로
+#: 내보내도 GIL 은 하나뿐이라, 수를 묶지 않으면 "루프를 막지는 않지만 모두를
+#: 느리게 하는" 것으로 바뀔 뿐입니다.
+MAX_CONCURRENT_BACKTESTS = 3
 
 
 class BacktestRequest(BaseModel):
-    config_path: Optional[str] = None
-    config: Optional[dict] = None
-    start: Optional[str] = None
-    end: Optional[str] = None
-    starting_cash: Optional[float] = None
+    config_path: str | None = Field(default=None, max_length=200)
+    config: dict | None = None
+    start: str | None = Field(default=None, max_length=64)
+    end: str | None = Field(default=None, max_length=64)
+    starting_cash: float | None = Field(default=None, gt=0, le=1e15)
 
 
 class ManualOrderRequest(BaseModel):
     ticker: str
-    quantity: Optional[float] = None
-    notional: Optional[float] = None
-    limit_price: Optional[float] = None
+    quantity: float | None = None
+    notional: float | None = None
+    limit_price: float | None = None
     #: hand the resulting position back to the strategy instead of pinning it
     manage: bool = False
     note: str = ""
@@ -112,10 +187,42 @@ class ProfileOverrideRequest(BaseModel):
     overrides: dict[str, float] = Field(default_factory=dict)
 
 
+#: 저장할 수 있는 값 하나의 최대 길이. 어떤 거래소 키도 이 근처에 가지
+#: 않습니다 — 가장 긴 것이 200자 남짓입니다.
+MAX_SECRET_LEN = 512
+MAX_SECRET_NAME_LEN = 64
+
+#: 요청 본문 상한. 이 API 가 받는 것 중 가장 큰 것이 전략 설정 하나입니다.
+MAX_BODY_BYTES = 256 * 1024
+
+
 class SetupRequest(BaseModel):
-    """Values from the setup form. Blank fields leave existing ones alone."""
+    """Values from the setup form. Blank fields leave existing ones alone.
+
+    크기를 여기서 묶습니다. 가입은 공짜고 저장할 수 있는 이름은 스무 개
+    남짓이라, 값 하나에 상한이 없으면 계정 하나가 4 MiB짜리 키를 스무 번
+    밀어 넣습니다. 그 디스크는 모든 사용자의 포지션과 체결 기록이 사는
+    곳이고, 채워지는 순간 봇들은 자기가 무엇을 들고 있는지 적지 못합니다.
+    """
 
     values: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("values")
+    @classmethod
+    def _bounded(cls, values: dict[str, str]) -> dict[str, str]:
+        # 한 번에 보낼 수 있는 항목 수는 설정 화면이 가진 칸 수까지입니다
+        # (계정 화면은 그보다 적게 쓰지만, 1인용 화면은 전부 씁니다).
+        if len(values) > len(WRITABLE_KEYS):
+            raise ValueError(
+                f"한 번에 저장할 수 있는 항목은 {len(WRITABLE_KEYS)}개까지입니다")
+        for key, value in values.items():
+            if len(key or "") > MAX_SECRET_NAME_LEN:
+                raise ValueError("설정 항목 이름이 너무 깁니다")
+            if len(value or "") > MAX_SECRET_LEN:
+                raise ValueError(
+                    f"{(key or '')[:40]} 값이 너무 깁니다 "
+                    f"({MAX_SECRET_LEN}자 이하로 입력하세요)")
+        return values
 
 
 class LimitsRequest(BaseModel):
@@ -125,10 +232,10 @@ class LimitsRequest(BaseModel):
     release the loss cap it never mentioned.
     """
 
-    max_daily_notional: Optional[float] = None
-    max_daily_orders: Optional[int] = None
-    max_daily_loss: Optional[float] = None
-    max_daily_loss_pct: Optional[float] = None
+    max_daily_notional: float | None = None
+    max_daily_orders: int | None = None
+    max_daily_loss: float | None = None
+    max_daily_loss_pct: float | None = None
 
 
 #: (요청 필드, TradingBudget 속성, .env 키, 변환)
@@ -159,24 +266,52 @@ class UnsafeBind(RuntimeError):
 
 
 def assert_safe_to_bind(host: str) -> None:
-    """토큰 없는 API 를 외부에 노출하려 하면 뜨지 않습니다.
+    """로그인이 불가능한 상태로 외부에 노출하려 하면 뜨지 않습니다.
 
     이전에는 경고 한 줄만 찍고 그대로 떴습니다. 그런데 호스팅 플랫폼은
     예외 없이 0.0.0.0 바인딩을 요구하므로, 하필 실제 배포 구성에서만
     경고가 무시되고 매수·매도·전량청산 엔드포인트가 인증 없이 열립니다.
     로그로 남길 성질이 아니라 뜨지 말아야 할 상태입니다.
+
+    공유 토큰은 더 이상 없습니다 — 값 하나가 자리를 열면 그것은 로그인이
+    아니라 로그인의 우회이기 때문입니다. 그래서 조건은 "토큰이 있는가" 가
+    아니라 "**사람이 가입할 수 있는가**" 로 바뀌었습니다. 암호화 키가 없으면
+    계정을 만들 수 없고, 계정이 없으면 이 API 에는 앉을 자리가 없습니다.
     """
     if host.strip().lower() in _LOOPBACK:
         return
-    if os.environ.get("QUANT_API_TOKEN", "").strip():
-        return
-    raise UnsafeBind(
-        f"{host} 로 바인딩하려는데 QUANT_API_TOKEN 이 없습니다. "
-        "이 API 는 매수·매도·전량청산·자격증명 저장을 수행하므로 "
-        "인증 없이 외부에 열 수 없습니다.\n"
-        "  해결: QUANT_API_TOKEN=$(python3 -c \"import secrets;print(secrets.token_urlsafe(32))\") "
-        "를 환경변수로 설정하거나, --host 127.0.0.1 로 로컬에서만 여세요."
-    )
+    try:
+        assert_ready_for_users()
+    except SecretKeyMissing as exc:
+        raise UnsafeBind(
+            f"{host} 로 바인딩할 수 없습니다.\n{exc}") from None
+
+
+def assert_ready_for_users(secret: str | None = None) -> None:
+    """암호화 키 없이는 서비스를 열지 않습니다 — 공개 바인딩과 같은 이유로.
+
+    `assert_safe_to_bind` 와 짝입니다. 그쪽은 "인증 없이 열지 마라", 이쪽은
+    "남의 증권사 키를 평문으로 받아둘 상태로 열지 마라" 입니다. 둘 다 경고로
+    두면 하필 실제 배포에서만 무시됩니다 — 로컬에서는 아무도 가입하지 않으니
+    문제가 드러나지 않고, 사람이 붙기 시작하는 배포에서 처음으로 대가를
+    치릅니다. 그래서 로그가 아니라 기동 거부입니다.
+    """
+    value = (secret if secret is not None
+             else os.environ.get("QUANT_SECRET_KEY", "")).strip()
+    how = ("  생성: QUANT_SECRET_KEY="
+           "$(python3 -c \"import secrets;print(secrets.token_urlsafe(48))\")\n"
+           "  주의: 이 값을 잃어버리면 저장된 자격증명을 되살릴 수 없습니다 — "
+           "가입자들이 키를 다시 등록해야 합니다.")
+    if not value:
+        raise SecretKeyMissing(
+            "QUANT_SECRET_KEY 가 없습니다. 이 값으로 가입자들의 증권사 API 키를 "
+            f"암호화하므로, 없으면 서비스를 시작하지 않습니다.\n{how}")
+    if len(value) < 32:
+        # `Accounts` 도 같은 선을 긋습니다. 여기서 먼저 걸러야 "짧다" 는 말이
+        # 스택 트레이스가 아니라 기동 거부 메시지로 나옵니다.
+        raise SecretKeyMissing(
+            f"QUANT_SECRET_KEY 가 너무 짧습니다 ({len(value)}자, 32자 이상 필요). "
+            f"이 값 하나가 모든 가입자의 증권사 키를 지킵니다.\n{how}")
 
 
 def assert_live_start_allowed(config: StrategyConfig, confirm: str) -> None:
@@ -187,6 +322,9 @@ def assert_live_start_allowed(config: StrategyConfig, confirm: str) -> None:
     일 것, 사람이 전략 이름을 직접 입력할 것. API 는 두 번째만 손으로 검사했고
     `cfg.mode = ...` 대입은 pydantic 검증을 다시 돌리지 않으므로, '하루 한도
     없는 실거래'가 POST 한 번으로 만들어졌습니다.
+
+    사람마다 다시 겁니다. 여러 사람이 쓴다고 해서 확인 한 번이 모두를 위한
+    확인이 되지는 않습니다.
     """
     if config.mode is not RunMode.LIVE:
         raise HTTPException(
@@ -209,6 +347,548 @@ def assert_live_start_allowed(config: StrategyConfig, confirm: str) -> None:
         )
 
 
+def users_db_path(state_path: str = "quant_state.db") -> str:
+    """계정 DB 자리 — `QUANT_USERS_DB`, 없으면 상태 DB 옆."""
+    explicit = os.environ.get("QUANT_USERS_DB", "").strip()
+    if explicit:
+        return explicit
+    return str(Path(state_path).expanduser().parent / "quant_users.db")
+
+
+def registered_accounts(users_db: str) -> int:
+    """계정 DB 에 사람이 몇 명 있는지 — 복호화 없이 파일만 셉니다.
+
+    `QUANT_SECRET_KEY` 가 사라지면 `Accounts` 를 열 수 없고, 그러면 이 API 는
+    계정이 없는 1인용 배포로 되돌아갑니다. 되돌아간 자리에서 공유 토큰 하나가
+    다시 모든 것을 여는데, 정작 가입자들의 데이터는 그대로 디스크에 있습니다.
+    "계정이 있는가" 는 그래서 복호화 없이도 답할 수 있어야 합니다.
+    """
+    path = Path(users_db)
+    if not path.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            table = conn.execute(
+                "SELECT count(*) FROM sqlite_master "
+                "WHERE type='table' AND name='users'").fetchone()
+            if not table or not table[0]:
+                return 0
+            return int(conn.execute("SELECT count(*) FROM users").fetchone()[0])
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError:
+        # 읽을 수 없는 계정 DB 가 거기 있다는 것 자체가 "1인용이 아니다" 입니다.
+        log.warning("계정 DB 를 읽지 못했습니다: %s — 1인용 경로를 닫습니다", users_db)
+        return 1
+
+
+def user_data_root(state_path: str = "quant_state.db") -> str:
+    """사용자별 파일이 놓이는 곳 — `QUANT_USER_DATA`, 없으면 상태 DB 옆.
+
+    계정 DB 와 같은 규칙을 쓰는 데는 배포상의 이유가 있습니다. 호스팅에서
+    영구 디스크는 보통 하나만 붙이고 상태 DB 를 그 위에 올립니다. 사용자
+    디렉터리만 작업 디렉터리 기준으로 남으면, **포지션과 체결 기록이 재배포마다
+    사라집니다** — 봇은 다시 뜨지만 자기가 무엇을 들고 있었는지 모르는 채로 뜹니다.
+    """
+    explicit = os.environ.get("QUANT_USER_DATA", "").strip()
+    if explicit:
+        return explicit
+    return str(Path(state_path).expanduser().parent / "users")
+
+
+# ── 계정에 저장할 수 있는 설정값 ─────────────────────────────────────────
+#: 서비스 전체를 바꾸는 값들. 허용 목록에는 있지만 **한 사람의 계정에는**
+#: 들어갈 수 없습니다. 여기가 비어 있으면 가입자 한 명이 `QUANT_API_TOKEN` 을
+#: 저장해 전체 배포의 토큰을 정하거나, `QUANT_LIMIT_DAILY_*` 로 모두의 하루
+#: 한도를 바꿉니다 — 후자는 실제로 예전 `/api/limits` 가 하던 일입니다.
+_SERVICE_SCOPED = frozenset({
+    "OPERATOR_NAME", "QUANT_API_TOKEN", "CORS_ORIGINS",
+    "QUANT_LIMIT_DAILY_NOTIONAL", "QUANT_LIMIT_DAILY_ORDERS",
+    "QUANT_LIMIT_DAILY_LOSS", "QUANT_LIMIT_DAILY_LOSS_PCT",
+})
+
+#: 계정에 저장할 수 있는 이름 전부. `WRITABLE_KEYS` 에서 빼는 방식이라,
+#: 거래소가 하나 늘면 설정 화면과 이쪽이 자동으로 같이 늡니다 — 목록을 따로
+#: 적어두면 새 거래소 필드가 조용히 사라지는 쪽으로 어긋납니다.
+ACCOUNT_KEYS: frozenset[str] = frozenset(WRITABLE_KEYS) - _SERVICE_SCOPED
+
+#: 계정 화면이 보여줄 운영자 항목. 이름과 대시보드 토큰은 계정이 대신하므로
+#: 뺍니다 — 화면에 남겨두면 로그인한 사람 옆에 중복된 신원이 하나 더 섭니다.
+ACCOUNT_OPERATOR_FIELDS = [(env, label, required)
+                           for env, label, required in OPERATOR_FIELDS
+                           if env not in _SERVICE_SCOPED]
+
+#: 프로세스 환경에 남아 있으면 안 되는 이름들 — 계좌에 닿거나 사람에게 닿는 값.
+#:
+#: LLM 키(ANTHROPIC/OPENAI/GOOGLE)는 일부러 뺐습니다. 그건 서비스가 자기 비용으로
+#: 제공하기로 한 값이고 주문을 낼 수 없습니다 — 여기서 지우면 자기 키가 없는
+#: 사용자의 AI 데스크가 통째로 꺼집니다. 증권사 키와 알림 토큰은 반대입니다:
+#: 프로세스 전역에 있는 순간 "운영자 계좌로 아무나 주문을 낸다"거나 "남의
+#: 텔레그램으로 내 체결이 간다" 가 됩니다.
+_NEVER_PROCESS_WIDE: frozenset[str] = frozenset(
+    [env for venue in VENUES for env, _, _ in venue.fields]
+    + ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
+)
+
+
+def account_rejection_reason(key: str) -> str:
+    """이 값을 **계정에** 저장할 수 없는 이유. 저장해도 되면 빈 문자열.
+
+    파일 저장소(`CredentialStore`)와 같은 규칙을 먼저 그대로 겁니다 —
+    프로세스를 조종하는 변수 금지, 설정 화면이 아는 이름만 허용. 저장 경로가
+    `.env` 에서 계정 DB 로 바뀌었다고 규칙이 헐거워지면, 예전에 막았던 것이
+    새 경로로 그대로 들어옵니다.
+    """
+    reason = rejection_reason(key)
+    if reason:
+        return reason
+    if key.strip() not in ACCOUNT_KEYS:
+        return "서비스 전체 설정이라 계정에서는 바꿀 수 없습니다"
+    return ""
+
+
+def _scrub(text: str, secrets_used: dict[str, str]) -> str:
+    """검증 실패 메시지에서 값이 보이면 지웁니다.
+
+    어댑터 예외는 대개 이름만 말하지만, 거래소 SDK 는 요청 본문을 그대로 붙여
+    던지기도 합니다. 화면으로 나가는 문자열에 키가 섞이는 경로는 여기 하나뿐이라
+    여기서 끊습니다.
+    """
+    for value in secrets_used.values():
+        if value and len(value) >= 6 and value in text:
+            text = text.replace(value, "***")
+    return text
+
+
+async def verify_venue(venue_id: str, values: dict[str, str]) -> dict:
+    """거래소에 읽기 전용 호출 한 번. 값은 **인자로만** 흐릅니다.
+
+    `CredentialStore.verify()` 와 하는 일은 같지만 `os.environ` 을 읽지
+    않습니다. 여러 사람이 쓰는 프로세스에서 검증을 위해 환경변수에 키를 잠깐
+    올리는 순간, 그 잠깐 동안 다른 사람의 봇이 그 키를 집어갑니다.
+    """
+    spec = VENUES_BY_ID.get(venue_id)
+    if spec is None:
+        return {"ok": False, "error": f"알 수 없는 거래소: {venue_id}"}
+    missing = [env for env, _, required in spec.fields
+               if required and not values.get(env)]
+    if missing:
+        return {"ok": False, "error": f"미입력 항목: {', '.join(missing)}"}
+
+    try:
+        if venue_id == "kis":
+            from quant.data.providers.kis import kis_token
+
+            await kis_token(values["KIS_APP_KEY"], values["KIS_APP_SECRET"], paper=True)
+            return {"ok": True, "detail": "모의투자 토큰 발급 성공"}
+
+        if venue_id == "toss":
+            from quant.brokerage.toss_broker import toss_token
+
+            await toss_token(values["TOSS_CLIENT_ID"], values["TOSS_CLIENT_SECRET"])
+            return {"ok": True, "detail": "OAuth 토큰 발급 성공 (모의투자 환경 없음)"}
+
+        if venue_id == "alpaca":
+            import httpx
+
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(
+                    "https://paper-api.alpaca.markets/v2/account",
+                    headers={"APCA-API-KEY-ID": values["ALPACA_API_KEY"],
+                             "APCA-API-SECRET-KEY": values["ALPACA_SECRET_KEY"]},
+                )
+            r.raise_for_status()
+            return {"ok": True, "detail": "페이퍼 계좌 조회 성공"}
+
+        import ccxt.async_support as ccxt_async
+
+        key_env, secret_env = [f[0] for f in spec.fields[:2]]
+        ex = getattr(ccxt_async, venue_id)({
+            "apiKey": values[key_env], "secret": values[secret_env],
+            "enableRateLimit": True,
+        })
+        try:
+            balance = await ex.fetch_balance()
+            nonzero = sum(1 for v in (balance.get("total") or {}).values() if v)
+            return {"ok": True, "detail": f"잔고 조회 성공 (보유 자산 {nonzero}종)"}
+        finally:
+            await ex.close()
+    except ImportError as exc:
+        return {"ok": False, "error": f"필요한 패키지가 없습니다: {exc}"}
+    except Exception as exc:
+        return {"ok": False,
+                "error": _scrub(f"{type(exc).__name__}: {str(exc)[:200]}", values)}
+
+
+# ── 전략 템플릿 ──────────────────────────────────────────────────────────
+def strategy_catalog(root: str | Path | None = None) -> dict[str, Path]:
+    """이 서비스가 돌려주는 전략들 — 이름 → 파일.
+
+    가입자가 서버의 **경로**를 지정할 수 있으면 그것은 설정 선택이 아니라
+    파일 열람입니다. 이름만 받고, 열리는 파일은 언제나 이 표 안의 값입니다.
+    """
+    base = Path(root or os.environ.get("QUANT_CONFIG_DIR", "configs"))
+    if not base.is_dir():
+        return {}
+    return {p.stem: p for p in sorted(base.iterdir())
+            if p.is_file() and p.suffix.lower() in (".yaml", ".yml", ".json")}
+
+
+def resolve_template(name: str) -> Path:
+    catalog = strategy_catalog()
+    # 경로처럼 생긴 것이 와도 이름만 뽑아 씁니다. `../../etc/passwd` 는
+    # `passwd` 가 되고, 표에 없으니 거기서 끝납니다.
+    wanted = Path((name or "").strip()).stem
+    path = catalog.get(wanted)
+    if path is None:
+        raise HTTPException(
+            400,
+            f"전략 템플릿 이름을 지정하세요 (서버 파일 경로는 쓸 수 없습니다). "
+            f"사용 가능: {', '.join(sorted(catalog)) or '없음'}",
+        )
+    return path
+
+
+def _with_mode(config: StrategyConfig, mode: RunMode) -> StrategyConfig:
+    """모드를 바꿨으면 스키마 검증을 다시 돌린다.
+
+    대입만으로는 돌지 않아서 '하루 한도 없는 실거래'와 'paper 브로커 실거래'가
+    그대로 통과했습니다.
+    """
+    try:
+        return StrategyConfig.model_validate({**config.model_dump(), "mode": mode})
+    except ValidationError as exc:
+        raise HTTPException(
+            400, f"이 설정으로는 시작할 수 없습니다: {exc.errors()[0]['msg']}"
+        ) from exc
+
+
+def _parse_ts(value: str, field: str) -> datetime:
+    """ISO 8601 하나. 파싱 실패는 500 이 아니라 400 입니다."""
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(
+            400, f"{field} 형식이 올바르지 않습니다 (예: 2024-01-01T00:00:00Z)"
+        ) from exc
+
+
+def _assert_window_bounded(config: StrategyConfig) -> None:
+    """요청이 정한 백테스트 창이 상식적인 크기인지.
+
+    시작이 끝보다 뒤면 러너가 `ValueError` 로 끝내는데, 그건 화면에 500 으로
+    나갑니다. 길이 쪽은 비용의 문제입니다 — 창이 길수록 CPU 를 오래 씁니다.
+    """
+    end = config.backtest.end or datetime.now(UTC)
+    start = config.backtest.start or (end - timedelta(days=730))
+    start = start if start.tzinfo else start.replace(tzinfo=UTC)
+    end = end if end.tzinfo else end.replace(tzinfo=UTC)
+    if start >= end:
+        raise HTTPException(400, "백테스트 시작이 종료보다 앞서야 합니다")
+    if (end - start).days > MAX_BACKTEST_DAYS:
+        raise HTTPException(
+            400, f"백테스트 기간이 너무 깁니다 — 최대 {MAX_BACKTEST_DAYS}일입니다")
+
+
+def _apply_profile_live(trader, profile) -> dict | None:
+    """실행 중인 봇에 즉시 반영할 수 있는 것만 반영한다 (1인용 경로).
+
+    사이즈·손절·한도는 바로 바뀌지만 봉 주기나 알파 구성은 바뀌지 않습니다 —
+    그건 엔진을 다시 세워야 하는 일이라, 반쯤 바뀐 상태로 돌리는 것보다
+    재시작이 필요하다고 말하는 편이 정직합니다.
+    """
+    if trader is None:
+        return None
+    settings = profile.settings()
+    engine = trader.engine
+    pm = engine.portfolio_model
+    pm.max_position_weight = settings["max_position_weight"]
+    pm.max_gross_leverage = settings["max_gross_leverage"]
+    pm.cash_reserve_pct = settings["cash_reserve_pct"]
+    if hasattr(pm, "target_vol"):
+        pm.target_vol = settings["target_annual_vol"]
+    budget = engine.budget
+    budget.max_loss_pct = settings["max_daily_loss_pct"]
+    budget.max_orders = settings["max_daily_orders"]
+    for model in engine.risk.models:
+        if model.name == "max_dd_per_security":
+            model.atr_multiple = settings["stop_atr_multiple"]
+            model.limit = settings["stop_ceiling_pct"]
+        elif model.name == "trailing_stop":
+            model.atr_multiple = settings["trailing_atr_multiple"]
+        elif model.name == "max_positions":
+            model.max_positions = settings["max_positions"]
+    return {
+        "sizing_and_risk": "즉시 적용됨",
+        "needs_restart": ["봉 주기", "알파 모델 구성", "AI 데스크 사용 여부"],
+    }
+
+
+# ── 요청 하나가 만질 수 있는 전부 ────────────────────────────────────────
+class Desk:
+    """봇 하나, 상태 파일 하나, 성향 하나, 한도 하나, 자격증명 한 벌.
+
+    엔드포인트는 이것만 받습니다. `state.trader` 를 직접 만지는 줄이 하나라도
+    남으면 그 줄이 남의 봇을 조종하는 경로가 되므로, 고르는 일은 `_desk`
+    한 곳에만 있고 나머지는 자기 데스크만 압니다.
+    """
+
+    user: User | None = None
+
+    # ── 봇 ───────────────────────────────────────────────────────────────
+    def trader(self) -> Any:
+        raise NotImplementedError
+
+    def require_trader(self) -> Any:
+        raise NotImplementedError
+
+    def running(self) -> bool:
+        trader = self.trader()
+        return bool(trader is not None and trader.running)
+
+    def desk_model(self):
+        trader = self.trader()
+        return trader.desk() if trader is not None else None
+
+    def release_halt(self) -> dict:
+        budget = self.require_trader().engine.budget
+        budget.release()
+        return budget.status()
+
+    async def sync(self) -> dict:
+        return await self.require_trader().engine.brokerage.sync()
+
+    # ── 파일 ─────────────────────────────────────────────────────────────
+    @property
+    def hub(self) -> Hub:
+        raise NotImplementedError
+
+    @property
+    def state_path(self) -> str:
+        raise NotImplementedError
+
+    def run_config(self) -> StrategyConfig | None:
+        raise NotImplementedError
+
+    def status(self) -> dict:
+        raise NotImplementedError
+
+    # ── 투자 성향 ────────────────────────────────────────────────────────
+    def profile_store(self) -> ProfileStore:
+        raise NotImplementedError
+
+    def save_profile(self, profile) -> dict | None:
+        raise NotImplementedError
+
+    def clear_override(self, axis: str) -> dict:
+        store = self.profile_store()
+        profile = store.load()
+        profile.overrides.pop(axis.upper(), None)
+        store.save(profile)
+        self.record("profile_override_cleared", axis.upper())
+        return profile.to_dict()
+
+    # ── 하루 한도 ────────────────────────────────────────────────────────
+    def limits(self) -> dict:
+        raise NotImplementedError
+
+    def save_limits(self, req: LimitsRequest) -> dict:
+        raise NotImplementedError
+
+    # ── 자격증명 ─────────────────────────────────────────────────────────
+    def setup(self) -> dict:
+        raise NotImplementedError
+
+    def save_setup(self, values: dict[str, str]) -> dict:
+        raise NotImplementedError
+
+    async def verify(self, venue_id: str) -> dict:
+        raise NotImplementedError
+
+    def disconnect(self, venue_id: str) -> dict:
+        raise NotImplementedError
+
+    # ── 실행 ─────────────────────────────────────────────────────────────
+    def load_strategy(self, config_path: str) -> StrategyConfig:
+        raise NotImplementedError
+
+    async def start(self, req: StartRequest) -> dict:
+        raise NotImplementedError
+
+    async def stop(self) -> dict:
+        raise NotImplementedError
+
+    def record(self, action: str, detail: str = "") -> None:
+        """감사 기록. 값은 절대 남기지 않습니다 — 이름과 종목까지만."""
+
+
+class UserDesk(Desk):
+    """가입자 한 명의 데스크. 여기 있는 모든 것이 `user.id` 로 좁혀집니다.
+
+    이 클래스의 어떤 메서드도 사용자 id 를 인자로 받지 않는다는 점이 중요합니다.
+    id 는 세션에서 한 번 정해져 생성자로만 들어오므로, 요청 본문이나 경로에
+    남의 id 를 적어 넣을 자리가 애초에 없습니다.
+    """
+
+    def __init__(self, user: User, state: AppState, accounts: Accounts,
+                 registry: UserRegistry):
+        self.user = user
+        self.state = state
+        self.accounts = accounts
+        self.registry = registry
+
+    # ── 봇 ───────────────────────────────────────────────────────────────
+    def trader(self) -> Any:
+        return self.registry.trader(self.user.id)
+
+    def require_trader(self) -> Any:
+        return self.registry.require_trader(self.user.id)
+
+    @property
+    def hub(self) -> Hub:
+        return self.state.hub_for(self.user.id)
+
+    @property
+    def state_path(self) -> str:
+        return self.registry.state_path(self.user.id)
+
+    def run_config(self) -> StrategyConfig | None:
+        trader = self.trader()
+        # 돌고 있으면 그 봇의 설정이 이 사람의 상태 DB 에 적힌 run 과 같은
+        # 이름을 가집니다. 아니면 프로세스 기본 템플릿으로 물러섭니다.
+        return trader.config if trader is not None else self.state.config
+
+    def status(self) -> dict:
+        return self.registry.status(self.user.id)
+
+    # ── 투자 성향 ────────────────────────────────────────────────────────
+    def profile_store(self) -> ProfileStore:
+        return self.registry.profile_store(self.user.id)
+
+    def save_profile(self, profile) -> dict | None:
+        return self.registry.save_profile(self.user.id, profile)
+
+    # ── 하루 한도 ────────────────────────────────────────────────────────
+    def limits(self) -> dict:
+        trader = self.trader()
+        if trader is not None:
+            return trader.engine.budget.status()
+        return {"running": False, "configured": self.registry.limits(self.user.id)}
+
+    def save_limits(self, req: LimitsRequest) -> dict:
+        out = self.registry.save_limits(self.user.id, req.model_dump())
+        note = ("실행 중인 봇에는 즉시 적용됩니다" if out["applied_now"]
+                else "다음 실행부터 적용됩니다")
+        if out["removed"]:
+            note += (f" — 주의: {', '.join(out['removed'])} 한도가 "
+                     "해제되었습니다 (무제한)")
+        return {**out, "note": note}
+
+    # ── 자격증명 ─────────────────────────────────────────────────────────
+    def setup(self) -> dict:
+        configured = self.accounts.configured(self.user.id)
+        linked = [v.id for v in VENUES
+                  if all(env in configured
+                         for env, _, needed in v.fields if needed)]
+        return {
+            "state": {
+                "configured": bool(linked),
+                "operator": self.user.display_name or self.user.email,
+                "venues": linked,
+                "has_llm": any(name in configured for name in
+                               ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY")),
+                "has_notifier": ("TELEGRAM_BOT_TOKEN" in configured
+                                 and "TELEGRAM_CHAT_ID" in configured),
+                "has_api_token": False,
+                "updated_at": "",
+            },
+            "venues": venue_catalog(),
+            "operator_fields": [{"env": e, "label": label, "required": required}
+                                for e, label, required in ACCOUNT_OPERATOR_FIELDS],
+            # 이름과 마지막 4자리뿐입니다. 값은 어떤 경로로도 돌아가지 않습니다.
+            "configured": configured,
+        }
+
+    def save_setup(self, values: dict[str, str]) -> dict:
+        written: list[str] = []
+        rejected: dict[str, str] = {}
+        for raw_key, raw_value in values.items():
+            key = (raw_key or "").strip()
+            reason = account_rejection_reason(key)
+            if reason:
+                rejected[key or "(빈 키)"] = reason
+                log.warning("설정 저장 거부: user=%s key=%r — %s",
+                            self.user.id, key, reason)
+                continue
+            value = (raw_value or "").strip()
+            if not value:
+                # 빈 칸은 "이미 저장된 것을 그대로 두라"는 뜻입니다. 설정 화면이
+                # 비밀 칸을 비운 채 폼을 제출할 수 있어야 하니까요.
+                continue
+            if "\n" in value or "\r" in value:
+                rejected[key] = "값에 줄바꿈이 있어 저장할 수 없습니다"
+                log.warning("설정 저장 거부: user=%s key=%r — 줄바꿈", self.user.id, key)
+                continue
+            self.accounts.put_secret(self.user.id, key, value)
+            written.append(key)
+        return {"written": written, "rejected": rejected, **self.setup()}
+
+    async def verify(self, venue_id: str) -> dict:
+        spec = VENUES_BY_ID[venue_id]
+        wanted = {env for env, _, _ in spec.fields}
+        # 복호화된 값이 사는 유일한 구간입니다. 이 함수 밖으로 나가지 않습니다.
+        mine = {k: v for k, v in self.accounts.secrets_for(self.user.id).items()
+                if k in wanted}
+        result = await verify_venue(venue_id, mine)
+        self.record("credentials_verified" if result.get("ok")
+                    else "credentials_verify_failed", venue_id)
+        return result
+
+    def disconnect(self, venue_id: str) -> dict:
+        spec = VENUES_BY_ID[venue_id]
+        configured = self.accounts.configured(self.user.id)
+        removed = [env for env, _, _ in spec.fields if env in configured]
+        for name in removed:
+            self.accounts.drop_secret(self.user.id, name)
+        return {"disconnected": venue_id, "removed": removed}
+
+    # ── 실행 ─────────────────────────────────────────────────────────────
+    def load_strategy(self, config_path: str) -> StrategyConfig:
+        path = resolve_template(config_path)
+        try:
+            return load_config(str(path))
+        except Exception as exc:
+            raise HTTPException(400, f"설정을 불러오지 못했습니다: {exc}") from exc
+
+    async def start(self, req: StartRequest) -> dict:
+        cfg = self.load_strategy(req.config_path)
+        mode = RunMode(req.mode)
+        if mode is RunMode.LIVE:
+            # 사람마다 다시 겁니다 — 남이 확인했다고 내 실거래가 열리지 않습니다.
+            assert_live_start_allowed(cfg, req.confirm)
+        cfg = _with_mode(cfg, mode)
+        return await self.registry.start(self.user.id, cfg, on_event=self.hub.publish)
+
+    async def stop(self) -> dict:
+        return await self.registry.stop(self.user.id)
+
+    def record(self, action: str, detail: str = "") -> None:
+        self.accounts.record(self.user.id, action, detail)
+
+
+def _resolve(trader, ticker: str):
+    ctx = trader.engine.ctx
+    wanted = ticker.strip().upper()
+    for sym in ctx.universe:
+        if sym.ticker.upper() == wanted:
+            return sym
+    for pos in ctx.portfolio.open_positions:
+        if pos.symbol.ticker.upper() == wanted:
+            return pos.symbol
+    raise HTTPException(404, f"유니버스에도 보유에도 없는 종목: {ticker}")
+
+
 def create_app(config: StrategyConfig | None = None,
                state_path: str = "quant_state.db") -> FastAPI:
     # The setup screen writes credentials to .env; load them before anything
@@ -216,29 +896,98 @@ def create_app(config: StrategyConfig | None = None,
     load_env_file(os.environ.get("QUANT_ENV_FILE", ".env"))
 
     state = AppState(config, state_path)
-    token = os.environ.get("QUANT_API_TOKEN", "").strip()
+    secret = os.environ.get("QUANT_SECRET_KEY", "").strip()
 
-    async def require_token(request: Request) -> None:
-        if not token:
-            return
-        header = request.headers.get("authorization", "")
-        supplied = header[7:] if header.lower().startswith("bearer ") else \
-            request.query_params.get("token", "")
-        if not secrets.compare_digest(supplied, token):
-            raise HTTPException(401, "invalid or missing API token")
+    accounts: Accounts | None = None
+    registry: UserRegistry | None = None
+    if secret:
+        accounts = Accounts(users_db_path(state_path), secret)
+        registry = UserRegistry(accounts, root=user_data_root(state_path))
+        # 1인용 시절의 `.env` 나 배포 환경변수에 증권사 키가 남아 있을 수
+        # 있습니다. 프로세스 환경은 전역이라, 여러 사람이 도는 프로세스에서
+        # 그 한 줄은 "운영자의 계좌로 아무나 주문을 낼 수 있다" 와 같은
+        # 말입니다. 사용자 봇은 자격증명을 언제나 인자로 받으므로 이 값들은
+        # 이제 아무도 필요로 하지 않습니다 — 내려놓고 이름만 남깁니다.
+        stale = sorted(name for name in _NEVER_PROCESS_WIDE if os.environ.get(name))
+        for name in stale:
+            os.environ.pop(name, None)
+        if stale:
+            log.warning(
+                "프로세스 환경에 있던 계정용 자격증명 %d건을 내렸습니다 (%s) — "
+                "여러 사람이 쓰는 배포에서는 각자 설정 화면에서 등록합니다",
+                len(stale), ", ".join(stale))
+
+    #: 계정 DB 에 사람이 있는데 암호화 키가 없는 상태. 1인용으로 되돌아가면
+    #: 공유 토큰 하나가 다시 전부를 여는 자리라, 그 길을 아예 닫습니다.
+    orphaned_accounts = (registry is None
+                         and registered_accounts(users_db_path(state_path)) > 0)
+
+    def _desk(scope) -> Desk:
+        """이 요청이 앉을 데스크. 인증이 일어나는 유일한 자리입니다.
+
+        가입자가 있는 배포에서 사람을 정하는 것은 세션 쿠키뿐입니다.
+        공유 토큰은 존재하지 않습니다. 값 하나가 관리자 자리를 열면 그것은
+        로그인이 아니라 로그인의 우회이고, 그 값은 주소창과 프록시 접근 로그를
+        타고 서비스 바깥으로 흐릅니다. 브라우저 WebSocket 도 쿠키로 인증하므로
+        `?token=` 이 필요한 자리는 남아 있지 않습니다.
+        """
+        if registry is None or accounts is None:
+            # 여기 오면 앱이 잘못 조립된 것입니다. `create_app` 이 이미
+            # QUANT_SECRET_KEY 를 요구하므로 정상 경로에서는 도달하지 않습니다.
+            raise HTTPException(
+                503, "서비스가 준비되지 않았습니다 — QUANT_SECRET_KEY 를 설정하고 "
+                     "다시 시작하세요.")
+        user = accounts.user_for_session(scope.cookies.get(SESSION_COOKIE, ""))
+        if user is None:
+            raise HTTPException(
+                401, "로그인이 필요합니다 — 계정이 없으면 먼저 가입하세요.")
+        return UserDesk(user, state, accounts, registry)
+
+    async def desk(request: Request) -> Desk:
+        return _desk(request)
+
+    async def maybe_desk(request: Request) -> Desk | None:
+        """인증되지 않았으면 None. `/api/health` 처럼 막으면 안 되는 곳에서만."""
+        try:
+            return _desk(request)
+        except HTTPException:
+            return None
+
+    async def require_admin(request: Request) -> Desk:
+        seat = _desk(request)
+        if seat.user is not None and not seat.user.is_admin:
+            raise HTTPException(403, "관리자만 접근할 수 있습니다")
+        return seat
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        if not token:
-            log.warning(
-                "QUANT_API_TOKEN is not set — the control API is unauthenticated. "
-                "Bind to localhost or set a token before exposing this."
+        if orphaned_accounts:
+            log.error(
+                "계정 DB 에 가입자가 있는데 QUANT_SECRET_KEY 가 없습니다 — "
+                "이 프로세스는 아무 요청도 받지 않습니다. 키를 설정하고 다시 "
+                "시작하세요 (키를 잃어버렸다면 저장된 자격증명은 되살릴 수 "
+                "없고, 가입자들이 키를 다시 등록해야 합니다)."
             )
+        elif registry is None:
+            # 계정 없이 조립된 앱은 어떤 요청도 받지 못합니다 (`_desk` 가 503).
+            # `quant serve` 는 이 상태로 뜨지 않으니, 여기 오는 것은 임베딩한
+            # 코드가 QUANT_SECRET_KEY 없이 create_app 을 부른 경우뿐입니다.
+            log.error(
+                "QUANT_SECRET_KEY is not set — no accounts can exist, so this "
+                "app will refuse every request. Set it and restart."
+            )
+        else:
+            accounts.purge_expired()
         yield
+        if registry is not None:
+            # 프로세스가 죽기 전에 모든 봇이 마지막 상태를 적게 합니다.
+            await registry.shutdown()
         if state.trader is not None:
             state.trader.running = False
         if state.trader_task is not None:
             state.trader_task.cancel()
+        if accounts is not None:
+            accounts.close()
 
     app = FastAPI(title="Quant Engine", version="1.0.0", lifespan=lifespan)
     app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -249,85 +998,127 @@ def create_app(config: StrategyConfig | None = None,
         # thing "*" bought was letting any page the operator happens to visit
         # POST /api/manual/close_all or /api/setup at their own localhost.
         # Anyone genuinely serving the UI from elsewhere names it explicitly.
+        # 세션 쿠키가 생긴 뒤로는 더 강한 이유가 하나 더 있습니다: SameSite=Lax
+        # 가 CSRF 방어인데, 출처를 되비추는 관대한 CORS 정책은 그 방어가 지키던
+        # 것을 그대로 돌려줍니다.
         allow_origins=[o for o in os.environ.get("CORS_ORIGINS", "").split(",") if o],
         allow_methods=["*"], allow_headers=["*"],
     )
+    @app.middleware("http")
+    async def bound_request_body(request: Request, call_next):
+        """본문 크기 상한. 이 API 가 받는 가장 큰 것도 설정 하나(수십 KB)입니다.
+
+        값 하나의 상한은 `SetupRequest` 가 이미 걸지만, 그건 본문을 다 읽고
+        JSON 으로 세운 뒤의 이야기입니다. 4 MiB 를 스무 번 보내는 쪽에서 보면
+        거절당하는 것과 거절당하기까지 서버가 그것을 전부 들고 있는 것은 다른
+        일입니다.
+        """
+        length = request.headers.get("content-length", "")
+        if length.isdigit() and int(length) > MAX_BODY_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"요청 본문이 너무 큽니다 "
+                                   f"({MAX_BODY_BYTES // 1024} KiB 이하로 보내세요)"})
+        return await call_next(request)
+
     app.state.quant = state
-    app.state.api_token = token
+    app.state.accounts = accounts
+    app.state.registry = registry
+
+    if accounts is not None:
+        app.include_router(build_auth(accounts).router)
 
     # ── read-only ────────────────────────────────────────────────────────
     @app.get("/api/health")
-    async def health():
+    async def health(seat: Desk | None = Depends(maybe_desk)):
         return {
             "ok": True,
             "version": "1.0.0",
             "uptime_s": round((datetime.now(UTC) - state.started_at).total_seconds(), 1),
-            "trader_running": bool(state.trader and state.trader.running),
-            "authenticated": bool(token),
+            # 자기 봇만 봅니다. 로그인하지 않았으면 볼 봇이 없습니다.
+            "trader_running": bool(seat is not None and seat.running()),
+            "authenticated": registry is not None,
+            "multiuser": registry is not None,
         }
 
     @app.get("/api/config")
-    async def get_config(_=Depends(require_token)):
-        if state.config is None:
+    async def get_config(seat: Desk = Depends(desk)):
+        """이 프로세스가 들고 있는 전략 설정. 자격증명은 값도 신원도 나가지 않습니다."""
+        cfg = state.config
+        if cfg is None:
             raise HTTPException(404, "no config loaded")
-        data = json.loads(state.config.model_dump_json())
-        return _redact(data)
+        fields = _credential_fields(cfg)
+        if registry is not None and seat.user is not None:
+            # 이 사람의 성향과 한도가 반영된 사본입니다 — `prepare()` 는 키를
+            # 넣지 않는 쪽입니다.
+            body = json.loads(registry.prepare(seat.user.id, cfg).model_dump_json())
+            # 남는 것은 프로세스 템플릿에 적힌 **운영자의** 배선값입니다. 가입한
+            # 사람에게는 쓸모가 없고(자기 봇은 자기 키로 섭니다), 거기에는
+            # client_id 와 account_no 처럼 이름에 secret 이 들어가지 않는
+            # 신원값이 그대로 있습니다. 가리는 것이 아니라 비웁니다.
+            return _redact(_without_wiring_params(body), fields)
+        return _redact(json.loads(cfg.model_dump_json()), fields)
 
     @app.get("/api/status")
-    async def status(_=Depends(require_token)):
-        if state.trader is None:
-            return {"running": False, "message": "no trader started"}
-        return state.trader.status()
+    async def status(seat: Desk = Depends(desk)):
+        return seat.status()
 
+    # 조회 한도는 핸들러가 아니라 여기서 막습니다. `limit=99999999999999999999`
+    # 하나면 sqlite 안에서 터져 500 이 되고, 그건 로그인한 아무나 누를 수 있는
+    # 크래시 경로였습니다. FastAPI 가 요청을 받기 전에 422 로 끝냅니다.
     @app.get("/api/equity")
-    async def equity(limit: int = 2000, _=Depends(require_token)):
-        store = StateStore(state.state_path)
+    async def equity(limit: int = Query(2000, ge=1, le=10_000),
+                     seat: Desk = Depends(desk)):
+        store = StateStore(seat.state_path)
         try:
-            if state.config:
-                store.resume_run(state.config.name, state.config.mode.value)
+            cfg = seat.run_config()
+            if cfg:
+                store.resume_run(cfg.name, cfg.mode.value)
             return {"points": store.equity_curve(limit)}
         finally:
             store.close()
 
     @app.get("/api/trades")
-    async def trades(limit: int = 100, _=Depends(require_token)):
-        store = StateStore(state.state_path)
+    async def trades(limit: int = Query(100, ge=1, le=2_000),
+                     seat: Desk = Depends(desk)):
+        store = StateStore(seat.state_path)
         try:
-            if state.config:
-                store.resume_run(state.config.name, state.config.mode.value)
+            cfg = seat.run_config()
+            if cfg:
+                store.resume_run(cfg.name, cfg.mode.value)
             return {"trades": store.recent_trades(limit)}
         finally:
             store.close()
 
     @app.get("/api/events")
-    async def events(limit: int = 100, type: Optional[str] = None,
-                     _=Depends(require_token)):
+    async def events(limit: int = Query(100, ge=1, le=500),
+                     type: str | None = Query(None, max_length=500),
+                     seat: Desk = Depends(desk)):
         types = {t.strip() for t in type.split(",")} if type else None
-        return {"events": state.hub.recent(limit, types)}
+        return {"events": seat.hub.recent(limit, types)}
 
     @app.get("/api/desk")
-    async def desk(limit: int = 20, _=Depends(require_token)):
+    async def desk_status(limit: int = Query(20, ge=1, le=200),
+                          seat: Desk = Depends(desk)):
         """Desk status plus recent deliberations, newest first.
 
         This is what the trading-floor view renders: one entry per full
         ten-seat deliberation, including every seat's own output so the debate
         can be replayed rather than just summarised.
         """
-        trader = state.trader
-        model = trader.desk() if trader is not None else None
+        model = seat.desk_model()
         if model is None:
             return {"enabled": False,
                     "message": "no desk configured — add an alpha of type 'desk'",
                     "deliberations": []}
-        status = model.status()
-        status["deliberations"] = [d.to_dict() for d in reversed(model.history[-limit:])]
-        status.pop("latest", None)
-        return status
+        payload = model.status()
+        payload["deliberations"] = [d.to_dict() for d in reversed(model.history[-limit:])]
+        payload.pop("latest", None)
+        return payload
 
     @app.get("/api/desk/{ticker}")
-    async def desk_symbol(ticker: str, _=Depends(require_token)):
-        trader = state.trader
-        model = trader.desk() if trader is not None else None
+    async def desk_symbol(ticker: str, seat: Desk = Depends(desk)):
+        model = seat.desk_model()
         if model is None:
             raise HTTPException(404, "no desk configured")
         for decision in reversed(model.history):
@@ -336,10 +1127,12 @@ def create_app(config: StrategyConfig | None = None,
         raise HTTPException(404, f"no deliberation recorded for {ticker}")
 
     @app.get("/api/flow")
-    async def flow(symbol: Optional[str] = None, window: int = 20,
-                   sessions: int = 30, _=Depends(require_token)):
+    async def flow(symbol: str | None = Query(None, max_length=64),
+                   window: int = Query(20, ge=1, le=500),
+                   sessions: int = Query(30, ge=1, le=500),
+                   seat: Desk = Depends(desk)):
         """투자자별 수급 — foreign / institution / retail net buying."""
-        trader = state.trader
+        trader = seat.trader()
         if trader is None:
             return {"available": False, "message": "no trader running", "symbols": {}}
         feed = getattr(trader.engine, "flow_feed", None)
@@ -361,9 +1154,9 @@ def create_app(config: StrategyConfig | None = None,
         return {"available": True, "window": window, "symbols": out}
 
     @app.get("/api/universe")
-    async def universe(_=Depends(require_token)):
+    async def universe(seat: Desk = Depends(desk)):
         """Symbols with their last mark — drives the ticker tape."""
-        trader = state.trader
+        trader = seat.trader()
         if trader is None:
             return {"symbols": []}
         ctx = trader.engine.ctx
@@ -384,25 +1177,9 @@ def create_app(config: StrategyConfig | None = None,
         return {"symbols": out}
 
     # ── 수동 개입 ────────────────────────────────────────────────────────
-    def _require_trader():
-        if state.trader is None:
-            raise HTTPException(404, "실행 중인 트레이더가 없습니다")
-        return state.trader
-
-    def _resolve(trader, ticker: str):
-        ctx = trader.engine.ctx
-        wanted = ticker.strip().upper()
-        for sym in ctx.universe:
-            if sym.ticker.upper() == wanted:
-                return sym
-        for pos in ctx.portfolio.open_positions:
-            if pos.symbol.ticker.upper() == wanted:
-                return pos.symbol
-        raise HTTPException(404, f"유니버스에도 보유에도 없는 종목: {ticker}")
-
     @app.get("/api/manual")
-    async def manual_status(_=Depends(require_token)):
-        trader = state.trader
+    async def manual_status(seat: Desk = Depends(desk)):
+        trader = seat.trader()
         if trader is None:
             return {"running": False, "paused": False, "pending": [], "recent": []}
         engine = trader.engine
@@ -414,8 +1191,8 @@ def create_app(config: StrategyConfig | None = None,
         }
 
     @app.post("/api/manual/buy")
-    async def manual_buy(req: ManualOrderRequest, _=Depends(require_token)):
-        trader = _require_trader()
+    async def manual_buy(req: ManualOrderRequest, seat: Desk = Depends(desk)):
+        trader = seat.require_trader()
         symbol = _resolve(trader, req.ticker)
         if req.quantity is None and req.notional is None:
             raise HTTPException(400, "수량 또는 금액 중 하나는 지정해야 합니다")
@@ -427,12 +1204,13 @@ def create_app(config: StrategyConfig | None = None,
             notional=req.notional, limit_price=req.limit_price,
             manage=req.manage, note=req.note or "대시보드 수동 매수",
         )
+        seat.record("manual_buy", symbol.ticker)
         return {"queued": request.to_dict(),
                 "note": "다음 봉 처리 시 브로커 안전장치(주문 한도·일일 한도)를 거쳐 발주됩니다"}
 
     @app.post("/api/manual/sell")
-    async def manual_sell(req: ManualOrderRequest, _=Depends(require_token)):
-        trader = _require_trader()
+    async def manual_sell(req: ManualOrderRequest, seat: Desk = Depends(desk)):
+        trader = seat.require_trader()
         symbol = _resolve(trader, req.ticker)
         from decimal import Decimal
 
@@ -442,116 +1220,70 @@ def create_app(config: StrategyConfig | None = None,
             notional=req.notional, limit_price=req.limit_price,
             note=req.note or "대시보드 수동 매도",
         )
+        seat.record("manual_sell", symbol.ticker)
         return {"queued": request.to_dict()}
 
     @app.post("/api/manual/close")
-    async def manual_close(req: ManualOrderRequest, _=Depends(require_token)):
-        trader = _require_trader()
+    async def manual_close(req: ManualOrderRequest, seat: Desk = Depends(desk)):
+        trader = seat.require_trader()
         symbol = _resolve(trader, req.ticker)
+        seat.record("manual_close", symbol.ticker)
         return {"queued": trader.engine.manual.close(
             symbol, note=req.note or "대시보드 수동 청산").to_dict()}
 
     @app.post("/api/manual/close_all")
-    async def manual_close_all(_=Depends(require_token)):
-        trader = _require_trader()
+    async def manual_close_all(seat: Desk = Depends(desk)):
+        trader = seat.require_trader()
+        seat.record("manual_close_all")
         return {"queued": trader.engine.manual.close_all(
             note="대시보드 전체 청산").to_dict()}
 
     @app.post("/api/manual/pause")
-    async def manual_pause(_=Depends(require_token)):
-        trader = _require_trader()
+    async def manual_pause(seat: Desk = Depends(desk)):
+        trader = seat.require_trader()
         trader.engine.manual.pause("대시보드에서 일시정지")
+        seat.record("manual_pause")
         return {"paused": True,
                 "note": "신규 진입만 중단됩니다. 손절·청산·수동주문은 계속 동작합니다."}
 
     @app.post("/api/manual/resume")
-    async def manual_resume(_=Depends(require_token)):
-        trader = _require_trader()
+    async def manual_resume(seat: Desk = Depends(desk)):
+        trader = seat.require_trader()
         trader.engine.manual.resume()
+        seat.record("manual_resume")
         return {"paused": False}
 
     @app.post("/api/manual/unpin/{ticker}")
-    async def manual_unpin(ticker: str, _=Depends(require_token)):
-        trader = _require_trader()
+    async def manual_unpin(ticker: str, seat: Desk = Depends(desk)):
+        trader = seat.require_trader()
         trader.engine.ctx.unpin(_resolve(trader, ticker))
         return {"unpinned": ticker, "note": "이 종목을 다시 전략이 관리합니다"}
 
     @app.post("/api/limits")
-    async def limits_save(req: LimitsRequest, _=Depends(require_token)):
+    async def limits_save(req: LimitsRequest, seat: Desk = Depends(desk)):
         """Apply daily caps now, and persist them for the next restart.
 
         **Partial.** Only the caps named in the request body change; a field
         that is absent (or null) is left exactly as it was, in the running bot
-        and in `.env` alike. Sending an explicit `0` removes that cap — which
+        and in storage alike. Sending an explicit `0` removes that cap — which
         means unlimited — and the response names every cap it removed.
-
-        Written to `.env` rather than back into the strategy YAML, so the
-        operator's file — comments and all — is never reformatted by a UI.
         """
-        store = CredentialStore(os.environ.get("QUANT_ENV_FILE", ".env"))
-        budget = state.trader.engine.budget if state.trader is not None else None
-        write: dict[str, str] = {}
-        clear: list[str] = []
-        updated: list[str] = []
-        removed: list[str] = []
-        for field_name, attr, env_key, cast in _LIMIT_FIELDS:
-            sent = getattr(req, field_name)
-            if sent is None:
-                continue
-            value = cast(sent)
-            previous = (getattr(budget, attr) if budget is not None
-                        else float(os.environ.get(env_key, 0) or 0))
-            updated.append(field_name)
-            if value:
-                write[env_key] = str(value)
-            else:
-                clear.append(env_key)
-                if previous:
-                    removed.append(field_name)
-            if budget is not None:
-                setattr(budget, attr, value)
-        if write:
-            store.update(write)
-        if clear:
-            store.remove(clear)
-        applied = budget.status() if budget is not None else None
-        note = ("실행 중인 봇에는 즉시 적용됩니다" if applied
-                else "다음 실행부터 적용됩니다")
-        if removed:
-            note += f" — 주의: {', '.join(removed)} 한도가 해제되었습니다 (무제한)"
-            log.warning("일일 한도 해제: %s — 다시 설정하기 전까지 무제한입니다",
-                        ", ".join(removed))
-        return {"saved": True, "applied_now": applied,
-                "updated": updated, "removed": removed, "note": note}
+        return seat.save_limits(req)
 
     @app.get("/api/limits")
-    async def limits_get(_=Depends(require_token)):
-        if state.trader is not None:
-            return state.trader.engine.budget.status()
-        return {
-            "running": False,
-            "configured": {
-                "max_daily_notional": float(os.environ.get("QUANT_LIMIT_DAILY_NOTIONAL", 0) or 0),
-                "max_daily_orders": int(float(os.environ.get("QUANT_LIMIT_DAILY_ORDERS", 0) or 0)),
-                "max_daily_loss": float(os.environ.get("QUANT_LIMIT_DAILY_LOSS", 0) or 0),
-                "max_daily_loss_pct": float(os.environ.get("QUANT_LIMIT_DAILY_LOSS_PCT", 0) or 0),
-            },
-        }
+    async def limits_get(seat: Desk = Depends(desk)):
+        return seat.limits()
 
     @app.post("/api/limits/release")
-    async def limits_release(_=Depends(require_token)):
+    async def limits_release(seat: Desk = Depends(desk)):
         """Clear a daily-cap halt for the rest of today. Deliberately explicit."""
-        trader = _require_trader()
-        trader.engine.budget.release()
-        return trader.engine.budget.status()
+        out = seat.release_halt()
+        seat.record("limits_released")
+        return out
 
     # ── 투자 성향 ────────────────────────────────────────────────────────
-    def _profile_store() -> ProfileStore:
-        return ProfileStore(os.environ.get("QUANT_PROFILE_FILE",
-                                           "investor_profile.json"))
-
     @app.get("/api/profile/questions")
-    async def profile_questions(_=Depends(require_token)):
+    async def profile_questions(_: Desk = Depends(desk)):
         return {
             "questions": questionnaire(),
             "note": "여덟 문항으로 위험 감내도를 정확히 잴 수는 없습니다. "
@@ -560,111 +1292,83 @@ def create_app(config: StrategyConfig | None = None,
         }
 
     @app.get("/api/profile")
-    async def profile_get(_=Depends(require_token)):
-        return _profile_store().load().to_dict()
+    async def profile_get(seat: Desk = Depends(desk)):
+        return seat.profile_store().load().to_dict()
 
     @app.post("/api/profile")
-    async def profile_save(req: ProfileRequest, _=Depends(require_token)):
+    async def profile_save(req: ProfileRequest, seat: Desk = Depends(desk)):
         profile = score_answers(req.answers)
         if not profile.answers:
             raise HTTPException(400, "인식된 답안이 없습니다")
-        store = _profile_store()
-        store.save(profile)
-        applied = _apply_profile_live(profile)
+        applied = seat.save_profile(profile)
         return {**profile.to_dict(), "applied_now": applied}
 
     @app.patch("/api/profile")
-    async def profile_override(req: ProfileOverrideRequest, _=Depends(require_token)):
+    async def profile_override(req: ProfileOverrideRequest, seat: Desk = Depends(desk)):
         """마이페이지에서 축을 직접 밀어 올리거나 내린다."""
-        store = _profile_store()
-        profile = store.load()
+        profile = seat.profile_store().load()
         for axis, value in req.overrides.items():
             axis = axis.upper()
             if axis not in ("R", "H", "E", "C"):
                 raise HTTPException(400, f"알 수 없는 축: {axis}")
             profile.overrides[axis] = max(-1.0, min(1.0, float(value)))
-        store.save(profile)
-        applied = _apply_profile_live(profile)
+        applied = seat.save_profile(profile)
         return {**profile.to_dict(), "applied_now": applied}
 
     @app.delete("/api/profile/override/{axis}")
-    async def profile_clear_override(axis: str, _=Depends(require_token)):
-        store = _profile_store()
-        profile = store.load()
-        profile.overrides.pop(axis.upper(), None)
-        store.save(profile)
-        return profile.to_dict()
-
-    def _apply_profile_live(profile) -> dict | None:
-        """실행 중인 봇에 즉시 반영할 수 있는 것만 반영한다.
-
-        사이즈·손절·한도는 바로 바뀌지만 봉 주기나 알파 구성은 바뀌지 않습니다 —
-        그건 엔진을 다시 세워야 하는 일이라, 반쯤 바뀐 상태로 돌리는 것보다
-        재시작이 필요하다고 말하는 편이 정직합니다.
-        """
-        if state.trader is None:
-            return None
-        settings = profile.settings()
-        engine = state.trader.engine
-        pm = engine.portfolio_model
-        pm.max_position_weight = settings["max_position_weight"]
-        pm.max_gross_leverage = settings["max_gross_leverage"]
-        pm.cash_reserve_pct = settings["cash_reserve_pct"]
-        if hasattr(pm, "target_vol"):
-            pm.target_vol = settings["target_annual_vol"]
-        budget = engine.budget
-        budget.max_loss_pct = settings["max_daily_loss_pct"]
-        budget.max_orders = settings["max_daily_orders"]
-        for model in engine.risk.models:
-            if model.name == "max_dd_per_security":
-                model.atr_multiple = settings["stop_atr_multiple"]
-                model.limit = settings["stop_ceiling_pct"]
-            elif model.name == "trailing_stop":
-                model.atr_multiple = settings["trailing_atr_multiple"]
-            elif model.name == "max_positions":
-                model.max_positions = settings["max_positions"]
-        return {
-            "sizing_and_risk": "즉시 적용됨",
-            "needs_restart": ["봉 주기", "알파 모델 구성", "AI 데스크 사용 여부"],
-        }
+    async def profile_clear_override(axis: str, seat: Desk = Depends(desk)):
+        return seat.clear_override(axis)
 
     # ── 초기 설정 ────────────────────────────────────────────────────────
     @app.get("/api/setup")
-    async def setup_status(_=Depends(require_token)):
-        store = CredentialStore(os.environ.get("QUANT_ENV_FILE", ".env"))
-        return {
-            "state": store.state().to_dict(),
-            "venues": venue_catalog(),
-            "operator_fields": [{"env": e, "label": l, "required": r}
-                                for e, l, r in OPERATOR_FIELDS],
-            "configured_keys": {k: v for k, v in store.redacted().items()},
-        }
+    async def setup_status(seat: Desk = Depends(desk)):
+        return seat.setup()
 
     @app.post("/api/setup")
-    async def setup_save(req: SetupRequest, _=Depends(require_token)):
+    async def setup_save(req: SetupRequest, seat: Desk = Depends(desk)):
         """Store setup values. Only the keys this screen owns are accepted.
 
         Anything else — a typo, or a `HTTPS_PROXY` that would reroute the next
         broker call — is refused and named in `rejected`.
         """
-        store = CredentialStore(os.environ.get("QUANT_ENV_FILE", ".env"))
-        report = store.update(req.values)
+        out = seat.save_setup(req.values)
         note = "저장된 값은 다시 조회할 수 없습니다 (재발급만 가능)"
-        if report.rejected:
+        if out["rejected"]:
             note += (" — 거부된 항목: "
-                     + ", ".join(f"{k}({v})" for k, v in report.rejected.items()))
-        return {"written": report.written, "rejected": report.rejected,
-                "state": store.state().to_dict(), "note": note}
+                     + ", ".join(f"{k}({v})" for k, v in out["rejected"].items()))
+        return {**out, "note": note}
 
     @app.post("/api/setup/verify/{venue_id}")
-    async def setup_verify(venue_id: str, _=Depends(require_token)):
+    async def setup_verify(venue_id: str, seat: Desk = Depends(desk)):
         if venue_id not in VENUES_BY_ID:
             raise HTTPException(404, f"알 수 없는 거래소: {venue_id}")
-        store = CredentialStore(os.environ.get("QUANT_ENV_FILE", ".env"))
-        return await store.verify(venue_id)
+        return await seat.verify(venue_id)
+
+    @app.post("/api/setup/disconnect/{venue_id}")
+    async def setup_disconnect(venue_id: str, seat: Desk = Depends(desk)):
+        """이 거래소에 저장된 값을 전부 지운다. 되돌릴 수 없습니다."""
+        if venue_id not in VENUES_BY_ID:
+            raise HTTPException(404, f"알 수 없는 거래소: {venue_id}")
+        out = seat.disconnect(venue_id)
+        return {**out, "note": "다시 쓰려면 키를 새로 등록해야 합니다"}
+
+    @app.get("/api/strategies")
+    async def strategies(_: Desk = Depends(desk)):
+        """이 서비스가 돌려주는 전략 목록 — `/api/trader/start` 가 받는 이름들."""
+        out = []
+        for name, path in strategy_catalog().items():
+            try:
+                cfg = load_config(str(path))
+            except Exception:
+                continue          # 전략이 아닌 YAML(파라미터 공간 등)
+            out.append({"id": name, "name": cfg.name, "mode": cfg.mode.value,
+                        "broker": cfg.broker.type,
+                        "symbols": len(cfg.universe.symbols),
+                        "requires": required_secrets(cfg)})
+        return {"strategies": out}
 
     @app.get("/api/models")
-    async def models(_=Depends(require_token)):
+    async def models(_: Desk = Depends(desk)):
         from quant.execution.models import BUILTIN_EXECUTION_MODELS
         from quant.portfolio.models import BUILTIN_PORTFOLIO_MODELS
         from quant.risk.models import BUILTIN_RISK_MODELS
@@ -679,13 +1383,48 @@ def create_app(config: StrategyConfig | None = None,
             "execution": sorted(BUILTIN_EXECUTION_MODELS),
         }
 
+    # ── 관리자 ───────────────────────────────────────────────────────────
+    @app.get("/api/admin/users")
+    async def admin_users(seat: Desk = Depends(require_admin)):
+        """가입자 목록. 이름과 봇 상태까지이고, 자격증명은 개수도 값도 아닙니다."""
+        if registry is None or accounts is None:
+            raise HTTPException(404, "계정이 없는 배포입니다")
+        running = set(registry.running())
+        rows = accounts.conn.execute(
+            "SELECT id FROM users ORDER BY id").fetchall()
+        out = []
+        for row in rows:
+            person = accounts.user(row["id"])
+            if person is None:      # pragma: no cover - 조회 사이에 지워진 경우
+                continue
+            out.append({**public_user(person), "bot_running": person.id in running})
+        return {"users": out}
+
     # ── actions ──────────────────────────────────────────────────────────
     @app.post("/api/backtest")
-    async def backtest(req: BacktestRequest, _=Depends(require_token)):
+    async def backtest(req: BacktestRequest, seat: Desk = Depends(desk)):
+        """Run a backtest off the event loop, one at a time per caller.
+
+        백테스트는 CPU 를 끝까지 씁니다. `run_backtest` 안에는 진짜 대기 지점이
+        없어서, 이벤트 루프 위에서 그대로 돌리면 끝날 때까지 루프를 붙잡습니다 —
+        그동안 **모든 사용자의 봇이** 한 틱도 돌지 못하고, 패닉 버튼도 응답하지
+        않습니다. 서비스가 스스로 제공하는 템플릿 하나로 20초였습니다.
+
+        그래서 새 루프를 든 스레드로 내보내고, 한 사람이 한 번에 하나만, 프로세스
+        전체로도 몇 개만 돌게 묶습니다. 스레드도 GIL 을 나눠 쓰므로 수를 묶지
+        않으면 "막지는 않지만 모두를 느리게 하는" 것으로 바뀔 뿐입니다.
+        """
         from quant.backtest.runner import run_backtest
 
+        if registry is not None and req.config is not None:
+            # 임의의 설정을 그대로 돌리면 데이터 제공자 하나로 서버 파일을 읽는
+            # 길이 열립니다(csv 제공자 + 경로). 여러 사람이 쓰는 배포에서는
+            # 템플릿 이름만 받습니다.
+            raise HTTPException(
+                400, "설정을 통째로 보내는 백테스트는 지원하지 않습니다 — "
+                     "전략 템플릿 이름을 config_path 로 지정하세요.")
         if req.config_path:
-            cfg = load_config(req.config_path)
+            cfg = seat.load_strategy(req.config_path)
         elif req.config:
             cfg = StrategyConfig.model_validate(req.config)
         elif state.config:
@@ -694,78 +1433,71 @@ def create_app(config: StrategyConfig | None = None,
             raise HTTPException(400, "supply config_path or config")
         cfg.mode = RunMode.BACKTEST
         if req.start:
-            cfg.backtest.start = datetime.fromisoformat(req.start.replace("Z", "+00:00"))
+            cfg.backtest.start = _parse_ts(req.start, "start")
         if req.end:
-            cfg.backtest.end = datetime.fromisoformat(req.end.replace("Z", "+00:00"))
+            cfg.backtest.end = _parse_ts(req.end, "end")
+        if req.start or req.end:
+            _assert_window_bounded(cfg)
         if req.starting_cash:
             cfg.portfolio.starting_cash = req.starting_cash
+
+        owner = f"u{seat.user.id}" if seat.user is not None else "operator"
+        inflight = state.backtests_running
+        if owner in inflight:
+            raise HTTPException(
+                429, "백테스트가 이미 하나 돌고 있습니다 — 끝난 뒤에 다시 시도하세요")
+        if len(inflight) >= MAX_CONCURRENT_BACKTESTS:
+            raise HTTPException(
+                429, "지금 백테스트가 밀려 있습니다 — 잠시 후 다시 시도하세요")
+        inflight.add(owner)
         try:
-            result = await run_backtest(cfg)
+            # 코루틴이지만 이 루프에서 기다릴 것이 없습니다. 스레드에서 자기
+            # 루프로 돌리면 다른 사람의 봇은 계속 틱을 받습니다.
+            result = await asyncio.to_thread(lambda: asyncio.run(run_backtest(cfg)))
         except Exception as exc:
             raise HTTPException(400, f"backtest failed: {exc}") from exc
+        finally:
+            inflight.discard(owner)
         return result.to_dict()
 
     @app.post("/api/trader/start")
-    async def start_trader(req: StartRequest, _=Depends(require_token)):
-        """Start a dry-run or live trader from a config file on this machine.
+    async def start_trader(req: StartRequest, seat: Desk = Depends(desk)):
+        """Start a dry-run or live trader.
 
         `mode: "live"` carries exactly the preconditions `quant live` does: the
-        config file must itself declare `mode: live`, `broker.live_trading_confirmed`
+        config must itself declare `mode: live`, `broker.live_trading_confirmed`
         must be true, at least one daily cap must be set under `limits:`, and
         `confirm` must repeat the strategy name — the API's stand-in for the
-        name the CLI makes a human type.
+        name the CLI makes a human type. 가입자마다 다시 요구합니다.
         """
-        from quant.live.trader import LiveTrader
-
-        if state.trader is not None and state.trader.running:
-            raise HTTPException(409, "a trader is already running")
-        try:
-            cfg = load_config(req.config_path)
-        except Exception as exc:
-            raise HTTPException(400, f"설정을 불러오지 못했습니다: {exc}") from exc
-        mode = RunMode(req.mode)
-        if mode is RunMode.LIVE:
-            assert_live_start_allowed(cfg, req.confirm)
-        # 모드를 바꿨으면 스키마 검증을 다시 돌린다. 대입만으로는 돌지 않아서
-        # 하루 한도 없는 실거래·paper 브로커 실거래가 그대로 통과했습니다.
-        try:
-            cfg = StrategyConfig.model_validate({**cfg.model_dump(), "mode": mode})
-        except ValidationError as exc:
-            raise HTTPException(
-                400, f"이 설정으로는 시작할 수 없습니다: {exc.errors()[0]['msg']}"
-            ) from exc
-        trader = LiveTrader(cfg, state.state_path)
-        trader.engine.ctx.bus.on(None, state.hub.publish)
-        state.trader, state.config = trader, cfg
-        state.trader_task = asyncio.create_task(trader.run())
-        return {"started": True, "strategy": cfg.name, "mode": cfg.mode.value}
+        return await seat.start(req)
 
     @app.post("/api/trader/stop")
-    async def stop_trader(_=Depends(require_token)):
-        if state.trader is None:
-            raise HTTPException(404, "no trader running")
-        state.trader.running = False
-        return {"stopping": True,
-                "note": "the current cycle finishes first; open positions are left as-is"}
+    async def stop_trader(seat: Desk = Depends(desk)):
+        return await seat.stop()
 
     @app.post("/api/trader/sync")
-    async def sync_positions(_=Depends(require_token)):
-        if state.trader is None:
-            raise HTTPException(404, "no trader running")
-        return await state.trader.engine.brokerage.sync()
+    async def sync_positions(seat: Desk = Depends(desk)):
+        return await seat.sync()
 
     # ── stream ───────────────────────────────────────────────────────────
     @app.websocket("/ws")
     async def stream(ws: WebSocket):
-        if token:
-            supplied = ws.query_params.get("token", "")
-            if not secrets.compare_digest(supplied, token):
-                await ws.close(code=4401)
-                return
-        await ws.accept()
-        state.hub.clients.add(ws)
         try:
-            for item in state.hub.recent(50):
+            # 브라우저는 소켓 핸드셰이크에 헤더를 붙일 수 없습니다. 계정이 있는
+            # 배포에서는 쿠키가 따라오므로 여기서도 `?token=` 은 아무것도
+            # 열지 않습니다 — 계정이 없는 1인용 배포에서만 쓰입니다.
+            seat = _desk(ws)
+        except HTTPException:
+            # 소켓에는 상태 코드로 말할 자리가 없습니다. 4401 은 대시보드가
+            # "로그인이 끊겼다" 로 읽는 약속된 코드입니다.
+            await ws.close(code=4401)
+            return
+        hub = seat.hub
+        await ws.accept()
+        hub.clients.add(ws)
+        try:
+            for item in hub.recent(50):
                 await ws.send_text(json.dumps(item, default=str))
             while True:
                 await ws.receive_text()          # keep-alive / client pings
@@ -774,7 +1506,7 @@ def create_app(config: StrategyConfig | None = None,
         except Exception:
             pass
         finally:
-            state.hub.clients.discard(ws)
+            hub.clients.discard(ws)
 
     # ── dashboard ────────────────────────────────────────────────────────
     if STATIC_DIR.exists():
@@ -784,9 +1516,19 @@ def create_app(config: StrategyConfig | None = None,
         async def index():
             return FileResponse(STATIC_DIR / "index.html")
 
+    @app.exception_handler(RuntimeProblem)
+    async def runtime_problem(_request: Request, exc: RuntimeProblem):
+        """레지스트리가 문장으로 끝낸 실패 — 상태 코드까지 스스로 알고 있습니다."""
+        return JSONResponse(status_code=exc.status, content=exc.to_dict())
+
     @app.exception_handler(Exception)
     async def unhandled(_request: Request, exc: Exception):
         log.exception("unhandled API error")
+        if registry is not None:
+            # 예외 문자열에는 어댑터가 붙인 것이 무엇이든 들어갈 수 있습니다.
+            # 남의 서비스 위에서 도는 사람에게 그것을 그대로 보여주지 않습니다.
+            return JSONResponse(status_code=500,
+                                content={"error": "서버 오류 — 로그를 확인하세요"})
         return JSONResponse(status_code=500, content={"error": str(exc)})
 
     return app
@@ -794,14 +1536,62 @@ def create_app(config: StrategyConfig | None = None,
 
 _SECRET_HINTS = ("key", "secret", "token", "password", "passphrase")
 
+#: 어떤 거래소 배선표에도 없지만 사람을 가리키는 필드들. 알림은 사람의
+#: 텔레그램이고, `api_key` 는 AI 데스크 슬롯에 들어가는 LLM 키입니다.
+_ALWAYS_SECRET = frozenset({"telegram_bot_token", "telegram_chat_id", "api_key"})
 
-def _redact(node: Any) -> Any:
-    """Never hand a credential back through the API, even to an authed caller."""
+#: 설정 트리에서 배선 파라미터가 사는 자리.
+_WIRING_SECTIONS = ("broker", "data", "flow")
+
+
+def _credential_fields(config: StrategyConfig) -> frozenset[str]:
+    """이 설정에서 자격증명이 들어가는 필드 이름 — 배선표가 선언한 그대로.
+
+    이름을 여기 손으로 적어두면 거래소가 하나 늘 때마다 조용히 어긋납니다.
+    실제로 `client_id` 와 `account_no` 가 그렇게 빠져나갔습니다: 이름에
+    key/secret/token 이 없다는 이유만으로 통과했고, 그건 그 값이 비밀이 아니라는
+    뜻이 아니라 부분 문자열로 비밀을 알아맞히려 했다는 뜻이었습니다. OAuth
+    client id 와 계좌번호는 열쇠가 아니라 **신원**이고, 남에게 줄 이유는 열쇠와
+    똑같이 없습니다.
+
+    배선표(`registry._targets`)는 어느 자격증명이 어느 생성자 인자로 들어가는지
+    이미 알고 있습니다. 가려야 할 이름은 정확히 그 인자들이라, 거래소가 늘면
+    가리는 목록도 같이 늡니다.
+    """
+    names = set(_ALWAYS_SECRET)
+    for _params, wiring in credential_targets(config):
+        names.update(wiring.args)
+    return frozenset(names)
+
+
+def _without_wiring_params(body: dict) -> dict:
+    """브로커·시세·수급 파라미터를 통째로 비운 사본.
+
+    가입자에게 보여주는 설정에서만 씁니다. 거기 남아 있는 것은 프로세스
+    템플릿에 적힌 운영자의 배선값이고, 그 사람의 봇은 그것으로 서지 않습니다.
+    """
+    out = dict(body)
+    for section in _WIRING_SECTIONS:
+        block = out.get(section)
+        if isinstance(block, dict) and "params" in block:
+            out[section] = {**block, "params": {}}
+    return out
+
+
+def _redact(node: Any, fields: frozenset[str] = frozenset()) -> Any:
+    """Never hand a credential back through the API, even to an authed caller.
+
+    `fields` 가 규칙입니다 — 배선표가 자격증명이라고 선언한 이름들. 부분 문자열
+    힌트는 그 위에 남겨둔 그물일 뿐이라, 표에 없는 이름(설정 파일이 직접 적은
+    `password` 같은 것)만 그쪽에 걸립니다.
+    """
     if isinstance(node, dict):
         return {
-            k: ("***" if any(h in k.lower() for h in _SECRET_HINTS) and v else _redact(v))
+            k: ("***" if v and (k.lower() in fields
+                                or any(h in k.lower() for h in _SECRET_HINTS))
+                else _redact(v, fields))
             for k, v in node.items()
         }
     if isinstance(node, list):
-        return [_redact(v) for v in node]
+        return [_redact(v, fields) for v in node]
     return node

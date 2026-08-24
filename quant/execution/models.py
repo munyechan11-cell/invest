@@ -4,8 +4,7 @@ from __future__ import annotations
 import statistics
 from decimal import Decimal
 
-from quant.core.context import Context
-from quant.core.types import Order, OrderSide, OrderType, PortfolioTarget, TimeInForce
+from quant.core.types import Order, OrderType, TimeInForce
 from quant.execution.base import ExecutionModel
 
 

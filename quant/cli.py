@@ -5,7 +5,7 @@
     quant walkforward configs/demo.yaml --space configs/space.yaml --folds 5
     quant dryrun configs/live_crypto.yaml
     quant live configs/live_crypto.yaml        # requires explicit confirmation
-    quant serve configs/demo.yaml --port 8000
+    quant serve configs/demo.yaml --port 8000   # needs QUANT_SECRET_KEY
     quant validate configs/demo.yaml
 """
 from __future__ import annotations
@@ -172,11 +172,21 @@ async def cmd_live(args) -> int:
 async def cmd_serve(args) -> int:
     import uvicorn
 
-    from quant.api.server import UnsafeBind, assert_safe_to_bind, create_app
+    from quant.api.server import (
+        UnsafeBind,
+        assert_ready_for_users,
+        assert_safe_to_bind,
+        create_app,
+    )
+    from quant.webapp.accounts import SecretKeyMissing
 
+    # 두 개의 기동 조건입니다. 하나는 "인증 없이 밖으로 열지 마라", 다른 하나는
+    # "가입자들의 증권사 키를 평문으로 받아둘 상태로 열지 마라". 둘 다 경고로
+    # 두면 하필 실제 배포에서만 무시되므로, 여기서 뜨지 않고 끝냅니다.
     try:
         assert_safe_to_bind(args.host)
-    except UnsafeBind as exc:
+        assert_ready_for_users()
+    except (UnsafeBind, SecretKeyMissing) as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 2
 
@@ -223,12 +233,12 @@ async def cmd_validate(args) -> int:
 
 
 def cmd_models(args) -> int:
+    from quant.data.provider import available_providers
     from quant.execution.models import BUILTIN_EXECUTION_MODELS
     from quant.portfolio.models import BUILTIN_PORTFOLIO_MODELS
     from quant.risk.models import BUILTIN_RISK_MODELS
     from quant.risk.protections import BUILTIN_PROTECTIONS
     from quant.strategy.builder import BUILTIN_ALPHA_MODELS
-    from quant.data.provider import available_providers
 
     sections = {
         "alpha": sorted(BUILTIN_ALPHA_MODELS) + ["council"],

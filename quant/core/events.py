@@ -10,10 +10,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Awaitable, Callable, Optional, Union
+from typing import Any, Optional
 
 from quant.core.types import utcnow
 
@@ -47,7 +48,11 @@ class Event:
     source: str = ""
 
 
-Handler = Callable[[Event], Union[Awaitable[None], None]]
+# 어노테이션이 아니라 **실행되는 할당**이라 `from __future__ import annotations`
+# 가 미뤄주지 않습니다. `X | None` 로 적으면 파이썬 3.9 에서 import 자체가
+# 실패하고, 그 한 줄이 패키지 전체를 끌고 내려갑니다. 배포는 3.13 이지만
+# 개발 기기가 3.9 인 경우가 있어 여기만 옛 표기를 지킵니다.
+Handler = Callable[[Event], Optional[Awaitable[None]]]  # noqa: UP007, UP045
 
 
 class EventBus:

@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import json
 import logging
 import random
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Any, Callable
+from datetime import datetime
+from typing import Any
 
 from quant.backtest.runner import BacktestResult, run_backtest
 from quant.config.schema import StrategyConfig

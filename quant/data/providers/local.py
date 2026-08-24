@@ -8,7 +8,7 @@ from __future__ import annotations
 import csv
 import math
 import random
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from quant.core.types import UTC, Bar, Symbol, timeframe_delta

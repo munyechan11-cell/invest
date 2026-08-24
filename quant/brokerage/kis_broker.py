@@ -26,7 +26,7 @@ import httpx
 
 from quant.brokerage.base import BrokerageError
 from quant.brokerage.live_base import LiveBrokerage
-from quant.core.types import UTC, AssetClass, Fill, Order, OrderSide, OrderType, utcnow
+from quant.core.types import UTC, Fill, Order, OrderSide, OrderType, utcnow
 from quant.data.calendar import KST
 from quant.data.providers.kis import kis_host, kis_token
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import difflib
 from datetime import datetime, timedelta
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -109,12 +109,12 @@ class UniverseConfig(ConfigBlock):
     source: ModelSpec = Field(default_factory=lambda: ModelSpec(type="static"))
     filters: list[ModelSpec] = Field(default_factory=list)
     refresh_every_bars: int = 24
-    benchmark: Optional[str] = None
+    benchmark: str | None = None
     #: kept for older configs; a bare selection spec is treated as the source
-    selection: Optional[ModelSpec] = None
+    selection: ModelSpec | None = None
 
     @model_validator(mode="after")
-    def _fold_legacy_selection(self) -> "UniverseConfig":
+    def _fold_legacy_selection(self) -> UniverseConfig:
         if self.selection is not None and self.source.type == "static":
             self.source = self.selection
         return self
@@ -122,16 +122,16 @@ class UniverseConfig(ConfigBlock):
 
 class CostConfig(ConfigBlock):
     preset: Literal["crypto_spot", "us_equity", "kr_equity", "zero_cost", "custom"] = "us_equity"
-    fee: Optional[ModelSpec] = None
-    slippage: Optional[ModelSpec] = None
-    fill: Optional[ModelSpec] = None
+    fee: ModelSpec | None = None
+    slippage: ModelSpec | None = None
+    fill: ModelSpec | None = None
     #: 매도 증권거래세율 (bps) — `preset: kr_equity` 의 기본값을 덮어쓴다.
     #: 법정 세율은 한 번의 백테스트 구간 안에서도 여러 차례 바뀌었으므로,
     #: 프리셋에 박힌 하나의 값은 구간의 일부에서만 맞다.
-    sell_tax_bps: Optional[float] = Field(default=None, ge=0.0)
+    sell_tax_bps: float | None = Field(default=None, ge=0.0)
 
     @model_validator(mode="after")
-    def _sell_tax_belongs_to_kr_preset(self) -> "CostConfig":
+    def _sell_tax_belongs_to_kr_preset(self) -> CostConfig:
         if self.sell_tax_bps is not None and self.preset != "kr_equity":
             raise ValueError(
                 f"costs.sell_tax_bps applies to preset: kr_equity, not "
@@ -194,8 +194,8 @@ class LimitsConfig(ConfigBlock):
 
 
 class BacktestConfig(ConfigBlock):
-    start: Optional[datetime] = None
-    end: Optional[datetime] = None
+    start: datetime | None = None
+    end: datetime | None = None
     #: how many parameter variants were evaluated — feeds the deflated Sharpe
     trials: int = 1
     risk_free_rate: float = 0.0
@@ -227,7 +227,7 @@ class StrategyConfig(ConfigBlock):
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
 
     @model_validator(mode="after")
-    def _live_needs_confirmation(self) -> "StrategyConfig":
+    def _live_needs_confirmation(self) -> StrategyConfig:
         if self.mode is RunMode.LIVE and not self.broker.live_trading_confirmed:
             raise ValueError(
                 "mode: live requires broker.live_trading_confirmed: true. "
@@ -247,7 +247,7 @@ class StrategyConfig(ConfigBlock):
         return self
 
     @model_validator(mode="after")
-    def _backtest_needs_the_simulator(self) -> "StrategyConfig":
+    def _backtest_needs_the_simulator(self) -> StrategyConfig:
         # A file that declares both is asking for something impossible: a venue
         # adapter has no fill simulation, so the run places orders that never
         # fill, charges no commission and no 거래세, and reports a flat curve.

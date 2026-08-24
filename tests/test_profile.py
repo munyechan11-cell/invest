@@ -10,15 +10,21 @@ about the two promises around it:
      bigger inside the same rules, never fewer rules.
 """
 import json
-import os
 import tempfile
 from pathlib import Path
 
 import pytest
 
 from quant.live.profile import (
-    AXIS_MAX, AXIS_META, ARCHETYPES, QUESTIONS, InvestorProfile, ProfileStore,
-    apply_profile, questionnaire, score_answers,
+    ARCHETYPES,
+    AXIS_MAX,
+    AXIS_META,
+    QUESTIONS,
+    InvestorProfile,
+    ProfileStore,
+    apply_profile,
+    questionnaire,
+    score_answers,
 )
 
 AGGRESSIVE = {"q1": "c", "q2": "c", "q3": "a", "q4": "c", "q5": "a",

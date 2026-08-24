@@ -14,8 +14,13 @@ from pydantic import ValidationError
 
 from quant.config.loader import load_config
 from quant.config.schema import (
-    BrokerConfig, CostConfig, LimitsConfig, ModelSpec, PortfolioConfig,
-    StrategyConfig, SymbolSpec,
+    BrokerConfig,
+    CostConfig,
+    LimitsConfig,
+    ModelSpec,
+    PortfolioConfig,
+    StrategyConfig,
+    SymbolSpec,
 )
 from quant.core.types import AssetClass, OrderSide, RunMode, Symbol
 from quant.strategy.builder import build_brokerage, build_costs, build_engine

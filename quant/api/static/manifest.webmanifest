@@ -1,0 +1,31 @@
+{
+  "id": "/",
+  "name": "퀀트 트레이딩 플로어",
+  "short_name": "퀀트 데스크",
+  "description": "16석 AI 데스크가 심의하고, 내가 정한 한도 안에서 자동으로 매매합니다.",
+  "lang": "ko",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "browser"],
+  "orientation": "any",
+  "background_color": "#080B14",
+  "theme_color": "#080B14",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    {"src": "/static/icons/icon-64.png",  "sizes": "64x64",   "type": "image/png"},
+    {"src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png"},
+    {"src": "/static/icons/maskable-192.png", "sizes": "192x192",
+     "type": "image/png", "purpose": "maskable"},
+    {"src": "/static/icons/maskable-512.png", "sizes": "512x512",
+     "type": "image/png", "purpose": "maskable"}
+  ],
+  "shortcuts": [
+    {"name": "시세 · 매매", "short_name": "시세", "url": "/?view=chart",
+     "icons": [{"src": "/static/icons/icon-192.png", "sizes": "192x192"}]},
+    {"name": "마이페이지", "short_name": "설정", "url": "/?view=account",
+     "icons": [{"src": "/static/icons/icon-192.png", "sizes": "192x192"}]}
+  ]
+}

@@ -17,8 +17,8 @@ bar *t* can only ever be filled using data from bar *t+1*.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Sequence
 
 from quant.alpha.attribution import InsightLedger
 from quant.alpha.base import AlphaModel, InsightCollection

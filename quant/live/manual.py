@@ -34,7 +34,13 @@ from typing import Literal
 
 from quant.core.context import Context
 from quant.core.types import (
-    Order, OrderSide, OrderType, Symbol, TimeInForce, new_id, utcnow,
+    Order,
+    OrderSide,
+    OrderType,
+    Symbol,
+    TimeInForce,
+    new_id,
+    utcnow,
 )
 
 log = logging.getLogger("quant.manual")

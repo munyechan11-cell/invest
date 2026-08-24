@@ -24,7 +24,13 @@ from quant.core.context import Context
 from quant.core.engine import Engine
 from quant.core.events import EventBus, EventType
 from quant.core.types import (
-    UTC, Bar, Direction, Insight, OrderSide, PortfolioTarget, Symbol,
+    UTC,
+    Bar,
+    Direction,
+    Insight,
+    OrderSide,
+    PortfolioTarget,
+    Symbol,
 )
 from quant.execution.models import ImmediateExecution, LimitExecution, TwapExecution
 from quant.portfolio.models import EqualWeighting

@@ -4,14 +4,18 @@ The rule these tests protect: a live bot must not poll, signal, or order into a
 closed book. Every failure here is a bot that trades at 3am on 설날 and reports
 the rejections as API faults.
 """
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta
 
 import pytest
 
-from quant.data.calendar import (
-    KST, AlwaysOpen, KrxCalendar, MarketCalendar, calendar_for_venue, create_calendar,
-)
 from quant.core.types import UTC
+from quant.data.calendar import (
+    KST,
+    AlwaysOpen,
+    KrxCalendar,
+    calendar_for_venue,
+    create_calendar,
+)
 
 
 def kst(y, m, d, hh=0, mm=0):

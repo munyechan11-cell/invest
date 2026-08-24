@@ -19,10 +19,12 @@ def _source(name: str) -> str:
 
 def test_start_restores_the_budget_whether_or_not_it_resumed():
     """새 실행도 자기 첫 크래시를 넘겨야 하므로 resumed 안쪽이면 안 됩니다."""
+    def indent(line: str) -> int:
+        return len(line) - len(line.lstrip())
+
     lines = _source("start").split("\n")
-    guard = next(l for l in lines if l.strip().startswith("if resumed:"))
-    call = next(l for l in lines if "restore_budget" in l)
-    indent = lambda l: len(l) - len(l.lstrip())
+    guard = next(x for x in lines if x.strip().startswith("if resumed:"))
+    call = next(x for x in lines if "restore_budget" in x)
     assert indent(call) <= indent(guard), (
         "restore_budget 이 resumed 분기 안에 있습니다 — 새 실행은 자기 첫 "
         "크래시에서 한도를 잃습니다")

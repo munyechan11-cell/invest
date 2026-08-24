@@ -2,3 +2,9 @@
 pytest>=8.0
 pytest-asyncio>=0.24
 ruff>=0.6
+
+# 이 프로젝트는 3.10+ 를 요구하고 3.13 으로 배포됩니다(pyproject, Dockerfile,
+# render.yaml). 3.9 밖에 없는 개발 기기에서 테스트를 돌리려면 이것이 필요합니다 —
+# pydantic 이 `str | None` 같은 어노테이션을 런타임에 해석하기 때문입니다.
+# 3.10 이상에서는 설치되어 있어도 아무 일도 하지 않습니다.
+eval_type_backport>=0.2; python_version < "3.10"

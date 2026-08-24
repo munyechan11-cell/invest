@@ -23,10 +23,10 @@ exit: a limit that traps you in a losing position is not a safety feature.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from quant.core.types import UTC, Fill, Order, OrderSide
+from quant.core.types import UTC, Fill, Order
 
 log = logging.getLogger("quant.limits")
 

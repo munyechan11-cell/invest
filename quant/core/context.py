@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict, deque
+from collections.abc import Iterable
 from datetime import datetime, timedelta
-from typing import Any, Iterable
+from typing import Any
 
 from quant.core.account import Portfolio
 from quant.core.clock import Clock
@@ -110,16 +111,16 @@ class Context:
         return self.portfolio.quantity(symbol)
 
     # ── projected holdings ───────────────────────────────────────────────
-    def set_pending(self, pending: dict[str, "Decimal"]) -> None:
+    def set_pending(self, pending: dict[str, Decimal]) -> None:
         """Signed quantity currently resting in unfilled orders, per symbol."""
         self._pending = dict(pending)
 
-    def pending_quantity(self, symbol: Symbol) -> "Decimal":
+    def pending_quantity(self, symbol: Symbol) -> Decimal:
         from decimal import Decimal
 
         return self._pending.get(symbol.key, Decimal("0"))
 
-    def projected_quantity(self, symbol: Symbol) -> "Decimal":
+    def projected_quantity(self, symbol: Symbol) -> Decimal:
         """Position you will hold if every resting order fills.
 
         This — not the filled position — is what a target must be diffed

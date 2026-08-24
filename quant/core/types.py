@@ -23,7 +23,6 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
-
 UTC = timezone.utc
 
 
@@ -262,7 +261,7 @@ class Insight:
         mag = abs(self.magnitude) if self.magnitude is not None else 0.0
         return int(self.direction) * self.confidence * (1.0 + mag)
 
-    def with_source(self, source: str) -> "Insight":
+    def with_source(self, source: str) -> Insight:
         return replace(self, source=source, id=new_id("ins_"))
 
 
@@ -286,7 +285,7 @@ class PortfolioTarget:
     @staticmethod
     def from_weight(
         symbol: Symbol, weight: float, portfolio_value: float, price: float
-    ) -> "PortfolioTarget":
+    ) -> PortfolioTarget:
         if price <= 0 or portfolio_value <= 0:
             return PortfolioTarget(symbol, Decimal("0"), tag="invalid price/value")
         raw = Decimal(str(weight * portfolio_value / price))
@@ -327,7 +326,7 @@ class Order:
     def signed_filled(self) -> Decimal:
         return self.filled_qty * self.side.sign
 
-    def apply_fill(self, fill: "Fill") -> None:
+    def apply_fill(self, fill: Fill) -> None:
         prev_notional = float(self.filled_qty) * self.avg_fill_price
         self.filled_qty += fill.quantity
         new_notional = prev_notional + float(fill.quantity) * fill.price

@@ -14,7 +14,7 @@ import logging
 from abc import ABC, abstractmethod
 from decimal import Decimal
 
-from quant.core.types import Fill, Order, OrderSide, RunMode, Symbol
+from quant.core.types import Order, OrderSide, RunMode, Symbol
 
 log = logging.getLogger("quant.brokerage")
 
@@ -36,7 +36,7 @@ class Brokerage(ABC):
     budget = None
     portfolio = None
 
-    def _reduces_position(self, order: "Order") -> bool:
+    def _reduces_position(self, order: Order) -> bool:
         if self.portfolio is None:
             return False
         held = self.portfolio.quantity(order.symbol)
@@ -44,7 +44,7 @@ class Brokerage(ABC):
             return False
         return (held > 0) == (order.side is OrderSide.SELL)
 
-    def _budget_check(self, order: "Order") -> tuple[bool, str]:
+    def _budget_check(self, order: Order) -> tuple[bool, str]:
         if self.budget is None or not self.budget.configured:
             return True, ""
         price = order.limit_price or 0.0
@@ -54,7 +54,7 @@ class Brokerage(ABC):
         return self.budget.check(order, price, self._reduces_position(order),
                                  equity=equity)
 
-    def _budget_record(self, order: "Order") -> None:
+    def _budget_record(self, order: Order) -> None:
         if self.budget is None or not self.budget.configured:
             return
         price = order.limit_price or 0.0

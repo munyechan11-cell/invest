@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import math
 import statistics
-from datetime import timedelta
 
 from quant.alpha.base import AlphaModel
 from quant.core.context import Context
@@ -18,16 +17,16 @@ from quant.core.types import Bar, Direction, Insight, Symbol, periods_per_year
 from quant.indicators.streaming import (
     ADX,
     ATR,
-    BollingerBands,
-    Donchian,
     EMA,
-    IndicatorSet,
-    Keltner,
     MACD,
     RSI,
+    SMA,
+    BollingerBands,
+    Donchian,
+    IndicatorSet,
+    Keltner,
     RollingReturn,
     RollingVolatility,
-    SMA,
 )
 
 

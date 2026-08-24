@@ -26,16 +26,15 @@ import json
 import logging
 import statistics
 import time
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import timedelta
-from typing import Awaitable, Callable, Sequence
 
-from quant.core.aio import LazySemaphore
 from quant.alpha.base import AlphaModel
 from quant.alpha.llm_client import LLMClient, LLMConfig, LLMError
+from quant.core.aio import LazySemaphore
 from quant.core.context import Context
 from quant.core.types import Bar, Direction, Insight, Symbol, periods_per_year
-from quant.indicators.streaming import ATR, RSI, SMA, IndicatorSet, MACD, RollingReturn
+from quant.indicators.streaming import ATR, MACD, RSI, SMA, IndicatorSet, RollingReturn
 
 log = logging.getLogger("quant.alpha.council")
 

@@ -65,7 +65,7 @@ def multi_metric_loss(result: BacktestResult) -> float:
         return 100.0
     sharpe_term = -math.tanh(r.sharpe / 2.0)
     dd_term = min(r.max_drawdown / 0.25, 2.0)
-    pf_term = -math.tanh((r.profit_factor - 1.0)) if math.isfinite(r.profit_factor) else -1.0
+    pf_term = -math.tanh(r.profit_factor - 1.0) if math.isfinite(r.profit_factor) else -1.0
     consistency = -math.tanh(r.win_rate * 2 - 0.8)
     turnover_term = min(r.turnover / 50.0, 1.0)
     return (2.0 * sharpe_term + 1.0 * dd_term + 1.0 * pf_term

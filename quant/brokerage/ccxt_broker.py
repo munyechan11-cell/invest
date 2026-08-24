@@ -5,7 +5,7 @@ import logging
 from decimal import Decimal
 
 from quant.brokerage.live_base import LiveBrokerage
-from quant.core.types import Fill, Order, OrderSide, OrderType, Symbol, utcnow
+from quant.core.types import Fill, Order, OrderType, Symbol, utcnow
 
 log = logging.getLogger("quant.brokerage.ccxt")
 

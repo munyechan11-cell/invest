@@ -7,14 +7,13 @@ deliberately blunt and deliberately on by default.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from decimal import Decimal
 
-from quant.core.aio import LazyLock
 from quant.brokerage.base import Brokerage, BrokerageError
 from quant.core.account import Portfolio
+from quant.core.aio import LazyLock
 from quant.core.types import Fill, Order, OrderStatus, RunMode, Symbol, utcnow
 
 log = logging.getLogger("quant.brokerage.live")

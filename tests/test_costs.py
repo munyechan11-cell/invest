@@ -5,7 +5,6 @@ direction that makes every strategy look unprofitable, which is exactly as
 misleading as a backtest that fills for free. These tests pin the magnitudes
 against what real execution costs, in both directions.
 """
-import math
 from datetime import datetime
 from decimal import Decimal
 
@@ -13,7 +12,10 @@ import pytest
 
 from quant.core.types import UTC, Bar, Order, OrderSide, Symbol
 from quant.execution.costs import (
-    KoreanEquityFeeModel, PercentFeeModel, PerShareFeeModel, SpreadPlusImpactSlippage,
+    KoreanEquityFeeModel,
+    PercentFeeModel,
+    PerShareFeeModel,
+    SpreadPlusImpactSlippage,
 )
 
 SYM = Symbol("AAA", venue="SIM")

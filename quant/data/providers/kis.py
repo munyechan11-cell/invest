@@ -184,7 +184,7 @@ class KisProvider(DataProvider):
         await self._client.aclose()
 
 
-def korean_tick_size(price: float) -> "Decimal":
+def korean_tick_size(price: float) -> Decimal:
     """KRX tick ladder (2023 revision). Orders off the ladder are rejected."""
     from decimal import Decimal
 

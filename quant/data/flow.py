@@ -20,9 +20,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Iterable
 
 from quant.core.aio import LazySemaphore
 from quant.core.types import UTC, Symbol
@@ -241,7 +241,7 @@ def register_flow_provider(name: str):
     return deco
 
 
-def create_flow_provider(name: str, **kwargs) -> "FlowProvider":
+def create_flow_provider(name: str, **kwargs) -> FlowProvider:
     key = (name or "none").lower()
     if key in ("none", "null", ""):
         return NullFlowProvider()

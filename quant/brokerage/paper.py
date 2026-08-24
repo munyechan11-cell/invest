@@ -25,7 +25,6 @@ from quant.core.types import (
     Quote,
     RunMode,
     TimeInForce,
-    utcnow,
 )
 from quant.execution.costs import (
     FeeModel,

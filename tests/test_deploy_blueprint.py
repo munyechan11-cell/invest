@@ -39,9 +39,18 @@ def test_everything_written_at_runtime_lives_on_the_disk(web, env):
             f"{key}={value} 가 디스크({mount}) 밖입니다 — 재배포하면 사라집니다")
 
 
-def test_the_dashboard_token_is_generated_not_left_empty(env):
-    """토큰이 없으면 서버가 뜨지 않습니다 (assert_safe_to_bind)."""
-    assert env["QUANT_API_TOKEN"].get("generateValue") is True
+def test_the_encryption_key_is_generated_not_left_empty(env):
+    """이 값으로 모든 사용자의 증권사 키를 암호화합니다. 없으면 서버가 뜨지 않습니다."""
+    assert env["QUANT_SECRET_KEY"].get("generateValue") is True
+
+
+def test_the_shared_operator_token_is_gone(env):
+    """공용 토큰 하나가 관리자 자리를 열면 그건 로그인이 아니라 로그인의 우회입니다.
+
+    여러 사람이 쓰는 서비스에서 그 값은 URL 과 프록시 로그를 타고 흐릅니다.
+    사람을 정하는 것은 세션 쿠키뿐이어야 합니다.
+    """
+    assert "QUANT_API_TOKEN" not in env
 
 
 def test_broker_keys_are_not_in_the_blueprint(env):
@@ -63,7 +72,11 @@ def test_every_key_in_the_blueprint_is_one_the_code_reads(env):
     """오타나 옛 이름이 남으면 채워도 아무 일이 일어나지 않습니다."""
     from quant.live.credentials import WRITABLE_KEYS
 
-    infra = {"PYTHON_VERSION", "DB_PATH", "LOG_FORMAT", "QUANT_ENV_FILE"}
+    # 화면에서 설정할 수 없고 프로세스가 뜨기 전에 있어야 하는 것들. 특히
+    # QUANT_SECRET_KEY 는 **일부러** WRITABLE_KEYS 에 없습니다 — 자기 키를
+    # 복호화하는 열쇠를 사용자가 설정 화면에서 바꿀 수 있으면 안 됩니다.
+    infra = {"PYTHON_VERSION", "DB_PATH", "LOG_FORMAT", "QUANT_ENV_FILE",
+             "QUANT_SECRET_KEY", "QUANT_USERS_DB", "QUANT_USER_DATA"}
     unknown = sorted(k for k in env if k not in WRITABLE_KEYS and k not in infra)
     assert not unknown, f"코드가 읽지 않는 키: {unknown}"
 

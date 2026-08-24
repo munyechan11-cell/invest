@@ -12,14 +12,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
-from typing import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable
+from datetime import datetime
 
 from quant.core.types import Bar, Quote, Symbol, timeframe_delta, utcnow
 
 log = logging.getLogger("quant.data")
 
-_REGISTRY: dict[str, Callable[..., "DataProvider"]] = {}
+_REGISTRY: dict[str, Callable[..., DataProvider]] = {}
 
 
 def register_provider(name: str):
@@ -30,7 +30,7 @@ def register_provider(name: str):
     return deco
 
 
-def create_provider(name: str, **kwargs) -> "DataProvider":
+def create_provider(name: str, **kwargs) -> DataProvider:
     key = name.lower()
     if key not in _REGISTRY:
         raise KeyError(f"unknown data provider {name!r}; available: {sorted(_REGISTRY)}")

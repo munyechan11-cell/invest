@@ -24,7 +24,7 @@ import base64
 import logging
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 
 import httpx
@@ -33,8 +33,17 @@ from quant.brokerage.base import BrokerageError
 from quant.brokerage.live_base import LiveBrokerage
 from quant.core.aio import LazyLock
 from quant.core.types import (
-    UTC, AssetClass, Bar, Fill, Order, OrderSide, OrderType, Quote, Symbol,
-    timeframe_seconds, utcnow,
+    UTC,
+    AssetClass,
+    Bar,
+    Fill,
+    Order,
+    OrderSide,
+    OrderType,
+    Quote,
+    Symbol,
+    timeframe_seconds,
+    utcnow,
 )
 from quant.data.provider import DataProvider, register_provider
 

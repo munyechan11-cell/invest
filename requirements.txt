@@ -8,6 +8,10 @@ httpx>=0.27
 fastapi>=0.115
 uvicorn[standard]>=0.30
 
+# ── multi-user service ────────────────────────────────────────────────────
+# Other people's brokerage keys are stored encrypted, not in a dotenv file.
+cryptography>=43.0
+
 # ── optional, install what you actually use ───────────────────────────────
 # ccxt>=4.4          # crypto exchanges (data + live orders)
 # optuna>=4.0        # TPE parameter search; without it hyperopt uses random search

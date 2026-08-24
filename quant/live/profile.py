@@ -160,7 +160,7 @@ def _axis_maxima() -> dict[str, float]:
     두 개뿐입니다. 고정된 값으로 나누면 문항이 적은 축은 아무리 극단으로 답해도
     중간 근처에 머물러, 결과가 사용자의 답을 배신합니다.
     """
-    maxima = {axis: 0.0 for axis in AXIS_META}
+    maxima = dict.fromkeys(AXIS_META, 0.0)
     for question in QUESTIONS:
         for axis in maxima:
             reach = max((abs(o.weights.get(axis, 0.0)) for o in question.options),
