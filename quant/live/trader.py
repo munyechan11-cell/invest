@@ -18,7 +18,8 @@ from quant.config.schema import StrategyConfig
 from quant.core.clock import RealClock, next_candle_close
 from quant.core.engine import Engine, _insight_dict
 from quant.core.events import Event, EventType
-from quant.core.types import UTC, Bar, RunMode
+from quant.core.types import UTC, Bar, RunMode, Symbol
+from quant.data.feed import LiveBarFeed
 from quant.data.provider import DataProvider, gather_history
 from quant.live.notifier import TelegramNotifier
 from quant.live.spend import SpendMeter
@@ -75,13 +76,32 @@ class LiveTrader:
         self.errors = 0
         self.last_bar_ts: datetime | None = None
         self.started_at: datetime | None = None
-        self._seen: dict[str, datetime] = {}
+        # 시세를 받는 쪽 전부 — 확정 판정, 중복 제거, 못 본 구간 되메우기.
+        # 루프는 "무엇을 언제 물어볼까" 만 알면 되고, "이 봉을 믿어도 되는가"
+        # 는 저기서 판정합니다. 웹소켓이 붙는 날에도 이 자리는 그대로입니다.
+        self.feed = LiveBarFeed(self.provider, config.data.timeframe)
         self._announced_closed = False
         # Built on the running loop rather than here: a trader is constructed
         # outside async context (CLI, API) and an Event binds to a loop eagerly.
         self._stop: asyncio.Event | None = None
         self._task: asyncio.Task | None = None
         self._stopped = False
+
+    @property
+    def _seen(self) -> dict[str, datetime]:
+        """심볼별 마지막 확정봉 시각 — 실물은 피드가 들고 있습니다.
+
+        구멍을 판정하는 기준이 바로 이 값이라 한 벌만 존재해야 합니다. 루프와
+        피드가 각자 하나씩 들면 어긋나는 날이 오고, 어긋난 쪽이 기준이 되는
+        순간 없는 봉이 생기거나 있는 봉이 사라집니다. 이름은 워밍업·유니버스
+        갱신이 쓰던 그대로 둡니다.
+        """
+        return self.feed.seen
+
+    @_seen.setter
+    def _seen(self, value: dict[str, datetime]) -> None:
+        self.feed.seen.clear()
+        self.feed.seen.update(value)
 
     # ── wiring ───────────────────────────────────────────────────────────
     def _attach_observers(self) -> None:
@@ -445,7 +465,7 @@ class LiveTrader:
     async def _tick(self) -> None:
         try:
             await self._refresh_universe()
-            bars = await self._fetch_new_bars()
+            pending = await self._fetch_new_bars()
             if isinstance(self.engine.brokerage, LiveBrokerage):
                 # Cheap insurance: reconcile every cycle so drift is caught in
                 # minutes rather than after a bad restart.
@@ -456,11 +476,29 @@ class LiveTrader:
                 # 시세가 안 올 때. 아래 조기 반환 뒤에 두었더니 그런 날에만
                 # 골라서 건너뛰었습니다.
                 await self.engine.brokerage.sync()
-            if not bars:
+            if not pending:
                 log.debug("no new closed bars this cycle")
                 return
-            await self.engine.on_bars(bars)
-            self.last_bar_ts = max(b.ts for b in bars.values())
+            # 밀린 봉이 여러 개일 때 지표는 **전부** 봐야 하고, 판단은 가장
+            # 최근 봉으로 **한 번만** 해야 합니다.
+            #
+            # 예전에는 심볼당 가장 최근 봉 하나만 엔진에 갔고 나머지는 "봤다"
+            # 로 표시된 채 버려졌습니다. 그러면 지표는 건너뛴 봉들을 연속봉으로
+            # 계산합니다 — 화면에는 아무 표시도 나지 않습니다.
+            #
+            # 그렇다고 밀린 봉을 하나씩 `on_bars` 로 재생하지도 않습니다.
+            # 그건 이미 지나간 시장에 대해 판단을 N번 내리고(데스크가 붙어
+            # 있으면 LLM 도 N번), 그 주문은 **지금** 가격에 나갑니다. 지나간
+            # 봉에서 나온 주문은 지나간 가격에 체결되지 않습니다.
+            latest: dict[str, Bar] = {}
+            for bar in pending:                      # pending 은 시간순입니다
+                latest[bar.symbol.key] = bar
+            ctx = self.engine.ctx
+            for bar in pending:
+                if bar is not latest[bar.symbol.key]:
+                    ctx.push_bar(bar)                # 지표 연속성만
+            await self.engine.on_bars(latest)
+            self.last_bar_ts = max(b.ts for b in pending)
             self.errors = 0
         except asyncio.CancelledError:
             raise
@@ -477,10 +515,18 @@ class LiveTrader:
                 )
                 self.running = False
 
-    async def _fetch_new_bars(self) -> dict[str, Bar]:
-        """Return only bars we have not already processed."""
-        tf = self.config.data.timeframe
-        out: dict[str, Bar] = {}
+    async def _fetch_new_bars(self) -> list[Bar]:
+        """아직 엔진에 넘기지 않은 확정봉 **전부**, 시간순(심볼 섞임).
+
+        예전에는 심볼당 하나만 돌려줬습니다(`dict[str, Bar]`). 반환형 자체가
+        결손의 원인이었습니다 — 한 사이클에 두 봉이 밀리면 담을 자리가 없어서
+        하나는 반드시 사라지고, 그러고도 "봤다" 로 표시됩니다. 무엇을 거르고
+        무엇을 되메울지는 `LiveBarFeed` 가 정합니다.
+        """
+        return await self.feed.pending(self._watched())
+
+    def _watched(self) -> list[Symbol]:
+        """이번 사이클에 시세를 물어볼 종목들."""
         watched = list(self.engine.ctx.universe)
         seen = {s.key for s in watched}
         for pos in self.engine.ctx.portfolio.open_positions:
@@ -490,21 +536,7 @@ class LiveTrader:
         bench = self.engine.ctx.benchmark
         if bench is not None and bench.key not in seen and self._seen.get(bench.key):
             watched.append(bench)                # priced every cycle, never traded
-        results = await asyncio.gather(
-            *(self.provider.latest_bars(s, tf, 3) for s in watched),
-            return_exceptions=True,
-        )
-        for symbol, result in zip(watched, results):
-            if isinstance(result, BaseException):
-                log.warning("data fetch failed for %s: %s", symbol.ticker, result)
-                continue
-            for bar in result:
-                last = self._seen.get(symbol.key)
-                if last is not None and bar.ts <= last:
-                    continue
-                self._seen[symbol.key] = bar.ts
-                out[symbol.key] = bar        # keep the newest per symbol
-        return out
+        return watched
 
     # ── shutdown ─────────────────────────────────────────────────────────
     async def shutdown(self) -> None:
@@ -589,6 +621,12 @@ class LiveTrader:
             "stopping": self.stopping,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "last_bar": self.last_bar_ts.isoformat() if self.last_bar_ts else None,
+            # 시세를 어떻게 받고 있는가. 화면의 "실시간" 배지는 여기서 나와야
+            # 합니다 — 설정 파일의 프로바이더 이름으로 정하면, 푸시가 안 되어
+            # 폴링으로 내려간 날에도 배지는 계속 실시간이라고 말합니다.
+            # 못 본 구간도 여기 실립니다: 조용히 이어 붙인 시계열 위에서
+            # 나온 판단을 사람이 그대로 믿는 것이 가장 비싼 실패입니다.
+            "feed": self.feed.health(),
             "consecutive_errors": self.errors,
             "universe": [s.ticker for s in self.engine.ctx.universe],
             # 장이 닫혀 있는 동안 내려진 판단. 주문은 아직 아니고, 개장하면

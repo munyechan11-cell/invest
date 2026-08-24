@@ -87,7 +87,15 @@ class DataProvider(ABC):
     async def stream(
         self, symbols: list[Symbol], timeframe: str
     ) -> AsyncIterator[Bar]:  # pragma: no cover - overridden
-        """Push closed bars as they form. Default: none (engine falls back to polling)."""
+        """Push closed bars as they form. Default: none (engine falls back to polling).
+
+        구현하는 쪽은 `supports_streaming = True` 도 같이 켜야 합니다 — 화면의
+        "실시간" 배지가 그 값에서 나옵니다(`quant/data/feed.py`). 그리고 여기서
+        나온 봉을 곧장 엔진에 넘기지 마세요: 확정 판정·중복 제거·끊긴 구간
+        되메우기는 `LiveBarFeed.admit()` 이 합니다. 소켓은 진행 중인 봉을 계속
+        갱신해서 보내고 끊겼다 붙으므로, 그 셋 없이 이어 붙이면 없는 봉이
+        생깁니다.
+        """
         if False:
             yield  # type: ignore[misc]
         raise NotImplementedError

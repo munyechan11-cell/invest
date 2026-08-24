@@ -267,8 +267,10 @@ def test_the_live_path_prices_the_benchmark_too(tmp_path):
 
     # and it keeps being priced, or the excess column goes stale after a day
     trader._seen = {k: ts - timedelta(days=5) for k, ts in trader._seen.items()}
+    # `_fetch_new_bars` 는 이제 심볼당 하나가 아니라 밀린 확정봉 **전부** 를
+    # 시간순으로 돌려줍니다 — 벤치마크가 그 안에 있는지만 보면 됩니다.
     fetched = asyncio.run(trader._fetch_new_bars())
-    assert ctx.benchmark.key in fetched
+    assert ctx.benchmark.key in {b.symbol.key for b in fetched}
 
 
 def test_the_worst_alpha_warning_does_not_claim_a_benchmark_it_never_had():
