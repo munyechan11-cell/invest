@@ -85,17 +85,21 @@ class InvestorFlowAlpha(AlphaModel):
         if abs(s.turnover_ratio) < self.min_participation:
             return None
 
+        # 방향은 `smart_money_side` 로 봅니다 — 순매수 **금액** 을 직접 보면,
+        # 금액 축을 주지 않는 소스(토스)에서 그 값이 언제나 0 이라 20일 연속
+        # 매집도 "매수 아님" 이 되어 이 알파가 영영 조용해집니다. 세기는 아래의
+        # 거래량 정규화가 이미 맡고 있으므로 여기서는 부호만 있으면 됩니다.
         buying = (
             s.foreign_streak >= self.min_streak
             or s.institution_streak >= self.min_streak
             or s.accumulation_days >= self.min_accumulation_days
-        ) and s.smart_money_net_value > 0
+        ) and s.smart_money_side > 0
 
         selling = (
             s.foreign_streak <= -self.min_streak
             or s.institution_streak <= -self.min_streak
             or s.distribution_days >= self.min_accumulation_days
-        ) and s.smart_money_net_value < 0
+        ) and s.smart_money_side < 0
 
         if not (buying or selling):
             return None

@@ -8,7 +8,7 @@
 #    안전망입니다. 실거래 전환은 mode: live 와 broker.live_trading_confirmed
 #    두 곳을 모두 바꿔야 하며, limits 의 하루 한도도 반드시 채워야 합니다.
 name: kr-toss-flow
-label_ko: "국내 · 수급 추종 (토스+한투)"
+label_ko: "국내 · 수급 추종 (토스만)"
 description: 외국인·기관 수급 추종 + 추세 확인, 변동성 타겟 사이징.
 mode: dry_run
 
@@ -19,9 +19,17 @@ data:
   warmup_bars: 260
   calendar: krx
 
+# 수급도 토스가 줍니다 — 이 전략은 **토스 키 하나로** 돕니다.
+# 한때 여기에 "수급은 KIS 가 제공합니다 (토스는 미제공)" 이라고 적혀 있었고
+# 그건 틀렸습니다. 그 한 줄 때문에 토스만 연동한 사람은 이 전략을 켜려고
+# 한국투자증권 계좌를 새로 만들어야 했습니다.
+#
+# 다만 KIS 와 같은 자료는 아닙니다: 토스는 거래**량**(주)만 주고 금액 축이
+# 없으며, `foreigner` 는 등록외국인만입니다. 그래서 한 종목의 수급을 두 소스로
+# 섞어 받지 마세요 — 근거는 quant/data/providers/toss_flow.py 상단에 있습니다.
 flow:
-  provider: kis        # 수급 데이터는 KIS 가 제공합니다 (토스는 미제공)
-  params: {app_key: "${KIS_APP_KEY}", app_secret: "${KIS_APP_SECRET}", paper: true}
+  provider: toss
+  params: {client_id: "${TOSS_CLIENT_ID}", client_secret: "${TOSS_CLIENT_SECRET}"}
   history_sessions: 120
 
 universe:

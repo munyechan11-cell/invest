@@ -87,19 +87,38 @@ class InvestorFlow:
             self.foreign_qty < 0 and self.institution_qty < 0 and self.retail_qty > 0
         )
 
+    @property
+    def has_value_axis(self) -> bool:
+        """이 기록에 순매수 **금액** 이 실려 있는가.
+
+        금액을 아예 주지 않는 소스가 있습니다 — 토스의 투자자별 매매동향은 주
+        수만 줍니다. 네 그룹의 금액이 전부 정확히 0 이면 그건 "아무도 아무것도
+        사지 않았다" 가 아니라 이 소스에 금액 축이 없다는 뜻입니다. 그 0 을
+        그대로 화면과 LLM 프롬프트에 흘리면 "외국인 순매수 0원" 이라는, 아무도
+        측정하지 않은 사실이 됩니다.
+        """
+        return any((self.foreign_value, self.institution_value,
+                    self.retail_value, self.program_value))
+
     def to_dict(self) -> dict:
+        known = self.has_value_axis
         return {
             "date": self.ts.date().isoformat(),
             "foreign_qty": round(self.foreign_qty),
             "institution_qty": round(self.institution_qty),
             "retail_qty": round(self.retail_qty),
             "program_qty": round(self.program_qty),
-            "foreign_value": round(self.foreign_value),
-            "institution_value": round(self.institution_value),
-            "retail_value": round(self.retail_value),
+            # 모르는 금액은 0 이 아니라 null 입니다 — `has_value_axis` 참고.
+            "foreign_value": round(self.foreign_value) if known else None,
+            "institution_value": round(self.institution_value) if known else None,
+            "retail_value": round(self.retail_value) if known else None,
             "close": self.close,
             "volume": round(self.volume),
-            "participation_pct": round(self.participation * 100, 3),
+            # 거래량을 못 받은 세션의 참여율은 **모르는 값**이지 0% 가 아닙니다.
+            # 0 으로 내보내면 화면이 "수급이 거의 없었다" 로 그리는데, 실제로는
+            # 분모를 못 받은 것뿐입니다. 모르면 비워 둡니다.
+            "participation_pct": (round(self.participation * 100, 3)
+                                  if self.volume > 0 else None),
             "pattern": ("accumulation" if self.is_accumulation
                         else "distribution" if self.is_distribution else "mixed"),
             "institution_detail": self.institution_detail or None,
@@ -132,15 +151,43 @@ class FlowSummary:
     price_change_pct: float
     divergence: str              # how flow relates to price
 
+    @property
+    def smart_money_net_qty(self) -> float:
+        return self.foreign_net_qty + self.institution_net_qty
+
+    @property
+    def smart_money_side(self) -> int:
+        """스마트머니가 어느 쪽인가 — +1 순매수 / −1 순매도 / 0 없음.
+
+        금액이 있으면 금액으로, 없으면 **수량**으로 봅니다. 금액 축을 아예
+        주지 않는 소스가 있기 때문입니다 — 토스의 투자자별 매매동향은 주 수만
+        줍니다(`quant/data/providers/toss_flow.py`). 그 소스에서 금액은 0 이고,
+        0 을 그대로 방향 판정에 쓰면 20일 연속 매집도 "매수 아님" 이 되어
+        `investor_flow` 알파가 영영 신호를 내지 않습니다.
+
+        **부호만** 씁니다. 순매수 주 수의 부호는 순매수 금액의 부호와 사실상
+        같지만(가격은 양수), 크기는 다른 이야기입니다 — 종목 간 세기 비교는
+        여기가 아니라 거래량으로 정규화한 `turnover_ratio` 가 합니다.
+        """
+        basis = self.smart_money_net_value or self.smart_money_net_qty
+        return (basis > 0) - (basis < 0)
+
     def to_dict(self) -> dict:
+        # 금액 축이 없는 소스에서는 0 이 아니라 null 을 내보냅니다. 이 딕셔너리는
+        # 그대로 AI 데스크 프롬프트로 들어가므로, 0 은 "순매수 0원" 이라는 없는
+        # 사실이 되어 수급 좌석의 판단을 조용히 뒤집습니다.
+        known = any((self.foreign_net_value, self.institution_net_value,
+                     self.smart_money_net_value))
         return {
             "window": self.window,
             "foreign_net_qty": round(self.foreign_net_qty),
             "institution_net_qty": round(self.institution_net_qty),
             "retail_net_qty": round(self.retail_net_qty),
-            "foreign_net_value": round(self.foreign_net_value),
-            "institution_net_value": round(self.institution_net_value),
-            "smart_money_net_value": round(self.smart_money_net_value),
+            "foreign_net_value": round(self.foreign_net_value) if known else None,
+            "institution_net_value": (round(self.institution_net_value)
+                                      if known else None),
+            "smart_money_net_value": (round(self.smart_money_net_value)
+                                      if known else None),
             "foreign_streak": self.foreign_streak,
             "institution_streak": self.institution_streak,
             "avg_participation_pct": round(self.avg_participation * 100, 3),
@@ -197,14 +244,19 @@ def summarize(symbol: Symbol, flows: list[InvestorFlow], window: int = 20) -> Fl
     first_close = next((f.close for f in recent if f.close > 0), 0.0)
     price_change = (recent[-1].close / first_close - 1.0) if first_close > 0 else 0.0
     smart_value = f_val + i_val
+    # 다이버전스는 "샀는가 팔았는가" 와 "올랐는가 내렸는가" 의 조합이라 수급 쪽은
+    # 부호만 필요합니다. 금액을 주지 않는 소스에서는 금액이 전부 0 이라 그대로
+    # 쓰면 언제나 neutral 이 되는데, 그건 다이버전스가 없다는 뜻이 아니라 우리가
+    # 안 본다는 뜻입니다 — 수량의 부호로 봅니다 (`FlowSummary.smart_money_side`).
+    smart_side = smart_value or (f_qty + i_qty)
 
-    if smart_value > 0 and price_change < -0.01:
+    if smart_side > 0 and price_change < -0.01:
         divergence = "bullish_divergence"      # they are buying weakness
-    elif smart_value < 0 and price_change > 0.01:
+    elif smart_side < 0 and price_change > 0.01:
         divergence = "bearish_divergence"      # they are selling strength
-    elif smart_value > 0 and price_change > 0:
+    elif smart_side > 0 and price_change > 0:
         divergence = "confirmed_uptrend"
-    elif smart_value < 0 and price_change < 0:
+    elif smart_side < 0 and price_change < 0:
         divergence = "confirmed_downtrend"
     else:
         divergence = "neutral"

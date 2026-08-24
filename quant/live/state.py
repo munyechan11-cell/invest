@@ -23,6 +23,7 @@ import logging
 import os
 import socket
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -214,6 +215,13 @@ class StateStore:
         self.run_id: int | None = None
         self._owns = False
         self._lock_fd: int | None = None
+        #: `remember_ticker` 의 upsert 를 감싸는 잠금. 이 값이 **없어서**
+        #: `remember_ticker` 는 부를 때마다 AttributeError 로 죽었고, 그래서
+        #: "한 번 조회한 종목은 다음부터 이름으로도 찾힌다" 가 한 번도 동작한
+        #: 적이 없습니다 — 조회 기록 테이블은 늘 비어 있었습니다. 이 경로에만
+        #: 잠금이 있는 이유는 이것이 유일한 read-modify-write 이기 때문입니다
+        #: (빈 이름으로 알던 이름을 덮지 않으려는 CASE 문).
+        self._lock = threading.Lock()
         self._heartbeat_at = 0.0
         #: How many of the ledger's scored insights are already on disk. The
         #: scored list is append-only between saves, so writing only the tail

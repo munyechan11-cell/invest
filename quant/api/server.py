@@ -66,6 +66,7 @@ from quant.config.loader import load_config
 from quant.config.schema import StrategyConfig
 from quant.core.events import Event
 from quant.core.types import UTC, RunMode, Symbol
+from quant.data.names import NameBook
 from quant.live.credentials import (
     OPERATOR_FIELDS,
     VENUES,
@@ -754,6 +755,39 @@ def _config_symbols(config: StrategyConfig) -> list[Symbol]:
     return [build_symbol(spec) for spec in config.universe.symbols]
 
 
+def _name_feed(seat: Desk, config: StrategyConfig | None):
+    """이름 조회에 쓸 프로바이더. 못 세우면 None.
+
+    이름은 있으면 좋은 것이고, 없다고 화면이 죽으면 안 됩니다. 증권사 키를
+    아직 등록하지 않은 사람에게도 목록은 떠야 하고, 그때 정적 표와 조회
+    기록이 답을 냅니다.
+    """
+    if config is None:
+        return None
+    try:
+        return seat.data_provider(config)
+    except Exception as exc:                # noqa: BLE001
+        log.debug("이름 조회용 프로바이더를 세우지 못했습니다: %s", exc)
+        return None
+
+
+def _named_status(payload: dict, book: NameBook) -> dict:
+    """`/api/status` 가 내보내는 티커들에 이름을 답니다.
+
+    `LiveTrader.status()` 자체는 건드리지 않습니다 — 같은 함수를 CLI 도
+    쓰는데, 화면 하나 때문에 터미널 출력의 모양을 바꿀 이유가 없습니다.
+    """
+    out = dict(payload)
+    universe = out.get("universe")
+    if isinstance(universe, list):
+        out["universe"] = book.labels(universe)
+    portfolio = out.get("portfolio")
+    if isinstance(portfolio, dict) and isinstance(portfolio.get("positions"), list):
+        out["portfolio"] = {**portfolio,
+                            "positions": book.tag(portfolio["positions"], "symbol")}
+    return out
+
+
 def _template_config(name: str | None):
     """전략 이름으로 설정을 읽습니다. 없거나 잘못된 이름이면 None.
 
@@ -1397,7 +1431,7 @@ def create_app(config: StrategyConfig | None = None,
 
     @app.get("/api/status")
     async def status(seat: Desk = Depends(desk)):
-        return seat.status()
+        return _named_status(seat.status(), NameBook(seat.state_path))
 
     # 조회 한도는 핸들러가 아니라 여기서 막습니다. `limit=99999999999999999999`
     # 하나면 sqlite 안에서 터져 500 이 되고, 그건 로그인한 아무나 누를 수 있는
@@ -1476,7 +1510,7 @@ def create_app(config: StrategyConfig | None = None,
             raise HTTPException(
                 404, f"{ticker} 는 이 전략의 종목이 아닙니다.")
 
-        bars, quote, stale = [], None, True
+        bars, quote, stale, provider = [], None, True, None
         try:
             provider = seat.data_provider(cfg)
             bars = await provider.latest_bars(symbol, timeframe, count)
@@ -1491,6 +1525,10 @@ def create_app(config: StrategyConfig | None = None,
             since = bars[0].end_ts.isoformat() if bars else ""
             fills = store.fills_for(symbol.key, since=since)
             position = store.position_for(symbol.key)
+            # 지금 보고 있는 종목 하나입니다. 조회 기록에도 정적 표에도 없으면
+            # 증권사에 물어보고, 찾으면 적어 둡니다 — 다음부터는 조회 없이.
+            book = NameBook(seat.state_path, store=store)
+            ticker_name = await book.resolve(symbol.ticker, provider)
         finally:
             store.close()
 
@@ -1510,6 +1548,8 @@ def create_app(config: StrategyConfig | None = None,
 
         return {
             "ticker": symbol.ticker,
+            # 코드만 띄우면 지금 무엇을 보고 있는지 코드를 외운 사람만 압니다.
+            "ticker_name": ticker_name,
             "timeframe": timeframe,
             "currency": symbol.quote_currency,
             "tick_size": float(symbol.tick_size or 0),
@@ -1532,7 +1572,8 @@ def create_app(config: StrategyConfig | None = None,
             cfg = seat.run_config()
             if cfg:
                 store.resume_run(cfg.name, cfg.mode.value)
-            return {"trades": store.recent_trades(limit)}
+            book = NameBook(seat.state_path, store=store)
+            return {"trades": book.tag(store.recent_trades(limit), "symbol")}
         finally:
             store.close()
 
@@ -1567,8 +1608,13 @@ def create_app(config: StrategyConfig | None = None,
         """
         store = StateStore(seat.state_path)
         try:
-            return store.trade_log(limit=limit, offset=offset,
-                                   strategy=strategy, mode=mode)
+            payload = store.trade_log(limit=limit, offset=offset,
+                                      strategy=strategy, mode=mode)
+            book = NameBook(seat.state_path, store=store)
+            # 기록은 나중에 다시 읽는 것입니다. 반년 전 줄에 코드만 남아 있으면
+            # 그때 내가 무엇을 사고팔았는지 알아볼 수 없습니다.
+            payload["trades"] = book.tag(payload.get("trades"), "symbol")
+            return payload
         finally:
             store.close()
 
@@ -1593,11 +1639,15 @@ def create_app(config: StrategyConfig | None = None,
 
         cfg = (seat.run_config() if seat.running()
                else (_template_config(strategy) or seat.run_config()))
+        book = NameBook(seat.state_path)
         known: dict[str, dict] = {}
         if cfg is not None:
             for sym in _config_symbols(cfg):
+                # 전략에 박혀 있는 종목은 조회해 본 적이 없어도 이름이 떠야
+                # 합니다 — 화면이 처음 열렸을 때 보이는 것이 이 목록입니다.
                 known[sym.ticker] = {"ticker": sym.ticker, "venue": sym.venue,
-                                     "currency": sym.quote_currency, "name": "",
+                                     "currency": sym.quote_currency,
+                                     "name": book.name(sym.ticker),
                                      "source": "strategy"}
         store = StateStore(seat.state_path)
         try:
@@ -1606,7 +1656,8 @@ def create_app(config: StrategyConfig | None = None,
                 known[row["ticker"]].update(
                     {"ticker": row["ticker"], "venue": row["venue"],
                      "currency": row.get("currency") or "",
-                     "name": row.get("name") or "", "source": "seen"})
+                     "name": row.get("name") or book.name(row["ticker"]),
+                     "source": "seen"})
         finally:
             store.close()
 
@@ -1626,7 +1677,10 @@ def create_app(config: StrategyConfig | None = None,
                     store.remember_ticker(found)
                 finally:
                     store.close()
-                return {"results": [{**found, "source": "venue"}], "message": ""}
+                # 증권사가 이름을 안 줬으면 아는 것으로 채웁니다. 코드만 뜬
+                # 검색 결과는 고르는 사람에게 아무 정보도 주지 않습니다.
+                named = {**found, "name": found.get("name") or book.name(digits)}
+                return {"results": [{**named, "source": "venue"}], "message": ""}
             return {"results": [], "message":
                     f"{digits} 를 찾지 못했습니다. 증권사 연동을 확인하거나, "
                     f"장 시간이 아니면 시세가 오지 않을 수 있습니다."}
@@ -1793,8 +1847,11 @@ def create_app(config: StrategyConfig | None = None,
             return {"enabled": False,
                     "message": "no desk configured — add an alpha of type 'desk'",
                     "deliberations": []}
+        book = NameBook(seat.state_path)
         payload = model.status()
-        payload["deliberations"] = [d.to_dict() for d in reversed(model.history[-limit:])]
+        payload["deliberations"] = [
+            {**d.to_dict(), "ticker_name": book.name(d.ticker)}
+            for d in reversed(model.history[-limit:])]
         payload.pop("latest", None)
         return payload
 
@@ -1805,7 +1862,9 @@ def create_app(config: StrategyConfig | None = None,
             raise HTTPException(404, "no desk configured")
         for decision in reversed(model.history):
             if decision.ticker.upper() == ticker.upper():
-                return decision.to_dict()
+                book = NameBook(seat.state_path)
+                return {**decision.to_dict(),
+                        "ticker_name": book.name(decision.ticker)}
         raise HTTPException(404, f"no deliberation recorded for {ticker}")
 
     @app.get("/api/flow")
@@ -1814,22 +1873,33 @@ def create_app(config: StrategyConfig | None = None,
                    sessions: int = Query(30, ge=1, le=500),
                    seat: Desk = Depends(desk)):
         """투자자별 수급 — foreign / institution / retail net buying."""
+        # 여기 `message` 는 로그가 아니라 화면 빈 칸에 그대로 찍힙니다. 영어로
+        # 적으면 읽는 사람이 못 읽고, `flow.provider` 같은 설정 키를 가리키면
+        # 화면에서 손댈 수 없는 곳을 가리키게 됩니다.
         trader = seat.trader()
         if trader is None:
-            return {"available": False, "message": "no trader running", "symbols": {}}
+            return {"available": False,
+                    "message": "자동매매가 돌고 있지 않습니다 — 수급은 봇이 도는 "
+                               "동안 모입니다.",
+                    "symbols": {}}
         feed = getattr(trader.engine, "flow_feed", None)
         if feed is None or not feed.has_data:
             return {"available": False,
-                    "message": "flow feed is empty — set flow.provider in the config",
+                    "message": "수급 자료가 아직 없습니다 — 이 전략이 수급을 받도록 "
+                               "설정돼 있지 않거나, 첫 자료가 아직 오지 "
+                               "않았습니다. '외국인·기관 수급' 신호가 들어 있는 "
+                               "전략을 고르면 채워집니다.",
                     "failures": getattr(feed, "failures", {}), "symbols": {}}
         ctx = trader.engine.ctx
         wanted = [s for s in ctx.universe
                   if symbol is None or s.ticker.upper() == symbol.upper()]
+        book = NameBook(seat.state_path)
         out = {}
         for sym in wanted:
             summary = feed.summary(sym, ctx.now, window)
             recent = feed.get(sym, ctx.now)[-sessions:]
             out[sym.ticker] = {
+                "name": book.name(sym.ticker),
                 "summary": summary.to_dict() if summary else None,
                 "sessions": [f.to_dict() for f in recent],
             }
@@ -1844,17 +1914,27 @@ def create_app(config: StrategyConfig | None = None,
         보려면 먼저 봇을 켜야 한다면, 데스크가 수동 매수를 추천했을 때 정작
         그 종목을 고를 수가 없습니다.
         """
+        book = NameBook(seat.state_path)
         trader = seat.trader()
         if trader is None:
             if not strategy:
                 return {"symbols": []}
             cfg = load_config(str(resolve_template(strategy)))
+            symbols = _config_symbols(cfg)
+            # 이 목록의 이름은 **한 번에** 물어봅니다. 종목마다 한 번씩 부르면
+            # 유니버스가 넓을수록 느려지고, 레이트 리밋에 걸리면 이름이 하나도
+            # 안 뜹니다.
+            names = await book.resolve_many([s.ticker for s in symbols],
+                                            _name_feed(seat, cfg))
             return {"symbols": [
-                {"ticker": sym.ticker, "venue": sym.venue,
+                {"ticker": sym.ticker, "name": names.get(sym.ticker, sym.ticker),
+                 "venue": sym.venue,
                  "currency": sym.quote_currency, "price": None,
                  "change_pct": 0.0, "invested": False}
-                for sym in _config_symbols(cfg)]}
+                for sym in symbols]}
         ctx = trader.engine.ctx
+        names = await book.resolve_many([s.ticker for s in ctx.universe],
+                                        getattr(trader, "provider", None))
         out = []
         for sym in ctx.universe:
             bars = ctx.history(sym, 2)
@@ -1863,7 +1943,8 @@ def create_app(config: StrategyConfig | None = None,
             change = ((last.close / prev.close - 1) * 100
                       if last and prev and prev.close > 0 else 0.0)
             out.append({
-                "ticker": sym.ticker, "venue": sym.venue,
+                "ticker": sym.ticker, "name": names.get(sym.ticker, sym.ticker),
+                "venue": sym.venue,
                 "currency": sym.quote_currency,
                 "price": round(last.close, 4) if last else None,
                 "change_pct": round(change, 2),
@@ -1878,9 +1959,15 @@ def create_app(config: StrategyConfig | None = None,
         if trader is None:
             return {"running": False, "paused": False, "pending": [], "recent": []}
         engine = trader.engine
+        book = NameBook(seat.state_path)
+        manual = engine.manual.status()
+        # 대기 중인 주문은 "이걸 정말 낼 것인가" 를 묻는 줄입니다. 코드만
+        # 떠 있으면 확인이 되지 않습니다.
+        for field in ("pending", "recent"):
+            manual[field] = book.tag(manual.get(field), "symbol")
         return {
             "running": True,
-            **engine.manual.status(),
+            **manual,
             "pinned": engine.ctx.pinned,
             "budget": engine.budget.status() if engine.budget.configured else None,
         }
@@ -2079,13 +2166,14 @@ def create_app(config: StrategyConfig | None = None,
         return {**out, "note": "다시 쓰려면 키를 새로 등록해야 합니다"}
 
     @app.get("/api/strategies")
-    async def strategies(_: Desk = Depends(desk)):
+    async def strategies(seat: Desk = Depends(desk)):
         """이 서비스가 돌려주는 전략 목록 — `/api/trader/start` 가 받는 이름들.
 
         각 전략이 **무엇을 하는지 한국어로** 함께 내보냅니다. 화면에
         `kr-toss-flow` 만 뜨면 그게 뭔지 이미 아는 사람만 쓸 수 있고, 이건
         자기 돈을 넣는 사람이 읽어야 하는 목록입니다.
         """
+        book = NameBook(seat.state_path)
         out = []
         for name, path in strategy_catalog().items():
             try:
@@ -2099,6 +2187,11 @@ def create_app(config: StrategyConfig | None = None,
                 "symbols": len(cfg.universe.symbols),
                 "requires": required_secrets(cfg),
                 # ── 한국어 ──────────────────────────────────────────────
+                # `name` 은 로그와 설정이 쓰는 주소라 영어로 두고, 사람이 고르는
+                # 이름은 여기로 내보냅니다. 설정에 없으면 빈 문자열이 나가고,
+                # 화면은 그때 `name` 으로 떨어집니다 — 이름이 없다고 목록에서
+                # 그 전략이 사라지면 그게 훨씬 나쁩니다.
+                "label_ko": cfg.label_ko,
                 "mode_ko": glossary.MODE.get(cfg.mode.value, cfg.mode.value),
                 "broker_ko": glossary.BROKER.get(cfg.broker.type, cfg.broker.type),
                 "timeframe": cfg.data.timeframe,
@@ -2116,7 +2209,13 @@ def create_app(config: StrategyConfig | None = None,
                                                cfg.execution.model.type),
                 "protections": [glossary.describe(glossary.RISK, r.type)
                                 for r in cfg.risk.models],
-                "tickers": [sy.ticker for sy in cfg.universe.symbols][:12],
+                # 전략을 고르는 화면입니다. "005930, 000660" 만 늘어놓으면
+                # 무엇에 돈을 넣는 전략인지 코드를 외운 사람만 읽습니다.
+                # 여기서는 증권사에 묻지 않습니다 — 전략 목록 한 번에 설정
+                # 파일 전부를 도는 자리라, 조회를 섞으면 목록이 느려지고
+                # 키를 등록하지 않은 사람에게는 아예 안 뜹니다.
+                "tickers": book.labels(
+                    [sy.ticker for sy in cfg.universe.symbols][:12]),
             })
         return {"strategies": out}
 

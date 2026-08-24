@@ -114,6 +114,12 @@ def test_the_screen_has_the_controls(el):
 
 
 def test_picking_a_ticker_moves_the_chart_too():
-    """한 곳에만 꽂으면 보고 있는 것과 주문 나가는 것이 달라집니다."""
-    body = re.search(r"function pickTicker\(ticker\) \{(.*?)\n\}", SCRIPT, re.S).group(1)
+    """한 곳에만 꽂으면 보고 있는 것과 주문 나가는 것이 달라집니다.
+
+    인자 목록은 고정하지 않습니다 — 지키려는 것은 "두 곳에 함께 꽂힌다" 이지
+    `pickTicker` 가 몇 개를 받는가가 아닙니다. 종목명을 함께 넘기도록 인자가
+    하나 늘었을 때, 이 검사가 정규식 때문에 깨지면 그건 규칙이 깨진 게 아니라
+    검사가 엉뚱한 것을 붙잡고 있었다는 뜻입니다.
+    """
+    body = re.search(r"function pickTicker\([^)]*\) \{(.*?)\n\}", SCRIPT, re.S).group(1)
     assert "#mSymbol" in body and "#cSym" in body

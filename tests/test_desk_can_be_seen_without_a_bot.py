@@ -72,9 +72,26 @@ def test_a_ticker_is_never_rendered_as_an_object():
     assert "tickerCode" in label, (
         "tickerLabel 이 티커를 직접 문자열로 다룹니다 — 객체가 오면 "
         "'[object Object]' 가 화면에 뜹니다.")
-    # 이름이 없으면 빈 괄호를 만들지 않아야 합니다.
-    assert "name !== code" in label or "name != code" in label, (
+    # 찍는 규칙은 `symLabel` 한 곳에만 둡니다. 두 군데면 언젠가 한 곳만
+    # 고치고, 화면 절반에서만 이름이 뜨는 상태가 됩니다.
+    assert "symLabel(" in label, "tickerLabel 이 자기만의 표기 규칙을 갖고 있습니다"
+    rule = _body("symLabel")
+    assert "nm !== code" in rule or "nm != code" in rule, (
         "이름이 티커와 같을 때 '005930 (005930)' 을 만듭니다")
+
+
+def test_join_never_stringifies_a_ticker_object():
+    """`join` 은 원소마다 ToString 을 부릅니다.
+
+    목록이 {ticker, name} 으로 바뀌면서 전략 설명의 "대상 종목" 줄이
+    "[object Object], [object Object]" 를 그렸습니다 — 하필 사람이 자기 돈을
+    넣기 직전에 읽는 자리에서.
+    """
+    for m in re.finditer(r"(\w+)\.join\(", SCRIPT):
+        name = m.group(1)
+        assert name not in ("tickers", "symbols"), (
+            f"{name}.join(...) — 원소가 객체면 [object Object] 가 찍힙니다. "
+            "tickerLabel 로 문자열을 만든 뒤 이으세요.")
 
 
 def test_the_desk_speaks_before_the_first_bar_closes():

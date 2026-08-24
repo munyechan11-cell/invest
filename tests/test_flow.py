@@ -146,6 +146,63 @@ def test_flow_alpha_emits_a_flat_veto_on_distribution_when_short_is_off():
     assert out and out[0].direction is Direction.FLAT
 
 
+def qty_only(day, foreign, institution, retail, close=50_000.0, volume=1_000_000.0):
+    """금액 축이 없는 소스가 주는 모양 — 수량만 있고 `*_value` 는 전부 0.
+
+    토스의 투자자별 매매동향이 이렇습니다(주 수만 제공). 종가를 곱해 금액을
+    채우는 것은 추정치를 사실로 만드는 일이라 프로바이더가 하지 않습니다.
+    """
+    return InvestorFlow(
+        symbol=SYM, ts=T0 + timedelta(days=day),
+        foreign_qty=foreign, institution_qty=institution, retail_qty=retail,
+        close=close, volume=volume,
+    )
+
+
+def test_flow_alpha_fires_when_the_venue_reports_no_won_value():
+    """금액을 안 주는 소스에서도 수급 신호는 나와야 합니다.
+
+    방향 판정이 순매수 **금액** 을 직접 보면, 그 축이 없는 소스에서는 값이
+    언제나 0 이라 20일 연속 매집도 "매수 아님" 이 됩니다. 알파는 아무 신호도
+    내지 않고, 화면에는 오류도 경고도 뜨지 않습니다 — 그냥 조용합니다.
+    """
+    feed = FlowFeed(NullFlowProvider())
+    feed.seed(SYM, [qty_only(i, 20_000, 10_000, -30_000, close=50_000 - i * 200)
+                    for i in range(30)])
+    alpha = InvestorFlowAlpha(feed, min_streak=3, min_participation=0.005)
+    ctx = make_ctx()
+    out = asyncio.run(alpha.update(ctx, {SYM.key: ctx.history(SYM, 1)[0]}))
+    assert out and out[0].direction is Direction.UP
+
+
+def test_divergence_is_read_from_quantity_when_value_is_missing():
+    """금액이 없다고 다이버전스가 없는 것은 아닙니다 — 수량의 부호로 봅니다."""
+    flows = [qty_only(i, 2_000, 1_000, -3_000, close=50_000 - i * 400)
+             for i in range(10)]
+    assert summarize(SYM, flows, window=10).divergence == "bullish_divergence"
+
+
+def test_a_missing_value_axis_is_reported_as_unknown_not_as_zero():
+    """"순매수 0원" 은 아무도 측정하지 않은 숫자입니다.
+
+    이 딕셔너리는 화면과 AI 데스크 프롬프트로 그대로 나갑니다. 0 을 흘리면
+    수급 좌석은 "외국인이 금액으로는 안 샀다" 로 읽습니다.
+    """
+    row = qty_only(0, 20_000, 10_000, -30_000)
+    assert not row.has_value_axis
+    assert row.to_dict()["foreign_value"] is None
+    assert row.to_dict()["foreign_qty"] == 20_000        # 아는 것은 그대로 뜹니다
+
+    s = summarize(SYM, [qty_only(i, 20_000, 10_000, -30_000) for i in range(5)])
+    assert s.to_dict()["smart_money_net_value"] is None
+    assert s.to_dict()["foreign_net_qty"] == 100_000
+
+    # 금액을 주는 소스에서는 아무것도 달라지지 않아야 합니다.
+    priced = flow(0, 20_000, 10_000, -30_000)
+    assert priced.has_value_axis
+    assert priced.to_dict()["foreign_value"] == 20_000 * 50_000
+
+
 def test_flow_alpha_stays_silent_below_the_participation_floor():
     feed = FlowFeed(NullFlowProvider())
     feed.seed(SYM, [flow(i, 100, 50, -150, volume=10_000_000) for i in range(30)])

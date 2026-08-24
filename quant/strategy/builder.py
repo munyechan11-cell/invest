@@ -117,6 +117,8 @@ def build_flow_feed(config: StrategyConfig) -> FlowFeed:
     """
     if config.flow.provider in ("kis",):
         from quant.data.providers import kis_flow as _kf  # noqa: F401
+    elif config.flow.provider in ("toss",):
+        from quant.data.providers import toss_flow as _tf  # noqa: F401
     elif config.flow.provider in ("synthetic",):
         from quant.data.providers import synthetic_flow as _sf  # noqa: F401
     try:

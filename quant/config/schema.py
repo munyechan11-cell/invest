@@ -83,14 +83,18 @@ class DataConfig(ConfigBlock):
 
 
 class FlowConfig(ConfigBlock):
-    """Investor supply/demand feed (수급) — currently KIS for Korean equities.
+    """Investor supply/demand feed (수급) — KIS or Toss, for Korean equities.
 
     Kept separate from `data` because flow is a different feed with a different
     cadence and different failure modes: losing it should degrade the signal,
     not stop the bars arriving.
+
+    두 소스는 같은 자료가 아닙니다. 토스는 거래**량**만 주고(금액 축 없음)
+    `foreigner` 가 등록외국인만이라, 한 종목의 시계열을 둘로 이어 붙이면
+    경계에서 계단이 생깁니다 — 자세한 것은 `providers/toss_flow.py`.
     """
 
-    provider: str = "none"          # none | kis | synthetic
+    provider: str = "none"          # none | kis | toss | synthetic
     params: dict[str, Any] = Field(default_factory=dict)
     history_sessions: int = 120
     refresh_every_bars: int = 1
@@ -221,6 +225,10 @@ class StrategyConfig(ConfigBlock):
     #: `name` 은 설정 파일과 로그가 쓰는 식별자라 영어로 둡니다. 그런데 전략을
     #: 고르는 화면에 `kr-toss-desk · dry_run` 만 뜨면, 그게 뭔지 이미 아는
     #: 사람만 자기 돈을 넣을 수 있습니다.
+    #:
+    #: 여기에 모드("과거 검증용" 같은 말)를 적지 마세요. 아래 `mode` 를 바꾸는
+    #: 순간 이 문자열은 조용히 거짓말이 되고, 화면은 그 거짓말을 자신 있게
+    #: 띄웁니다. 모드는 `mode` 하나에서만 읽습니다.
     label_ko: str = ""
     description: str = ""
     mode: RunMode = RunMode.BACKTEST

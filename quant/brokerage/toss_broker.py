@@ -59,6 +59,7 @@ HOST = "https://openapi.tossinvest.com"
 _FIELDS = {
     "token_path": "/oauth2/token",
     "price_path": "/api/v1/prices",
+    "stocks_path": "/api/v1/stocks",
     "candles_path": "/api/v1/candles",
     "orderbook_path": "/api/v1/orderbook",
     "accounts_path": "/api/v1/accounts",
@@ -219,6 +220,13 @@ class TossProvider(DataProvider):
     #: 지원한다고 적어 두면 그 설정으로 만든 전략이 시작할 때 죽습니다.
     _INTERVAL = {"1m": "1m", "1d": "1d"}
 
+    #: 종목정보(`/api/v1/stocks`)와 현재가(`/api/v1/prices`)는 둘 다 콤마로
+    #: 최대 **200건**을 한 번에 받습니다. 공식 문서가 못 박은 값이고, 넘기면
+    #: 400 입니다. 종목마다 한 번씩 부르면 4종목짜리 화면이 4번, 유니버스가
+    #: 넓으면 200번이 되고 `STOCK` 레이트 리밋에 걸리는 순간 이름이 **전부**
+    #: 사라집니다 — 종목이 많을수록 이름이 필요한데, 하필 그때 다 실패합니다.
+    _PER_CALL = 200
+
     def __init__(self, client_id: str = "", client_secret: str = "",
                  account_no: str = "", **kwargs):
         self.client = _TossClient(client_id, client_secret, account_no, **kwargs)
@@ -335,6 +343,86 @@ class TossProvider(DataProvider):
             tick_size=korean_tick_size(price) if krx else Decimal("0.01"),
         )
 
+    async def describe(self, ticker: str) -> dict | None:
+        """종목 하나를 사람이 읽을 수 있는 것으로 바꿉니다.
+
+        `kis.describe` 와 같은 자리이지만 출처가 다릅니다 — 한투는 이름을
+        **시세** 응답에 얹어 주고(`hts_kor_isnm`), 토스는 종목정보 API 가
+        따로 있습니다. 그래서 토스 쪽은 오늘 한 번도 체결되지 않은 종목,
+        장이 닫힌 시각, 거래정지 종목도 이름이 나옵니다. 한투 쪽은 현재가가
+        0 이면 아무것도 돌려주지 못합니다.
+        """
+        found = await self.describe_many([ticker])
+        return found.get(_api_symbol(ticker))
+
+    async def describe_many(self, tickers: list[str]) -> dict[str, dict]:
+        """여러 종목의 이름·시장·통화를 **한 번에**.
+
+        `GET /api/v1/stocks?symbols=005930,AAPL` 하나로 최대 200건입니다.
+        국내 코드와 미국 티커를 섞어도 됩니다.
+
+        토스가 받지 않는 심볼(예: `BTC/USDT` 처럼 `/` 가 든 것)은 아예 빼고
+        보냅니다. 하나만 섞여도 요청 전체가 400 이라, 같이 물어본 멀쩡한
+        종목들까지 이름을 잃습니다.
+        """
+        wanted: list[str] = []
+        for raw in tickers:
+            code = _api_symbol(raw)
+            if code and code not in wanted:
+                wanted.append(code)
+        if not wanted:
+            return {}
+
+        rows: list[dict] = []
+        for start in range(0, len(wanted), self._PER_CALL):
+            chunk = wanted[start:start + self._PER_CALL]
+            try:
+                data = await self.client.request(
+                    "GET", _FIELDS["stocks_path"],
+                    params={"symbols": ",".join(chunk)})
+            except Exception as exc:        # noqa: BLE001 — 한 묶음이 실패해도
+                # 나머지 묶음의 이름은 나와야 합니다.
+                log.debug("토스 종목정보 조회 실패 (%d건): %s", len(chunk), exc)
+                continue
+            rows.extend(data if isinstance(data, list) else (data.get("stocks") or []))
+        if not rows:
+            return {}
+
+        prices = await self._last_prices([str(r.get("symbol") or "") for r in rows])
+        out: dict[str, dict] = {}
+        for row in rows:
+            info = _stock_info(row, prices)
+            if info:
+                out[info["ticker"]] = info
+        return out
+
+    async def _last_prices(self, codes: list[str]) -> dict[str, float]:
+        """현재가 다건. 실패하면 빈 표 — 값은 없어도 **이름은 남습니다**.
+
+        검색 결과에 값이 같이 뜨면 종목을 잘못 고른 것을 그 자리에서 알아챕니다.
+        하지만 값을 못 받았다고 이름까지 버리면 고치려던 문제로 되돌아갑니다.
+        """
+        wanted = [c for c in dict.fromkeys(_api_symbol(c) for c in codes) if c]
+        out: dict[str, float] = {}
+        for start in range(0, len(wanted), self._PER_CALL):
+            chunk = wanted[start:start + self._PER_CALL]
+            try:
+                data = await self.client.request(
+                    "GET", _FIELDS["price_path"],
+                    params={"symbols": ",".join(chunk)})
+            except Exception as exc:        # noqa: BLE001
+                log.debug("토스 현재가 다건 조회 실패 (%d건): %s", len(chunk), exc)
+                continue
+            for row in (data if isinstance(data, list) else (data.get("prices") or [])):
+                code = _api_symbol(row.get("symbol"))
+                try:
+                    price = float(row.get("lastPrice"))
+                except (TypeError, ValueError):
+                    continue
+                if code and price > 0:
+                    out[code] = price
+        return out
+
     async def close(self):
         await self.client.close()
 
@@ -437,6 +525,65 @@ class TossBrokerage(LiveBrokerage):
 
     async def close(self):
         await self.client.close()
+
+
+#: 토스가 심볼로 받는 글자. 공식 문서의 패턴(`^[A-Za-z0-9.,\-]+$`)에서 구분자
+#: 콤마만 뺀 것입니다. 여기 없는 글자가 하나라도 들어가면 요청 전체가 400 이라,
+#: 보내기 전에 걸러 냅니다.
+_SYMBOL_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-")
+
+#: 국내 시장 세그먼트. 상하한가·호가단위가 있는 쪽이라 구분이 필요합니다.
+_KR_MARKETS = frozenset({"KOSPI", "KOSDAQ", "KR_ETC"})
+
+
+def _api_symbol(raw) -> str:
+    """요청에 실을 심볼. 토스가 받지 않는 것은 빈 문자열."""
+    code = str(raw or "").strip().partition(":")[0].strip().upper()
+    if not code or any(ch not in _SYMBOL_CHARS for ch in code):
+        return ""
+    return code
+
+
+def _stock_info(row: dict, prices: dict[str, float]) -> dict | None:
+    """`StockInfo` 한 줄을 화면이 쓰는 모양으로.
+
+    이름이 비어 있으면 티커로 채우지 않고 **빈 채로** 둡니다. 호출부는 그때
+    자기 캐시나 정적 표로 물러설 수 있어야 하는데, 티커를 이름 자리에 넣어
+    버리면 "증권사가 이 종목의 이름을 이렇게 준다" 는 뜻이 되어 버립니다.
+    """
+    from quant.data.providers.kis import korean_tick_size
+
+    code = _api_symbol(row.get("symbol"))
+    if not code:
+        return None
+    market = str(row.get("market") or "").strip().upper()
+    currency = str(row.get("currency") or "").strip().upper()
+    krx = market in _KR_MARKETS or currency == "KRW"
+    info = {
+        "ticker": code,
+        # 한글 종목명이 없으면 영문명이라도. 둘 다 없으면 빈 값입니다.
+        "name": (str(row.get("name") or "").strip()
+                 or str(row.get("englishName") or "").strip()),
+        "english_name": str(row.get("englishName") or "").strip(),
+        "venue": "toss",
+        "currency": currency,
+        "market": market,
+        "security_type": str(row.get("securityType") or "").strip().upper(),
+        # 상장폐지·상장예정 종목도 이름은 나옵니다. 그 사실을 숨기면 살 수
+        # 없는 종목을 살 수 있는 것처럼 보여 줍니다.
+        "status": str(row.get("status") or "").strip().upper(),
+    }
+    price = prices.get(code)
+    if price is not None:
+        info["price"] = price
+        info["tick_size"] = float(korean_tick_size(price)) if krx else 0.01
+    elif not krx:
+        # 미국 주식의 호가단위는 가격과 무관하게 $0.01 입니다. 국내는 가격에
+        # 따라 달라지므로, 현재가를 못 받았으면 **적지 않습니다** — 틀린
+        # 호가단위로 낸 지정가는 거절됩니다.
+        info["tick_size"] = 0.01
+    return info
 
 
 def _parse_ts(raw) -> datetime | None:

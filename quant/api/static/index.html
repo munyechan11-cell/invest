@@ -855,7 +855,7 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
   <div class="top-in">
     <span class="conn" id="conn" role="img" aria-label="연결 상태 확인 중"></span>
     <button type="button" class="brand" id="brandHome" title="홈으로"><i aria-hidden="true">◆</i> QUANT TRADING FLOOR <i aria-hidden="true">◆</i></button>
-    <span class="mode backtest px" id="mode">OFFLINE</span>
+    <span class="mode backtest px" id="mode">미가동</span>
     <!-- 잔고와 오늘 손익은 어느 화면에 있든 보여야 합니다. 계좌 탭에 있는
          숫자를 보려고 탭을 옮기면, 매매하다 말고 자리를 뜨게 됩니다. -->
     <span class="mini" id="miniAcct" hidden>
@@ -878,8 +878,8 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
 
 <div class="wrap app-only">
   <div class="viewtabs" role="tablist">
-    <button id="tabDesk" role="tab" aria-selected="true">DESK</button>
-    <button id="tabChart" role="tab" aria-selected="false">CHART</button>
+    <button id="tabDesk" role="tab" aria-selected="true">심의</button>
+    <button id="tabChart" role="tab" aria-selected="false">시세 · 매매</button>
   </div>
   <div class="deck">
   <div class="deck-l">
@@ -959,7 +959,8 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
       <div class="pins" id="mPins"></div>
       <div class="msg" id="mMsg">수동 주문은 알파·포트폴리오 계층을 건너뛰지만,
         주문 한도와 하루 한도 같은 브로커 안전장치는 그대로 적용됩니다.
-        수동 매수한 종목은 전략이 되팔지 않도록 자동으로 고정(pin)됩니다.</div>
+        수동 매수한 종목은 전략이 되팔지 않도록 자동으로 고정됩니다 —
+        아래 📌 목록에서 풀 수 있습니다.</div>
 
       <div style="margin-top:14px" id="mBudget"></div>
     </div>
@@ -994,7 +995,7 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
   <section class="panel">
     <div class="room turf">
       <span class="plate"><span class="d" aria-hidden="true">◆</span> 토론장 <span class="d" aria-hidden="true">◆</span></span>
-      <span class="round px" id="roundTag">ROUND —</span>
+      <span class="round px" id="roundTag">라운드 —</span>
       <div class="duel" id="debateSeats"></div>
       <div class="saybox idle" id="say-debate"><b class="who">대기 중</b><p class="line">심의가 시작되면 여기에 발언이 그대로 남습니다.</p></div>
     </div>
@@ -1004,7 +1005,7 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
   <section class="panel">
     <div class="room turf">
       <span class="plate"><span class="d" aria-hidden="true">◆</span> 리스크 위원회 <span class="d" aria-hidden="true">◆</span></span>
-      <span class="round px" id="riskTag">SCALE —</span>
+      <span class="round px" id="riskTag">배율 —</span>
       <div class="duel" id="riskSeats"></div>
       <div class="saybox idle" id="say-risk"><b class="who">대기 중</b><p class="line">심의가 시작되면 여기에 발언이 그대로 남습니다.</p></div>
     </div>
@@ -1038,7 +1039,7 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
     <span class="plate"><span class="d" aria-hidden="true">◆</span> 계좌 <span class="d" aria-hidden="true">◆</span></span>
     <div class="hud">
       <div class="hud-l">
-        <div class="sym" id="hudSym">PORTFOLIO</div>
+        <div class="sym" id="hudSym">전체 계좌</div>
         <div class="big" id="hudEquity">—</div>
         <div class="chg" id="hudChange">—</div>
         <div class="kpis" id="hudKpis"></div>
@@ -1214,7 +1215,7 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
   <!-- flow -->
   <section class="panel">
     <span class="plate"><span class="d" aria-hidden="true">◆</span> 수급 · 외국인 / 기관 / 개인 <span class="d" aria-hidden="true">◆</span></span>
-    <div class="body" id="flowBody"><div class="empty">수급 데이터 없음 — config 의 flow.provider 를 설정하세요</div></div>
+    <div class="body" id="flowBody"><div class="empty">아직 수급 자료가 없습니다 — 봇이 돌기 시작하면 채워집니다</div></div>
   </section>
   </div>
   </div><!-- /deck -->
@@ -1308,7 +1309,7 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
   <div id="tourVeil"></div>
   <div id="tourRing"></div>
   <div id="tourBox">
-    <h4 id="tourTitle">GUIDE</h4>
+    <h4 id="tourTitle">안내</h4>
     <p id="tourText"></p>
     <div class="row">
       <button class="btn tap" id="tourNext">다음</button>
@@ -1335,6 +1336,45 @@ const num = (n, d = 0) => n == null || !isFinite(n) ? "—"
 const pct = n => n == null || !isFinite(n) ? "—" : (n >= 0 ? "+" : "") + Number(n).toFixed(2) + "%";
 const cls = n => n > 0 ? "up" : n < 0 ? "down" : "";
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* ── 종목 이름 ────────────────────────────────────────────────────────
+   "005930" 만 뜨면 그 종목이 무엇인지는 외운 사람만 압니다. 이름을 앞에
+   세우되 코드는 지우지 않습니다 — 주문 확인 화면에서 사람이 실제로 대조하는
+   것은 이름이 아니라 코드니까요.
+
+   이름은 서버가 실어 보냅니다(목록은 `{ticker, name}`, 단일 값은 형제 필드
+   `<필드>_name`). 아직 안 실려 오는 응답도 있으므로 없으면 코드만 그립니다 —
+   빈 괄호는 "이름을 못 받았다" 는 사실조차 알려 주지 못합니다. 이름이 코드와
+   같을 때도 마찬가지입니다(서버가 이름 대신 코드를 되돌려준 경우). */
+function symLabel(ticker, name) {
+  const code = String(ticker == null ? "" : ticker).split(":").pop();
+  const nm = String(name == null ? "" : name).trim();
+  return nm && nm !== code ? `${nm} (${code})` : code;
+}
+
+/* 이 행에 실려 온 종목 이름. 목록 원소면 `name`, 단일 필드면 `<필드>_name`. */
+function nameOf(row, field) {
+  if (!row || typeof row !== "object") return "";
+  return row[field + "_name"] || row.name || "";
+}
+
+/* ── 봉 주기 ──────────────────────────────────────────────────────────
+   서버는 `1d`·`4h` 같은 코드로 말합니다. 오른쪽 시세 칸의 주기 선택기는
+   이미 "일봉 / 1시간 / 15분" 인데 전략 설명만 `1d 봉` 이라, 같은 값이 한
+   화면에서 두 이름으로 떠 있었습니다.
+
+   표를 손으로 적는 대신 숫자와 단위를 읽습니다 — 새 주기가 하나 생겨도
+   낡지 않습니다. 모르는 모양은 원문 그대로 둡니다. */
+const TF_UNIT = {m: "분", h: "시간", d: "일", w: "주", M: "개월"};
+function timeframeKo(tf) {
+  const m = /^(\d+)([mhdwM])$/.exec(String(tf == null ? "" : tf).trim());
+  if (!m) return tf || "";
+  // 하루·한 주짜리는 "1일봉" 이 아니라 그냥 일봉·주봉으로 부릅니다.
+  if (m[1] === "1" && (m[2] === "d" || m[2] === "w" || m[2] === "M")) {
+    return TF_UNIT[m[2]] + "봉";
+  }
+  return m[1] + TF_UNIT[m[2]] + "봉";
+}
 
 /* ── pixel sprites ───────────────────────────────────────────────────── */
 const SPRITE = [
@@ -1407,7 +1447,7 @@ function seatHtml(s) {
 }
 $("#analystSeats").innerHTML = ANALYSTS.map(seatHtml).join("");
 $("#debateSeats").innerHTML =
-  seatHtml(DEBATERS[0]) + `<div class="vs px">VS</div>` + seatHtml(DEBATERS[1]);
+  seatHtml(DEBATERS[0]) + `<div class="vs px">대결</div>` + seatHtml(DEBATERS[1]);
 $("#riskSeats").innerHTML =
   seatHtml(RISKERS[0]) + `<div class="vs px">⇄</div>` + seatHtml(RISKERS[1]) +
   `<div class="vs px">→</div>` + seatHtml(RISKERS[2]);
@@ -1475,12 +1515,21 @@ function resetFloor() {
     const s = document.getElementById("seat-" + k);
     if (s) { s.classList.add("idle"); s.classList.remove("active", "talking"); }
   });
-  $("#roundTag").textContent = "ROUND —";
-  $("#riskTag").textContent = "SCALE —";
+  $("#roundTag").textContent = "라운드 —";
+  $("#riskTag").textContent = "배율 —";
 }
 
 /* ── deliberation replay ─────────────────────────────────────────────── */
 const TONE = {bullish: "bull", bearish: "bear", neutral: "neutral"};
+/* 좌석이 쓰는 낱말은 모델 스키마의 영어 enum 입니다(quant/alpha/seats.py).
+   그대로 흘리면 발언 앞머리가 `[bullish 68%]` 이 됩니다 — 열여섯 명이
+   한국어로 말하는 화면에서 유일하게 못 읽는 부분이 됩니다. 사전에 없는
+   값은 원문 그대로 둡니다. 모델이 새 낱말을 뱉었다는 사실이 빈칸보다 낫습니다. */
+const STANCE_KO = {bullish: "강세", bearish: "약세", neutral: "중립"};
+const ENTRY_STYLE_KO = {
+  market_now: "지금 시장가", limit_patient: "지정가로 기다림",
+  scale_in: "나눠서 진입", wait_for_pullback: "눌림목 기다림",
+};
 let playing = false;
 /* 사람이 고른 재생 속도. 숫자가 클수록 빠릅니다 — `playDeliberation` 안에서는
    기다리는 시간에 나누어 쓰므로 여기서 뒤집지 않습니다.
@@ -1504,17 +1553,19 @@ async function playDeliberation(d, opts) {
   try {
     resetFloor();
     $("#verdict").classList.add("hidden");
+    const subject = symLabel(d.symbol, nameOf(d, "symbol")) || "—";
     $("#deskSubject").textContent =
-      (opts && opts.demo ? "DEMO · " : "") + (d.symbol || "—") + " 심의 중";
+      (opts && opts.demo ? "데모 · " : "") + subject + " 심의 중";
 
     // 1) 분석 8석 — each states its read in turn
     for (const a of ANALYSTS) {
       const r = (d.analysts || {})[a.key];
       if (!r) continue;
+      const stance = STANCE_KO[r.stance] || r.stance || "?";
       const line = !r.data_sufficient
         ? "데이터 부족 — 판단 보류"
-        : ((r.key_points || [])[0] || r.stance || "");
-      say(a.key, `[${r.stance || "?"} ${Math.round((r.conviction || 0) * 100)}%] ${line}`,
+        : ((r.key_points || [])[0] || stance);
+      say(a.key, `[${stance} ${Math.round((r.conviction || 0) * 100)}%] ${line}`,
           TONE[r.stance] || "neutral");
       await wait(850);
     }
@@ -1523,7 +1574,7 @@ async function playDeliberation(d, opts) {
     // 2) 강세 vs 약세, round by round
     const rounds = (d.debate && d.debate.rounds) || [];
     for (let i = 0; i < rounds.length; i++) {
-      $("#roundTag").textContent = `ROUND ${i + 1}/${rounds.length}`;
+      $("#roundTag").textContent = `라운드 ${i + 1}/${rounds.length}`;
       for (const side of ["bull", "bear"]) {
         const r = rounds[i][side];
         if (!r) continue;
@@ -1550,7 +1601,7 @@ async function playDeliberation(d, opts) {
     }
     if (d.risk) {
       const scale = Math.round((d.position_scale || 0) * 100);
-      $("#riskTag").textContent = d.vetoed ? "VETO" : `SCALE ${scale}%`;
+      $("#riskTag").textContent = d.vetoed ? "거부" : `배율 ${scale}%`;
       say("risk_neutral",
           (d.vetoed ? "⛔ 거부: " + (d.veto_reason || "") : `최종 배율 ${scale}% — `) +
           (d.risk.reasoning || ""),
@@ -1562,23 +1613,24 @@ async function playDeliberation(d, opts) {
     // 4) 결정 데스크 — plan, then execution, then the call
     if (d.plan) {
       say("research_manager",
-          `[${d.plan.rating || "?"}] ${d.plan.rationale || ""}`,
+          `[${actionKo(d.plan.rating)}] ${d.plan.rationale || ""}`,
           (d.plan.rating || "").includes("buy") ? "bull"
             : (d.plan.rating || "").includes("sell") ? "bear" : "neutral");
       await wait(1700);
     }
     if (d.trade) {
+      const how = ENTRY_STYLE_KO[d.trade.entry_style] || d.trade.entry_style || "";
       say("trader",
-          `${d.trade.entry_style || ""} ${d.trade.tranches ? "· " + d.trade.tranches + "분할" : ""} — ${d.trade.execution_note || ""}`,
+          `${how} ${d.trade.tranches ? "· " + d.trade.tranches + "분할" : ""} — ${d.trade.execution_note || ""}`,
           "neutral");
       await wait(1600);
     }
-    say("head", `${(d.action || "hold").toUpperCase()} · 확신 ${Math.round((d.conviction || 0) * 100)}% — ${d.rationale || ""}`,
+    say("head", `${actionKo(d.action || "hold")} · 확신 ${Math.round((d.conviction || 0) * 100)}% — ${d.rationale || ""}`,
         (d.action || "").includes("buy") ? "bull"
           : (d.action || "").includes("sell") || (d.action || "") === "reduce" ? "bear" : "neutral");
     renderVerdict(d, opts && opts.demo);
-    $("#deskSubject").textContent = (opts && opts.demo ? "DEMO · " : "") +
-      (d.symbol || "—") + " 결정 완료";
+    $("#deskSubject").textContent = (opts && opts.demo ? "데모 · " : "") +
+      subject + " 결정 완료";
   } finally {
     playing = false;
     syncPlayBar();
@@ -1589,7 +1641,12 @@ const ACTION_STYLE = {
   strong_buy: ["적극 매수", "var(--up)"], buy: ["매수", "var(--up)"],
   hold: ["관망", "var(--muted)"], reduce: ["축소", "var(--gold)"],
   sell: ["매도", "var(--down)"], strong_sell: ["적극 매도", "var(--down)"],
+  avoid: ["회피", "var(--down)"],
 };
+
+/* 판정 낱말 하나를 한국어로. 사전에 없으면 원문 그대로 — 좌석이 새 낱말을
+   뱉었을 때 화면이 빈칸이 되면 무슨 결론이 났는지조차 알 수 없습니다. */
+const actionKo = a => (ACTION_STYLE[a] || [])[0] || a || "—";
 
 function renderVerdict(d, demo) {
   const [label, color] = ACTION_STYLE[d.action] || ["관망", "var(--muted)"];
@@ -1598,12 +1655,12 @@ function renderVerdict(d, demo) {
   v.innerHTML = `
     <div class="act px" style="color:${color}">${d.vetoed ? "거부" : esc(label)}</div>
     <div class="meta">
-      ${esc(d.symbol || "")}<br>
+      ${esc(symLabel(d.symbol, nameOf(d, "symbol")))}<br>
       확신 ${Math.round((d.conviction || 0) * 100)}% · 합의 ${(d.consensus >= 0 ? "+" : "")}${(d.consensus || 0).toFixed(2)}<br>
       투표 ${d.voting_seats != null ? d.voting_seats : "—"}/8석 · 반대 ${Math.round((d.dissent_ratio || 0) * 100)}%<br>
       배율 ${Math.round((d.position_scale || 0) * 100)}% · ${d.horizon_bars || "—"}봉<br>
-      <span class="dim">${(d.elapsed_s || 0).toFixed(1)}s · ${d.llm_calls || 0} calls</span>
-      ${demo ? ' <span class="demo-tag">DEMO</span>' : ""}
+      <span class="dim">${(d.elapsed_s || 0).toFixed(1)}초 · AI 호출 ${d.llm_calls || 0}회</span>
+      ${demo ? ' <span class="demo-tag">데모</span>' : ""}
       ${d.degraded ? ' <span class="demo-tag">축약</span>' : ""}
     </div>
     <div class="why">
@@ -1629,6 +1686,28 @@ async function api(path) {
   return r.json();
 }
 
+/* ── 부품 이름 사전 ───────────────────────────────────────────────────
+   `/api/glossary` 가 알파·주문방식·보호장치·모드·브로커의 한국어 이름을
+   한 번에 내려 줍니다. 여기서 베껴 두면 서버 사전과 화면 사전이 갈라지고,
+   갈라진 뒤에는 어느 쪽이 낡았는지 알 수 없습니다.
+
+   못 받아도 화면은 그대로 돕니다 — 사전 하나 때문에 이벤트 로그가 비는 것이
+   영어 식별자가 뜨는 것보다 훨씬 나쁩니다. */
+let GLOSSARY = {};
+async function loadGlossary() {
+  try { GLOSSARY = await api("/api/glossary"); } catch { GLOSSARY = {}; }
+}
+const alphaKo = id => ((GLOSSARY.alpha || {})[id] || {}).ko || id || "";
+const modeKo = id => (GLOSSARY.mode || {})[id] || id || "";
+
+/* 머리말 배지에 들어갈 짧은 모드 이름. 사전의 문장("실거래 — 실제 주문이
+   나갑니다")은 배지 한 칸에 들어가지 않아서 여기만 낱말로 줄입니다. 뜻은
+   같아야 하므로 사전을 고칠 때 여기도 같이 봐야 합니다. `offline` 은 모드가
+   아니라 "봇이 안 돈다" 는 뜻이라 사전에 없습니다. */
+const MODE_BADGE = {
+  live: "실거래", dry_run: "모의매매", backtest: "과거검증", offline: "미가동",
+};
+
 let equity = [];
 function drawEquity() {
   const c = $("#equity"), ctx = c.getContext("2d");
@@ -1636,8 +1715,13 @@ function drawEquity() {
   c.width = w * dpr; c.height = h * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
   if (equity.length < 2) {
-    ctx.fillStyle = "#7b8494"; ctx.font = '10px Silkscreen, monospace';
-    ctx.textAlign = "center"; ctx.fillText("NO EQUITY HISTORY", w / 2, h / 2);
+    // Silkscreen 에는 한글 글리프가 없습니다. 캔버스도 글자 단위로 다음
+    // 폰트를 찾지만, 한글을 그릴 수 있는 이름이 목록에 하나도 없으면 네모가
+    // 찍힙니다 — 그래서 여기만 한글 폰트를 앞에 세웁니다.
+    ctx.fillStyle = "#7b8494";
+    ctx.font = '11px "Apple SD Gothic Neo","Malgun Gothic",sans-serif';
+    ctx.textAlign = "center";
+    ctx.fillText("자산 기록이 아직 없습니다", w / 2, h / 2);
     return;
   }
   const vals = equity.map(p => p.equity);
@@ -1666,10 +1750,11 @@ function renderHud(p) {
   const ch = $("#hudChange");
   ch.textContent = pct(p.total_return_pct);
   ch.className = "chg " + cls(p.total_return_pct);
-  $("#hudSym").textContent = "PORTFOLIO · " + (p.currency || "");
+  // 통화 코드(KRW·USD)는 티커와 같은 부류입니다 — 번역하면 오히려 못 알아봅니다.
+  $("#hudSym").textContent = "전체 계좌 · " + (p.currency || "");
   const items = [
-    ["CASH", num(p.cash, 0), ""],
-    ["DRAWDOWN", pct(-Math.abs(p.drawdown_pct || 0)), p.drawdown_pct > 10 ? "down" : ""],
+    ["현금", num(p.cash, 0), ""],
+    ["고점 대비", pct(-Math.abs(p.drawdown_pct || 0)), p.drawdown_pct > 10 ? "down" : ""],
     ["미실현", num(p.unrealized_pnl, 0), cls(p.unrealized_pnl)],
     ["보유", p.open_positions, ""],
     ["매매", p.closed_trades, ""],
@@ -1681,7 +1766,7 @@ function renderHud(p) {
   const tb = $("#positions").querySelector("tbody");
   tb.innerHTML = (p.positions || []).length
     ? `<tr><th>종목</th><th class="num">수량</th><th class="num">평단</th><th class="num">현재가</th><th class="num">손익</th></tr>` +
-      p.positions.map(x => `<tr><td class="gold">${esc(x.symbol)}</td>
+      p.positions.map(x => `<tr><td class="gold">${esc(symLabel(x.symbol, nameOf(x, "symbol")))}</td>
         <td class="num">${num(x.quantity, 4)}</td><td class="num">${num(x.avg_price, 2)}</td>
         <td class="num">${num(x.last_price, 2)}</td>
         <td class="num ${cls(x.unrealized_pct)}">${pct(x.unrealized_pct)}</td></tr>`).join("")
@@ -1692,7 +1777,7 @@ function renderFlow(data) {
   const box = $("#flowBody");
   if (!data || !data.available) {
     box.innerHTML = `<div class="empty">${esc((data && data.message) ||
-      "수급 데이터 없음 — config 의 flow.provider 를 설정하세요")}</div>`;
+      "아직 수급 자료가 없습니다 — 봇이 돌기 시작하면 채워집니다")}</div>`;
     return;
   }
   const rows = Object.entries(data.symbols || {}).filter(([, v]) => v.summary);
@@ -1704,7 +1789,7 @@ function renderFlow(data) {
     ];
     const scale = Math.max(...trio.map(t => Math.abs(t[1])), 1);
     return `<div class="flowrow">
-      <div class="flowsym">${esc(ticker)}<br><span class="dim" style="font-size:11px">${esc(s.divergence)}</span></div>
+      <div class="flowsym">${esc(symLabel(ticker, v.name))}<br><span class="dim" style="font-size:11px">${esc(s.divergence)}</span></div>
       <div class="bars">
         ${trio.map(([n, q]) => {
           const h = Math.max(Math.abs(q) / scale * 100, 3);
@@ -1720,36 +1805,63 @@ function renderFlow(data) {
 function renderTape(symbols) {
   if (!symbols || !symbols.length) return;
   const one = symbols.map(s =>
-    `<span><b>${esc(s.ticker)}</b><span class="${cls(s.change_pct)}">${num(s.price, 2)} ${pct(s.change_pct)}</span></span>`
+    `<span><b>${esc(symLabel(s.ticker, s.name))}</b><span class="${cls(s.change_pct)}">${num(s.price, 2)} ${pct(s.change_pct)}</span></span>`
   ).join("");
   $("#tape").innerHTML = one + one;   // duplicated so the marquee loops seamlessly
 }
 
+/* ── 이벤트 로그의 어휘 ───────────────────────────────────────────────
+   여기 뜨는 낱말은 전부 서버 내부의 식별자입니다 — 이벤트 종류, 주문 방향,
+   보호 장치 이름, 신호 방향. 이 칸은 "지금 봇이 무엇을 했는가" 를 보는
+   유일한 자리라, 그것이 `order_rejected · buy` 로 뜨면 정작 필요한 사람이
+   못 읽습니다.
+
+   사전에 없는 값은 원문 그대로 흘립니다. 새 이벤트 종류가 하나 생겼다고 그
+   줄이 빈칸이 되면, 무슨 일이 일어났는지조차 알 수 없게 됩니다. */
+const EVENT_KO = {
+  order_filled: "체결", trade_closed: "매매 종료", protection: "보호 장치",
+  order_rejected: "주문 거부", deliberation: "심의", insight: "신호",
+  equity: "자산", error: "오류",
+};
+const SIDE_KO = {buy: "매수", sell: "매도"};
+//: quant/risk/protections.py 의 BUILTIN_PROTECTIONS. 유니버스 쪽에서 오는
+//: "거래상태" 는 이미 한국어라 그대로 통과합니다.
+const PROTECTION_KO = {
+  stoploss_guard: "손절 반복 차단", cooldown: "재진입 대기",
+  low_profit: "저수익 정리", max_drawdown: "전체 손실 한도",
+};
+//: quant/core/types.py 의 Direction — 신호가 위를 보는가 아래를 보는가.
+const DIRECTION_KO = {UP: "상승", DOWN: "하락", FLAT: "중립"};
+
 const feed = $("#feed");
 function pushEvent(e) {
   const p = e.payload || {};
+  const sym = symLabel(p.symbol, nameOf(p, "symbol"));
   let msg = "", tone = "";
   switch (e.type) {
     case "order_filled":
-      msg = `${p.side} ${p.quantity} ${p.symbol} @ ${p.price}`;
+      msg = `${SIDE_KO[p.side] || p.side} ${p.quantity} ${sym} @ ${p.price}`;
       tone = p.side === "buy" ? "up" : "down"; break;
     case "trade_closed":
-      msg = `${p.symbol} ${pct(p.pnl_pct)} (${num(p.pnl, 0)})`; tone = cls(p.pnl); break;
+      msg = `${sym} ${pct(p.pnl_pct)} (${num(p.pnl, 0)})`; tone = cls(p.pnl); break;
     case "protection":
-      msg = `${p.protection} · ${p.symbol} · ${p.reason}`; tone = "gold"; break;
+      msg = `${PROTECTION_KO[p.protection] || p.protection} · ${sym} · ${p.reason}`;
+      tone = "gold"; break;
     case "order_rejected":
-      msg = `${p.symbol}: ${p.reject_reason || p.reason}`; tone = "down"; break;
+      msg = `${sym}: ${p.reject_reason || p.reason}`; tone = "down"; break;
     case "deliberation":
-      msg = `${p.symbol} → ${p.action} (${Math.round((p.conviction || 0) * 100)}%)`;
+      msg = `${sym} → ${actionKo(p.action)} (${Math.round((p.conviction || 0) * 100)}%)`;
       tone = "gold"; break;
     case "insight":
-      msg = `${p.symbol} ${p.direction} ${p.source} — ${p.tag || ""}`; break;
+      // `source` 는 알파 모델 이름입니다 — 사전은 서버가 내려 줍니다.
+      msg = `${sym} ${DIRECTION_KO[p.direction] || p.direction} ` +
+            `${alphaKo(p.source)} — ${p.tag || ""}`; break;
     case "equity": return;
     default: msg = JSON.stringify(p).slice(0, 140);
   }
   const div = document.createElement("div");
   div.innerHTML = `<span class="t">${esc((e.ts || "").slice(11, 19))}</span>
-    <span class="ty ${tone}">${esc(e.type)}</span><span class="m">${esc(msg)}</span>`;
+    <span class="ty ${tone}">${esc(EVENT_KO[e.type] || e.type)}</span><span class="m">${esc(msg)}</span>`;
   feed.prepend(div);
   while (feed.childNodes.length > 150) feed.lastChild.remove();
 }
@@ -1788,9 +1900,15 @@ async function refresh() {
     if (s.running === false) runningStrategy = "";
     setRunning(!!s.running);
     if (s.portfolio) {
-      $("#strategy").textContent = s.strategy || "—";
+      // `/api/status` 는 식별자(`kr-toss-desk`)만 돌려줍니다. 목록에서 고른
+      // 것과 머리말에 뜬 것이 다른 글자면, 사용자는 자기가 고른 전략이
+      // 도는 중인지 확인할 방법이 없습니다.
+      $("#strategy").textContent = runningLabel(s.strategy);
       const m = $("#mode");
-      m.textContent = (s.mode || "offline").replace("_", " ").toUpperCase();
+      m.textContent = MODE_BADGE[s.mode] || s.mode || "미가동";
+      // 배지는 낱말 하나만 들어갑니다. 사전의 온전한 설명("모의 매매 —
+      // 실시간 시세, 가상 체결")은 마우스를 올리면 나옵니다.
+      m.title = modeKo(s.mode) || "";
       m.className = "mode px " + (s.mode === "live" ? "" : s.mode === "dry_run" ? "dry" : "backtest");
       renderHud(s.portfolio);
     }
@@ -1872,7 +1990,10 @@ function connect() {
 
 /* ── demo replay (clearly labelled — not market data) ─────────────────── */
 const DEMO = {
-  symbol: "005930", decided_at: "demo", action: "buy", conviction: 0.72,
+  // 종목명은 서버가 형제 필드로 실어 보냅니다. 데모도 같은 모양을 써야,
+  // 로그인 전에 보는 화면과 로그인 후에 보는 화면이 같은 제품이 됩니다.
+  symbol: "005930", symbol_name: "삼성전자",
+  decided_at: "demo", action: "buy", conviction: 0.72,
   position_scale: 0.6, horizon_bars: 12, consensus: 0.38, voting_seats: 7,
   dissent_ratio: 0.29, elapsed_s: 31.6, llm_calls: 19,
   rationale: "외국인 6일 연속 순매수에 기관이 동조했고, 주가는 20일선 눌림목에서 지지받는 중. 수급이 가격을 앞서고 있다는 판단. 다만 퀀트·미시구조 좌석의 이견을 반영해 사이즈는 절반 수준으로.",
@@ -2070,7 +2191,7 @@ async function refreshSymbols() {
     const keep = sel.value;
     const syms = data.symbols || [];
     sel.innerHTML = syms.length
-      ? syms.map(x => `<option value="${esc(x.ticker)}">${esc(x.ticker)}` +
+      ? syms.map(x => `<option value="${esc(x.ticker)}">${esc(symLabel(x.ticker, x.name))}` +
           `${x.invested ? " (보유)" : ""} — ${num(x.price, 2)}</option>`).join("")
       : `<option value="">— 실행 중인 봇 없음 —</option>`;
     if (keep) sel.value = keep;
@@ -2164,7 +2285,7 @@ function renderProfile(p) {
     ["총 노출", (s.max_gross_leverage * 100).toFixed(0) + "%"],
     ["최대 종목수", s.max_positions],
     ["손절", s.stop_atr_multiple + " ATR"],
-    ["봉 주기", s.timeframe],
+    ["봉 주기", timeframeKo(s.timeframe)],
     ["보유 기간", s.hold_bars + "봉"],
     ["AI 데스크", s.use_desk ? "사용" : "미사용"],
     ["하루 손실 한도", (s.max_daily_loss_pct * 100).toFixed(2) + "%"],
@@ -2832,6 +2953,9 @@ $("#registerForm").addEventListener("submit", async ev => {
    깜빡이게 만듭니다. */
 function start() {
   showPage("trade");
+  // 부품 이름 사전을 먼저 부릅니다. 늦게 와도 화면은 영어 식별자로 돌아가고,
+  // 도착한 다음 줄부터 한국어가 됩니다 — 기다리게 만들 이유는 없습니다.
+  loadGlossary();
   loadPlan();
   loadPnl();
   loadTradeLog();
@@ -2883,7 +3007,10 @@ function chartStrategy() {
 function syncChartSymbols(syms) {
   const sel = document.getElementById("cSym");
   if (!sel) return;
-  const names = (syms || []).map(x => (typeof x === "string" ? x : x.ticker)).filter(Boolean);
+  const rows = (syms || [])
+    .map(x => (typeof x === "string" ? {ticker: x} : x))
+    .filter(x => x && x.ticker);
+  const names = rows.map(x => x.ticker);
   // 전략을 바꾸면 종목 목록이 통째로 바뀝니다. 옛 종목이 골라진 채로 남으면
   // "AAPL 는 이 전략의 종목이 아닙니다" 를 계속 보게 됩니다 — 사용자가
   // 고른 적도 없는 종목에 대해서.
@@ -2893,11 +3020,15 @@ function syncChartSymbols(syms) {
     // 이야기를 계속 하게 됩니다.
     note("#cMsg", "", "");
   }
-  const now = [...sel.options].map(o => o.value).join();
-  if (names.join() === now) return;
+  // 다시 그릴지는 티커와 이름을 함께 보고 정합니다. 티커만 비교하면, 종목
+  // 이름이 나중에 실려 왔을 때 목록이 코드만 뜬 채로 굳습니다.
+  const key = JSON.stringify(rows.map(x => [x.ticker, x.name || ""]));
+  if (sel.dataset.key === key) return;
+  sel.dataset.key = key;
   const keep = sel.value;
-  sel.innerHTML = names.length
-    ? names.map(t => `<option value="${t}">${t}</option>`).join("")
+  sel.innerHTML = rows.length
+    ? rows.map(x => `<option value="${esc(x.ticker)}">` +
+        `${esc(symLabel(x.ticker, x.name))}</option>`).join("")
     : '<option value="">—</option>';
   sel.value = names.includes(keep) ? keep : (names[0] || "");
 }
@@ -2959,7 +3090,10 @@ async function chartOrder(side) {
   if (notional > 0) payload.notional = notional;
   if (limit > 0) payload.limit_price = limit;
   const how = limit > 0 ? `지정가 ${fmtPrice(limit, d.currency)}` : "시장가";
-  if (!confirm(`${d.ticker} ${side === "buy" ? "매수" : "매도"} — ${how}\n계속할까요?`)) return;
+  // 확인 창에도 코드를 남깁니다 — 여기가 사람이 "내가 맞게 골랐나" 를
+  // 마지막으로 대조하는 자리이고, 대조하는 것은 이름이 아니라 코드입니다.
+  const what = symLabel(d.ticker, nameOf(d, "ticker"));
+  if (!confirm(`${what} ${side === "buy" ? "매수" : "매도"} — ${how}\n계속할까요?`)) return;
   try {
     const res = await post("/api/manual/" + side, payload);
     note("#cMsg", `접수됨: ${JSON.stringify(res.queued || res)}`.slice(0, 300), "ok");
@@ -2995,9 +3129,21 @@ if ("serviceWorker" in navigator) {
 
 
 /* ── 자동매매 시작·정지 ────────────────────────────────────────────────
-   연동을 마쳐도 켤 방법이 화면에 없으면, 사용자가 보는 것은 "OFFLINE" 과
+   연동을 마쳐도 켤 방법이 화면에 없으면, 사용자가 보는 것은 "미가동" 과
    빈 표뿐입니다. 무엇이 없어서 못 켜는지도 여기서 말해 줍니다. */
 let strategies = [];
+
+/* 이 전략을 사람이 부르는 이름. 설정에 `label_ko` 가 없으면 식별자로
+   떨어집니다 — 이름이 없다고 목록에서 사라지는 것보다 낫습니다. */
+const stLabel = st => (st && (st.label_ko || st.name)) || "";
+
+/* 지금 도는 전략의 이름. `/api/status` 는 식별자만 주므로 목록에서 찾습니다.
+   목록에 없는 전략도 있을 수 있습니다(설정을 지운 뒤에도 봇은 계속 돕니다) —
+   그때는 식별자를 그대로 보여줍니다. 빈칸보다 읽을 수 있는 게 낫습니다. */
+function runningLabel(name) {
+  if (!name) return "—";
+  return stLabel(strategies.find(x => x.name === name)) || name;
+}
 
 async function loadStrategies() {
   try {
@@ -3011,8 +3157,14 @@ async function loadStrategies() {
   sel.innerHTML = strategies.map(st => {
     const missing = (st.requires || []).filter(k => !linked.has(k));
     const tag = missing.length ? " — 연동 필요" : "";
+    // 모드는 바로 아래 설명 칸이 사전 문장 그대로 말합니다. 다만 실거래는
+    // 고르는 순간에 알아야 합니다 — `label_ko` 를 그대로 둔 채 `mode` 만
+    // 올릴 수 있고, 그때 목록이 조용하면 모의인 줄 알고 시작을 누릅니다.
+    // 과거 검증은 시장에 닿지 않는다는 사실이 이름만큼 중요합니다.
+    const how = st.mode === "live" ? " · 실거래"
+              : st.mode === "backtest" ? " (과거 검증)" : "";
     return `<option value="${esc(st.id)}"${missing.length ? " data-missing='1'" : ""}>` +
-           `${esc(st.name)} · ${esc(st.mode)}${tag}</option>`;
+           `${esc(stLabel(st))}${how}${tag}</option>`;
   }).join("");
   // 연동이 끝난 전략을 기본으로 고릅니다.
   const ready = strategies.find(st => !(st.requires || []).some(k => !linked.has(k)));
@@ -3036,7 +3188,7 @@ function renderStrategyBrief() {
     `<span class="tag">${esc(st.broker_ko || st.broker)}</span>` +
     `<span class="tag${st.realtime === false ? " delayed" : ""}">` +
     `${st.realtime === false ? "지연 시세" : "실시간 시세"}</span>` +
-    `<span class="tag">${esc(st.timeframe || "")} 봉</span>` +
+    `<span class="tag">${esc(timeframeKo(st.timeframe))}</span>` +
     `<span class="tag">종목 ${st.symbols}개</span>`;
 
   renderMissingKeys(st);
@@ -3061,7 +3213,7 @@ function renderStrategyBrief() {
     ask.disabled = !desk;
     cost.textContent = desk
       ? "심의 1회는 서비스가 비용을 냅니다 — 요금제 한도 안에서 쓸 수 있습니다."
-      : `'${st.name}' 에는 AI 데스크가 없습니다. 데스크가 있는 전략을 고르면 물어볼 수 있습니다.`;
+      : `'${stLabel(st)}' 에는 AI 데스크가 없습니다. 데스크가 있는 전략을 고르면 물어볼 수 있습니다.`;
   }
 
   const line = (label, value) =>
@@ -3071,7 +3223,12 @@ function renderStrategyBrief() {
   $("#stDetail").innerHTML =
     line("주문 방식", `${ex.ko || "—"} — ${ex.what || ""}`)
     + (st.protections || []).map(r => line(r.ko, r.what)).join("")
-    + (tickers.length ? line("대상 종목", tickers.join(", ")) : "");
+    // `join` 은 원소마다 ToString 을 부릅니다. 목록이 {ticker, name} 으로
+    // 바뀌면서 이 줄이 "[object Object], [object Object]" 를 그렸습니다 —
+    // 하필 사람이 자기 돈을 넣기 직전에 읽는 자리에서.
+    + (tickers.length
+       ? line("대상 종목", tickers.map(t => tickerLabel(t)).join(", "))
+       : "");
 }
 
 /* ── 이 전략에 모자란 키, 그리고 대신 지금 쓸 수 있는 전략 ────────
@@ -3113,7 +3270,7 @@ function renderMissingKeys(st) {
     (usable.length
       ? `<div class="alt">지금 등록된 키로 바로 돌릴 수 있는 전략:` +
         usable.slice(0, 4).map(x =>
-          `<button type="button" data-pick="${esc(x.id)}">${esc(x.name)}` +
+          `<button type="button" data-pick="${esc(x.id)}">${esc(stLabel(x))}` +
           `${hasDesk(x) ? " · AI 데스크" : ""}</button>`).join("") +
         `</div>`
       : `<span class="none">지금 등록된 키로 돌릴 수 있는 전략이 없습니다 — ` +
@@ -3171,7 +3328,7 @@ async function loadTradeLog(more) {
     // 가 한 줄이므로, 방향을 그대로 쓰면 매도 기록이 없어 보입니다.
     const side = t.side === "buy" ? "매수→매도" : "매도→매수";
     return `<tr>
-      <td class="tl-sym">${esc(String(t.symbol || "").split(":").pop())}</td>
+      <td class="tl-sym">${esc(symLabel(t.symbol, nameOf(t, "symbol")))}</td>
       <td class="tl-side dim">${side}</td>
       <td class="tl-num">${num(t.quantity)}</td>
       <td class="tl-num">${num(t.entry_price)} → ${num(t.exit_price)}</td>
@@ -3245,28 +3402,37 @@ async function lookup() {
     return;
   }
   const SRC = {venue: "증권사 조회", strategy: "전략 종목", seen: "전에 조회"};
-  res.innerHTML = rows.map(r => `
-    <button type="button" class="lkrow" data-pick="${esc(r.ticker)}">
-      <span class="code">${esc(r.ticker)}</span>
-      <span class="nm">${esc(r.name || "이름 없음")}</span>
+  res.innerHTML = rows.map(r => {
+    // 이름이 앞, 코드가 괄호. 이름을 못 받았으면 코드만 — "이름 없음" 이라고
+    // 적으면 그 자리에 종목명이 있다고 읽히고, 실제로는 아무것도 없습니다.
+    const nm = String(r.name == null ? "" : r.name).trim();
+    const code = String(r.ticker || "");
+    const label = nm && nm !== code
+      ? `${esc(nm)} <b class="code">(${esc(code)})</b>`
+      : `<b class="code">${esc(code)}</b>`;
+    return `
+    <button type="button" class="lkrow" data-pick="${esc(code)}"
+            data-name="${esc(nm)}">
+      <span class="nm">${label}</span>
       <span class="px">${r.price ? num(r.price) : ""}</span>
       <span class="src">${esc(SRC[r.source] || "")}</span>
-    </button>`).join("");
+    </button>`;
+  }).join("");
   res.querySelectorAll("[data-pick]").forEach(el => {
-    el.onclick = () => pickTicker(el.dataset.pick);
+    el.onclick = () => pickTicker(el.dataset.pick, el.dataset.name);
   });
 }
 
 /* 고른 종목을 주문 칸과 차트에 함께 꽂습니다. 한 곳에만 넣으면 보고 있는
    것과 주문 나가는 것이 서로 다른 종목이 됩니다. */
-function pickTicker(ticker) {
+function pickTicker(ticker, name) {
   const sel = $("#mSymbol");
   let opt = [...sel.options].find(o => o.value.split(":").pop() === ticker);
   if (!opt) {
     // 전략 밖의 종목입니다 — 목록에 없으면 고를 수가 없으니 넣어 줍니다.
     opt = document.createElement("option");
     opt.value = ticker;
-    opt.textContent = ticker + " (직접 지정)";
+    opt.textContent = symLabel(ticker, name) + " · 직접 지정";
     sel.appendChild(opt);
   }
   sel.value = opt.value;
@@ -3277,7 +3443,7 @@ function pickTicker(ticker) {
   }
   $("#mAskOut").hidden = true;
   $("#lkRes").innerHTML = "";
-  note("#lkMsg", `${ticker} 선택됨 — 아래에서 물어보거나 바로 주문할 수 있습니다.`, "ok");
+  note("#lkMsg", `${symLabel(ticker, name)} 선택됨 — 아래에서 물어보거나 바로 주문할 수 있습니다.`, "ok");
   $("#lkMsg").hidden = false;
 }
 
@@ -3334,7 +3500,7 @@ function renderAsk(d, ticker) {
   const kv = (label, value) => `<div><b>${esc(label)}</b><span>${esc(value)}</span></div>`;
   const m = d.metered || {};
   out.innerHTML =
-    `<div class="act">${esc(ticker)} · ${esc(act)}${cv}</div>` +
+    `<div class="act">${esc(symLabel(ticker, nameOf(d, "ticker")))} · ${esc(act)}${cv}</div>` +
     (d.veto_reason ? `<div class="why">거부 사유 — ${esc(d.veto_reason)}</div>` : "") +
     (d.rationale ? `<div class="why">${esc(d.rationale)}</div>` : "") +
     `<div class="kv">` +
@@ -3345,7 +3511,7 @@ function renderAsk(d, ticker) {
     `</div>` +
     (d.invalidation ? `<div class="why">틀렸다고 볼 조건 — ${esc(d.invalidation)}</div>` : "") +
     (d.dissent ? `<div class="why">소수 의견 — ${esc(d.dissent)}</div>` : "") +
-    `<div class="meter">LLM 호출 ${m.llm_calls || 0}회 · $${(m.cost_usd || 0).toFixed(4)}
+    `<div class="meter">AI 호출 ${m.llm_calls || 0}회 · $${(m.cost_usd || 0).toFixed(4)}
       · ${m.billed_to === "own_key" ? "내 키로 결제" : "서비스 부담"}
       — 이건 의견이고 주문이 아닙니다. 아래에서 직접 내야 나갑니다.</div>`;
   out.hidden = false;
@@ -3437,8 +3603,10 @@ function deskWaitReason() {
   const st = shownStrategy();
   if (!st) return null;
   if (!(st.signals || []).some(g => g.id === "desk" || g.id === "council")) {
+    // 조사를 붙이지 않습니다 — 이름이 모음으로 끝나면 "은" 이 틀리고,
+    // 이름은 설정 파일이 정하므로 여기서 알 수 없습니다.
     return {kind: "nodesk", who: "심의 없음",
-            line: `'${st.name}' 은 규칙 기반 신호로만 매매합니다. ` +
+            line: `'${stLabel(st)}' — 규칙 기반 신호로만 매매합니다. ` +
                   `AI 16명의 심의를 보시려면 데스크가 있는 전략을 고르세요.`};
   }
   // 영영 안 되는 것부터. 기다려도 소용없는 것을 "대기 중" 으로 두면 안 됩니다.
@@ -3558,23 +3726,28 @@ function tickerCode(entry) {
   return typeof entry === "string" ? entry : String(entry.ticker || "");
 }
 
-/* 티커를 사람이 읽는 이름으로. 서버가 이름을 실어 보내면 그것을 쓰고, 없으면
-   코드를 그대로 씁니다 — 빈 괄호를 만들지 않습니다. 코드도 같이 남깁니다:
-   주문을 확인할 때 사람이 대조하는 것은 이름이 아니라 코드입니다. */
-function tickerLabel(ticker) {
-  const code = tickerCode(ticker);
+/* 목록 원소 하나를 사람이 읽는 이름으로.
+
+   `symLabel` 은 (코드, 이름) 두 값을 받고 이건 원소 하나를 받습니다 —
+   이름이 원소 안에 있을 수도, 지금 전략의 종목 목록에만 있을 수도 있어서
+   찾는 일이 따로 필요합니다. 찍는 규칙 자체는 `symLabel` 한 곳에만 둡니다. */
+function tickerLabel(entry) {
+  const code = tickerCode(entry);
   if (!code) return "";
-  const st = shownStrategy();
-  const found = (st?.tickers || []).find(t => tickerCode(t) === code);
-  const name = found && typeof found === "object" ? found.name : "";
-  return name && name !== code ? `${name} (${code})` : code;
+  let name = entry && typeof entry === "object" ? entry.name : "";
+  if (!name) {
+    const st = shownStrategy();
+    const found = (st?.tickers || []).find(t => tickerCode(t) === code);
+    name = found && typeof found === "object" ? found.name : "";
+  }
+  return symLabel(code, name);
 }
 
 function renderRunSummary(running) {
   document.body.classList.toggle("running", !!running);
   const st = shownStrategy();
   $("#runSum").textContent = running && st
-    ? `${st.name} · ${st.mode_ko || st.mode} · ${st.broker_ko || st.broker} — 돌고 있습니다.`
+    ? `${stLabel(st)} · ${st.mode_ko || st.mode} · ${st.broker_ko || st.broker} — 돌고 있습니다.`
     : "";
 }
 
@@ -3601,7 +3774,10 @@ document.getElementById("runStart").onclick = async () => {
   note("#runMsg", "시작하는 중…", "dim");
   try {
     const res = await post("/api/trader/start", {config_path: id});
-    note("#runMsg", `${res.strategy} 시작됨 (${res.mode})`, "ok");
+    // 서버가 돌려주는 것은 식별자와 모드 값입니다. 방금 목록에서 읽은 것과
+    // 같은 말로 확인해 줘야, 내가 고른 그것이 켜졌는지 알 수 있습니다.
+    note("#runMsg", `${runningLabel(res.strategy)} 시작됨 — ${modeKo(res.mode)}`, "ok");
+    // 실행 상태는 한 군데서만 바꿉니다 — 화면이 서버와 어긋나던 원인입니다.
     runningStrategy = res.strategy || id;
     setRunning(true);
     refresh();

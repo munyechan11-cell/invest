@@ -23,6 +23,7 @@ def test_the_host_is_the_documented_one():
 @pytest.mark.parametrize("key,path", [
     ("token_path", "/oauth2/token"),
     ("price_path", "/api/v1/prices"),
+    ("stocks_path", "/api/v1/stocks"),
     ("candles_path", "/api/v1/candles"),
     ("orderbook_path", "/api/v1/orderbook"),
     ("accounts_path", "/api/v1/accounts"),

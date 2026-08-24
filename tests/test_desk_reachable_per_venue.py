@@ -56,17 +56,33 @@ def test_each_venue_alone_can_run_something_at_all():
         assert len(reachable) >= 2, f"{venue} 로 돌릴 수 있는 전략: {reachable}"
 
 
-def test_a_toss_only_strategy_does_not_ask_for_flow_data():
-    """토스 전용 전략이 수급 알파를 쓰면 조용히 KIS 키를 다시 요구합니다.
+#: 수급 피드를 실제로 읽는 알파들. 이것들이 붙어 있는데 `flow.provider` 가
+#: `none` 이면 알파는 조용히 0 을 읽습니다.
+FLOW_ALPHAS = {"investor_flow", "retail_contrarian"}
 
-    수급(`investor_flow`)은 KIS 만 제공합니다. 토스 전용이라고 이름 붙여 놓고
-    이 알파를 넣으면 `required_secrets` 에 KIS 키가 되살아나서, 고친 줄 알았던
-    "먼저 연동이 필요합니다" 가 그대로 다시 뜹니다.
+
+def test_a_toss_only_strategy_gets_its_flow_data_from_toss():
+    """토스 전용 전략이 수급을 KIS 로 받으면 조용히 KIS 키를 다시 요구합니다.
+
+    이 테스트는 한때 "수급은 KIS 만 제공하므로 토스 전용 전략에는 수급 알파를
+    넣지 말라" 였습니다. 그 전제가 틀렸습니다 — 토스도 투자자별 매매동향을
+    줍니다(`quant/data/providers/toss_flow.py`). 그래서 지키려는 성질만 남깁니다:
+    **토스 하나로 도는 전략은 수급까지 토스로 받아야 한다.** 여기에 KIS 를
+    적으면 `required_secrets` 에 KIS 키가 되살아나서, 고친 줄 알았던 "먼저
+    연동이 필요합니다" 가 그대로 다시 뜹니다.
     """
     for name, cfg in _configs():
         touches_toss = cfg.data.provider == "toss" or cfg.broker.type == "toss"
         if not touches_toss or set(required_secrets(cfg)) - VENUES["toss"]:
             continue          # 애초에 토스 전용이 아닌 전략
         assert cfg.flow.provider != "kis", f"{name}: 토스 전용인데 수급을 KIS 로 받습니다"
-        assert not any(m.type == "investor_flow" for m in cfg.alpha), (
-            f"{name}: 토스가 주지 않는 수급 자료를 알파가 요구합니다")
+        if any(m.type in FLOW_ALPHAS for m in cfg.alpha):
+            assert cfg.flow.provider not in ("none", ""), (
+                f"{name}: 수급 알파를 켜 놓고 수급 소스가 없습니다 — "
+                f"알파가 0 을 읽고 영영 조용합니다")
+
+
+def test_the_toss_only_strategies_actually_use_toss_flow():
+    """토스 수급이 어느 전략에도 안 붙어 있으면, 있어도 없는 기능입니다."""
+    using = [name for name, cfg in _configs() if cfg.flow.provider == "toss"]
+    assert using, "토스 수급 프로바이더를 쓰는 전략이 하나도 없습니다"

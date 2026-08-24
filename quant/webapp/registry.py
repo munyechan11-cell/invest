@@ -228,6 +228,13 @@ def _flow_wiring(config: StrategyConfig) -> _Wiring | None:
         return _Wiring("kis",
                        {"app_key": "KIS_APP_KEY", "app_secret": "KIS_APP_SECRET"},
                        ("KIS_APP_KEY", "KIS_APP_SECRET"))
+    if config.flow.provider == "toss":
+        # 수급은 읽기만 하므로 계좌번호는 필요 없습니다. 여기에 TOSS_ACCOUNT_NO
+        # 까지 적으면 계좌를 열지 않은 사람이 수급 전략 앞에서 막힙니다.
+        return _Wiring("toss",
+                       {"client_id": "TOSS_CLIENT_ID",
+                        "client_secret": "TOSS_CLIENT_SECRET"},
+                       ("TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET"))
     return None
 
 

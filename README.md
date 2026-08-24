@@ -281,9 +281,14 @@ alpha:
 
 ```yaml
 flow:
-  provider: kis                      # kis | synthetic | none
+  provider: kis                      # kis | toss | synthetic | none
   params: {app_key: "${KIS_APP_KEY}", app_secret: "${KIS_APP_SECRET}", paper: true}
   history_sessions: 120
+
+# 토스로 받을 때 (토스 키 하나로 시세·수급·주문이 전부 됩니다)
+flow:
+  provider: toss
+  params: {client_id: "${TOSS_CLIENT_ID}", client_secret: "${TOSS_CLIENT_SECRET}"}
 
 alpha:
   - {type: investor_flow, params: {min_streak: 3, min_participation: 0.01}}
@@ -300,6 +305,11 @@ alpha:
   가격과 수급이 같은 방향인 경우보다 확신도를 높게 잡습니다.
 - **프로그램 분리** — 프로그램 순매수는 지수·차익거래 물량일 수 있어 종목 고유의
   뷰가 아닙니다.
+
+두 소스는 같은 자료가 아닙니다. 토스는 순매수 **거래량(주)** 만 주고 금액 축이
+없으며(그래서 순매수 금액 자리는 0 이 아니라 빈칸으로 나옵니다), `foreigner` 가
+등록외국인만이라 KIS 의 외국인과 집단이 다릅니다. 한 종목의 수급을 두 소스로
+이어 붙이면 경계에서 계단이 생깁니다 — 근거는 `quant/data/providers/toss_flow.py`.
 
 수급 소스가 없으면 `NullFlowProvider`가 조용히 0을 반환하는 대신 **한 번 경고하고
 빈 데이터를 반환**합니다. 수급을 읽는 줄 알았는데 0을 읽고 있는 전략은 자신 있게

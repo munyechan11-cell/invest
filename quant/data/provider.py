@@ -109,6 +109,29 @@ class DataProvider(ABC):
         """
         return None
 
+    async def describe_many(self, tickers: list[str]) -> dict[str, dict]:
+        """여러 종목을 한 번에. 키는 티커, 값은 `describe` 와 같은 모양.
+
+        기본 구현은 하나씩 도는 것뿐입니다. **다건 조회가 있는 거래소는 반드시
+        덮어쓰세요** — 화면 하나가 종목 수만큼 호출을 내면 레이트 리밋에
+        걸리고, 그러면 이름이 하나도 안 뜹니다. 이름이 가장 필요한 순간은
+        종목이 많은 순간이라 하필 그때 전부 실패합니다.
+
+        모르는 종목은 키 자체가 빠집니다. 빈 이름을 채워 넣으면 호출부가
+        "찾았는데 이름이 없다" 와 "못 찾았다" 를 구분할 수 없습니다.
+        """
+        out: dict[str, dict] = {}
+        for ticker in tickers:
+            try:
+                info = await self.describe(ticker)
+            except Exception as exc:        # noqa: BLE001 — 한 종목이 실패해도
+                # 나머지 이름은 나와야 합니다.
+                log.debug("describe failed for %s: %s", ticker, exc)
+                continue
+            if info:
+                out[str(info.get("ticker") or ticker)] = info
+        return out
+
     async def close(self) -> None:
         return None
 
@@ -161,6 +184,11 @@ class CachingProvider(DataProvider):
     async def describe(self, ticker):
         return await self.inner.describe(ticker)
 
+    async def describe_many(self, tickers):
+        # 안쪽으로 그대로 넘깁니다. 여기서 기본 구현을 타면 다건 조회를 가진
+        # 프로바이더도 한 종목씩 부르게 됩니다.
+        return await self.inner.describe_many(tickers)
+
     def stream(self, symbols, timeframe):
         return self.inner.stream(symbols, timeframe)
 
@@ -206,6 +234,24 @@ class CompositeProvider(DataProvider):
             if found:
                 return found
         return None
+
+    async def describe_many(self, tickers):
+        """아직 못 찾은 것만 다음 거래소에 묻습니다.
+
+        교차시장 포트폴리오에서는 국내 코드와 미국 티커가 한 목록에 섞여
+        옵니다. 매번 전부를 모든 거래소에 물으면, 자기 시장이 아닌 종목까지
+        포함한 요청이 통째로 거절되어 **맞는 것까지** 이름을 잃습니다.
+        """
+        out: dict[str, dict] = {}
+        remaining = list(tickers)
+        for p in self.providers.values():
+            if not remaining:
+                break
+            found = await p.describe_many(remaining)
+            out.update(found)
+            seen = {str(k).strip().upper() for k in found}
+            remaining = [t for t in remaining if str(t).strip().upper() not in seen]
+        return out
 
     async def close(self):
         for p in self.providers.values():
