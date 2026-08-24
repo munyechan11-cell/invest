@@ -86,7 +86,9 @@ class PerformanceReport:
             f"Calmar            {self.calmar:.2f}",
             f"Max drawdown      {self.max_drawdown:.2%}"
             f"  ({self.max_drawdown_duration_days:.0f}d underwater)",
-            f"Trades            {self.trades}  win {self.win_rate:.1%}"
+            # 자리(진입~청산) 수입니다. "Trades" 라고만 쓰면 나눠 판 체결 수로
+            # 읽히는데, 그게 정확히 이 줄이 예전에 인쇄하던 잘못된 수입니다.
+            f"Round trips       {self.trades}  win {self.win_rate:.1%}"
             f"  PF {self.profit_factor:.2f}  expectancy {self.expectancy:+.3%}",
             f"Exposure          {self.exposure:.1%}   turnover {self.turnover:.2f}x/yr",
             f"Fees              {self.total_fees:,.0f}  ({self.fee_drag:.2%} of starting equity)",
@@ -113,7 +115,85 @@ def _drawdown_stats(curve: list[EquityPoint]) -> tuple[float, float, float]:
     return max_dd, longest, math.sqrt(squares / len(curve))
 
 
-def _streaks(trades: list[ClosedTrade]) -> tuple[int, int]:
+@dataclass
+class _RoundTrip:
+    """한 자리(진입~청산)로 되접은 조각들.
+
+    장부는 포지션을 줄이는 체결마다 `ClosedTrade` 를 한 줄 씁니다 — 실현손익과
+    거래세가 거기서 확정되니 그게 맞습니다. 하지만 성적표가 그 줄을 그대로 세면
+    "거래 수 · 승률 · 기대값" 이 **매도를 몇 번에 나눴는가** 를 재게 됩니다.
+    익절만 조금씩 덜어내고 손절은 한 번에 하는 장부는 조각 대부분이 이겨서,
+    계좌가 -8% 인데 성적표가 "580거래 승률 74.7%" 를 인쇄합니다.
+
+    한 자리는 진입부터 청산(`closes_position`)까지입니다. 뒤집기도 경계입니다 —
+    롱을 닫고 숏을 여는 체결은 롱을 실제로 끝냈습니다.
+    """
+
+    symbol_key: str
+    slices: list[ClosedTrade] = field(default_factory=list)
+    #: 아직 안 닫힌 자리는 실현된 부분만 들어 있습니다. 성적표에서 빼지 않는
+    #: 이유는 손익·수수료가 이미 계좌에 반영됐고, 빼면 "닫힌 자리가 0" 인
+    #: 장부에서 `report.trades` 가 0 이 되어 목적함수가 후보를 통째로
+    #: 탈락시키기 때문입니다. 대신 그 자리의 미실현분은 반영되지 않습니다.
+    closed: bool = False
+
+    @property
+    def pnl(self) -> float:
+        return sum(t.pnl for t in self.slices)
+
+    @property
+    def is_win(self) -> bool:
+        return self.pnl > 0
+
+    @property
+    def basis(self) -> float:
+        """이 자리가 한때 실제로 묶었던 순투입현금의 최대치.
+
+        안 닫힌 자리에서는 **마지막 실현 시점까지의** 최대치입니다 — 그 뒤에
+        더 담은 돈은 조각에 실려 오지 않습니다. 실현손익을 만들어 낸 자본만
+        분모에 넣는 셈이라 뜻은 통하지만, "지금 얼마 묶여 있나" 와는 다릅니다.
+        """
+        peak = max((t.peak_invested for t in self.slices), default=0.0)
+        if peak > 0:
+            return peak
+        # `Portfolio.apply_fill` 을 거치지 않은 장부에는 자리 단위 분모가 없어
+        # 조각 원가 합으로 물러섭니다. 트림 후 재매수를 두 번 세므로 되접기의
+        # 이점이 그만큼 사라집니다 — 지금 `analyze` 를 부르는 곳은 백테스트
+        # 러너뿐이라 실제로는 닿지 않는 경로입니다.
+        return sum(abs(float(t.quantity)) * abs(t.entry_price)
+                   * float(t.symbol.multiplier) for t in self.slices)
+
+    @property
+    def pnl_pct(self) -> float:
+        b = self.basis
+        return self.pnl / b if b > 0 else 0.0
+
+    @property
+    def hold_hours(self) -> float:
+        start = min(t.entry_ts for t in self.slices)
+        end = max(t.exit_ts for t in self.slices)
+        return (end - start).total_seconds() / 3600
+
+
+def _round_trips(trades: list[ClosedTrade]) -> list[_RoundTrip]:
+    """조각 장부를 자리 단위로 되접습니다. 순서는 자리가 처음 등장한 순서."""
+    out: list[_RoundTrip] = []
+    live: dict[str, _RoundTrip] = {}
+    for t in trades:
+        key = t.symbol.key
+        trip = live.get(key)
+        if trip is None:
+            trip = _RoundTrip(symbol_key=key)
+            live[key] = trip
+            out.append(trip)
+        trip.slices.append(t)
+        if t.closes_position:
+            trip.closed = True
+            live.pop(key, None)
+    return out
+
+
+def _streaks(trades: list[_RoundTrip]) -> tuple[int, int]:
     best = worst = cur_w = cur_l = 0
     for t in trades:
         if t.is_win:
@@ -218,7 +298,11 @@ def analyze(
     rep.total_return = portfolio.total_return
     rep.total_fees = portfolio.total_fees
     rep.fee_drag = portfolio.total_fees / portfolio.starting_cash if portfolio.starting_cash else 0.0
-    rep.trades = len(portfolio.closed_trades)
+    # 조각이 아니라 자리를 셉니다 — 왜인지는 `_RoundTrip` 을 보세요. 모든 조각은
+    # 정확히 한 자리에 속하므로 "자리 0" 과 "조각 0" 은 여전히 같은 뜻이고,
+    # 러너의 "zero closed trades" 경고와 목적함수의 0 분기는 그대로 동작합니다.
+    trips = _round_trips(portfolio.closed_trades)
+    rep.trades = len(trips)
     if not curve:
         return rep
 
@@ -263,23 +347,26 @@ def analyze(
     rep.exposure = statistics.fmean([p.exposure for p in curve]) if curve else 0.0
 
     trades = portfolio.closed_trades
-    if trades:
-        wins = [t for t in trades if t.is_win]
-        losses = [t for t in trades if not t.is_win]
-        rep.win_rate = len(wins) / len(trades)
+    if trips:
+        wins = [t for t in trips if t.is_win]
+        losses = [t for t in trips if not t.is_win]
+        rep.win_rate = len(wins) / len(trips)
         gross_win = sum(t.pnl for t in wins)
         gross_loss = abs(sum(t.pnl for t in losses))
         rep.profit_factor = _safe(gross_win / gross_loss, math.inf if gross_win else 0.0) \
             if gross_loss > 0 else (math.inf if gross_win > 0 else 0.0)
         rep.avg_win = statistics.fmean([t.pnl_pct for t in wins]) if wins else 0.0
         rep.avg_loss = statistics.fmean([t.pnl_pct for t in losses]) if losses else 0.0
-        rep.expectancy = statistics.fmean([t.pnl_pct for t in trades])
-        rep.best_trade = max(t.pnl_pct for t in trades)
-        rep.worst_trade = min(t.pnl_pct for t in trades)
-        rep.avg_hold_hours = statistics.fmean(
-            [t.duration.total_seconds() / 3600 for t in trades]
-        )
-        rep.longest_win_streak, rep.longest_loss_streak = _streaks(trades)
+        # 자리마다 같은 무게입니다. 작은 익절 자리와 큰 손절 자리를 똑같이 세는
+        # 것은 기대값 정의의 한계이고, 이 티켓이 고치는 병(분할매도 지배) 과는
+        # 다른 문제라 그대로 뒀습니다.
+        rep.expectancy = statistics.fmean([t.pnl_pct for t in trips])
+        rep.best_trade = max(t.pnl_pct for t in trips)
+        rep.worst_trade = min(t.pnl_pct for t in trips)
+        rep.avg_hold_hours = statistics.fmean([t.hold_hours for t in trips])
+        rep.longest_win_streak, rep.longest_loss_streak = _streaks(trips)
+        # 회전율만 조각 단위 그대로입니다 — "돈이 얼마나 오갔나" 를 묻는
+        # 지표라, 나눠 판 체결도 각각 실제로 오간 명목금액입니다.
         traded_notional = sum(abs(float(t.quantity)) * t.entry_price for t in trades) * 2
         avg_equity = statistics.fmean([p.equity for p in curve]) or 1.0
         rep.turnover = _safe(traded_notional / avg_equity / max(years, 1e-9))

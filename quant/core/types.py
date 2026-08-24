@@ -479,6 +479,19 @@ class ClosedTrade:
     #: leave this name" have to be able to tell the difference, or a rebalance
     #: that trims 30% locks the symbol the strategy still holds.
     closes_position: bool = True
+    #: 이 조각이 속한 자리(진입~청산)가 한때 실제로 묶어 두었던 순투입현금의
+    #: 최대치. 성적표가 조각을 자리로 되접을 때 쓰는 분모입니다.
+    #:
+    #: 조각별 원가를 더하면 안 됩니다 — 트림해서 돌려받은 돈을 되사면 같은 돈을
+    #: 두 번 셉니다. 장부 평단 기준 원가(`Position.cost_basis`)의 최대치도 안
+    #: 됩니다 — 평단 **위**에서 되담는 순간 미실현이익이 원가로 승격돼 분모가
+    #: 부풀고, 승자는 덜 좋아 보이고 패자는 덜 나빠 보입니다. 체결마다
+    #: (현금유출 − 현금유입) 을 누적한 값의 최대치는 워시 트림(같은 값에 팔았다
+    #: 되사기)에 구조적으로 불변이라 "매도 스케줄이 성적을 정하는" 병이 없습니다.
+    #:
+    #: 0.0 은 `Portfolio.apply_fill` 을 거치지 않고 만든 장부(손으로 세운 것,
+    #: DB 에서 되살린 것)라는 뜻이고, 그때는 성적표가 조각 원가 합으로 물러섭니다.
+    peak_invested: float = 0.0
 
     @property
     def duration(self) -> timedelta:

@@ -27,8 +27,11 @@ def result(*, trades: int, sharpe: float = 1.5, total_return: float = 0.35,
         total_return=total_return, max_drawdown=max_drawdown, win_rate=win_rate,
         profit_factor=profit_factor, deflated_sharpe=deflated_sharpe,
         turnover=turnover)
+    # 장부도 같은 수만큼 채웁니다. `_thin_penalty` 는 성적표의 자리 수가 아니라
+    # 장부 레코드 수를 세는데(그 이유는 losses._thin_penalty 참고), 여기서 한쪽만
+    # 채우면 "거래 N회" 라는 이 헬퍼의 뜻이 두 갈래로 갈라집니다.
     return BacktestResult(config_name="t", report=rep, equity_curve=[], monthly={},
-                          trades=[], engine_summary={})
+                          trades=[{}] * trades, engine_summary={})
 
 
 @pytest.mark.parametrize("name", sorted(LOSS_FUNCTIONS))

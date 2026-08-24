@@ -47,6 +47,12 @@ class Portfolio:
         # entry-side fees owed by the quantity still held, charged to each
         # slice as it exits so the ledger's fee column foots to `total_fees`
         self._entry_fees: dict[str, float] = {}
+        # 자리(진입~청산)마다 지금 묶여 있는 순현금과 그 최대치. 성적표가 조각을
+        # 자리로 되접을 때 쓰는 분모라, 트림했다 되사서 돈이 나갔다 돌아온
+        # 경우에는 움직이지 않아야 합니다 — `ClosedTrade.peak_invested` 주석에
+        # 왜 다른 후보들이 안 되는지 적어 뒀습니다.
+        self._invested: dict[str, float] = {}
+        self._peak_invested: dict[str, float] = {}
 
     # ── position access ──────────────────────────────────────────────────
     def position(self, symbol: Symbol) -> Position:
@@ -155,6 +161,19 @@ class Portfolio:
 
         pos.apply(fill)
 
+        # 부호는 자리의 방향으로 정규화합니다. 그냥 |누적| 을 쓰면 숏은 진입이
+        # 현금 유입이라 0 에서 시작하고, 롱은 청산 대금이 원금보다 클 때 |누적|
+        # 이 다시 커져 **번 돈이 묶은 돈으로 둔갑**합니다 (100 에 사서 1000 에
+        # 팔면 분모가 10,000 이 아니라 90,000 이 됩니다).
+        # 수수료는 넣지 않습니다 — 이미 손익(분자)에서 빼고 있고, 분모에까지
+        # 넣으면 워시 트림 한 번마다 분모가 수수료만큼 밀려 "매도를 더 하면 자리
+        # 수익률이 달라지는" 바로 그 병이 작게 되살아납니다.
+        lifetime_dir = prior_dir or fill.side.sign
+        invested = (self._invested.get(key, 0.0)
+                    + notional * fill.side.sign * lifetime_dir)
+        self._invested[key] = invested
+        self._peak_invested[key] = max(self._peak_invested.get(key, 0.0), invested)
+
         if was_flat and not pos.is_flat:
             self._entry[key] = (fill.ts, fill.price, "")
 
@@ -195,17 +214,26 @@ class Portfolio:
             # Flat *or* flipped: selling 150 of a 100 long closes the long
             # and opens a short, and the long really did end.
             closes_position=closed_qty >= abs(prior_qty),
+            peak_invested=self._peak_invested.get(key, 0.0),
         )
         self.closed_trades.append(closed)
 
         if pos.is_flat:
             self._entry.pop(key, None)
             self._entry_fees.pop(key, None)
+            self._invested.pop(key, None)
+            self._peak_invested.pop(key, None)
         elif pos.direction != prior_dir:
             # flipped through zero — the remainder is a new position whose entry
             # cost is the unspent share of this fill's fee
             self._entry[key] = (fill.ts, fill.price, "")
             self._entry_fees[key] = fill.fee - exit_fee
+            # 뒤집힌 뒤는 새 자리입니다. 넘어온 잔량이 묶는 돈만 안고 시작하지
+            # 않으면 닫힌 쪽의 분모를 물려받아, 짧게 뒤집는 전략의 자리마다
+            # 직전 자리의 규모가 섞여 들어갑니다.
+            rem = (abs(float(fill.quantity)) - float(closed_qty)) * fill.price * mult
+            self._invested[key] = rem
+            self._peak_invested[key] = rem
         else:
             # trimmed — the surviving quantity keeps the entry ts and price it
             # was opened at, or hold time and the next slice's basis both drift
