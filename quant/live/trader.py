@@ -21,6 +21,7 @@ from quant.core.events import Event, EventType
 from quant.core.types import UTC, Bar, RunMode
 from quant.data.provider import DataProvider, gather_history
 from quant.live.notifier import TelegramNotifier
+from quant.live.spend import SpendMeter
 from quant.live.state import StateStore
 from quant.strategy.builder import build_engine
 
@@ -40,6 +41,7 @@ class LiveTrader:
         resume: bool = True,
         max_consecutive_errors: int = 10,
         profile_path: str | None = None,
+        meter: SpendMeter | None = None,
     ):
         if config.mode is RunMode.BACKTEST:
             raise ValueError("LiveTrader needs mode: dry_run or live")
@@ -56,6 +58,9 @@ class LiveTrader:
         self.state = StateStore(state_path)
         self.resume = resume
         self.max_errors = max_consecutive_errors
+        # 이 봇이 쓴 LLM 을 누구 앞으로 다는가. 단일 사용자 배포에서는 셀
+        # 사람이 없으므로 None 입니다.
+        self.meter = meter
         self.notifier = TelegramNotifier(
             config.notify.telegram_bot_token, config.notify.telegram_chat_id,
             config.notify.on_events,
@@ -223,6 +228,16 @@ class LiveTrader:
         desk = self.desk()
         if desk is None:
             return
+        # 이 심의는 사람이 ▶ 시작 을 누를 때마다 한 번씩 나갑니다. 껐다 켜기를
+        # 반복하면 그만큼 반복되고, 데스크의 `cost_limit_usd` 는 봇을 새로
+        # 세울 때마다 0 부터 다시 세므로 그것으로는 막히지 않습니다. 요금제
+        # 한도를 여기서도 물어봅니다 — 다중 사용자 서비스에서 계량되지 않는
+        # LLM 호출 경로는 결국 운영자 카드로 청구됩니다.
+        if self.meter is not None:
+            allowed, why = self.meter.allow()
+            if not allowed:
+                log.info("개장 전 심의 건너뜀 — %s", why)
+                return
         ctx = self.engine.ctx
         # 워밍업이 남긴 마지막 봉. 없으면 심의할 재료가 없는 것이고, 그건
         # 유니버스가 비었다는 뜻이라 여기서 할 말이 없습니다.
@@ -234,6 +249,7 @@ class LiveTrader:
         if not last:
             return
         log.info("개장 전 심의 — 봉을 기다리지 않고 지금 상태로 한 번 봅니다")
+        before = desk.status()["llm_calls"], desk.estimated_cost_usd
         try:
             await desk.update(ctx, last)
         except asyncio.CancelledError:
@@ -244,6 +260,14 @@ class LiveTrader:
             log.warning("개장 전 심의 실패: %s", exc)
             await ctx.bus.publish(EventType.ERROR,
                                   {"error": f"개장 전 심의 실패: {exc}"})
+        finally:
+            # 실패했어도 부른 만큼은 청구됩니다. 성공만 계량하면 실패한 호출의
+            # 비용이 아무 계정에도 잡히지 않습니다.
+            if self.meter is not None:
+                calls = max(0, desk.status()["llm_calls"] - before[0])
+                spent = max(0.0, desk.estimated_cost_usd - before[1])
+                if calls:
+                    self.meter.record(calls, spent)
 
     # ── stopping ─────────────────────────────────────────────────────────
     @property

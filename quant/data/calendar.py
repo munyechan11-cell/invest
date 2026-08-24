@@ -22,6 +22,7 @@ a silent wrong answer through.
 from __future__ import annotations
 
 import logging
+import math
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -61,14 +62,21 @@ class MarketCalendar(ABC):
     #: 만 남습니다. 그 한 번의 혼동이 실제로 하루를 잡아먹었습니다.
     sessions_per_year: float = 365.0
 
-    def calendar_span(self, sessions: float) -> timedelta:
-        """`sessions` 번의 장을 담으려면 달력으로 며칠이 필요한가.
+    def calendar_span(self, sessions: float, bar_days: float = 1.0) -> timedelta:
+        """`sessions` 개의 봉을 담으려면 달력으로 며칠이 필요한가.
 
-        넉넉한 쪽으로 올립니다. 모자라면 지표가 덜 데워진 채로 매매가 시작되고,
-        남으면 첫 조회가 조금 느려질 뿐입니다.
+        `bar_days` 는 봉 하나가 몇 거래일치인가입니다 — 일봉이면 1, 주봉이면
+        5. 이걸 빼먹으면 주봉 260개를 요청했을 때 385일(=일봉 260개) 창이
+        돌아오고, 거기엔 주봉이 55개뿐입니다. 지표가 5분의 1만 데워진 채로
+        실주문 신호가 나갑니다.
+
+        넉넉한 쪽으로 **올립니다.** 선언한 개장일 수(krx 246)는 해에 따라
+        실제보다 몇 일 클 수 있고(242~246), 그만큼 창이 짧아집니다. 모자라면
+        지표가 덜 데워지고, 남으면 첫 조회가 조금 느려질 뿐입니다 — 값이
+        같지 않은 두 실수라 한쪽으로 기울여 둡니다.
         """
-        days = sessions * 365.0 / max(self.sessions_per_year, 1.0)
-        return timedelta(days=days)
+        days = sessions * bar_days * 365.0 / max(self.sessions_per_year, 1.0)
+        return timedelta(days=math.ceil(days * 1.05) + 5)
 
     @abstractmethod
     def sessions_on(self, day: date) -> list[Session]:

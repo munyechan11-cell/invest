@@ -49,6 +49,7 @@ from quant.config.schema import StrategyConfig
 from quant.core.types import UTC
 from quant.live.credentials import VENUES_BY_ID
 from quant.live.profile import InvestorProfile, ProfileStore, apply_profile
+from quant.live.spend import SpendMeter
 from quant.webapp.accounts import Accounts
 from quant.webapp.usage import UsageStore
 
@@ -648,12 +649,29 @@ class UserRegistry:
         # 뒤 이 함수와 함께 사라집니다.
         wired = _with_credentials(cfg, self.accounts.secrets_for(user_id))
         trader = LiveTrader(wired, str(paths.state_db),
-                            profile_path=str(paths.profile))
+                            profile_path=str(paths.profile),
+                            meter=self._meter(user_id, cfg))
         # 엔진은 키를 받았고, 트레이더가 들고 다니는 설정은 받지 않습니다.
         # `LiveTrader.start()` 가 `config.model_dump_json()` 을 상태 DB 에
         # 그대로 적기 때문에, 되돌리지 않으면 앱 시크릿이 평문으로 남습니다.
         trader.config = cfg
         return trader
+
+    def _meter(self, user_id: int, config: StrategyConfig) -> SpendMeter:
+        """이 사용자의 LLM 지출을 재는 계량기.
+
+        봇이 부르는 심의도 `/api/evaluate` 와 같은 규칙을 받아야 합니다 —
+        계량되지 않는 호출 경로는 결국 운영자 카드로 청구됩니다. 자기 키로
+        도는 사람은 `own_key` 로 상한을 면제받는데, 그건 이름이 등록됐는지가
+        아니라 **그 값이 실제로 데스크에 들어갔는지**로 판정합니다.
+        """
+        plan = getattr(self.accounts.user(user_id), "plan", "free") or "free"
+        own_key = self.desk_owns_key(user_id, config)
+        return SpendMeter(
+            allow=lambda: self.usage.allow(user_id, plan, own_key),
+            record=lambda calls, cost: self.usage.record_spend(
+                user_id, calls, cost, own_key),
+        )
 
     async def start(self, user_id: int, config: StrategyConfig,
                     on_event: Callable | None = None) -> dict:

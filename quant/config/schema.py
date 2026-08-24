@@ -272,27 +272,43 @@ class StrategyConfig(ConfigBlock):
                       for f in self.universe.filters if f.type == "age"), default=0)
         if not wanted:
             return self
-        span = self.warmup_delta
-        calendar = self._calendar()
-        sessions, day, last = 0, self.data.timeframe, None
-        if timeframe_seconds(last or day) >= 86400:
-            from datetime import date as _date
-            from datetime import timedelta as _td
-            cursor = _date(2025, 1, 1)
-            end = cursor + span
-            while cursor <= end:
-                sessions += bool(calendar.sessions_on(cursor))
-                cursor += _td(days=1)
-            if sessions < wanted:
-                raise ValueError(
-                    f"warmup_bars: {self.data.warmup_bars} 로는 {calendar.name} 에서 "
-                    f"약 {sessions}봉밖에 받지 못하는데 age 필터가 {wanted}봉을 "
-                    f"요구합니다 — 모든 종목이 걸러져 유니버스가 비고, 봇은 아무것도 "
-                    f"하지 않으면서 오류도 내지 않습니다. warmup_bars 를 "
-                    f"{int(wanted * 365 / calendar.sessions_per_year) + 20} 이상으로 "
-                    f"올리거나 age.min_bars 를 낮추세요."
-                )
-        return self
+        seconds = timeframe_seconds(self.data.timeframe)
+        if seconds < 86400:
+            # 분봉은 하루에 몇 개가 들어오는지가 장 길이에 달려 있어서 날짜를
+            # 세는 방식으로는 알 수 없습니다. 잘못 세느니 안 세는 편이 낫습니다.
+            return self
+        try:
+            calendar = self._calendar()
+        except KeyError as exc:
+            # 오타 난 캘린더 이름. pydantic 은 ValueError 만 감싸므로 그대로
+            # 두면 검증이 아니라 500 으로 터집니다.
+            raise ValueError(str(exc)) from None
+
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        cursor = _date(2025, 1, 1)
+        end = cursor + self.warmup_delta
+        sessions = 0
+        while cursor <= end:
+            sessions += bool(calendar.sessions_on(cursor))
+            cursor += _td(days=1)
+        # 거래일이 아니라 **봉** 을 셉니다. 주봉이면 5거래일이 봉 하나입니다 —
+        # 여기서 거래일을 세면 주봉 설정을 안전하다고 도장 찍어 주면서 실제로는
+        # 유니버스가 비는, 가드가 오히려 거짓 보증을 하는 상태가 됩니다.
+        bars = int(sessions / max(seconds / 86400.0, 1.0))
+        if bars >= wanted:
+            return self
+
+        # 권고값은 **봉 개수** 입니다. warmup_delta 가 달력 환산을 이미 하므로
+        # 여기서 또 곱하면 두 배로 잡으라고 안내하게 됩니다.
+        raise ValueError(
+            f"warmup_bars: {self.data.warmup_bars} 로는 {calendar.name} 에서 약 "
+            f"{bars}봉밖에 받지 못하는데 age 필터가 {wanted}봉을 요구합니다 — "
+            f"모든 종목이 걸러져 유니버스가 비고, 봇은 아무것도 하지 않으면서 "
+            f"오류도 내지 않습니다. warmup_bars 를 {wanted + 20} 이상으로 "
+            f"올리거나 age.min_bars 를 낮추세요."
+        )
 
     @model_validator(mode="after")
     def _backtest_needs_the_simulator(self) -> StrategyConfig:
@@ -324,11 +340,13 @@ class StrategyConfig(ConfigBlock):
         같은 방식으로 나눌 수 없습니다. 그쪽은 지금처럼 두고, 실제로 물린
         일봉만 캘린더로 환산합니다.
         """
-        span = timedelta(seconds=timeframe_seconds(self.data.timeframe)
-                         * self.data.warmup_bars)
-        if timeframe_seconds(self.data.timeframe) < 86400:
-            return span
-        return self._calendar().calendar_span(self.data.warmup_bars)
+        seconds = timeframe_seconds(self.data.timeframe)
+        if seconds < 86400:
+            return timedelta(seconds=seconds * self.data.warmup_bars)
+        # 봉 하나가 며칠치인가 — 일봉 1, 주봉 5(거래일). 이걸 넘기지 않으면
+        # 주봉 전략의 창이 5분의 1로 줄어듭니다.
+        bar_days = seconds / 86400.0
+        return self._calendar().calendar_span(self.data.warmup_bars, bar_days)
 
     def _calendar(self):
         """이 설정이 실제로 쓸 캘린더. `build_calendar` 과 같은 규칙입니다."""

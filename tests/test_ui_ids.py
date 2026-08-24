@@ -32,8 +32,12 @@ def test_every_id_the_script_reaches_for_exists(html):
     script = html[html.index("<script"):]
     wanted = set(re.findall(r'getElementById\("([^"]+)"\)', script))
     wanted |= set(re.findall(r'\$\("#([A-Za-z][\w-]*)"\)', script))
-    # 스크립트가 만들어 넣는 것들은 마크업에 없어도 됩니다.
+    # 스크립트가 만들어 넣는 것들은 마크업에 없어도 됩니다. 두 가지 방식이
+    # 있습니다 — innerHTML 에 `id="..."` 를 박거나, createElement 뒤에
+    # `el.id = "..."` 로 붙이거나. 앞쪽만 세면 뒤쪽으로 만든 요소를 참조할 때
+    # 없는 id 라고 잘못 잡습니다.
     created = set(re.findall(r'id="([^"${}]+)"', script))
+    created |= set(re.findall(r'\.id\s*=\s*"([A-Za-z][\w-]*)"', script))
     missing = sorted(wanted - present - created)
     assert not missing, f"마크업에 없는 id 를 참조합니다: {missing}"
 

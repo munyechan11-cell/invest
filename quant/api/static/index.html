@@ -340,6 +340,15 @@ tr:last-child td{border-bottom:0}
 .saybox.idle .line{color:var(--muted)}
 /* 기다려도 영영 안 되는 상태. 기다리면 되는 것과 같은 회색으로 두면 사람은
    계속 기다립니다 — 실제로 열 분을 그렇게 보냈습니다. */
+/* 비어 있는 데스크 위에 서는 줄. 여기가 "일단 어떻게 도는지 보고 싶다" 는
+   마음이 생기는 자리입니다. */
+.trynow{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  border:2px solid var(--gold-dim);background:rgba(240,192,64,.07);
+  padding:11px 14px;margin:0 0 12px;font-size:13px;color:var(--ink)}
+.trynow button{font-family:var(--px);font-size:12px;padding:7px 13px;
+  border:2px solid var(--gold);background:none;color:var(--gold);cursor:pointer}
+.trynow button:hover:not(:disabled){background:var(--gold);color:#000}
+.trynow button:disabled{opacity:.55;cursor:default}
 .saybox.bad{border-color:var(--bad)}
 .saybox.bad .who{color:var(--bad)}
 .saybox.bad .line{color:var(--ink)}
@@ -1723,7 +1732,7 @@ async function refresh() {
     }
     // 버튼이 실제 상태를 따라가야 합니다 — 봇이 스스로 멈췄는데 화면에
     // "정지" 만 서 있으면 사용자는 돌고 있다고 믿습니다.
-    if (typeof runnerState === "function") runnerState(!!h.trader_running);
+    setRunning(!!h.trader_running);
     // 죽었으면 그 사실을 말합니다. 조용히 정지 상태로 돌아가면 사용자는
     // 봇이 돌고 있다고 믿은 채로 기다립니다.
     if (!h.trader_running && h.last_error && h.last_error !== lastBotError) {
@@ -1736,6 +1745,14 @@ async function refresh() {
   try {
     const s = await api("/api/status");
     botState = s;
+    // **어떤 전략이 돌고 있는가는 서버만 압니다.** 선택기는 새로고침 때마다
+    // "연동이 끝난 첫 전략" 으로 리셋되고, 봇이 도는 동안에는 감춰져 있어서
+    // 사용자가 고칠 수도 없습니다. 그 값을 실행 상태로 읽으면 화면이 돌지도
+    // 않는 전략 이야기를 합니다 — 데스크가 죽었는데 "이 전략은 데스크를 쓰지
+    // 않습니다" 가 뜨는 식으로.
+    if (s.running && s.strategy) runningStrategy = s.strategy;
+    if (s.running === false) runningStrategy = "";
+    setRunning(!!s.running);
     if (s.portfolio) {
       $("#strategy").textContent = s.strategy || "—";
       const m = $("#mode");
@@ -1766,6 +1783,29 @@ let lastShown = null;
 let deskState = null;
 //: `/api/status` 의 마지막 응답. 장이 닫혔는지, 볼 종목이 있는지.
 let botState = null;
+//: 지금 **실제로** 돌고 있는 전략의 이름(서버가 말한 것). 선택기 값이 아닙니다.
+let runningStrategy = "";
+
+/* 실행 상태는 한 군데서만 바꿉니다.
+
+   전에는 `/api/health` 성공 경로 안에서만 갱신했습니다. health 만 실패하는
+   tick 에서는 돌고 있는 봇이 "아직 시작하지 않았습니다" 로 보였고, 시작이
+   409(이미 실행 중)로 거절돼도 버튼은 ▶ 시작 그대로였습니다 — 화면이
+   "시작하세요" 와 "이미 돌고 있습니다" 를 동시에 말했습니다. */
+function setRunning(on) {
+  if (document.body.classList.contains("running") === !!on) return;
+  runnerState(!!on);
+}
+
+/* 화면이 이야기해야 할 전략. 돌고 있으면 **돌고 있는 것**, 아니면 고른 것. */
+function shownStrategy() {
+  if (runningStrategy) {
+    const live = strategies.find(x => x.name === runningStrategy
+                                   || x.id === runningStrategy);
+    if (live) return live;
+  }
+  return strategies.find(x => x.id === chartStrategy()) || null;
+}
 
 let socket = null, ping = null;
 function connect() {
@@ -3204,19 +3244,36 @@ function pickTicker(ticker) {
 async function askDesk() {
   const raw = ($("#mSymbol").value || "").split(":").pop();
   if (!raw) { note("#mMsg", "종목을 먼저 고르세요.", "err"); return; }
+  return askDeskFor(raw);
+}
+
+async function askDeskFor(raw) {
+  if (!raw) return;
   const btn = $("#mAsk"), out = $("#mAskOut");
+  const side = document.getElementById("tryNowGo");
   btn.disabled = true;
   btn.textContent = "◆ 심의 중… (최대 2분)";
+  if (side) { side.disabled = true; side.textContent = "◆ 심의 중… (최대 2분)"; }
   out.hidden = true;
   try {
     const d = await post("/api/evaluate",
                          {ticker: raw, strategy: chartStrategy()});
     renderAsk(d, raw);
+    // 16명이 실제로 말한 것을 그대로 재생합니다. 응답에 좌석별 발언이 전부
+    // 들어 있는데(analysts·debate·risk_debate) 지금까지 요약 카드만 그리고
+    // 버렸습니다 — 데스크는 돌았는데 사람은 도는 걸 못 봤습니다.
+    lastShown = d.decided_at;
+    scrollToDesk();
+    playDeliberation(d, {speed: .7});
   } catch (e) {
     note("#mMsg", "심의 실패: " + e.message, "err");
   } finally {
     btn.disabled = false;
     btn.textContent = "◆ 16명에게 물어보기";
+    // 이 버튼은 심의가 끝나면 사라집니다(발언이 그 자리를 채웁니다). 남아
+    // 있는 경우에만 되돌립니다 — 사라진 노드에 쓰면 조용히 죽습니다.
+    const back = document.getElementById("tryNowGo");
+    if (back) { back.disabled = false; back.textContent = "◆ 다시 심의"; }
   }
 }
 
@@ -3312,7 +3369,7 @@ function renderMini(payload) {
    `/api/status` 의 `market.minutes_to_open` 과 `universe`. 여기까지 와 있던
    것을 화면이 안 읽었을 뿐입니다. */
 function deskWaitReason() {
-  const st = strategies.find(x => x.id === chartStrategy());
+  const st = shownStrategy();
   if (!st) return null;
   if (!(st.signals || []).some(g => g.id === "desk" || g.id === "council")) {
     return {kind: "nodesk", who: "심의 없음",
@@ -3327,8 +3384,12 @@ function deskWaitReason() {
   }
   if (!document.body.classList.contains("running")) {
     return {kind: "idle", who: "아직 시작하지 않았습니다",
-            line: "위에서 ▶ 시작 을 누르면 그 자리에서 한 번 심의합니다 — " +
-                  "봉이 닫힐 때까지 기다리지 않습니다."};
+            line: "▶ 시작 을 누르면 그 자리에서 한 번 심의합니다 — 봉이 닫힐 " +
+                  "때까지 기다리지 않습니다.",
+            // 봇을 켜지 않고도 데스크가 도는 것을 볼 수 있어야 합니다.
+            // "일단 어떻게 돌아가는지 보고 싶다" 는 자동매매를 켜기 **전에**
+            // 생기는 마음인데, 지금까지 그걸 보려면 봇부터 켜야 했습니다.
+            try_now: true};
   }
   const uni = (botState || {}).universe;
   if (Array.isArray(uni) && uni.length === 0) {
@@ -3345,11 +3406,12 @@ function deskWaitReason() {
                   (h ? `${h}시간 ${m}분` : `${m}분`) + ". 열리면 이어서 봅니다."};
   }
   return {kind: "waiting", who: "대기 중",
-          line: "다음 봉이 닫히면 심의가 시작되고, 발언은 여기 그대로 남습니다."};
+          line: "다음 봉이 닫히면 심의가 시작되고, 발언은 여기 그대로 남습니다.",
+          try_now: true};
 }
 
 function renderDeskAvailability() {
-  const st = strategies.find(x => x.id === chartStrategy());
+  const st = shownStrategy();
   const has = !!st && (st.signals || []).some(g => g.id === "desk" || g.id === "council");
   document.body.classList.toggle("nodesk", !!st && !has);
   if (!st) return;
@@ -3359,7 +3421,14 @@ function renderDeskAvailability() {
   if (tag) tag.textContent = r.who;
   // 이미 발언이 재생된 뒤라면 덮어쓰지 않습니다 — 사람이 읽던 것을 지우는
   // 것이 "왜 비어 있는지" 를 알려 주는 것보다 나쁩니다.
-  if ((deskState?.deliberations || []).length) return;
+  //
+  // **데스크가 죽은 경우는 예외입니다.** 쿼터가 마르면 포지션을 든 채 장중에
+  // 데스크가 꺼지는데, 그때 마지막 강세 발언이 그대로 남아 있으면 사람은 그걸
+  // 지금 판단으로 읽습니다. 빨간 표시가 가장 필요한 순간이 하필 그때입니다.
+  if (r.kind !== "broken" && (deskState?.deliberations || []).length) {
+    renderTryNow(false);
+    return;
+  }
   ["analyst", "debate", "risk", "decision"].forEach(room => {
     const box = document.getElementById("say-" + room);
     if (!box) return;
@@ -3367,11 +3436,66 @@ function renderDeskAvailability() {
     box.querySelector(".who").textContent = r.who;
     box.querySelector(".line").textContent = r.line;
   });
+  renderTryNow(r.try_now === true);
+}
+
+/* 봇을 켜지 않고 지금 한 번 돌려보기.
+
+   `/api/evaluate` 는 처음부터 이걸 할 수 있었습니다 — 봉을 기다리지도, 장이
+   열려 있지도 않아도 종목 하나를 그 자리에서 16명에게 물어봅니다. 그런데 그
+   버튼이 수동매매 패널 안쪽에 있어서, 데스크가 비어 있는 것을 보고 있는
+   사람은 그게 있는 줄 몰랐습니다. 비어 있는 자리에 두는 게 맞습니다. */
+function renderTryNow(show) {
+  const rooms = document.getElementById("rooms");
+  if (!rooms) return;
+  let bar = document.getElementById("tryNow");
+  if (!show) { if (bar) bar.remove(); return; }
+  const st = shownStrategy();
+  if (!st || !hasDesk(st) || missingFor(st).length) {
+    if (bar) bar.remove();
+    return;
+  }
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "tryNow";
+    bar.className = "trynow";
+    rooms.parentNode.insertBefore(bar, rooms);
+  }
+  // 대상 종목은 이 전략이 실제로 보는 것 중 첫 번째입니다. 아무 종목이나
+  // 물으면 그 전략이 사지도 않을 종목의 심의를 보여주게 됩니다.
+  const first = tickerCode((st.tickers || [])[0]);
+  const label = tickerLabel(first);
+  bar.innerHTML = first
+    ? `<span>봇을 켜지 않고 지금 한 번 돌려볼 수 있습니다.</span>` +
+      `<button type="button" id="tryNowGo">◆ ${esc(label)} 지금 심의</button>`
+    : `<span>이 전략에는 볼 종목이 없습니다.</span>`;
+  const go = document.getElementById("tryNowGo");
+  if (go) go.onclick = () => askDeskFor(first);
+}
+
+/* 종목 목록은 두 모양으로 옵니다 — 예전 응답은 문자열 "005930", 지금은
+   {ticker, name}. 한쪽만 다루면 다른 쪽에서 "[object Object]" 가 화면에
+   뜹니다(실제로 떴습니다). 코드를 꺼내는 곳을 한 군데로 모읍니다. */
+function tickerCode(entry) {
+  if (!entry) return "";
+  return typeof entry === "string" ? entry : String(entry.ticker || "");
+}
+
+/* 티커를 사람이 읽는 이름으로. 서버가 이름을 실어 보내면 그것을 쓰고, 없으면
+   코드를 그대로 씁니다 — 빈 괄호를 만들지 않습니다. 코드도 같이 남깁니다:
+   주문을 확인할 때 사람이 대조하는 것은 이름이 아니라 코드입니다. */
+function tickerLabel(ticker) {
+  const code = tickerCode(ticker);
+  if (!code) return "";
+  const st = shownStrategy();
+  const found = (st?.tickers || []).find(t => tickerCode(t) === code);
+  const name = found && typeof found === "object" ? found.name : "";
+  return name && name !== code ? `${name} (${code})` : code;
 }
 
 function renderRunSummary(running) {
   document.body.classList.toggle("running", !!running);
-  const st = strategies.find(x => x.id === chartStrategy());
+  const st = shownStrategy();
   $("#runSum").textContent = running && st
     ? `${st.name} · ${st.mode_ko || st.mode} · ${st.broker_ko || st.broker} — 돌고 있습니다.`
     : "";
@@ -3401,13 +3525,18 @@ document.getElementById("runStart").onclick = async () => {
   try {
     const res = await post("/api/trader/start", {config_path: id});
     note("#runMsg", `${res.strategy} 시작됨 (${res.mode})`, "ok");
-    runnerState(true);
+    runningStrategy = res.strategy || id;
+    setRunning(true);
     refresh();
     // 시작 버튼을 누른 사람이 다음에 보고 싶은 것은 "무슨 일이 일어나는가"
     // 입니다. 그건 아래 데스크에 있는데, 화면은 위에 머물러 있습니다.
     scrollToDesk();
   } catch (e) {
     note("#runMsg", "시작하지 못했습니다: " + e.message, "err");
+    // "이미 실행 중" 이라고 거절당했는데 버튼이 ▶ 시작 그대로면, 화면이 서로
+    // 모순되는 두 말을 동시에 합니다. 서버가 방금 사실을 알려 줬으니 그것에
+    // 맞춥니다.
+    refresh();
   }
 };
 
@@ -3416,7 +3545,8 @@ document.getElementById("runStop").onclick = async () => {
   try {
     await post("/api/trader/stop");
     note("#runMsg", "정지했습니다 — 포지션은 그대로입니다", "ok");
-    runnerState(false);
+    runningStrategy = "";
+    setRunning(false);
     refresh();
   } catch (e) {
     note("#runMsg", "정지하지 못했습니다: " + e.message, "err");
