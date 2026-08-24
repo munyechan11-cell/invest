@@ -1,0 +1,50 @@
+# 자동매매 서비스 — systemd 유닛.
+#
+# 재시작이 안전한 이유: 상태(현금·포지션·하루 한도)는 전부 SQLite 에 있고,
+# 시작할 때 거래소와 대조합니다. 열린 포지션은 그대로 남습니다 — 재배포가
+# 포지션을 청산하지 않습니다.
+[Unit]
+Description=Quant trading desk
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=quant
+Group=quant
+WorkingDirectory=/home/quant/app
+EnvironmentFile=/home/quant/app/.env
+ExecStart=/home/quant/app/.venv/bin/python -m quant serve configs/demo.yaml \
+    --host 127.0.0.1 --port 8000 --state ${DB_PATH}
+
+# SIGTERM 을 받으면 현재 사이클을 끝내고 상태를 저장한 뒤 종료합니다.
+# 그 시간을 주지 않으면 봉 하나를 처리하다 만 채로 죽습니다.
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+Restart=always
+RestartSec=5
+# 계속 죽는 것을 무한히 되살리지 않습니다. 5분에 다섯 번 넘게 죽으면
+# 멈춰서 사람이 보게 합니다 — 자동 재시작이 문제를 가리면 안 됩니다.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+# 이 프로세스가 닿을 수 있는 곳을 좁힙니다. 남의 증권사 키를 들고 도는
+# 프로세스라 사고의 반경도 좁아야 합니다.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/quant/data /home/quant/app
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=quant
+
+[Install]
+WantedBy=multi-user.target

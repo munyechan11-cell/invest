@@ -1,0 +1,29 @@
+# HTTPS 자동 발급. 이 서비스에는 선택이 아닙니다 —
+# 세션 쿠키가 `__Host-` 접두사를 쓰고, 브라우저는 그 접두사에 `Secure` 를
+# 요구하며, `Secure` 는 HTTPS 를 요구합니다. HTTP 로 열면 브라우저가 쿠키를
+# 조용히 버려서 로그인이 되지 않습니다.
+YOUR_DOMAIN {
+	encode zstd gzip
+
+	# 웹소켓(실시간 심의·체결)이 이 경로로 옵니다.
+	reverse_proxy 127.0.0.1:8000 {
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+	}
+
+	header {
+		# 이 서비스가 다른 곳에 iframe 으로 실릴 이유가 없습니다.
+		X-Frame-Options DENY
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/quant.log
+		# 쿼리스트링을 남기지 않습니다. 이 앱은 비밀을 URL 에 담지 않지만,
+		# 로그는 한 번 새면 되돌릴 수 없는 종류의 파일입니다.
+		format json
+	}
+}
