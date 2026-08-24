@@ -22,7 +22,11 @@
 
 :root{
   --bg:#07080c; --panel:#0e1119; --plate:#151a25; --line:#252c3a;
-  --gold:#f0c040; --gold-dim:#8a6f27; --red:#e0453c; --up:#57d977; --down:#ff5a52;
+  --gold:#f0c040; --gold-dim:#8a6f27; --red:#e0453c;
+  /* 한국 색 논리: 오르면 빨강, 내리면 파랑. 시세 패널과 차트는 이미
+     이쪽이었고 티커·이벤트만 서구식이라, 같은 상승이 한 화면에서
+     초록과 빨강으로 동시에 칠해지고 있었습니다. */
+  --up:#ff5a52; --down:#5b9dff;
   --ink:#e8ecf2; --muted:#7b8494; --white:#fff;
   --wood:#8a6a45; --wood-dark:#6d5236; --turf:#2f6b4a; --turf-dark:#255840;
   --px:"Silkscreen","PixelKR","PixelKR2",ui-monospace,"SFMono-Regular",Menlo,monospace;
@@ -34,7 +38,9 @@
      보이지 않습니다. 한국 색 논리: 오르면 빨강. */
   --sang:#ff5a52; --ha:#5b9dff;
   --bone:#e8ecf2; --dim:#9aa4b6; --faint:#7b8494;
-  --rule:#252c3a; --edge:#38415a; --panel2:#151a25; --void:#07080c;
+  /* 입력칸 테두리는 글자가 아니라 '여기부터 여기까지가 칸이다' 라는
+     정보입니다. WCAG 1.4.11 은 그런 경계에 3:1 을 요구합니다. */
+  --rule:#252c3a; --edge:#38415a; --field:#5a6480; --panel2:#151a25; --void:#07080c;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{background:var(--bg);color:var(--ink)}
@@ -44,10 +50,10 @@ svg,canvas{image-rendering:pixelated;shape-rendering:crispEdges}
 .px{font-family:var(--px);letter-spacing:.04em}
 
 /* ── frame ───────────────────────────────────────────────────────────── */
-/* 아래 34px 은 고정 티커 자리입니다 — 안 비우면 마지막 줄(위험 고지)이
+/* 아래 42px 은 고정 티커 자리입니다 — 안 비우면 마지막 줄(위험 고지)이
    영구히 가려집니다. */
 .wrap{max-width:1180px;margin:0 auto;padding:0 12px 96px}
-body{padding-bottom:34px}
+body{padding-bottom:42px}
 
 header.top{position:sticky;top:0;z-index:40;background:var(--bg);
   border-bottom:3px solid var(--red);padding:10px 12px 8px}
@@ -115,7 +121,7 @@ tr:last-child td{border-bottom:0}
 .scroll{overflow:auto;max-height:260px}
 
 /* ── the floor ───────────────────────────────────────────────────────── */
-.room{position:relative;padding:30px 10px 12px;overflow:hidden}
+.room{position:relative;padding:38px 10px 12px;overflow:hidden}
 .room.wood{background-image:
   repeating-linear-gradient(0deg,rgba(0,0,0,.10) 0 22px,rgba(0,0,0,0) 22px 24px),
   repeating-linear-gradient(90deg,var(--wood) 0 46px,var(--wood-dark) 46px 48px);
@@ -131,8 +137,8 @@ tr:last-child td{border-bottom:0}
 
 .seats{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;align-items:flex-end}
 .seat{width:132px;display:flex;flex-direction:column;align-items:center;position:relative;
-  padding-top:104px}
-@media(max-width:520px){.seat{width:104px;padding-top:104px}}
+  padding-top:132px}
+@media(max-width:520px){.seat{width:104px;padding-top:132px}}
 .seat .seatname{font-family:var(--px);font-size:11px;color:#1a1206;
   background:rgba(255,252,244,.92);border:1px solid #2a1d0e;padding:2px 6px;
   border-radius:2px}
@@ -146,7 +152,7 @@ tr:last-child td{border-bottom:0}
 
 /* speech bubble */
 .bubble{position:absolute;bottom:calc(100% - 80px);left:50%;transform:translateX(-50%);
-  width:186px;max-width:min(186px,88vw);background:#fdfbf3;border:2px solid #2a1d0e;color:#171310;
+  width:186px;max-width:min(186px,calc(100vw - 44px));background:#fdfbf3;border:2px solid #2a1d0e;color:#171310;
   font-size:12px;line-height:1.5;padding:6px 8px;z-index:5;
   word-break:keep-all;overflow-wrap:anywhere;
   box-shadow:3px 3px 0 rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .12s}
@@ -217,7 +223,7 @@ tr:last-child td{border-bottom:0}
 
 /* ticker tape */
 .tape{position:fixed;left:0;right:0;bottom:0;z-index:50;background:#000;
-  border-top:3px solid var(--gold-dim);overflow:hidden;height:34px}
+  border-top:3px solid var(--gold-dim);overflow:hidden;height:42px}
 .tape-in{display:inline-flex;gap:34px;white-space:nowrap;padding:9px 0;
   font-family:var(--px);font-size:11px;animation:tape 42s linear infinite}
 @keyframes tape{from{transform:translateX(0)}to{transform:translateX(-50%)}}
@@ -239,7 +245,7 @@ select,#mSymbol{min-height:44px}
   align-items:end}
 .fld{display:flex;flex-direction:column;gap:4px;min-width:0}
 .fld label{font-family:var(--px);font-size:11px;color:var(--muted);letter-spacing:.05em}
-.fld input,.fld select{background:#0a0d14;border:2px solid var(--line);color:var(--ink);
+.fld input,.fld select{background:#0a0d14;border:2px solid var(--field);color:var(--ink);
   font-family:var(--px);font-size:12px;padding:6px 8px;width:100%}
 .fld input:focus,.fld select:focus{border-color:var(--gold)}
 /* 키보드로 오는 사람에게는 어디에 있는지가 유일한 단서입니다. 마우스로 누를
@@ -280,7 +286,7 @@ select,#mSymbol{min-height:44px}
 .venue .head{display:flex;align-items:center;gap:8px;cursor:pointer}
 .venue .head span{font-family:var(--px);font-size:11px}
 .venue .status{margin-left:auto;font-family:var(--px);font-size:11px}
-.venue .note{font-size:12px;color:var(--muted);margin:6px 0 0;line-height:1.6}
+.venue .note{word-break:keep-all;overflow-wrap:anywhere;font-size:12px;color:var(--muted);margin:6px 0 0;line-height:1.6}
 .venue .fields{display:none;margin-top:10px;display:grid;gap:8px}
 .venue:not(.on) .fields{display:none}
 .venue.on .fields{display:grid}
@@ -291,11 +297,12 @@ select,#mSymbol{min-height:44px}
 .q .qt{font-size:12px;line-height:1.6;margin-bottom:8px}
 .q .qh{font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.5}
 .q .opts{display:grid;gap:5px}
-.opt{display:flex;gap:8px;align-items:flex-start;padding:6px 8px;border:2px solid var(--line);
+.opt{display:flex;gap:8px;align-items:flex-start;padding:6px 8px;border:2px solid var(--field);
   width:100%;text-align:left;font:inherit;color:inherit;
   cursor:pointer;font-size:11px;line-height:1.5;background:#0a0d14}
 .opt:hover{border-color:var(--gold-dim)}
 .opt.on{border-color:var(--gold);background:#171b26}
+.opt.on i:after{content:" ✓";color:var(--gold)}   /* 색만으로 고른 것을 말하지 않습니다 */
 .opt i{font-family:var(--px);font-size:12px;color:var(--gold);font-style:normal;flex:0 0 auto}
 .qprog{font-family:var(--px);font-size:12px;color:var(--muted)}
 
@@ -340,7 +347,7 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
   .deck-r{position:static}
   /* 좁은 화면에서 세로로 쌓으면 시세가 심의 한참 아래 깔립니다. 탭으로 가릅니다. */
   .viewtabs{display:grid;grid-template-columns:1fr 1fr;position:sticky;
-    top:var(--header-h,64px);z-index:44;
+    top:var(--header-h,64px);z-index:38;
     border:1px solid var(--edge);border-bottom:0;background:var(--panel)}
   .viewtabs button{border:0;border-right:1px solid var(--rule);min-height:46px;
     font-family:var(--px);font-size:11px;background:transparent;color:var(--dim);cursor:pointer}
@@ -385,22 +392,28 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
    짚어가며 한 번만 보여줍니다. 건너뛸 수 있고, 다시 볼 수도 있습니다. */
 #tour{position:fixed;inset:0;z-index:120;display:none}
 body.touring #tour{display:block}
+body.touring{overflow:hidden}
+#tourVeil{touch-action:none}
 /* 링의 box-shadow 가 이미 화면 전체를 덮는 장막입니다. 여기에 반투명 판을 또
    깔면 두 겹이 되어 바깥은 1.1:1 로 캄캄해지고, 강조한 버튼 위에도 얹혀서
    정작 가리킨 것이 제일 흐려집니다. 이 판은 색 없이 클릭만 막습니다. */
 #tourVeil{position:absolute;inset:0}
 #tourRing{position:absolute;border:3px solid var(--gold);border-radius:3px;
   box-shadow:0 0 0 9999px rgba(4,6,12,.72),0 0 22px rgba(240,192,64,.55);
-  transition:all .25s ease;pointer-events:none}
+  transition:top .22s ease,left .22s ease,width .22s ease,height .22s ease;
+  pointer-events:none}
 #tourBox{position:absolute;max-width:min(420px,92vw);background:var(--plate);
-  border:2px solid var(--gold);padding:16px 18px;transition:all .25s ease}
+  border:2px solid var(--gold);padding:16px 18px;
+  animation:tourpop .18s ease}
+@keyframes tourpop{from{opacity:0}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){
+  #tourRing{transition:none}#tourBox{animation:none}}
 #tourBox h4{margin:0 0 8px;font-family:var(--px);font-size:11px;color:var(--gold)}
 #tourBox p{margin:0 0 14px;font-size:14px;line-height:1.7;color:var(--ink)}
 #tourBox .row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
 #tourBox .tourstep{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--muted)}
 @media(max-width:760px){
-  #tourBox{left:12px!important;right:12px!important;max-width:none;
-    top:auto!important;bottom:16px!important}
+  #tourBox{max-width:calc(100vw - 24px);width:calc(100vw - 24px)}
 }
 
 .app-only{display:none}
@@ -453,7 +466,7 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
   padding:5px 8px;color:var(--muted)}
 .steps span.done{border-color:var(--up);color:var(--up)}
 .steps span.now{border-color:var(--gold);color:var(--gold)}
-.steps span.skipped{border-color:var(--gold-dim);color:var(--gold-dim)}
+.steps span.skipped{border-color:var(--gold-dim);color:var(--gold)}
 .step .head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .step .head .mark{font-family:var(--px);font-size:11px;color:var(--muted);margin-left:auto}
 .step .head .mark.done{color:var(--up)}
@@ -512,7 +525,7 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
 <header class="top app-only">
   <div class="top-in">
     <span class="conn" id="conn" role="img" aria-label="연결 상태 확인 중"></span>
-    <span class="brand"><i>◆</i> QUANT TRADING FLOOR <i>◆</i></span>
+    <span class="brand"><i aria-hidden="true">◆</i> QUANT TRADING FLOOR <i aria-hidden="true">◆</i></span>
     <span class="mode backtest px" id="mode">OFFLINE</span>
     <span class="grow"></span>
     <button class="btn" id="setupBtn">⚙ 설정</button>
@@ -2074,6 +2087,9 @@ async function whoami() {
 function signedIn(user) {
   me = user;
   document.body.className = "authed";
+  // 이 줄 전까지 헤더는 display:none 이었습니다. 배치가 한 번 돌고 나서
+  // 재야 실제 높이가 나옵니다 — 안 그러면 0 이 그대로 굳습니다.
+  requestAnimationFrame(measureHeader);
   renderAccount();
   if (!started) { started = true; start(); }
 }
@@ -2413,27 +2429,43 @@ const TOUR = [
 ];
 
 let tourAt = 0;
+//: 이번에 실제로 보여 줄 단계들. 화면에 없는 것을 가리키는 단계는 뺍니다.
+let tourSteps = [];
+
+/* 이 단계가 지금 이 화면에 실제로 그려져 있는가.
+   `display:none` 인 요소도 querySelector 는 찾아 줍니다. 그 rect 는 0×0 이라
+   링이 왼쪽 위 구석의 점이 되고, 설명은 화면에 없는 것을 가리킵니다.
+   좁은 화면에서 `.deck-r` 이 정확히 그렇습니다. */
+function tourVisible(step) {
+  const el = document.querySelector(step.el);
+  return el && el.getClientRects().length ? el : null;
+}
 
 function tourShow() {
-  const step = TOUR[tourAt];
-  const target = document.querySelector(step.el);
+  const step = tourSteps[tourAt];
+  const target = tourVisible(step);
   const ring = document.getElementById("tourRing");
   const box = document.getElementById("tourBox");
   document.getElementById("tourTitle").textContent = step.title;
   document.getElementById("tourText").textContent = step.text;
-  document.getElementById("tourStep").textContent = `${tourAt + 1} / ${TOUR.length}`;
+  document.getElementById("tourStep").textContent =
+    `${tourAt + 1} / ${tourSteps.length}`;
   document.getElementById("tourNext").textContent =
-    tourAt === TOUR.length - 1 ? "시작하기" : "다음";
+    tourAt === tourSteps.length - 1 ? "시작하기" : "다음";
 
   if (!target) { ring.style.display = "none"; box.style.top = "20vh";
                  box.style.left = "50%"; box.style.transform = "translateX(-50%)";
                  return; }
   // 화면보다 큰 대상을 "가운데로" 스크롤하면 위쪽이 문서 밖으로 밀려서
   // 검은 띠만 보입니다. 이미 보이는 것은 건드리지 않고, 큰 것은 위를 맞춥니다.
+  //
+  // 가로도 같이 봅니다. 좁은 화면에서 머리말은 `overflow-x:auto` 로 가로
+  // 스크롤되므로, 세로만 확인하면 x=453 에 있는 버튼을 폭 375 화면에 링만
+  // 그려 놓고 정작 버튼은 화면 밖에 두게 됩니다.
   let r = target.getBoundingClientRect();
-  if (r.top < 0 || r.bottom > innerHeight) {
+  if (r.top < 0 || r.bottom > innerHeight || r.left < 0 || r.right > innerWidth) {
     target.scrollIntoView({block: r.height > innerHeight * 0.8 ? "start" : "center",
-                           behavior: "instant"});
+                           inline: "nearest", behavior: "instant"});
     r = target.getBoundingClientRect();
   }
   const pad = 6;
@@ -2443,6 +2475,9 @@ function tourShow() {
   ring.style.width = (r.width + pad * 2) + "px";
   ring.style.height = (r.height + pad * 2) + "px";
 
+  // 애니메이션은 요소가 새로 붙어야 다시 돕니다. 클래스를 껐다 켜서
+  // 단계마다 한 번씩 페이드가 걸리게 합니다.
+  box.style.animation = "none"; void box.offsetWidth; box.style.animation = "";
   place(box, r);
 }
 
@@ -2487,22 +2522,63 @@ function put(box, t, l, w, h) {
 
 function tourEnd() {
   document.body.classList.remove("touring");
-  if (me) me.tour_seen = true;   // 서버 왕복을 기다리는 사이에 또 뜨지 않게.
-  // 봤다는 사실은 계정에 답니다. 실패해도 화면은 이미 닫혔으니 조용히 넘깁니다 —
-  // 최악의 경우 다음 접속에 한 번 더 뜨는 것뿐입니다.
+  tourInerted.forEach(el => { el.inert = false; });
+  tourInerted = [];
+  if (tourReturnFocus && tourReturnFocus.focus) tourReturnFocus.focus();
+  tourReturnFocus = null;
+
+  // 이미 본 사람이 ? 안내로 다시 돌린 경우에는 서버에 알릴 것이 없습니다.
+  if (me && me.tour_seen) return;
+  // 봤다는 사실은 계정에 답니다. 실패하면 로컬 표시도 세우지 않습니다 —
+  // 그래야 다음 접속에 한 번 더 떠서, 못 본 사람이 못 본 채로 남지 않습니다.
   fetch("/api/auth/tour-seen", {method: "POST", credentials: "same-origin"})
+    .then(r => { if (r.ok && me) me.tour_seen = true; })
     .catch(() => {});
 }
 
+//: 안내가 떠 있는 동안 뒤로 보내 둔 것들. 끝나면 그대로 되돌립니다.
+let tourInerted = [];
+let tourReturnFocus = null;
+
 function tourStart() {
+  tourSteps = TOUR.filter(tourVisible);
+  if (!tourSteps.length) return;
   tourAt = 0;
+  tourReturnFocus = document.activeElement;
   document.body.classList.add("touring");
+  // 장막은 마우스만 막습니다. 탭으로는 뒤쪽 버튼에 닿고, 거기서 엔터를 치면
+  // 설정 마법사가 장막 아래에서 열립니다 — 안내와 마법사가 겹치는 상태는
+  // maybeTour() 가 애초에 막으려던 것입니다.
+  tourInerted = [];
+  for (const el of document.body.children) {
+    if (el.id === "tour" || el.inert) continue;
+    el.inert = true;
+    tourInerted.push(el);
+  }
   tourShow();
+  document.getElementById("tourNext").focus();
 }
+
+/* 대화상자 안에서만 탭이 돌게 합니다. `inert` 를 지원하지 않는 브라우저도
+   있어서, 상자 자체에서도 한 번 더 가둡니다. */
+function tourTrap(ev) {
+  if (!document.body.classList.contains("touring")) return;
+  if (ev.key === "Escape") { ev.preventDefault(); return tourEnd(); }
+  if (ev.key !== "Tab") return;
+  const stops = [document.getElementById("tourNext"),
+                 document.getElementById("tourSkip")];
+  const at = stops.indexOf(document.activeElement);
+  const next = ev.shiftKey ? at - 1 : at + 1;
+  if (at < 0 || next < 0 || next >= stops.length) {
+    ev.preventDefault();
+    stops[ev.shiftKey ? stops.length - 1 : 0].focus();
+  }
+}
+addEventListener("keydown", tourTrap);
 
 document.getElementById("tourNext").onclick = () => {
   tourAt += 1;
-  if (tourAt >= TOUR.length) return tourEnd();
+  if (tourAt >= tourSteps.length) return tourEnd();
   tourShow();
 };
 document.getElementById("tourSkip").onclick = tourEnd;

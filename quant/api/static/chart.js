@@ -94,6 +94,11 @@
 
     resize() {
       const r = this.cv.getBoundingClientRect();
+      // 숨어 있는 캔버스는 폭이 0 입니다. 그대로 진행하면 draw() 의
+      // `if (!this.W) this.resize()` 와 서로를 부르며 스택을 태웁니다 —
+      // 모바일에서 데스크 탭을 보고 있으면 시세 기둥이 display:none 이라
+      // 정확히 이 상태가 됩니다. 그릴 자리가 없으면 그리지 않습니다.
+      if (!(r.width > 0 && r.height > 0)) { this.W = this.H = 0; return; }
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       this.cv.width = Math.max(1, Math.round(r.width * dpr));
       this.cv.height = Math.max(1, Math.round(r.height * dpr));
@@ -104,7 +109,7 @@
 
     draw() {
       const g = this.ctx;
-      if (!this.W) this.resize();
+      if (!this.W) { this.resize(); if (!this.W) return; }
       g.clearRect(0, 0, this.W, this.H);
       g.fillStyle = C.void;
       g.fillRect(0, 0, this.W, this.H);
