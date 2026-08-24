@@ -826,7 +826,7 @@ class UniverseSelector:
 
     @property
     def required_history(self) -> int:
-        return max([self.warmup_bars, *(f.lookback for f in self.filters)] or [0])
+        return max([self.warmup_bars, *(f.lookback for f in self.filters)])
 
     def due(self) -> bool:
         due = (self._bar_count % self.refresh_every) == 0

@@ -75,7 +75,7 @@ class IndicatorAlphaModel(AlphaModel):
 
     async def update(self, ctx, bars):
         out: list[Insight] = []
-        for key, bar in bars.items():
+        for _key, bar in bars.items():
             iset = self.indicators(ctx, bar.symbol)
             iset.update(bar)
             if not iset.is_ready:

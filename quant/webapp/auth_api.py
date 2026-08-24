@@ -107,6 +107,7 @@ def public_user(user: User) -> dict:
         "display_name": user.display_name,
         "is_admin": user.is_admin,
         "created_at": user.created_at.isoformat(),
+        "tour_seen": user.tour_seen,
     }
 
 
@@ -536,7 +537,14 @@ class Auth:
             # work even when the session is already dead or the cookie is junk.
             # Duplicates are revoked one and all — the caller asked to be
             # logged out, and which of the two was theirs is the open question.
-            for token in _cookie_values(request.headers.get("cookie", ""), self.cookie):
+            # 이름은 요청이 어떻게 왔는지에 따라 달라집니다 — 평문 http 로 온
+            # 요청에는 `__Host-` 없이 냈으므로, 그 이름으로 찾지 않으면
+            # 로그아웃이 200 을 주면서 아무 세션도 끊지 않습니다. 두 이름 다
+            # 봅니다: 프록시 뒤에서 스킴 판정이 흔들려도 로그아웃은 들어야 합니다.
+            header = request.headers.get("cookie", "")
+            tokens = [t for name in {self.cookie, self._cookie_name(request)}
+                      for t in _cookie_values(header, name)]
+            for token in tokens:
                 if token:
                     await run_in_threadpool(accounts.revoke, token)
             self._clear_cookie(request, response)
@@ -545,6 +553,11 @@ class Auth:
         @self.router.get("/me")
         async def me(user: User = Depends(self.current_user)):
             return public_user(user)
+
+        @self.router.post("/tour-seen")
+        async def tour_seen(user: User = Depends(self.current_user)):
+            await run_in_threadpool(accounts.mark_tour_seen, user.id)
+            return {"ok": True}
 
         @self.router.post("/password")
         async def change_password(req: PasswordRequest, request: Request,

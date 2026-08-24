@@ -214,7 +214,8 @@ class ManualControl:
 
         if request.action == "buy" and not request.manage:
             # Pin it, or the portfolio model sells it back on the next bar.
-            ctx.pin(symbol, f"수동 매수: {request.note}" or "수동 매수")
+            ctx.pin(symbol, f"수동 매수: {request.note}"
+                    if (request.note or "").strip() else "수동 매수")
 
         order = Order(
             symbol=symbol, side=side, quantity=qty,

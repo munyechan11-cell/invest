@@ -546,7 +546,8 @@ def test_public_user_carries_nothing_secret(accounts):
     user = accounts.register("x@example.com", GOOD, "이름")
     accounts.put_secret(user.id, "KIS_APP_KEY", "super-secret-key-value")
     body = public_user(user)
-    assert set(body) == {"id", "email", "display_name", "is_admin", "created_at"}
+    assert set(body) == {"id", "email", "display_name", "is_admin", "created_at",
+                         "tour_seen"}
     assert "super-secret-key-value" not in str(body)
     assert "password" not in str(body).lower()
 
@@ -556,3 +557,19 @@ def test_build_auth_router_mounts_on_its_own(accounts):
     app.include_router(build_auth_router(accounts))
     client = TestClient(app)
     assert signup(client).status_code == 201
+
+
+def test_logout_over_plain_http_actually_revokes(plain_client, accounts):
+    """평문 http 로 온 요청에는 `__Host-` 없이 쿠키를 냅니다.
+
+    그래서 로그아웃이 `__Host-` 이름으로만 찾으면 200 을 돌려주면서 아무
+    세션도 끊지 않습니다. 사용자는 로그아웃했다고 믿고 자리를 뜨는데 세션은
+    살아 있는 상태 — 조용해서 더 나쁜 종류의 고장입니다.
+    """
+    plain = SESSION_COOKIE.replace("__Host-", "")
+    signup(plain_client)
+    token = plain_client.cookies[plain]
+    assert accounts.user_for_session(token) is not None
+
+    assert plain_client.post("/api/auth/logout").status_code == 200
+    assert accounts.user_for_session(token) is None, "로그아웃했는데 세션이 살아 있습니다"

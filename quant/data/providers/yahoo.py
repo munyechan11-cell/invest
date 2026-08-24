@@ -105,8 +105,9 @@ class YahooProvider(DataProvider):
         step = timeframe_seconds(timeframe)
         bars: list[Bar] = []
         for i, ts in enumerate(stamps):
-            o, h, l, c = (quote.get(k, [None] * len(stamps))[i] for k in ("open", "high", "low", "close"))
-            if None in (o, h, l, c):
+            o, h, low, c = (quote.get(k, [None] * len(stamps))[i]
+                            for k in ("open", "high", "low", "close"))
+            if None in (o, h, low, c):
                 continue
             factor = (adj[i] / c) if (adj and adj[i] and c) else 1.0
             dt = datetime.fromtimestamp(ts - ts % step, tz=UTC)
@@ -114,7 +115,7 @@ class YahooProvider(DataProvider):
                 continue
             v = (quote.get("volume") or [0] * len(stamps))[i] or 0
             bars.append(
-                Bar(symbol, dt, o * factor, h * factor, l * factor, c * factor,
+                Bar(symbol, dt, o * factor, h * factor, low * factor, c * factor,
                     float(v), timeframe)
             )
         bars.sort(key=lambda b: b.ts)

@@ -12,6 +12,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 import httpx
 

@@ -1,6 +1,7 @@
 """Crypto venue adapter via ccxt."""
 from __future__ import annotations
 
+import contextlib
 import logging
 from decimal import Decimal
 
@@ -102,7 +103,6 @@ class CcxtBrokerage(LiveBrokerage):
         return await super().poll_fills()
 
     async def close(self):
-        try:
+        # 닫는 중에 터지는 것은 아무것도 바꾸지 못합니다 — 이미 끝내는 길입니다.
+        with contextlib.suppress(Exception):
             await self.ex.close()
-        except Exception:
-            pass

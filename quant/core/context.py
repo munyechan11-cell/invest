@@ -13,6 +13,7 @@ import logging
 from collections import defaultdict, deque
 from collections.abc import Iterable
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from quant.core.account import Portfolio
@@ -116,7 +117,6 @@ class Context:
         self._pending = dict(pending)
 
     def pending_quantity(self, symbol: Symbol) -> Decimal:
-        from decimal import Decimal
 
         return self._pending.get(symbol.key, Decimal("0"))
 

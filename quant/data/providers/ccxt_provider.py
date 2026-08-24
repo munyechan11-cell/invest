@@ -7,6 +7,7 @@ Follows freqtrade's hard-won operational rules:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from datetime import datetime
 from decimal import Decimal
@@ -106,7 +107,7 @@ class CcxtProvider(DataProvider):
                 break
             if not chunk:
                 break
-            for ts, o, h, l, c, v in chunk:
+            for ts, o, h, low, c, v in chunk:
                 if ts in seen or ts >= end_ms:
                     continue
                 # a candle is only trustworthy once its window has fully elapsed
@@ -115,7 +116,7 @@ class CcxtProvider(DataProvider):
                 seen.add(ts)
                 out.append(
                     Bar(symbol, datetime.fromtimestamp(ts / 1000, tz=UTC),
-                        float(o), float(h), float(l), float(c), float(v), timeframe)
+                        float(o), float(h), float(low), float(c), float(v), timeframe)
                 )
             advanced = chunk[-1][0] + step_ms
             if advanced <= since:          # venue refused to page forward
@@ -139,7 +140,6 @@ class CcxtProvider(DataProvider):
                      float(t.get("bidVolume") or 0), float(t.get("askVolume") or 0))
 
     async def close(self):
-        try:
+        # 닫는 중에 터지는 것은 아무것도 바꾸지 못합니다 — 이미 끝내는 길입니다.
+        with contextlib.suppress(Exception):
             await self.ex.close()
-        except Exception:
-            pass

@@ -191,7 +191,7 @@ def test_low_conviction_is_dropped():
 
 def test_a_failed_risk_seat_shrinks_the_position_instead_of_waving_it_through():
     desk = TradingDesk(ScriptedLLM(fail_seats={"risk_verdict"}), memory=False)
-    out = run_desk(desk, make_ctx())
+    _out = run_desk(desk, make_ctx())
     decision = desk.history[-1]
     assert decision.position_scale <= 0.4
     assert "실패" in decision.risk.get("reasoning", "") or decision.risk.get("error")

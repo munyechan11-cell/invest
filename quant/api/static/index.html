@@ -27,6 +27,14 @@
   --wood:#8a6a45; --wood-dark:#6d5236; --turf:#2f6b4a; --turf-dark:#255840;
   --px:"Silkscreen","PixelKR","PixelKR2",ui-monospace,"SFMono-Regular",Menlo,monospace;
   --kr:"PixelKR","PixelKR2","Silkscreen","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+
+  /* 시세·주문 패널이 쓰는 이름들. chart.js 와 같은 어휘를 쓰되 값은 여기서
+     한 번만 정합니다 — 캔버스와 그 주변이 다른 색을 쓰면 같은 화면으로
+     보이지 않습니다. 한국 색 논리: 오르면 빨강. */
+  --sang:#ff5a52; --ha:#5b9dff;
+  --bone:#e8ecf2; --dim:#9aa4b6; --faint:#7b8494;
+  --rule:#252c3a; --edge:#38415a; --panel2:#151a25; --void:#07080c;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{background:var(--bg);color:var(--ink)}
@@ -36,15 +44,28 @@ svg,canvas{image-rendering:pixelated;shape-rendering:crispEdges}
 .px{font-family:var(--px);letter-spacing:.04em}
 
 /* ── frame ───────────────────────────────────────────────────────────── */
+/* 아래 34px 은 고정 티커 자리입니다 — 안 비우면 마지막 줄(위험 고지)이
+   영구히 가려집니다. */
 .wrap{max-width:1180px;margin:0 auto;padding:0 12px 96px}
+body{padding-bottom:34px}
 
 header.top{position:sticky;top:0;z-index:40;background:var(--bg);
   border-bottom:3px solid var(--red);padding:10px 12px 8px}
 .top-in{max-width:1180px;margin:0 auto;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+@media(max-width:640px){
+  /* 좁은 화면에서 줄바꿈하면 머리말만 일곱 줄이 됩니다. 한 줄로 두고
+     가로로 밀게 합니다 — 버튼은 전부 그대로 닿습니다. */
+  .top-in{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
+    scrollbar-width:none;-ms-overflow-style:none}
+  .top-in::-webkit-scrollbar{display:none}
+  .top-in > *{flex:0 0 auto}
+  .top-in .grow{flex:1 0 8px}
+  .brand{font-size:14px}
+}
 .brand{font-family:var(--px);color:var(--gold);font-size:17px;font-weight:700;
   text-shadow:2px 2px 0 #000;white-space:nowrap}
 .brand i{font-style:normal;color:var(--gold-dim)}
-.mode{font-family:var(--px);font-size:10px;padding:3px 8px;border:2px solid var(--red);
+.mode{font-family:var(--px);font-size:12px;padding:3px 8px;border:2px solid var(--red);
   color:var(--red);text-transform:uppercase}
 .mode.dry{border-color:var(--gold);color:var(--gold)}
 .mode.backtest{border-color:var(--muted);color:var(--muted)}
@@ -52,7 +73,7 @@ header.top{position:sticky;top:0;z-index:40;background:var(--bg);
 .tab{font-family:var(--px);font-size:11px;background:var(--plate);border:2px solid var(--line);
   border-bottom:none;padding:5px 12px;color:var(--muted)}
 .tab.on{color:var(--gold);border-color:var(--gold-dim)}
-.conn{width:9px;height:9px;background:var(--muted);flex:0 0 auto}
+.conn{width:11px;height:11px;background:var(--muted);flex:0 0 auto}
 .conn.on{background:var(--up);box-shadow:0 0 0 3px rgba(87,217,119,.18)}
 .conn.off{background:var(--red)}
 
@@ -72,12 +93,12 @@ header.top{position:sticky;top:0;z-index:40;background:var(--bg);
 .hud-l{padding:14px 16px;border-right:2px solid var(--line)}
 @media(max-width:760px){.hud-l{border-right:none;border-bottom:2px solid var(--line)}}
 .sym{font-family:var(--px);font-size:13px;color:var(--muted);letter-spacing:.1em}
-.big{font-family:var(--px);font-size:34px;color:var(--white);text-shadow:2px 2px 0 #000;
-  margin:4px 0 2px;word-break:break-all}
-@media(max-width:520px){.big{font-size:26px}}
+.big{overflow-wrap:anywhere;font-family:var(--px);font-size:34px;color:var(--white);text-shadow:2px 2px 0 #000;
+  margin:4px 0 2px;word-break:keep-all;overflow-wrap:anywhere}
+@media(max-width:520px){.big{overflow-wrap:anywhere;font-size:26px}}
 .chg{font-family:var(--px);font-size:15px}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:10px;margin-top:14px}
-.kpi .k{font-family:var(--px);font-size:9px;color:var(--muted);letter-spacing:.08em}
+.kpi .k{font-family:var(--px);font-size:11px;color:var(--muted);letter-spacing:.08em}
 .kpi .v{font-family:var(--px);font-size:15px;margin-top:2px}
 .hud-r{padding:10px 12px;min-height:150px}
 #equity{width:100%;height:150px;display:block}
@@ -95,27 +116,29 @@ tr:last-child td{border-bottom:0}
 
 /* ── the floor ───────────────────────────────────────────────────────── */
 .room{position:relative;padding:30px 10px 12px;overflow:hidden}
-.room.wood{background-color:var(--wood); background:var(--wood)
-  repeating-linear-gradient(90deg,var(--wood) 0 46px,var(--wood-dark) 46px 48px),
-  repeating-linear-gradient(0deg,rgba(0,0,0,.10) 0 22px,rgba(0,0,0,0) 22px 24px)}
-.room.turf{background-color:var(--turf); background:var(--turf)
-  repeating-linear-gradient(90deg,var(--turf) 0 30px,var(--turf-dark) 30px 32px),
-  repeating-linear-gradient(0deg,rgba(0,0,0,.10) 0 30px,rgba(0,0,0,0) 30px 32px)}
+.room.wood{background-image:
+  repeating-linear-gradient(0deg,rgba(0,0,0,.10) 0 22px,rgba(0,0,0,0) 22px 24px),
+  repeating-linear-gradient(90deg,var(--wood) 0 46px,var(--wood-dark) 46px 48px);
+  background-color:var(--wood)}
+.room.turf{background-image:
+  repeating-linear-gradient(0deg,rgba(0,0,0,.10) 0 30px,rgba(0,0,0,0) 30px 32px),
+  repeating-linear-gradient(90deg,var(--turf) 0 30px,var(--turf-dark) 30px 32px);
+  background-color:var(--turf)}
 .room .plate{position:absolute;top:0;left:0;margin:0}
-.round{position:absolute;top:0;right:0;font-family:var(--px);font-size:10px;
+.round{position:absolute;top:0;right:0;font-family:var(--px);font-size:12px;
   background:var(--plate);border:2px solid var(--line);border-top:none;border-right:none;
   padding:4px 10px;color:var(--gold)}
 
 .seats{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;align-items:flex-end}
 .seat{width:132px;display:flex;flex-direction:column;align-items:center;position:relative;
-  padding-top:84px}
-@media(max-width:520px){.seat{width:104px;padding-top:88px}}
+  padding-top:104px}
+@media(max-width:520px){.seat{width:104px;padding-top:104px}}
 .seat .seatname{font-family:var(--px);font-size:11px;color:#1a1206;
   background:rgba(255,252,244,.92);border:1px solid #2a1d0e;padding:2px 6px;
   border-radius:2px}
-.seat .role{font-family:var(--px);font-size:9px;background:#efe6d2;border:2px solid #2a1d0e;
+.seat .role{font-family:var(--px);font-size:11px;background:#efe6d2;border:2px solid #2a1d0e;
   color:#2a1d0e;padding:1px 5px;margin-top:3px;white-space:nowrap}
-.seat.idle{opacity:.55;filter:grayscale(.8)}
+.seat.idle{opacity:.82;filter:grayscale(.35)}
 .seat.active .avatar{animation:bob .55s steps(2) infinite}
 @keyframes bob{0%{transform:translateY(0)}50%{transform:translateY(-3px)}100%{transform:translateY(0)}}
 .avatar{width:56px;height:64px}
@@ -123,14 +146,42 @@ tr:last-child td{border-bottom:0}
 
 /* speech bubble */
 .bubble{position:absolute;bottom:calc(100% - 80px);left:50%;transform:translateX(-50%);
-  width:186px;background:#fdfbf3;border:2px solid #2a1d0e;color:#171310;
-  font-size:11px;line-height:1.45;padding:6px 8px;z-index:5;
+  width:186px;max-width:min(186px,88vw);background:#fdfbf3;border:2px solid #2a1d0e;color:#171310;
+  font-size:12px;line-height:1.5;padding:6px 8px;z-index:5;
+  word-break:keep-all;overflow-wrap:anywhere;
   box-shadow:3px 3px 0 rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .12s}
 .seat.talking .bubble{opacity:1}
 .bubble:after{content:"";position:absolute;top:100%;left:50%;margin-left:-5px;
   width:0;height:0;border:5px solid transparent;border-top-color:#2a1d0e}
-.bubble b{display:block;font-family:var(--px);font-size:9px;margin-bottom:3px}
+.bubble b{display:block;font-family:var(--px);font-size:11px;margin-bottom:3px}
 .bubble.bull b{color:#0a7a3c} .bubble.bear b{color:#a11c17} .bubble.neutral b{color:#5a5a5a}
+
+/* 대사판 — 릴스의 RPG 텍스트박스.
+   말풍선은 예쁘지만 한 사람 머리 위에 11px 로 잠깐 떴다 사라집니다. 방금
+   무슨 말이 오갔는지 읽으려면 그 순간을 노려보고 있어야 한다는 뜻이라,
+   실제로는 아무도 못 읽습니다. 그래서 방마다 아래에 판을 하나 답니다 —
+   불투명한 바닥에, 큰 글씨로, 다음 사람이 말하기 전까지 남아 있습니다. */
+.saybox{margin-top:12px;background:#0A0D17;border:2px solid #2A1D0E;
+  box-shadow:inset 0 0 0 2px rgba(255,255,255,.05);padding:9px 11px;
+  min-height:62px;position:relative}
+.room.turf .saybox{border-color:#123526}
+.saybox .who{display:block;font-family:var(--px);font-size:12px;letter-spacing:.5px;
+  color:var(--gold);margin-bottom:4px}
+.saybox .line{margin:0;font-size:13px;line-height:1.62;color:#F2EFE6;
+  word-break:keep-all;overflow-wrap:anywhere}
+.saybox.bull .who{color:#5FE39A} .saybox.bear .who{color:#FF8A92}
+.saybox.idle .line{color:var(--muted)}
+.saybox .line:after{content:"";display:inline-block;width:7px;height:13px;
+  margin-left:4px;background:var(--gold);vertical-align:-2px;
+  animation:blink .9s steps(2) infinite}
+.saybox.idle .line:after{display:none}
+@keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+@media(prefers-reduced-motion:reduce){
+  /* 움직임을 줄여 달라고 한 사람에게는 전부 멈춥니다 — 깜빡임 하나만
+     막아 두면 정작 화면을 흔드는 두 가지가 그대로 남습니다. */
+  .saybox .line:after,.tape-in,.seat.active .avatar{animation:none}
+  *{scroll-behavior:auto!important}
+}
 
 /* debate room */
 .duel{display:flex;align-items:flex-end;justify-content:center;gap:18px;flex-wrap:wrap}
@@ -142,10 +193,10 @@ tr:last-child td{border-bottom:0}
   display:flex;gap:14px;align-items:center;flex-wrap:wrap}
 .verdict.hidden{display:none}
 .verdict .act{font-family:var(--px);font-size:22px;padding:6px 14px;border:3px solid currentColor}
-.verdict .meta{font-family:var(--px);font-size:11px;color:var(--muted);line-height:1.9}
+.verdict .meta{font-family:var(--px);font-size:13px;color:var(--dim);line-height:1.9}
 .verdict .why{flex:1;min-width:220px;font-size:12px;color:var(--ink)}
 .verdict .why em{display:block;color:var(--gold);font-style:normal;font-family:var(--px);
-  font-size:9px;margin-bottom:3px}
+  font-size:11px;margin-bottom:3px}
 
 /* flow bars */
 .flowrow{display:grid;grid-template-columns:96px 1fr;gap:10px;align-items:center;
@@ -155,10 +206,10 @@ tr:last-child td{border-bottom:0}
 .bars{display:flex;gap:3px;align-items:center;height:22px}
 .bars .b{flex:1;height:100%;position:relative;background:#12161f;border:1px solid var(--line)}
 .bars .b i{position:absolute;left:0;right:0;bottom:0;display:block}
-.bars .lbl{font-family:var(--px);font-size:8px;color:var(--muted);width:30px;text-align:right}
+.bars .lbl{font-family:var(--px);font-size:11px;color:var(--muted);width:42px;text-align:right}
 
 /* event feed */
-.feed{font-family:var(--px);font-size:10px;max-height:250px;overflow:auto}
+.feed{font-family:var(--px);font-size:12px;max-height:250px;overflow:auto}
 .feed div{display:flex;gap:8px;padding:3px 0;border-bottom:1px solid var(--line)}
 .feed .t{color:var(--muted);flex:0 0 54px}
 .feed .ty{flex:0 0 118px}
@@ -176,7 +227,7 @@ tr:last-child td{border-bottom:0}
   border:2px solid var(--gold-dim);
   color:var(--gold);padding:5px 10px;cursor:pointer}
 .btn:hover{background:#1c2231}
-.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn:disabled{opacity:.68;cursor:not-allowed;filter:saturate(.6)}
 .btn.buy{border-color:var(--up);color:var(--up)}
 .btn.sell{border-color:var(--down);color:var(--down)}
 .btn.warn{border-color:var(--red);color:#ff8a83}   /* 되돌릴 수 없는 버튼 —
@@ -187,24 +238,28 @@ select,#mSymbol{min-height:44px}
 .manual{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;
   align-items:end}
 .fld{display:flex;flex-direction:column;gap:4px;min-width:0}
-.fld label{font-family:var(--px);font-size:9px;color:var(--muted);letter-spacing:.05em}
+.fld label{font-family:var(--px);font-size:11px;color:var(--muted);letter-spacing:.05em}
 .fld input,.fld select{background:#0a0d14;border:2px solid var(--line);color:var(--ink);
   font-family:var(--px);font-size:12px;padding:6px 8px;width:100%}
-.fld input:focus,.fld select:focus{outline:none;border-color:var(--gold-dim)}
+.fld input:focus,.fld select:focus{border-color:var(--gold)}
+/* 키보드로 오는 사람에게는 어디에 있는지가 유일한 단서입니다. 마우스로 누를
+   때는 안 뜨고(:focus-visible), 탭으로 올 때만 뜹니다. */
+:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .pins{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
-.pin{font-family:var(--px);font-size:9px;border:2px solid var(--gold-dim);color:var(--gold);
+.pin{font-family:var(--px);font-size:11px;border:2px solid var(--gold-dim);color:var(--gold);
   padding:3px 7px;display:flex;gap:6px;align-items:center}
-.pin b{cursor:pointer;color:var(--muted)}
+.pin button{cursor:pointer;color:var(--muted);background:none;border:0;
+  font:inherit;padding:0 2px;min-height:24px}
 .gauge{margin-top:4px}
-.gauge .lab{display:flex;justify-content:space-between;font-family:var(--px);font-size:9px;
+.gauge .lab{display:flex;justify-content:space-between;font-family:var(--px);font-size:11px;
   color:var(--muted)}
 .gauge .track{height:8px;background:#0a0d14;border:1px solid var(--line);margin-top:3px}
 .gauge .track i{display:block;height:100%;background:var(--up)}
 .gauge.hot .track i{background:var(--gold)}
 .gauge.over .track i{background:var(--down)}
-.msg{font-family:var(--px);font-size:10px;margin-top:10px;padding:6px 8px;
-  border-left:3px solid var(--gold-dim);color:var(--muted);word-break:break-all}
+.msg{font-family:var(--px);font-size:12px;margin-top:10px;padding:6px 8px;
+  border-left:3px solid var(--gold-dim);color:var(--muted);word-break:keep-all;overflow-wrap:anywhere}
 .msg.err{border-color:var(--down);color:var(--down)}
 .msg.ok{border-color:var(--up);color:var(--up)}
 
@@ -224,8 +279,8 @@ select,#mSymbol{min-height:44px}
 .venue.on{border-color:var(--gold-dim)}
 .venue .head{display:flex;align-items:center;gap:8px;cursor:pointer}
 .venue .head span{font-family:var(--px);font-size:11px}
-.venue .status{margin-left:auto;font-family:var(--px);font-size:9px}
-.venue .note{font-size:10px;color:var(--muted);margin:6px 0 0;line-height:1.6}
+.venue .status{margin-left:auto;font-family:var(--px);font-size:11px}
+.venue .note{font-size:12px;color:var(--muted);margin:6px 0 0;line-height:1.6}
 .venue .fields{display:none;margin-top:10px;display:grid;gap:8px}
 .venue:not(.on) .fields{display:none}
 .venue.on .fields{display:grid}
@@ -234,21 +289,22 @@ select,#mSymbol{min-height:44px}
 .quiz{display:grid;gap:14px}
 .q{border:2px solid var(--line);padding:10px}
 .q .qt{font-size:12px;line-height:1.6;margin-bottom:8px}
-.q .qh{font-size:10px;color:var(--muted);margin-bottom:8px;line-height:1.5}
+.q .qh{font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.5}
 .q .opts{display:grid;gap:5px}
 .opt{display:flex;gap:8px;align-items:flex-start;padding:6px 8px;border:2px solid var(--line);
+  width:100%;text-align:left;font:inherit;color:inherit;
   cursor:pointer;font-size:11px;line-height:1.5;background:#0a0d14}
 .opt:hover{border-color:var(--gold-dim)}
 .opt.on{border-color:var(--gold);background:#171b26}
-.opt i{font-family:var(--px);font-size:10px;color:var(--gold);font-style:normal;flex:0 0 auto}
-.qprog{font-family:var(--px);font-size:10px;color:var(--muted)}
+.opt i{font-family:var(--px);font-size:12px;color:var(--gold);font-style:normal;flex:0 0 auto}
+.qprog{font-family:var(--px);font-size:12px;color:var(--muted)}
 
 .type{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
 .typebadge{font-family:var(--px);font-size:20px;color:var(--gold);border:3px solid var(--gold-dim);
   padding:10px 16px;text-align:center;line-height:1.3}
-.typebadge small{display:block;font-size:9px;color:var(--muted);margin-top:4px}
+.typebadge small{display:block;font-size:11px;color:var(--muted);margin-top:4px}
 .axes{flex:1;min-width:260px;display:grid;gap:9px}
-.ax .axl{display:flex;justify-content:space-between;font-family:var(--px);font-size:9px;
+.ax .axl{display:flex;justify-content:space-between;font-family:var(--px);font-size:11px;
   color:var(--muted)}
 .ax .axl b{color:var(--gold);font-weight:400}
 .ax .bar{position:relative;height:10px;background:#0a0d14;border:1px solid var(--line);
@@ -259,10 +315,10 @@ select,#mSymbol{min-height:44px}
 .derived{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;
   margin-top:12px}
 .derived div{border:2px solid var(--line);padding:6px 8px}
-.derived .k{font-family:var(--px);font-size:9px;color:var(--muted)}
+.derived .k{font-family:var(--px);font-size:11px;color:var(--muted)}
 .derived .v{font-family:var(--px);font-size:13px;margin-top:2px}
-.demo-tag{font-family:var(--px);font-size:9px;color:#000;background:var(--gold);padding:2px 6px}
-.empty{font-family:var(--px);font-size:10px;color:var(--muted);text-align:center;padding:18px}
+.demo-tag{font-family:var(--px);font-size:11px;color:#000;background:var(--gold);padding:2px 6px}
+.empty{font-family:var(--px);font-size:12px;color:var(--muted);text-align:center;padding:18px}
 footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-size:11px}
 
 /* ── 로그인 게이트 ─────────────────────────────────────────────────── */
@@ -277,18 +333,19 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
   gap:14px;align-items:start}
 /* 오른쪽은 따라옵니다 — 왼쪽 심의를 읽는 동안 시세가 화면 밖으로 나가면
    "보면서 산다" 는 흐름이 끊깁니다. */
-.deck-r{position:sticky;top:12px}
-.tabs{display:none}
+.deck-r{position:sticky;top:calc(var(--header-h,64px) + 12px)}
+.viewtabs{display:none}
 @media(max-width:1000px){
   .deck{grid-template-columns:1fr}
   .deck-r{position:static}
   /* 좁은 화면에서 세로로 쌓으면 시세가 심의 한참 아래 깔립니다. 탭으로 가릅니다. */
-  .tabs{display:grid;grid-template-columns:1fr 1fr;position:sticky;top:0;z-index:30;
+  .viewtabs{display:grid;grid-template-columns:1fr 1fr;position:sticky;
+    top:var(--header-h,64px);z-index:44;
     border:1px solid var(--edge);border-bottom:0;background:var(--panel)}
-  .tabs button{border:0;border-right:1px solid var(--rule);min-height:46px;
-    font-family:var(--px);font-size:9px;background:transparent;color:var(--dim);cursor:pointer}
-  .tabs button:last-child{border-right:0}
-  .tabs button[aria-selected="true"]{color:var(--gold);background:rgba(255,198,74,.09)}
+  .viewtabs button{border:0;border-right:1px solid var(--rule);min-height:46px;
+    font-family:var(--px);font-size:11px;background:transparent;color:var(--dim);cursor:pointer}
+  .viewtabs button:last-child{border-right:0}
+  .viewtabs button[aria-selected="true"]{color:var(--gold);background:rgba(255,198,74,.09)}
   body[data-view="chart"] .deck-l,
   body[data-view="desk"]  .deck-r{display:none}
 }
@@ -304,19 +361,47 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
 #chartBox canvas{width:100%;height:100%;display:block;touch-action:pan-y}
 .mypos{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:8px;
   padding:10px 14px;border-top:1px solid var(--rule);font-size:12px}
-.mypos .k{color:var(--dim);font-size:10px;letter-spacing:.12em}
+.mypos .k{color:var(--dim);font-size:12px;letter-spacing:.12em}
 .mypos .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:15px;
   font-weight:600}
 .mypos .v.up{color:var(--sang)}.mypos .v.down{color:var(--ha)}
 .ticket{padding:12px 14px;border-top:1px solid var(--rule);display:grid;gap:9px}
 .ticket .row{display:grid;grid-template-columns:1fr 1fr;gap:9px}
-.ticket label{font-size:10px;color:var(--dim);letter-spacing:.1em;display:block;
+.ticket label{font-size:12px;color:var(--dim);letter-spacing:.1em;display:block;
   margin-bottom:4px}
 .ticket input{width:100%;background:var(--panel2);color:var(--bone);
   border:1px solid var(--rule);padding:9px 10px;font-family:var(--mono);min-height:44px}
 .ticket .hint{font-size:11px;color:var(--faint);line-height:1.5}
 .ticket .go{display:grid;grid-template-columns:1fr 1fr;gap:9px}
-.ticket .go button{min-height:46px;font-family:var(--px);font-size:10px}
+.ticket .go button{min-height:46px;font-family:var(--px);font-size:12px}
+
+.runbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.runbar select{flex:1;min-width:180px;min-height:44px;background:var(--plate);
+  color:var(--ink);border:2px solid var(--line);padding:8px 10px;font-size:13px}
+.runbar .btn{flex:0 0 auto}
+
+/* ── 첫 방문 안내 ─────────────────────────────────────────────────────
+   처음 열면 화면 절반이 비어 있고 무엇부터 눌러야 하는지 알 수 없습니다.
+   짚어가며 한 번만 보여줍니다. 건너뛸 수 있고, 다시 볼 수도 있습니다. */
+#tour{position:fixed;inset:0;z-index:120;display:none}
+body.touring #tour{display:block}
+/* 링의 box-shadow 가 이미 화면 전체를 덮는 장막입니다. 여기에 반투명 판을 또
+   깔면 두 겹이 되어 바깥은 1.1:1 로 캄캄해지고, 강조한 버튼 위에도 얹혀서
+   정작 가리킨 것이 제일 흐려집니다. 이 판은 색 없이 클릭만 막습니다. */
+#tourVeil{position:absolute;inset:0}
+#tourRing{position:absolute;border:3px solid var(--gold);border-radius:3px;
+  box-shadow:0 0 0 9999px rgba(4,6,12,.72),0 0 22px rgba(240,192,64,.55);
+  transition:all .25s ease;pointer-events:none}
+#tourBox{position:absolute;max-width:min(420px,92vw);background:var(--plate);
+  border:2px solid var(--gold);padding:16px 18px;transition:all .25s ease}
+#tourBox h4{margin:0 0 8px;font-family:var(--px);font-size:11px;color:var(--gold)}
+#tourBox p{margin:0 0 14px;font-size:14px;line-height:1.7;color:var(--ink)}
+#tourBox .row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+#tourBox .tourstep{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--muted)}
+@media(max-width:760px){
+  #tourBox{left:12px!important;right:12px!important;max-width:none;
+    top:auto!important;bottom:16px!important}
+}
 
 .app-only{display:none}
 body.authed .app-only{display:block}
@@ -339,7 +424,7 @@ body.anon .gate{display:flex}
 form.auth{display:grid;gap:12px;padding:14px 12px 16px}
 form.auth[hidden]{display:none}
 form.auth .fld input{min-height:44px}
-form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
+form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
 /* Fingers, not mice: every control a new screen adds is at least 44px tall. */
 .btn.tap{min-height:44px;padding:10px 14px;font-size:11px}
 
@@ -348,15 +433,15 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
    휴대폰에서는 머리글이 두 줄로 접혀 더 두꺼워집니다. */
 #account{scroll-margin-top:150px}
 .acct{display:grid;gap:14px}
-.acct .who{font-family:var(--px);font-size:12px;color:var(--gold);word-break:break-all}
-.acct .who small{display:block;font-size:9px;color:var(--muted);margin-top:4px}
-.acct h4{font-family:var(--px);font-size:10px;color:var(--muted);letter-spacing:.06em;
+.acct .who{font-family:var(--px);font-size:12px;color:var(--gold);word-break:keep-all;overflow-wrap:anywhere}
+.acct .who small{display:block;font-size:11px;color:var(--muted);margin-top:4px}
+.acct h4{font-family:var(--px);font-size:12px;color:var(--muted);letter-spacing:.06em;
   font-weight:400}
 .links{display:grid;gap:6px;margin-top:8px}
 .link{display:flex;gap:10px;align-items:center;flex-wrap:wrap;
   border:2px solid var(--line);padding:8px 10px}
 .link .nm{font-family:var(--px);font-size:11px;color:var(--ink)}
-.link .hint{font-family:var(--px);font-size:9px;color:var(--muted);word-break:break-all}
+.link .hint{font-family:var(--px);font-size:11px;color:var(--muted);word-break:keep-all;overflow-wrap:anywhere}
 .link .btn{margin-left:auto}
 .pwform{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;
   align-items:end;margin-top:8px}
@@ -364,13 +449,13 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
 
 /* ── 설정 진행 상태 ────────────────────────────────────────────────── */
 .steps{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
-.steps span{font-family:var(--px);font-size:9px;border:2px solid var(--line);
+.steps span{font-family:var(--px);font-size:11px;border:2px solid var(--line);
   padding:5px 8px;color:var(--muted)}
 .steps span.done{border-color:var(--up);color:var(--up)}
 .steps span.now{border-color:var(--gold);color:var(--gold)}
 .steps span.skipped{border-color:var(--gold-dim);color:var(--gold-dim)}
 .step .head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.step .head .mark{font-family:var(--px);font-size:9px;color:var(--muted);margin-left:auto}
+.step .head .mark{font-family:var(--px);font-size:11px;color:var(--muted);margin-left:auto}
 .step .head .mark.done{color:var(--up)}
 .venue .head{min-height:44px}
 </style>
@@ -426,24 +511,38 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
 
 <header class="top app-only">
   <div class="top-in">
-    <span class="conn" id="conn"></span>
+    <span class="conn" id="conn" role="img" aria-label="연결 상태 확인 중"></span>
     <span class="brand"><i>◆</i> QUANT TRADING FLOOR <i>◆</i></span>
     <span class="mode backtest px" id="mode">OFFLINE</span>
     <span class="grow"></span>
     <button class="btn" id="setupBtn">⚙ 설정</button>
     <button class="btn" id="demoBtn">▶ 데모 재생</button>
-    <button class="btn" id="meBtn">◉ 마이페이지</button>
+    <button class="btn" id="meBtn" aria-expanded="false">◉ 마이페이지</button>
+    <button class="btn" id="tourBtn" title="첫 화면 안내를 다시 봅니다">? 안내</button>
     <span class="tab on px" id="strategy">—</span>
   </div>
 </header>
 
 <div class="wrap app-only">
-  <div class="tabs" role="tablist">
+  <div class="viewtabs" role="tablist">
     <button id="tabDesk" role="tab" aria-selected="true">DESK</button>
     <button id="tabChart" role="tab" aria-selected="false">CHART</button>
   </div>
   <div class="deck">
   <div class="deck-l">
+
+  <!-- 봇 -->
+  <section class="panel" id="runner">
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 자동매매 <span class="d" aria-hidden="true">◆</span></span>
+    <div class="body">
+      <div class="runbar">
+        <select id="strategyPick" aria-label="전략"></select>
+        <button class="btn buy" id="runStart">▶ 시작</button>
+        <button class="btn" id="runStop" hidden>■ 정지</button>
+      </div>
+      <div class="msg" id="runMsg"></div>
+    </div>
+  </section>
 
   <!-- HUD -->
   <section class="panel">
@@ -471,6 +570,7 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
       <span class="plate"><span class="d" aria-hidden="true">◆</span> 애널리스트 데스크 <span class="d" aria-hidden="true">◆</span></span>
       <span class="round px" id="deskSubject">대기 중</span>
       <div class="seats" id="analystSeats"></div>
+      <div class="saybox idle" id="say-analyst"><b class="who">대기 중</b><p class="line">심의가 시작되면 여기에 발언이 그대로 남습니다.</p></div>
     </div>
   </section>
 
@@ -480,6 +580,7 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
       <span class="plate"><span class="d" aria-hidden="true">◆</span> 토론장 <span class="d" aria-hidden="true">◆</span></span>
       <span class="round px" id="roundTag">ROUND —</span>
       <div class="duel" id="debateSeats"></div>
+      <div class="saybox idle" id="say-debate"><b class="who">대기 중</b><p class="line">심의가 시작되면 여기에 발언이 그대로 남습니다.</p></div>
     </div>
   </section>
 
@@ -489,6 +590,7 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
       <span class="plate"><span class="d" aria-hidden="true">◆</span> 리스크 위원회 <span class="d" aria-hidden="true">◆</span></span>
       <span class="round px" id="riskTag">SCALE —</span>
       <div class="duel" id="riskSeats"></div>
+      <div class="saybox idle" id="say-risk"><b class="who">대기 중</b><p class="line">심의가 시작되면 여기에 발언이 그대로 남습니다.</p></div>
     </div>
   </section>
 
@@ -497,13 +599,30 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
     <div class="room wood">
       <span class="plate"><span class="d" aria-hidden="true">◆</span> 결정 데스크 <span class="d" aria-hidden="true">◆</span></span>
       <div class="duel" id="decisionSeats"></div>
+      <div class="saybox idle" id="say-decision"><b class="who">대기 중</b><p class="line">심의가 시작되면 여기에 발언이 그대로 남습니다.</p></div>
     </div>
     <div class="body">
       <div class="verdict hidden" id="verdict"></div>
     </div>
   </section>
 
-  <!-- 마이페이지 · 계정 -->
+  <!-- 마이페이지 — 버튼을 눌렀을 때만 펼칩니다. 왼쪽에 늘 세워 두면
+       심의를 읽으러 온 사람이 설정 화면을 스크롤로 통과해야 합니다. -->
+  <div id="mypage" hidden>
+  <section class="panel" id="planPanel">
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 요금제 <span class="d" aria-hidden="true">◆</span></span>
+    <div class="body">
+      <div id="planNow" class="dim">확인 중…</div>
+      <div class="pwform" style="margin-top:12px">
+        <div><label for="refCode">추천 코드</label>
+          <input id="refCode" type="text" autocomplete="off" placeholder="코드를 입력하세요"></div>
+        <div style="align-self:end"><button class="btn tap" id="refApply">적용</button></div>
+      </div>
+      <div class="msg" id="refMsg">AI 데스크 비용은 서비스가 부담합니다. 무료 요금제는 하루
+        심의 횟수에 상한이 있고, 상한에 닿아도 규칙 기반 전략은 그대로 돕니다.</div>
+    </div>
+  </section>
+
   <section class="panel" id="account">
     <span class="plate"><span class="d" aria-hidden="true">◆</span> 마이페이지 · 계정 <span class="d" aria-hidden="true">◆</span></span>
     <div class="body">
@@ -565,18 +684,20 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
     </div>
   </section>
 
+  </div><!-- /mypage -->
+
   <!-- 수동 개입 -->
   <section class="panel">
     <span class="plate"><span class="d" aria-hidden="true">◆</span> 수동 매매 · 자동매매 중에도 개입 <span class="d" aria-hidden="true">◆</span></span>
     <div class="body">
       <div class="manual">
-        <div class="fld"><label>종목</label>
+        <div class="fld"><label for="mSymbol">종목</label>
           <select id="mSymbol"><option value="">— 실행 중인 봇 없음 —</option></select></div>
-        <div class="fld"><label>수량 (비우면 금액 사용)</label>
+        <div class="fld"><label for="mQty">수량 (비우면 금액 사용)</label>
           <input id="mQty" type="number" step="any" placeholder="주"></div>
-        <div class="fld"><label>금액</label>
+        <div class="fld"><label for="mNotional">금액</label>
           <input id="mNotional" type="number" step="any" placeholder="예: 500000"></div>
-        <div class="fld"><label>지정가 (비우면 시장가)</label>
+        <div class="fld"><label for="mLimit">지정가 (비우면 시장가)</label>
           <input id="mLimit" type="number" step="any" placeholder="시장가"></div>
       </div>
       <div class="actions">
@@ -596,11 +717,6 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
     </div>
   </section>
 
-  <!-- flow -->
-  <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 수급 · 외국인 / 기관 / 개인 <span class="d" aria-hidden="true">◆</span></span>
-    <div class="body" id="flowBody"><div class="empty">수급 데이터 없음 — config 의 flow.provider 를 설정하세요</div></div>
-  </section>
 
   <!-- feed -->
   <section class="panel">
@@ -644,6 +760,12 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
           매수한 종목은 전략이 되팔지 않도록 고정됩니다.</div>
       </div>
     </section>
+
+  <!-- flow -->
+  <section class="panel">
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 수급 · 외국인 / 기관 / 개인 <span class="d" aria-hidden="true">◆</span></span>
+    <div class="body" id="flowBody"><div class="empty">수급 데이터 없음 — config 의 flow.provider 를 설정하세요</div></div>
+  </section>
   </div>
   </div><!-- /deck -->
 </div>
@@ -682,13 +804,13 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
            하나만 걸려도 <b>신규 진입</b>이 멈추고, <b>청산은 절대 막지 않습니다.</b>
            0 은 "제한 없음"입니다.</p>
         <div class="manual">
-          <div class="fld"><label>하루 거래대금 한도</label>
+          <div class="fld"><label for="lNotional">하루 거래대금 한도</label>
             <input id="lNotional" type="number" step="any" placeholder="예: 5000000"></div>
-          <div class="fld"><label>하루 주문 건수</label>
+          <div class="fld"><label for="lOrders">하루 주문 건수</label>
             <input id="lOrders" type="number" step="1" placeholder="예: 20"></div>
-          <div class="fld"><label>하루 손실 한도 (금액)</label>
+          <div class="fld"><label for="lLoss">하루 손실 한도 (금액)</label>
             <input id="lLoss" type="number" step="any" placeholder="예: 200000"></div>
-          <div class="fld"><label>하루 손실 한도 (자산 %)</label>
+          <div class="fld"><label for="lLossPct">하루 손실 한도 (자산 %)</label>
             <input id="lLossPct" type="number" step="any" placeholder="예: 2"></div>
         </div>
       </div>
@@ -721,6 +843,21 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
         <span style="flex:1"></span>
       </div>
       <div class="msg" id="setupMsg"></div>
+    </div>
+  </div>
+</div>
+
+
+<div id="tour" role="dialog" aria-modal="true" aria-labelledby="tourTitle">
+  <div id="tourVeil"></div>
+  <div id="tourRing"></div>
+  <div id="tourBox">
+    <h4 id="tourTitle">GUIDE</h4>
+    <p id="tourText"></p>
+    <div class="row">
+      <button class="btn tap" id="tourNext">다음</button>
+      <button class="btn" id="tourSkip">건너뛰기</button>
+      <span class="tourstep" id="tourStep"></span>
     </div>
   </div>
 </div>
@@ -820,6 +957,32 @@ $("#decisionSeats").innerHTML = DECIDERS.map(seatHtml).join("");
 
 const ALL_KEYS = [...ANALYSTS, ...DEBATERS, ...RISKERS, ...DECIDERS].map(s => s.key);
 
+/* 어느 자리가 어느 방에 앉아 있는가 — 대사판을 채우려면 필요합니다. */
+const ROOM_OF = {};
+const NAME_OF = {};
+[["analyst", ANALYSTS], ["debate", DEBATERS], ["risk", RISKERS],
+ ["decision", DECIDERS]].forEach(([room, roster]) => {
+  roster.forEach(s => { ROOM_OF[s.key] = room; NAME_OF[s.key] = `${s.name} · ${s.role}`; });
+});
+
+/* 말풍선과 같은 문장을, 사라지지 않는 자리에 한 번 더 씁니다. */
+function plate(key, text, tone) {
+  const box = document.getElementById("say-" + ROOM_OF[key]);
+  if (!box) return;
+  box.className = "saybox " + (tone || "neutral");
+  box.querySelector(".who").textContent = NAME_OF[key] || key;
+  box.querySelector(".line").textContent = text || "";
+}
+
+/* 말풍선 한 줄. 첫 문장까지만, 그것도 길면 자릅니다 — 방이 잘라 버리는
+   것보다 우리가 줄이는 편이 낫습니다. 전문은 아래 대사판에 그대로 남습니다. */
+function oneLine(text) {
+  const t = (text || "").trim();
+  const end = t.search(/[.!?。]\s|[.!?。]$/);
+  const first = end > 0 ? t.slice(0, end + 1) : t;
+  return first.length > 64 ? first.slice(0, 63).trimEnd() + "…" : first;
+}
+
 function say(key, text, tone) {
   const seat = document.getElementById("seat-" + key);
   const bub = document.getElementById("bub-" + key);
@@ -832,7 +995,8 @@ function say(key, text, tone) {
     if (other && k !== key) other.classList.remove("talking");
   });
   bub.className = "bubble " + (tone || "neutral");
-  bub.querySelector("span").textContent = text || "";
+  bub.querySelector("span").textContent = oneLine(text);
+  plate(key, text, tone);
   seat.classList.remove("idle");
   seat.classList.add("active", "talking");
 }
@@ -841,6 +1005,14 @@ function hush(key) {
   if (seat) seat.classList.remove("talking");
 }
 function resetFloor() {
+  ["analyst", "debate", "risk", "decision"].forEach(room => {
+    const box = document.getElementById("say-" + room);
+    if (!box) return;
+    box.className = "saybox idle";
+    box.querySelector(".who").textContent = "대기 중";
+    box.querySelector(".line").textContent =
+      "심의가 시작되면 여기에 발언이 그대로 남습니다.";
+  });
   ALL_KEYS.forEach(k => {
     const s = document.getElementById("seat-" + k);
     if (s) { s.classList.add("idle"); s.classList.remove("active", "talking"); }
@@ -1050,7 +1222,7 @@ function renderFlow(data) {
     ];
     const scale = Math.max(...trio.map(t => Math.abs(t[1])), 1);
     return `<div class="flowrow">
-      <div class="flowsym">${esc(ticker)}<br><span class="dim" style="font-size:8px">${esc(s.divergence)}</span></div>
+      <div class="flowsym">${esc(ticker)}<br><span class="dim" style="font-size:11px">${esc(s.divergence)}</span></div>
       <div class="bars">
         ${trio.map(([n, q]) => {
           const h = Math.max(Math.abs(q) / scale * 100, 3);
@@ -1104,8 +1276,11 @@ function pushEvent(e) {
 async function refresh() {
   try {
     const h = await api("/api/health");
-    $("#conn").className = "conn " + (h.trader_running ? "on" : "off");
-  } catch { $("#conn").className = "conn off"; }
+    setConn(h.trader_running);
+    // 버튼이 실제 상태를 따라가야 합니다 — 봇이 스스로 멈췄는데 화면에
+    // "정지" 만 서 있으면 사용자는 돌고 있다고 믿습니다.
+    if (typeof runnerState === "function") runnerState(!!h.trader_running);
+  } catch { setConn(false); }
 
   try {
     const s = await api("/api/status");
@@ -1152,7 +1327,7 @@ function connect() {
   // But a *signed-out* dashboard must not keep knocking, so the retry asks first.
   ws.onclose = () => {
     clearInterval(ping);
-    $("#conn").className = "conn off";
+    setConn(false);
     if (me) setTimeout(() => { if (me && socket === ws) connect(); }, 4000);
   };
   ws.onopen = () => {
@@ -1312,7 +1487,8 @@ async function refreshManual() {
     ? pins.map(([key, reason]) => {
         const ticker = key.split(":").pop();
         return `<span class="pin">📌 ${esc(ticker)} · ${esc(reason)}
-          <b data-unpin="${esc(ticker)}" title="전략에 반환">✕</b></span>`;
+          <button type="button" data-unpin="${esc(ticker)}"
+            aria-label="${esc(ticker)} 고정 해제">✕</button></span>`;
       }).join("")
     : "";
   $("#mPins").querySelectorAll("[data-unpin]").forEach(el => {
@@ -1364,8 +1540,8 @@ function renderQuiz() {
       <div class="qt">${i + 1}. ${esc(q.text).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")}</div>
       ${q.hint ? `<div class="qh">${esc(q.hint)}</div>` : ""}
       <div class="opts">
-        ${q.options.map(o => `<div class="opt" data-opt="${esc(o.id)}">
-          <i>${esc(o.id.toUpperCase())}</i><span>${esc(o.text)}</span></div>`).join("")}
+        ${q.options.map(o => `<button type="button" class="opt" data-opt="${esc(o.id)}">
+          <i>${esc(o.id.toUpperCase())}</i><span>${esc(o.text)}</span></button>`).join("")}
       </div></div>`).join("");
 
   $("#quiz").querySelectorAll(".opt").forEach(el => {
@@ -1534,8 +1710,10 @@ function keyHint(env) {
    화면에 되돌려 놓는 순간 유출될 사본이 하나 더 생깁니다. */
 function fieldRow(env, label, hint) {
   const isSecret = /key|secret|token|password/i.test(env);
-  return `<div class="fld"><label>${esc(label)}${hint ? " · " + esc(hint) : ""}</label>
-    <input data-env="${esc(env)}" type="${isSecret ? "password" : "text"}"
+  const fid = "fld-" + env.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  return `<div class="fld"><label for="${fid}">${esc(label)}${
+      hint ? " · " + esc(hint) : ""}</label>
+    <input id="${fid}" data-env="${esc(env)}" type="${isSecret ? "password" : "text"}"
       autocomplete="off" placeholder="${hint ? "변경할 때만 입력" : ""}"></div>`;
 }
 
@@ -1607,16 +1785,46 @@ function renderVenues() {
   }).join("");
 
   $("#setupVenues").querySelectorAll(".venue .head").forEach(head => {
-    head.onclick = () => head.parentElement.classList.toggle("on");
+    // 접힌 것을 펴는 조작이므로, 마우스가 없어도 닿아야 합니다.
+    head.setAttribute("role", "button");
+    head.setAttribute("tabindex", "0");
+    const toggle = () => {
+      const on = head.parentElement.classList.toggle("on");
+      head.setAttribute("aria-expanded", String(on));
+    };
+    head.setAttribute("aria-expanded", "false");
+    head.onclick = toggle;
+    head.onkeydown = (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); }
+    };
   });
   $("#setupVenues").querySelectorAll("[data-verify]").forEach(btn => {
     btn.onclick = async (ev) => {
       ev.stopPropagation();
       const id = btn.dataset.verify;
       const out = $(`[data-vres="${id}"]`);
-      out.textContent = "확인 중…";
       out.className = "status dim";
       try {
+        // 이 거래소 칸에 지금 적혀 있는 값을 먼저 저장합니다. 입력칸 바로 옆
+        // 버튼이 "미입력" 이라고 답하면 아무도 이유를 알 수 없습니다 —
+        // 화면이 보는 것과 서버가 보는 것이 달랐을 뿐인데.
+        const box = btn.closest(".venue");
+        const values = {};
+        box.querySelectorAll("input[data-env]").forEach(el => {
+          if (el.value.trim()) values[el.dataset.env] = el.value.trim();
+        });
+        if (Object.keys(values).length) {
+          out.textContent = "저장 중…";
+          const saved = await post("/api/setup", {values});
+          const refused = Object.keys(saved.rejected || {});
+          if (refused.length) {
+            out.textContent = "❌ " + refused.map(k => `${k}: ${saved.rejected[k]}`).join(", ");
+            out.className = "status down";
+            return;
+          }
+          await loadSetup();
+        }
+        out.textContent = "확인 중…";
         const res = await post("/api/setup/verify/" + id);
         out.textContent = res.ok ? "✅ " + (res.detail || "정상") : "❌ " + res.error;
         out.className = "status " + (res.ok ? "up" : "down");
@@ -1670,9 +1878,21 @@ async function openSetup() {
 
 $("#setupBtn").onclick = openSetup;
 $("#acctSetupBtn").onclick = openSetup;
-$("#setupClose").onclick = () => $("#setup").classList.remove("on");
-$("#meBtn").onclick = () =>
-  $("#account").scrollIntoView({behavior: "smooth", block: "start"});
+$("#setupClose").onclick = () => {
+  $("#setup").classList.remove("on");
+  // 연동을 막 끝낸 사람이 이 안내의 대상입니다. 다음 접속까지 미루면
+  // 그 사이에 빈 화면을 혼자 헤매게 됩니다.
+  maybeTour(me);
+};
+$("#meBtn").onclick = () => {
+  const page = $("#mypage");
+  page.hidden = !page.hidden;
+  $("#meBtn").setAttribute("aria-expanded", String(!page.hidden));
+  if (!page.hidden) {
+    loadPlan();
+    page.scrollIntoView({behavior: "smooth", block: "start"});
+  }
+};
 
 /* 성향 진단은 건너뛸 수 있습니다. 건너뛰면 서버가 진단 전에 쓰는 중립 프로필로
    그대로 돌고, 마이페이지에서 언제든 다시 할 수 있습니다. */
@@ -1936,6 +2156,8 @@ $("#registerForm").addEventListener("submit", async ev => {
    나가면 남의 화면을 잠깐 보여주는 게 아니라, 401 을 뿌리며 로그인 화면을
    깜빡이게 만듭니다. */
 function start() {
+  loadStrategies();
+  loadPlan();
   refreshManual();
   refreshSymbols();
   loadChart();
@@ -1950,6 +2172,7 @@ function start() {
     renderLinks();
     renderSteps();
     if (!linkedVenues.length) openSetup();
+    else maybeTour(me);
   }).catch(() => {});
 }
 
@@ -1971,7 +2194,7 @@ function fmtPrice(n, cur) {
 }
 
 function chartStrategy() {
-  const sel = document.getElementById("strategy");
+  const sel = document.getElementById("strategyPick");
   return (sel && sel.value) || "demo";
 }
 
@@ -2073,6 +2296,250 @@ addEventListener("resize", () => { if (chart) chart.resize(); });
 /* 앱으로 설치되게 합니다. 실패해도 화면은 그대로 돕니다. */
 if ("serviceWorker" in navigator) {
   addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+}
+
+
+/* ── 자동매매 시작·정지 ────────────────────────────────────────────────
+   연동을 마쳐도 켤 방법이 화면에 없으면, 사용자가 보는 것은 "OFFLINE" 과
+   빈 표뿐입니다. 무엇이 없어서 못 켜는지도 여기서 말해 줍니다. */
+let strategies = [];
+
+async function loadStrategies() {
+  try {
+    const data = await api("/api/strategies");
+    strategies = data.strategies || [];
+  } catch { return; }
+  const sel = document.getElementById("strategyPick");
+  if (!sel) return;
+  const keep = sel.value;
+  const linked = new Set(Object.keys(configuredKeys || {}));
+  sel.innerHTML = strategies.map(st => {
+    const missing = (st.requires || []).filter(k => !linked.has(k));
+    const tag = missing.length ? " — 연동 필요" : "";
+    return `<option value="${esc(st.id)}"${missing.length ? " data-missing='1'" : ""}>` +
+           `${esc(st.name)} · ${esc(st.mode)}${tag}</option>`;
+  }).join("");
+  // 연동이 끝난 전략을 기본으로 고릅니다.
+  const ready = strategies.find(st => !(st.requires || []).some(k => !linked.has(k)));
+  sel.value = keep || (ready ? ready.id : (strategies[0] || {}).id || "");
+  if (chart) loadChart();
+}
+
+function runnerState(running) {
+  document.getElementById("runStart").hidden = running;
+  document.getElementById("runStop").hidden = !running;
+}
+
+document.getElementById("runStart").onclick = async () => {
+  const id = document.getElementById("strategyPick").value;
+  const st = strategies.find(x => x.id === id) || {};
+  const linked = new Set(Object.keys(configuredKeys || {}));
+  const missing = (st.requires || []).filter(k => !linked.has(k));
+  if (missing.length) {
+    return note("#runMsg", `먼저 연동이 필요합니다: ${missing.join(", ")} — ` +
+                           `⚙ 설정에서 등록하세요`, "err");
+  }
+  note("#runMsg", "시작하는 중…", "dim");
+  try {
+    const res = await post("/api/trader/start", {config_path: id});
+    note("#runMsg", `${res.strategy} 시작됨 (${res.mode})`, "ok");
+    runnerState(true);
+    refresh();
+  } catch (e) {
+    note("#runMsg", "시작하지 못했습니다: " + e.message, "err");
+  }
+};
+
+document.getElementById("runStop").onclick = async () => {
+  if (!confirm("자동매매를 멈춥니다. 보유 포지션은 그대로 남습니다.\n계속할까요?")) return;
+  try {
+    await post("/api/trader/stop");
+    note("#runMsg", "정지했습니다 — 포지션은 그대로입니다", "ok");
+    runnerState(false);
+    refresh();
+  } catch (e) {
+    note("#runMsg", "정지하지 못했습니다: " + e.message, "err");
+  }
+};
+
+
+/* ── 요금제 · 추천 코드 ───────────────────────────────────────────────── */
+async function loadPlan() {
+  try {
+    const p = await api("/api/account/plan");
+    const limit = p.daily_deliberations
+      ? `하루 심의 ${p.daily_deliberations}회` : "심의 무제한";
+    document.getElementById("planNow").innerHTML =
+      `현재 <b style="color:var(--gold)">${esc(p.label)}</b> — ${limit}`;
+  } catch {}
+}
+
+document.getElementById("refApply").onclick = async () => {
+  const code = document.getElementById("refCode").value.trim();
+  if (!code) return note("#refMsg", "코드를 입력하세요", "err");
+  try {
+    const res = await post("/api/account/redeem", {code});
+    note("#refMsg", res.note, "ok");
+    document.getElementById("refCode").value = "";
+    loadPlan();
+  } catch (e) {
+    note("#refMsg", e.message, "err");
+  }
+};
+
+
+/* ── 첫 방문 안내 ──────────────────────────────────────────────────────
+   처음 열면 화면 절반이 비어 있습니다. 어디를 눌러야 무엇이 일어나는지
+   한 번만 짚어 줍니다. 진행 여부는 서버가 아니라 이 브라우저에만 남깁니다 —
+   사람에 대한 사실이 아니라 이 기기에서 봤는지일 뿐이라서요. */
+const TOUR = [
+  {el: "#setupBtn", title: "1 · 연동", loose: true,
+   text: "먼저 증권사나 거래소를 연결합니다. 여기가 연결되기 전에는 봇이 아무것도 " +
+         "하지 못합니다. 키는 암호화해 내 계정에만 저장되고, 저장 후에는 다시 " +
+         "조회할 수 없습니다."},
+  {el: "#runner", title: "2 · 자동매매",
+   text: "전략을 고르고 시작을 누르면 봇이 돕니다. 연동이 안 된 전략은 목록에서 " +
+         "'연동 필요' 로 표시됩니다. 정지해도 보유 포지션은 그대로 남습니다."},
+  {el: "#analystSeats", title: "3 · 데스크",
+   text: "16명이 순서대로 발언합니다. 분석 8석이 각자 자기 구획만 보고, 강세와 " +
+         "약세가 맞붙고, 리스크 3석이 크기를 정하고, 마지막에 헤드가 결론을 냅니다."},
+  {el: ".deck-r", title: "4 · 시세 · 매매",
+   text: "오른쪽에 봉과 현재가가 뜹니다. 내 진입가는 금색 점선, 봇이 낸 체결은 봉 " +
+         "위의 점입니다. 차트를 누르면 그 가격이 지정가로 들어가서, 보면서 바로 " +
+         "사고팔 수 있습니다."},
+  {el: "#meBtn", title: "5 · 마이페이지", loose: true,
+   text: "하루 거래 한도, 투자 성향, 요금제, 연동 해제가 여기 있습니다. 하루 한도는 " +
+         "전략이 고장났을 때를 가정한 마지막 방어선이라, 실거래 전에 꼭 채우세요."},
+];
+
+let tourAt = 0;
+
+function tourShow() {
+  const step = TOUR[tourAt];
+  const target = document.querySelector(step.el);
+  const ring = document.getElementById("tourRing");
+  const box = document.getElementById("tourBox");
+  document.getElementById("tourTitle").textContent = step.title;
+  document.getElementById("tourText").textContent = step.text;
+  document.getElementById("tourStep").textContent = `${tourAt + 1} / ${TOUR.length}`;
+  document.getElementById("tourNext").textContent =
+    tourAt === TOUR.length - 1 ? "시작하기" : "다음";
+
+  if (!target) { ring.style.display = "none"; box.style.top = "20vh";
+                 box.style.left = "50%"; box.style.transform = "translateX(-50%)";
+                 return; }
+  // 화면보다 큰 대상을 "가운데로" 스크롤하면 위쪽이 문서 밖으로 밀려서
+  // 검은 띠만 보입니다. 이미 보이는 것은 건드리지 않고, 큰 것은 위를 맞춥니다.
+  let r = target.getBoundingClientRect();
+  if (r.top < 0 || r.bottom > innerHeight) {
+    target.scrollIntoView({block: r.height > innerHeight * 0.8 ? "start" : "center",
+                           behavior: "instant"});
+    r = target.getBoundingClientRect();
+  }
+  const pad = 6;
+  ring.style.display = "block";
+  ring.style.top = (r.top - pad) + "px";
+  ring.style.left = (r.left - pad) + "px";
+  ring.style.width = (r.width + pad * 2) + "px";
+  ring.style.height = (r.height + pad * 2) + "px";
+
+  place(box, r);
+}
+
+/* 설명 상자를 어디에 둘 것인가.
+   "아래에 붙이고 안 들어가면 위에" 로는 부족합니다. 차트 기둥처럼 화면보다
+   큰 대상이 오면 두 자리 다 실패해서, 상자가 대상 위에 겹쳐 앉고 정작
+   가리키던 것을 가립니다. 그래서 네 방향을 다 재보고, 다 안 되면 겹침이
+   가장 적은 가장자리에 붙입니다. */
+function place(box, r) {
+  box.style.transform = "none";
+  const w = box.offsetWidth || 420, h = box.offsetHeight || 210;
+  const gap = 16, pad = 12;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
+  // 아래·위는 세로만 맞으면 됩니다 — 가로는 화면 안으로 밀어 넣으면 그만이고,
+  // 그래야 오른쪽 끝 버튼을 가리킬 때 상자가 반대쪽 구석으로 날아가지 않습니다.
+  const cands = [
+    {t: r.bottom + gap,  l: clamp(r.left, pad, innerWidth - w - pad)},   // 아래
+    {t: r.top - h - gap, l: clamp(r.left, pad, innerWidth - w - pad)},   // 위
+    {t: clamp(r.top, pad, innerHeight - h - pad), l: r.right + gap},     // 오른쪽
+    {t: clamp(r.top, pad, innerHeight - h - pad), l: r.left - w - gap},  // 왼쪽
+  ];
+  for (const {t, l} of cands) {
+    if (t < pad || l < pad || t + h > innerHeight - pad || l + w > innerWidth - pad) continue;
+    put(box, t, l, w, h);
+    return;
+  }
+  // 어디에도 안 들어갑니다 — 대상이 화면만 하다는 뜻이라 겹치는 것은 피할 수
+  // 없습니다. 겹치더라도 가장 덜 가리는 가장자리를 고릅니다.
+  const top = pad, bottom = innerHeight - h - pad;
+  const cover = (t) => Math.max(0, Math.min(t + h, r.bottom) - Math.max(t, r.top));
+  put(box, cover(bottom) <= cover(top) ? bottom : top,
+      clamp(r.left, pad, innerWidth - w - pad), w, h);
+}
+
+/* 마지막 한 줄 — 무슨 계산을 했든 상자는 화면 안에 있어야 합니다.
+   "다음" 버튼이 화면 밖으로 반 뼘만 나가도 안내는 거기서 끝나 버립니다. */
+function put(box, t, l, w, h) {
+  const pad = 12;
+  box.style.top = Math.max(pad, Math.min(t, innerHeight - h - pad)) + "px";
+  box.style.left = Math.max(pad, Math.min(l, innerWidth - w - pad)) + "px";
+}
+
+function tourEnd() {
+  document.body.classList.remove("touring");
+  if (me) me.tour_seen = true;   // 서버 왕복을 기다리는 사이에 또 뜨지 않게.
+  // 봤다는 사실은 계정에 답니다. 실패해도 화면은 이미 닫혔으니 조용히 넘깁니다 —
+  // 최악의 경우 다음 접속에 한 번 더 뜨는 것뿐입니다.
+  fetch("/api/auth/tour-seen", {method: "POST", credentials: "same-origin"})
+    .catch(() => {});
+}
+
+function tourStart() {
+  tourAt = 0;
+  document.body.classList.add("touring");
+  tourShow();
+}
+
+document.getElementById("tourNext").onclick = () => {
+  tourAt += 1;
+  if (tourAt >= TOUR.length) return tourEnd();
+  tourShow();
+};
+document.getElementById("tourSkip").onclick = tourEnd;
+document.getElementById("tourBtn").onclick = tourStart;
+addEventListener("resize", () => {
+  if (document.body.classList.contains("touring")) tourShow();
+});
+
+function maybeTour(me) {
+  // 설정 창이 떠 있으면 그쪽이 먼저입니다 — 두 안내가 겹치면 둘 다 안 읽힙니다.
+  if (me && me.tour_seen) return;
+  if (document.getElementById("setup").classList.contains("on")) return;
+  tourStart();
+}
+
+/* 고정 헤더의 실제 높이를 CSS 에 알려 줍니다. 아래에 붙는 것들(시세 기둥,
+   모바일 탭)이 그만큼 내려가야 헤더 뒤로 숨지 않습니다. */
+/* 색 하나로 상태를 말하지 않습니다 — 화면 낭독기와 색각 이상 모두에게
+   같은 사실이 전달되어야 합니다. */
+function setConn(running) {
+  const el = $("#conn");
+  el.className = "conn " + (running ? "on" : "off");
+  el.setAttribute("aria-label", running ? "자동매매 실행 중" : "자동매매 정지됨");
+  el.title = el.getAttribute("aria-label");
+}
+
+function measureHeader() {
+  const h = document.querySelector("header.top");
+  if (h) document.documentElement.style.setProperty(
+    "--header-h", Math.round(h.getBoundingClientRect().height) + "px");
+}
+measureHeader();
+addEventListener("resize", measureHeader);
+if (window.ResizeObserver) {
+  const ho = new ResizeObserver(measureHeader);
+  const el = document.querySelector("header.top");
+  if (el) ho.observe(el);
 }
 
 addEventListener("resize", drawEquity);

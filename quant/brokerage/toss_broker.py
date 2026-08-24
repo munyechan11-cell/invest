@@ -177,7 +177,7 @@ class TossProvider(DataProvider):
                     "from": start.strftime("%Y%m%d"), "to": end.strftime("%Y%m%d")},
         )
         rows = data.get("candles") or data.get("data") or []
-        step = timeframe_seconds(timeframe)
+        _step = timeframe_seconds(timeframe)
         now = datetime.now(UTC)
         bars: list[Bar] = []
         for row in rows:

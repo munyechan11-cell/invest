@@ -25,9 +25,9 @@ def bars(closes, highs=None, lows=None):
     out = []
     for i, c in enumerate(closes):
         h = highs[i] if highs else c * 1.01
-        l = lows[i] if lows else c * 0.99
+        low = lows[i] if lows else c * 0.99
         out.append(Bar(SYM, datetime(2024, 1, 1, tzinfo=UTC) + timedelta(days=i),
-                       c, h, l, c, 1000.0, "1d"))
+                       c, h, low, c, 1000.0, "1d"))
     return out
 
 

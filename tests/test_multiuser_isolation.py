@@ -396,8 +396,11 @@ def test_the_account_screen_does_not_offer_the_operator_token_field(client):
     a, _b = two_users(client)
     offered = {f["env"] for f in a.get("/api/setup").json()["operator_fields"]}
     assert "QUANT_API_TOKEN" not in offered and "OPERATOR_NAME" not in offered
-    # 계정에 속하는 것들은 그대로 남아 있어야 합니다.
-    assert "ANTHROPIC_API_KEY" in offered and "TELEGRAM_BOT_TOKEN" in offered
+    # 계정에 속하는 것들은 그대로 남아 있어야 합니다. LLM 키는 하나만 —
+    # 데스크 비용은 운영자가 내고, 자기 키를 넣고 싶은 사람에게만 제미나이를
+    # 엽니다. 여러 공급자를 늘어놓으면 어느 것이 실제로 쓰이는지 알 수 없습니다.
+    assert "GOOGLE_API_KEY" in offered and "TELEGRAM_BOT_TOKEN" in offered
+    assert "ANTHROPIC_API_KEY" not in offered
 
 
 def test_every_venue_field_the_setup_screen_shows_is_writable_by_a_user(client):

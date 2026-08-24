@@ -190,4 +190,4 @@ async def gather_history(
                 return sym.key, []
 
     results = await asyncio.gather(*(one(s) for s in symbols))
-    return {k: v for k, v in results}
+    return dict(results)

@@ -27,6 +27,10 @@ from quant.webapp import accounts as accounts_mod
 from quant.webapp.accounts import Accounts, User
 from quant.webapp.auth_api import SESSION_COOKIE, LoginRateLimiter, build_auth
 
+#: 평문 http 로 오는 요청에는 서버가 `__Host-` 를 떼고 냅니다 — 그 접두사는
+#: Secure 를 요구해서, 붙인 채로 http 에 내면 브라우저가 버립니다.
+_PLAIN_COOKIE = SESSION_COOKIE.replace("__Host-", "")
+
 SECRET = "k" * 48
 GOOD = "hunter2-secret"       # 10자 이상 + 숫자와 문자
 WRONG = "totally-wrong9"
@@ -187,13 +191,13 @@ async def test_changing_a_password_does_not_stall_the_loop(accounts, monkeypatch
     async with httpx.AsyncClient(transport=transport, base_url="http://desk") as client:
         r = await client.post("/api/auth/register",
                               json={"email": "a@example.com", "password": GOOD})
-        cookie = r.cookies[SESSION_COOKIE]
+        cookie = r.cookies[_PLAIN_COOKIE]
 
     slowly(monkeypatch, accounts, "change_password")
     answers, _elapsed, lag = await heartbeat_lag(app, [
         (lambda c: c.post("/api/auth/password",
                           json={"current": GOOD, "new": "another1-secret"},
-                          headers={"Cookie": f"{SESSION_COOKIE}={cookie}"}))])
+                          headers={"Cookie": f"{_PLAIN_COOKIE}={cookie}"}))])
 
     assert [r.status_code for r in answers] == [200]
     assert lag < 0.15, f"봇의 루프가 {lag * 1000:.0f}ms 멈췄습니다"
@@ -385,17 +389,17 @@ def test_two_session_cookies_are_not_a_session(accounts):
     bob_client, carol_client = TestClient(app), TestClient(app)
     register(bob_client, "bob@example.com")
     register(carol_client, "carol@example.com")
-    bob = bob_client.cookies[SESSION_COOKIE]
-    carol = carol_client.cookies[SESSION_COOKIE]
+    bob = bob_client.cookies[_PLAIN_COOKIE]
+    carol = carol_client.cookies[_PLAIN_COOKIE]
 
     probe = TestClient(app)
     for first, second in ((bob, carol), (carol, bob), ("GARBAGE", bob), (bob, "GARBAGE")):
         r = probe.get("/api/mine", headers={
-            "Cookie": f"{SESSION_COOKIE}={first}; {SESSION_COOKIE}={second}"})
+            "Cookie": f"{_PLAIN_COOKIE}={first}; {_PLAIN_COOKIE}={second}"})
         assert r.status_code == 401, f"{first[:6]}/{second[:6]} 가 세션이 됐습니다"
 
     # 한 장이면 그대로 동작합니다 — 세션을 못 쓰게 만든 게 아닙니다.
-    r = probe.get("/api/mine", headers={"Cookie": f"{SESSION_COOKIE}={bob}"})
+    r = probe.get("/api/mine", headers={"Cookie": f"{_PLAIN_COOKIE}={bob}"})
     assert r.json() == {"email": "bob@example.com"}
 
 
@@ -405,12 +409,12 @@ def test_logging_out_with_two_cookies_revokes_both(accounts):
     bob_client, carol_client = TestClient(app), TestClient(app)
     register(bob_client, "bob@example.com")
     register(carol_client, "carol@example.com")
-    bob = bob_client.cookies[SESSION_COOKIE]
-    carol = carol_client.cookies[SESSION_COOKIE]
+    bob = bob_client.cookies[_PLAIN_COOKIE]
+    carol = carol_client.cookies[_PLAIN_COOKIE]
 
     probe = TestClient(app)
     r = probe.post("/api/auth/logout", headers={
-        "Cookie": f"{SESSION_COOKIE}={bob}; {SESSION_COOKIE}={carol}"})
+        "Cookie": f"{_PLAIN_COOKIE}={bob}; {_PLAIN_COOKIE}={carol}"})
     assert r.status_code == 200
     assert accounts.user_for_session(bob) is None
     assert accounts.user_for_session(carol) is None

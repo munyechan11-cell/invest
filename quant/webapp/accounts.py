@@ -98,6 +98,91 @@ class SecretKeyMissing(RuntimeError):
     """서비스를 시작할 수 없는 상태."""
 
 
+#: 추천 코드 → 요금제. 코드는 서비스 운영자가 발급하는 것이지 사용자가 고르는
+#: 것이 아니므로 여기 둡니다. 값을 늘리려면 줄을 더하면 됩니다.
+#:
+#: 환경변수로도 더할 수 있습니다: QUANT_REFERRAL_CODES="코드:요금제,코드:요금제"
+#: — 코드를 바꾸려고 배포하지 않아도 되게.
+REFERRAL_CODES: dict[str, str] = {
+    "invest916": "unlimited",
+}
+
+
+def referral_plan(code: str) -> str:
+    """이 코드가 주는 요금제. 모르는 코드면 빈 문자열."""
+    code = (code or "").strip()
+    if not code:
+        return ""
+    extra = {}
+    for pair in os.environ.get("QUANT_REFERRAL_CODES", "").split(","):
+        name, _, plan = pair.partition(":")
+        if name.strip() and plan.strip():
+            extra[name.strip()] = plan.strip()
+    table = {**REFERRAL_CODES, **extra}
+    # 대소문자는 구분하지 않습니다 — 코드를 손으로 옮겨 적는 사람이 대부분입니다.
+    lowered = {k.lower(): v for k, v in table.items()}
+    return lowered.get(code.lower(), "")
+
+
+
+class _Guarded:
+    """잠금 안에서 결과까지 다 읽어 오는 sqlite 연결.
+
+    sqlite3 커서는 게으릅니다 — `execute()` 가 돌아온 시점에는 아직 아무 행도
+    읽히지 않았고, `fetchone()` 을 부를 때 비로소 엔진이 한 발짝 나갑니다.
+    그래서 쓰기만 잠그고 읽기를 열어 두면, 한 스레드가 INSERT 를 커밋하는 동안
+    다른 스레드가 **같은 연결 객체 위에서** SELECT 를 밟습니다. 로그인과 가입은
+    비밀번호를 늘이느라 느려서 `run_in_threadpool` 로 나가 있으므로, 이건
+    이론적인 경합이 아니라 사람 둘이 동시에 가입하면 바로 일어나는 일입니다.
+    파이썬 3.9 의 sqlite3 는 `threadsafety == 1` 이라 이 상황에서 프로세스를
+    통째로 죽입니다.
+
+    그래서 여기서는 execute 가 돌아올 때 이미 다 읽혀 있습니다. 호출부는
+    그대로 `.fetchone()` / `.fetchall()` 을 쓰지만 그때 남은 것은 리스트뿐이라,
+    잠금 밖에서 커서를 밟을 방법 자체가 없습니다. 사이트마다 잠금을 기억해서
+    거는 대신, 기억하지 않아도 되게 만드는 쪽을 골랐습니다.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, lock: threading.RLock):
+        self._conn = conn
+        self._lock = lock
+
+    def execute(self, sql: str, args: tuple = ()) -> _Rows:
+        with self._lock:
+            cur = self._conn.execute(sql, args)
+            return _Rows(cur.fetchall(), cur.lastrowid, cur.rowcount)
+
+    def executescript(self, sql: str) -> None:
+        with self._lock:
+            self._conn.executescript(sql)
+
+    def commit(self) -> None:
+        with self._lock:
+            self._conn.commit()
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+
+class _Rows:
+    """이미 다 읽은 결과. 커서인 척하지만 아무것도 미루지 않습니다."""
+
+    def __init__(self, rows: list, lastrowid: int | None, rowcount: int):
+        self._rows = rows
+        self.lastrowid = lastrowid
+        self.rowcount = rowcount
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self) -> list:
+        return list(self._rows)
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
 @dataclass(frozen=True)
 class User:
     id: int
@@ -105,6 +190,10 @@ class User:
     display_name: str
     created_at: datetime
     is_admin: bool = False
+    plan: str = "free"
+    #: 첫 화면 안내를 본 적이 있는가. 브라우저가 아니라 계정에 답니다 —
+    #: 폰에서 보고 노트북에서 또 보면 안내가 아니라 방해입니다.
+    tour_seen: bool = False
 
 
 def _now() -> datetime:
@@ -163,13 +252,14 @@ class Accounts:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fernet = _fernet(secret)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         # 계정 DB 는 비밀번호 해시와 암호문을 담습니다. 같은 머신의 다른
         # 사용자가 읽을 이유가 없습니다. WAL 을 켜기 전에 걸어야 사이드카가
         # 같은 권한으로 태어납니다.
         make_db_private(self.path)
-        self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
+        raw = sqlite3.connect(str(self.path), check_same_thread=False)
+        raw.row_factory = sqlite3.Row
+        self.conn = _Guarded(raw, self._lock)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self._migrate()
@@ -187,7 +277,10 @@ class Accounts:
                 display_name  TEXT NOT NULL DEFAULT '',
                 is_admin      INTEGER NOT NULL DEFAULT 0,
                 created_at    TEXT NOT NULL,
-                last_login_at TEXT
+                last_login_at TEXT,
+                plan          TEXT NOT NULL DEFAULT 'free',
+                referral      TEXT NOT NULL DEFAULT '',
+                tour_seen     INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS sessions (
                 token_hash TEXT PRIMARY KEY,
@@ -214,6 +307,13 @@ class Accounts:
             CREATE INDEX IF NOT EXISTS audit_user ON audit(user_id, ts);
             """
         )
+        # 이 서비스보다 먼저 만들어진 DB 에 컬럼을 붙입니다.
+        have = {r["name"] for r in self.conn.execute("PRAGMA table_info(users)")}
+        for column, ddl in (("plan", "TEXT NOT NULL DEFAULT 'free'"),
+                            ("referral", "TEXT NOT NULL DEFAULT ''"),
+                            ("tour_seen", "INTEGER NOT NULL DEFAULT 0")):
+            if column not in have:
+                self.conn.execute(f"ALTER TABLE users ADD COLUMN {column} {ddl}")
         self.conn.commit()
 
     # ── 감사 ─────────────────────────────────────────────────────────────
@@ -244,8 +344,10 @@ class Accounts:
             raise AccountError(problem)
         # 첫 사용자가 관리자입니다. 아무도 없는 서비스에 관리자를 만들 다른
         # 경로가 없고, 두 번째부터는 자동으로 일반 사용자가 됩니다.
-        first = self.count() == 0
         with self._lock:
+            # 세는 것과 넣는 것 사이가 벌어지면, 동시에 가입한 두 사람이 둘 다
+            # `count() == 0` 을 보고 둘 다 관리자가 됩니다. 한 잠금 안에 둡니다.
+            first = self.count() == 0
             try:
                 cur = self.conn.execute(
                     "INSERT INTO users (email, password_hash, display_name, "
@@ -272,10 +374,14 @@ class Accounts:
     def _as_user(row) -> User | None:
         if row is None:
             return None
+        keys = row.keys()
         return User(id=row["id"], email=row["email"],
                     display_name=row["display_name"],
                     created_at=datetime.fromisoformat(row["created_at"]),
-                    is_admin=bool(row["is_admin"]))
+                    is_admin=bool(row["is_admin"]),
+                    # 이 컬럼 없이 만들어진 DB 도 열립니다.
+                    plan=(row["plan"] if "plan" in keys else None) or "free",
+                    tour_seen=bool(row["tour_seen"] if "tour_seen" in keys else 0))
 
     def authenticate(self, email: str, password: str) -> User | None:
         row = self.conn.execute("SELECT * FROM users WHERE email=?",
@@ -293,6 +399,34 @@ class Accounts:
                               (_now().isoformat(), row["id"]))
             self.conn.commit()
         return self._as_user(row)
+
+    def redeem(self, user_id: int, code: str) -> str:
+        """추천 코드를 요금제로 바꿉니다. 성공하면 새 요금제 이름.
+
+        틀린 코드는 조용히 무시하지 않고 그렇게 말합니다 — 코드를 넣었는데
+        아무 일도 안 일어나면, 사용자는 넣은 것이 먹혔는지 알 수 없습니다.
+        """
+        plan = referral_plan(code)
+        if not plan:
+            raise AccountError("사용할 수 없는 코드입니다")
+        with self._lock:
+            self.conn.execute("UPDATE users SET plan=?, referral=? WHERE id=?",
+                              (plan, (code or "").strip(), user_id))
+            self.conn.commit()
+        self.record(user_id, "plan_upgraded", f"{code.strip()} → {plan}")
+        log.info("사용자 %s 요금제 %s (코드 %s)", user_id, plan, code.strip())
+        return plan
+
+    def mark_tour_seen(self, user_id: int) -> None:
+        """안내를 끝까지 봤거나 건너뛰었다고 적습니다.
+
+        브라우저 저장소에 두지 않는 이유는 두 가지입니다. 기기를 바꿔도 다시
+        뜨면 안 되고, 이 화면의 자바스크립트는 세션을 손에 쥐지 않는다는 규칙을
+        지켜야 합니다 — 저장소를 하나 열면 그 규칙을 검사할 방법이 없어집니다.
+        """
+        with self._lock:
+            self.conn.execute("UPDATE users SET tour_seen=1 WHERE id=?", (user_id,))
+            self.conn.commit()
 
     def change_password(self, user_id: int, current: str, new: str) -> None:
         row = self.conn.execute("SELECT password_hash FROM users WHERE id=?",

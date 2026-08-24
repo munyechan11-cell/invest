@@ -138,16 +138,16 @@ def main() -> int:
 
     print(f"\n{BAR}")
     print(f"  '왕복' = 한 포지션을 {args.hold_bars}봉 보유 × {args.symbols}종목.")
-    print(f"  심의 2회가 아닌 이유: 보유 종목은 매 사이클 다시 검토됩니다")
-    print(f"  (shortlist 에 보유분이 항상 포함되므로).")
+    print("  심의 2회가 아닌 이유: 보유 종목은 매 사이클 다시 검토됩니다")
+    print("  (shortlist 에 보유분이 항상 포함되므로).")
     print(f"  '하루' = 봉 {args.bars_per_day}개/일 × {args.symbols}종목 기준.")
-    print(f"\n  줄이는 방법:")
-    print(f"    · cadence_bars 를 올린다 (매 봉 대신 N봉마다 심의)")
+    print("\n  줄이는 방법:")
+    print("    · cadence_bars 를 올린다 (매 봉 대신 N봉마다 심의)")
     print(f"    · seats 로 분석 좌석을 줄인다 (8석 → 3석이면 입력 {STAGE_INPUT['analyst'][1]:,}"
           f" 토큰 중 약 {STAGE_INPUT['analyst'][1]*5//8:,} 절약)")
-    print(f"    · debate_rounds 를 1로 낮춘다")
-    print(f"    · max_symbols_per_run 을 줄인다")
-    print(f"\n  가격은 2026-08 기준이며 바뀝니다. 실제 청구 전 제공사 페이지로 확인하세요.")
+    print("    · debate_rounds 를 1로 낮춘다")
+    print("    · max_symbols_per_run 을 줄인다")
+    print("\n  가격은 2026-08 기준이며 바뀝니다. 실제 청구 전 제공사 페이지로 확인하세요.")
     print(BAR)
     return 0
 

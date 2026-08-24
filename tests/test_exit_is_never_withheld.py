@@ -7,10 +7,8 @@
 
 비용을 아끼려고 만든 장치가 포지션을 가두면, 없느니만 못합니다.
 """
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
-
-import pytest
 
 from quant.core.types import UTC, Order, OrderSide, OrderType, Symbol
 from quant.execution.base import CANCEL_PATIENCE_BARS, _Resting

@@ -16,6 +16,7 @@ orders, so the venue fills twice and the DB records once.
 """
 from __future__ import annotations
 
+import contextlib
 import errno
 import json
 import logging
@@ -229,10 +230,10 @@ class StateStore:
             raise StateInUseError(self._busy_message(holder))
 
         now = datetime.now(UTC).isoformat()
-        try:
+        # 이미 트랜잭션 안이면 그대로 씁니다 — 여는 데 실패한 것이지
+        # 쓸 수 없다는 뜻이 아닙니다.
+        with contextlib.suppress(sqlite3.OperationalError):
             self.conn.execute("BEGIN IMMEDIATE")
-        except sqlite3.OperationalError:
-            pass
         self.conn.execute(
             "INSERT OR REPLACE INTO db_owner(id, pid, host, started_at, heartbeat_at) "
             "VALUES(1,?,?,?,?)",

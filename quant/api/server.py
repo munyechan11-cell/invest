@@ -73,8 +73,8 @@ from quant.live.credentials import (
 )
 from quant.live.profile import ProfileStore, questionnaire, score_answers
 from quant.live.state import StateStore
-from quant.webapp.accounts import Accounts, SecretKeyMissing, User
-from quant.webapp.auth_api import SESSION_COOKIE, build_auth, public_user
+from quant.webapp.accounts import AccountError, Accounts, SecretKeyMissing, User
+from quant.webapp.auth_api import build_auth, public_user
 from quant.webapp.registry import (
     RuntimeProblem,
     UserRegistry,
@@ -194,6 +194,10 @@ MAX_SECRET_NAME_LEN = 64
 
 #: 요청 본문 상한. 이 API 가 받는 것 중 가장 큰 것이 전략 설정 하나입니다.
 MAX_BODY_BYTES = 256 * 1024
+
+
+class RedeemRequest(BaseModel):
+    code: str = Field(..., min_length=1, max_length=64)
 
 
 class SetupRequest(BaseModel):
@@ -415,9 +419,19 @@ ACCOUNT_KEYS: frozenset[str] = frozenset(WRITABLE_KEYS) - _SERVICE_SCOPED
 
 #: 계정 화면이 보여줄 운영자 항목. 이름과 대시보드 토큰은 계정이 대신하므로
 #: 뺍니다 — 화면에 남겨두면 로그인한 사람 옆에 중복된 신원이 하나 더 섭니다.
-ACCOUNT_OPERATOR_FIELDS = [(env, label, required)
-                           for env, label, required in OPERATOR_FIELDS
-                           if env not in _SERVICE_SCOPED]
+#: 계정 화면에서 자기 것으로 넣을 수 있는 LLM 키. 서비스가 Gemini 로 데스크
+#: 비용을 내므로, 자기 키를 넣는 것은 사용량 상한을 벗어나고 싶을 때뿐입니다 —
+#: 그래서 서비스가 실제로 쓰는 제공자와 같은 것만 보여줍니다. 쓰지도 않는
+#: 제공자의 칸이 서 있으면 사용자는 그것이 필요한 값이라고 읽습니다.
+_BYO_LLM_KEY = "GOOGLE_API_KEY"
+
+ACCOUNT_OPERATOR_FIELDS = [
+    (env, label, required)
+    for env, label, required in OPERATOR_FIELDS
+    if env not in _SERVICE_SCOPED
+    and not (env.endswith("_API_KEY") and env != _BYO_LLM_KEY)
+] + [(_BYO_LLM_KEY, "Gemini API 키 — 넣으면 AI 데스크 사용 한도가 없어집니다 (선택)",
+      False)]
 
 #: 프로세스 환경에 남아 있으면 안 되는 이름들 — 계좌에 닿거나 사람에게 닿는 값.
 #:
@@ -1096,6 +1110,36 @@ def create_app(config: StrategyConfig | None = None,
             return {"points": store.equity_curve(limit)}
         finally:
             store.close()
+
+    @app.post("/api/account/redeem")
+    async def redeem(req: RedeemRequest, seat: Desk = Depends(desk)):
+        """추천 코드로 요금제를 올립니다."""
+        user = getattr(seat, "user", None)
+        if user is None:
+            raise HTTPException(400, "계정이 필요합니다")
+        try:
+            plan = accounts.redeem(user.id, req.code)
+        except AccountError as exc:
+            raise HTTPException(400, str(exc)) from None
+        from quant.webapp.usage import plan_for
+
+        p = plan_for(plan)
+        return {"plan": p.id, "label": p.label_ko,
+                "daily_deliberations": p.daily_deliberations or None,
+                "monthly_cost_usd": p.monthly_cost_usd or None,
+                "note": f"{p.label_ko} 요금제로 변경되었습니다"}
+
+    @app.get("/api/account/plan")
+    async def account_plan(seat: Desk = Depends(desk)):
+        user = getattr(seat, "user", None)
+        if user is None:
+            raise HTTPException(400, "계정이 필요합니다")
+        from quant.webapp.usage import plan_for
+
+        p = plan_for(user.plan)
+        return {"plan": p.id, "label": p.label_ko,
+                "daily_deliberations": p.daily_deliberations or None,
+                "monthly_cost_usd": p.monthly_cost_usd or None}
 
     @app.get("/api/candles")
     async def candles(ticker: str = Query(..., min_length=1, max_length=32),

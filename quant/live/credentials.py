@@ -79,7 +79,8 @@ class VenueSpec:
         return {
             "id": self.id, "label": self.label_ko, "kind": self.kind,
             "paper_supported": self.paper_supported, "note": self.note_ko,
-            "fields": [{"env": e, "label": l, "required": r} for e, l, r in self.fields],
+            "fields": [{"env": env, "label": label, "required": required}
+                       for env, label, required in self.fields],
         }
 
 

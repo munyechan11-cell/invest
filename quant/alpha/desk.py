@@ -391,21 +391,21 @@ class DeskMemory:
         — because "you were 2 for 9 at conviction ≥ 0.7" is a fact about the
         desk, not about the name.
         """
-        same = [l for l in self._lessons if l.ticker == symbol.ticker][-self.lookback:]
+        same = [line for line in self._lessons if line.ticker == symbol.ticker][-self.lookback:]
         lines: list[str] = []
         if same:
             lines.append(f"[{symbol.ticker} 과거 판단 결과]")
-            for l in same:
-                mark = "적중" if l.correct else "실패"
-                versus = (f" (벤치 {l.benchmark_pct:+.2f}%, 초과 {l.excess_pct:+.2f}%)"
-                          if l.benchmark_key else "")
+            for line in same:
+                mark = "적중" if line.correct else "실패"
+                versus = (f" (벤치 {line.benchmark_pct:+.2f}%, 초과 {line.excess_pct:+.2f}%)"
+                          if line.benchmark_key else "")
                 lines.append(
-                    f"- {l.decided_at:%Y-%m-%d} {l.action} (확신 {l.conviction:.2f}) "
-                    f"→ {l.realised_pct:+.2f}%{versus} {mark} · 근거: {l.rationale[:120]}"
+                    f"- {line.decided_at:%Y-%m-%d} {line.action} (확신 {line.conviction:.2f}) "
+                    f"→ {line.realised_pct:+.2f}%{versus} {mark} · 근거: {line.rationale[:120]}"
                 )
-        confident = [l for l in self._lessons if l.conviction >= 0.7]
+        confident = [line for line in self._lessons if line.conviction >= 0.7]
         if len(confident) >= 4:
-            hit = sum(1 for l in confident if l.correct) / len(confident)
+            hit = sum(1 for line in confident if line.correct) / len(confident)
             lines.append(
                 f"[캘리브레이션] 확신 0.7 이상 판단 {len(confident)}건 중 적중률 {hit:.0%}. "
                 + ("확신도가 과대평가되어 있으니 낮춰 잡아라." if hit < 0.6 else

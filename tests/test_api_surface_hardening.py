@@ -325,9 +325,9 @@ async def _backtest_while_the_loop_watches(app, cookie: str, other: str) -> tupl
     깨어난다는 것은 그동안 아무의 봇도 한 틱을 못 돌았다는 뜻입니다.
     """
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=transport, base_url="http://srv",
-                                     timeout=120) as c:
+    async with app.router.lifespan_context(app), \
+            httpx.AsyncClient(transport=transport, base_url="http://srv",
+                              timeout=120) as c:
             job = asyncio.create_task(
                 c.post("/api/backtest", json={"config_path": "slow"},
                        cookies={_PLAIN_COOKIE: cookie}))
@@ -355,9 +355,9 @@ def test_a_backtest_does_not_freeze_everyone_elses_bot(app, client):
 
 async def _two_at_once(app, cookie: str) -> list[int]:
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=transport, base_url="http://srv",
-                                     timeout=120) as c:
+    async with app.router.lifespan_context(app), \
+            httpx.AsyncClient(transport=transport, base_url="http://srv",
+                              timeout=120) as c:
             async def one():
                 return await c.post("/api/backtest", json={"config_path": "slow"},
                                     cookies={_PLAIN_COOKIE: cookie})

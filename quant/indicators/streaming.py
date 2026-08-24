@@ -129,13 +129,13 @@ class RSI(Indicator):
             return None
         delta = value - self._prev
         self._prev = value
-        g = self._gain.update(max(delta, 0.0))
-        l = self._loss.update(max(-delta, 0.0))
-        if g is None or l is None:
+        gain = self._gain.update(max(delta, 0.0))
+        loss = self._loss.update(max(-delta, 0.0))
+        if gain is None or loss is None:
             return None
-        if l == 0:
+        if loss == 0:
             return 100.0
-        rs = g / l
+        rs = gain / loss
         return 100.0 - 100.0 / (1.0 + rs)
 
     @property

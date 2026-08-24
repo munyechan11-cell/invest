@@ -43,4 +43,17 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
-ignore = ["E501", "B008"]
+ignore = [
+  "E501", "B008",
+  # zip(..., strict=True) is 3.10+. The project targets 3.10 and deploys on
+  # 3.13, but a development machine may only have 3.9, and a lint rule that
+  # makes the test suite unrunnable there costs more than it catches. Revisit
+  # when 3.9 is no longer anywhere in the loop.
+  "B905",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 이 스크립트는 import 하기 전에 두 가지를 먼저 해야 합니다: 저장소 루트를
+# sys.path 에 넣고, .env 를 읽는 것. 둘 다 quant 패키지를 부르기 전이어야
+# 하므로 import 를 위로 올릴 수 없습니다. 규칙이 아니라 순서가 요구사항입니다.
+"scripts/desk_live_check.py" = ["E402"]
