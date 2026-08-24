@@ -23,7 +23,8 @@ GUIDE = Path("deploy/README.md").read_text(encoding="utf-8")
 def test_the_service_gets_time_to_finish_its_cycle():
     """SIGTERM 을 받고 바로 죽으면 봉 하나를 처리하다 만 상태가 됩니다."""
     assert "KillSignal=SIGTERM" in UNIT
-    stop = next(l for l in UNIT.splitlines() if l.startswith("TimeoutStopSec="))
+    stop = next(line for line in UNIT.splitlines()
+                if line.startswith("TimeoutStopSec="))
     assert int(stop.split("=")[1]) >= 60
 
 
