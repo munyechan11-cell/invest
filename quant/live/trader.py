@@ -379,17 +379,22 @@ class LiveTrader:
         try:
             await self._refresh_universe()
             bars = await self._fetch_new_bars()
+            if isinstance(self.engine.brokerage, LiveBrokerage):
+                # Cheap insurance: reconcile every cycle so drift is caught in
+                # minutes rather than after a bad restart.
+                #
+                # **봉이 없어도** 맞춰 봅니다. 대조는 봉이 아니라 증권사 쪽
+                # 장부를 읽는 일이라 새 봉과 아무 상관이 없고, 정작 대조가
+                # 필요한 날은 조용한 날입니다 — 재시작으로 상태가 어긋났거나
+                # 시세가 안 올 때. 아래 조기 반환 뒤에 두었더니 그런 날에만
+                # 골라서 건너뛰었습니다.
+                await self.engine.brokerage.sync()
             if not bars:
                 log.debug("no new closed bars this cycle")
                 return
             await self.engine.on_bars(bars)
             self.last_bar_ts = max(b.ts for b in bars.values())
             self.errors = 0
-
-            if isinstance(self.engine.brokerage, LiveBrokerage):
-                # Cheap insurance: reconcile every cycle so drift is caught in
-                # minutes rather than after a bad restart.
-                await self.engine.brokerage.sync()
         except asyncio.CancelledError:
             raise
         except Exception as exc:

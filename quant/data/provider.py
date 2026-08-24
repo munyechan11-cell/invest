@@ -13,9 +13,16 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from quant.core.types import Bar, Quote, Symbol, timeframe_delta, utcnow
+from quant.core.types import (
+    Bar,
+    Quote,
+    Symbol,
+    timeframe_delta,
+    timeframe_seconds,
+    utcnow,
+)
 
 log = logging.getLogger("quant.data")
 
@@ -53,8 +60,21 @@ class DataProvider(ABC):
         beyond what the venue itself had, and never a partially formed candle."""
 
     async def latest_bars(self, symbol: Symbol, timeframe: str, count: int = 1) -> list[Bar]:
-        """Most recent `count` *closed* bars."""
+        """Most recent `count` *closed* bars.
+
+        일봉부터는 창을 넉넉히 잡습니다. 달력일과 거래일이 다르기 때문입니다 —
+        일봉 3개를 달력 5일로 요청하면 설 연휴가 주말에 붙은 주에는 장이 한 번도
+        안 서서 **빈 리스트**가 돌아옵니다. 그러면 라이브 루프는 그날 틱을
+        통째로 건너뛰고, 하필 갭이 가장 큰 연휴 직후에 손절이 한 번도 평가되지
+        않습니다.
+
+        주말 몫으로 7/5, 연휴 몫으로 열흘을 더합니다. 넓게 잡아서 손해 보는
+        것은 조회 한 번이 조금 무거워지는 것뿐이고, 좁게 잡아서 손해 보는 것은
+        그날의 리스크 관리 전부입니다.
+        """
         span = timeframe_delta(timeframe) * (count + 2)
+        if timeframe_seconds(timeframe) >= 86400:
+            span = span * 1.4 + timedelta(days=10)
         end = utcnow()
         bars = await self.history(symbol, timeframe, end - span, end)
         return bars[-count:]

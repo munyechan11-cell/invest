@@ -1,6 +1,7 @@
 # Runnable with no API keys: synthetic data, paper broker.
 #   python -m quant backtest configs/demo.yaml
 name: demo-multi-alpha
+label_ko: "연습 · 여러 신호 섞기"
 description: >
   Trend + mean-reversion + cross-sectional momentum on synthetic data,
   sized by volatility targeting, with stops, protections and realistic costs.

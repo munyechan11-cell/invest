@@ -7,6 +7,7 @@
 # Going live is a two-step, on-purpose change: set mode: live AND
 # broker.live_trading_confirmed: true, then `quant live`.
 name: crypto-trend-4h
+label_ko: "코인 · 추세추종 4시간봉"
 description: Donchian breakout + squeeze release on major pairs, vol-targeted.
 mode: dry_run
 

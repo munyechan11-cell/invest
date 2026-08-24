@@ -216,6 +216,12 @@ class NotifyConfig(ConfigBlock):
 
 class StrategyConfig(ConfigBlock):
     name: str = "unnamed"
+    #: 화면에 뜨는 한국어 이름. 비면 `name` 을 그대로 씁니다.
+    #:
+    #: `name` 은 설정 파일과 로그가 쓰는 식별자라 영어로 둡니다. 그런데 전략을
+    #: 고르는 화면에 `kr-toss-desk · dry_run` 만 뜨면, 그게 뭔지 이미 아는
+    #: 사람만 자기 돈을 넣을 수 있습니다.
+    label_ko: str = ""
     description: str = ""
     mode: RunMode = RunMode.BACKTEST
     data: DataConfig = Field(default_factory=DataConfig)

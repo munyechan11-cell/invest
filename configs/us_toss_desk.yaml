@@ -14,6 +14,7 @@
 # ⚠️ 토스 Open API 에는 모의투자 환경이 없습니다. dry_run(실시간 시세 + 가상
 #    체결)이 유일한 안전망입니다.
 name: us-toss-desk
+label_ko: "미국 · AI 데스크 (토스만)"
 description: 미국주식 16석 AI 데스크 + 상대강도, 실시간 시세(토스). KIS 키 불필요.
 mode: dry_run
 

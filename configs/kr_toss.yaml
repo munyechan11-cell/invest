@@ -8,6 +8,7 @@
 #    안전망입니다. 실거래 전환은 mode: live 와 broker.live_trading_confirmed
 #    두 곳을 모두 바꿔야 하며, limits 의 하루 한도도 반드시 채워야 합니다.
 name: kr-toss-flow
+label_ko: "국내 · 수급 추종 (토스+한투)"
 description: 외국인·기관 수급 추종 + 추세 확인, 변동성 타겟 사이징.
 mode: dry_run
 

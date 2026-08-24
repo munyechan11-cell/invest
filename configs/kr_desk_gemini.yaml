@@ -7,6 +7,7 @@
 # 크레딧/쿼터가 없으면 매 봉 19번씩 실패하는 대신 그 자리에서 이유를 말하고
 # 비활성화됩니다.
 name: kr-desk-gemini
+label_ko: "국내 · AI 데스크 + 수급 (한투)"
 description: 16석 AI 데스크 + 수급 알파. 판정 좌석만 더 큰 모델을 씁니다.
 mode: dry_run
 

@@ -6,6 +6,7 @@
 # 흐르는지)만 보여줍니다. 수급 신호가 실제로 돈이 되는지는 flow.provider 를 kis 로
 # 바꿔 실데이터로, 그것도 walkforward 로 확인해야 합니다.
 name: flow-demo
+label_ko: "연습 · 수급 신호"
 description: 외국인·기관 매집 추종 + 개인 과열 역발상, 변동성 타겟 사이징.
 mode: backtest
 

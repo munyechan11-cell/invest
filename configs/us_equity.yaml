@@ -1,5 +1,6 @@
 # US equity cross-sectional momentum on daily bars, free Yahoo data.
 name: us-momentum-daily
+label_ko: "미국 모멘텀 (과거 검증용)"
 description: 12-1 volatility-adjusted momentum, risk-parity sized, regime filtered.
 mode: backtest
 

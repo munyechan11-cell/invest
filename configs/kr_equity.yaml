@@ -2,6 +2,7 @@
 # 일봉을 받으려면 .env 에 KIS_APP_KEY / KIS_APP_SECRET 이 있어야 한다 (주문과는 무관 —
 # 아래 broker 는 백테스트용 시뮬레이션 체결이라 계좌번호도 주문 권한도 쓰지 않는다).
 name: kr-swing-daily
+label_ko: "국내 스윙 (과거 검증용)"
 description: KOSPI 대형주 추세추종 + 눌림목 매수, 변동성 타겟 사이징.
 mode: backtest
 
