@@ -92,16 +92,25 @@ def _explain(response, what: str) -> str:
     body = ""
     try:
         data = response.json()
-        body = str(data.get("error") or data.get("message")
-                   or data.get("errorMessage") or data)[:220]
+        # OAuth 오류는 `error` 와 `error_description` 이 짝입니다. 앞의 한
+        # 단어(`access_denied`)만 읽으면 무엇이 거부됐는지 알 수 없고, 설명은
+        # 대개 뒤쪽에 있습니다.
+        parts = [str(data.get(k)) for k in
+                 ("error", "error_description", "message", "errorMessage", "detail")
+                 if data.get(k)]
+        body = " — ".join(dict.fromkeys(parts))[:300] or str(data)[:300]
     except Exception:                       # noqa: BLE001 — 본문이 JSON 이 아닐 때
-        body = (response.text or "")[:220]
+        body = (response.text or "")[:300]
 
     if response.status_code == 403:
         return (f"{what} 실패 (403) — {body}\n"
-                f"가장 흔한 원인은 **허용 IP** 입니다. 토스증권 앱의 설정 → "
-                f"Open API → 허용 IP 관리에 이 서버의 공인 IP 가 등록되어 있어야 "
-                f"합니다. 집에서 돌리면 집 IP, 서버에 올리면 그 서버 IP 입니다.")
+                f"확인할 것을 흔한 순서로: ① 허용 IP — 토스증권 앱 설정 → "
+                f"Open API → 허용 IP 관리에 이 서버의 공인 IP 가 있어야 합니다"
+                f"(집에서 돌리면 집 IP, 서버에 올리면 서버 IP). ② 키를 재발급한 "
+                f"적이 있으면 옛 키는 즉시 죽습니다 — 새 값으로 다시 넣으세요. "
+                f"③ Open API 이용 동의와 계좌 상태. 세 가지가 다 맞는데도 "
+                f"계속 거부되면 토스증권 고객센터에 이 메시지를 그대로 "
+                f"보여주세요 — 계정 쪽 설정입니다.")
     if response.status_code == 401:
         return (f"{what} 실패 (401) — {body}\n"
                 f"클라이언트 ID·시크릿이 맞는지 확인하세요.")
