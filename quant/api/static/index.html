@@ -61,7 +61,9 @@ header.top{position:sticky;top:0;z-index:40;background:var(--bg);
 .plate{display:inline-flex;align-items:center;gap:6px;background:var(--plate);
   border:2px solid var(--gold-dim);color:var(--gold);font-family:var(--px);font-size:11px;
   padding:4px 10px;margin:-2px 0 0 -2px}
-.plate .d{color:var(--gold-dim)}
+/* 장식 — 읽어줄 내용이 없으므로 보조기기에서는 건너뜁니다. */
+.plate .d{color:#a8862f;opacity:.9}
+.plate .d,.mode .d{speak:none}
 .body{padding:12px}
 
 /* ── HUD ─────────────────────────────────────────────────────────────── */
@@ -93,10 +95,10 @@ tr:last-child td{border-bottom:0}
 
 /* ── the floor ───────────────────────────────────────────────────────── */
 .room{position:relative;padding:30px 10px 12px;overflow:hidden}
-.room.wood{background:
+.room.wood{background-color:var(--wood); background:var(--wood)
   repeating-linear-gradient(90deg,var(--wood) 0 46px,var(--wood-dark) 46px 48px),
   repeating-linear-gradient(0deg,rgba(0,0,0,.10) 0 22px,rgba(0,0,0,0) 22px 24px)}
-.room.turf{background:
+.room.turf{background-color:var(--turf); background:var(--turf)
   repeating-linear-gradient(90deg,var(--turf) 0 30px,var(--turf-dark) 30px 32px),
   repeating-linear-gradient(0deg,rgba(0,0,0,.10) 0 30px,rgba(0,0,0,0) 30px 32px)}
 .room .plate{position:absolute;top:0;left:0;margin:0}
@@ -108,7 +110,9 @@ tr:last-child td{border-bottom:0}
 .seat{width:132px;display:flex;flex-direction:column;align-items:center;position:relative;
   padding-top:84px}
 @media(max-width:520px){.seat{width:104px;padding-top:88px}}
-.seat .seatname{font-family:var(--px);font-size:11px;color:#2a1d0e;text-shadow:1px 1px 0 rgba(255,255,255,.28)}
+.seat .seatname{font-family:var(--px);font-size:11px;color:#1a1206;
+  background:rgba(255,252,244,.92);border:1px solid #2a1d0e;padding:2px 6px;
+  border-radius:2px}
 .seat .role{font-family:var(--px);font-size:9px;background:#efe6d2;border:2px solid #2a1d0e;
   color:#2a1d0e;padding:1px 5px;margin-top:3px;white-space:nowrap}
 .seat.idle{opacity:.55;filter:grayscale(.8)}
@@ -168,15 +172,18 @@ tr:last-child td{border-bottom:0}
 @keyframes tape{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 .tape b{color:var(--gold);font-weight:400;margin-right:6px}
 
-.btn{font-family:var(--px);font-size:10px;background:var(--plate);border:2px solid var(--gold-dim);
+.btn{font-family:var(--px);font-size:11px;min-height:44px;background:var(--plate);
+  border:2px solid var(--gold-dim);
   color:var(--gold);padding:5px 10px;cursor:pointer}
 .btn:hover{background:#1c2231}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .btn.buy{border-color:var(--up);color:var(--up)}
 .btn.sell{border-color:var(--down);color:var(--down)}
-.btn.warn{border-color:var(--red);color:var(--red)}
+.btn.warn{border-color:var(--red);color:#ff8a83}   /* 되돌릴 수 없는 버튼 —
+     빨강은 경고를 뜻하지만, 어두운 바탕에서 읽히지 않으면 경고가 아닙니다. */
 
 /* ── 수동 개입 ─────────────────────────────────────────────────────── */
+select,#mSymbol{min-height:44px}
 .manual{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;
   align-items:end}
 .fld{display:flex;flex-direction:column;gap:4px;min-width:0}
@@ -288,7 +295,7 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
 .quotebar{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:12px 14px;
   border-bottom:1px solid var(--rule)}
 .quotebar select{background:var(--panel2);color:var(--bone);border:1px solid var(--rule);
-  padding:8px 10px;font-family:var(--mono);font-size:13px;min-height:40px}
+  padding:8px 10px;font-family:var(--mono);font-size:13px;min-height:44px}
 .quotebar .last{font-family:var(--mono);font-size:26px;font-weight:700;
   font-variant-numeric:tabular-nums;margin-left:auto}
 .quotebar .last.up{color:var(--sang)}.quotebar .last.down{color:var(--ha)}
@@ -306,7 +313,7 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
 .ticket label{font-size:10px;color:var(--dim);letter-spacing:.1em;display:block;
   margin-bottom:4px}
 .ticket input{width:100%;background:var(--panel2);color:var(--bone);
-  border:1px solid var(--rule);padding:9px 10px;font-family:var(--mono);min-height:42px}
+  border:1px solid var(--rule);padding:9px 10px;font-family:var(--mono);min-height:44px}
 .ticket .hint{font-size:11px;color:var(--faint);line-height:1.5}
 .ticket .go{display:grid;grid-template-columns:1fr 1fr;gap:9px}
 .ticket .go button{min-height:46px;font-family:var(--px);font-size:10px}
@@ -440,7 +447,7 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
 
   <!-- HUD -->
   <section class="panel">
-    <span class="plate"><span class="d">◆</span> 계좌 <span class="d">◆</span></span>
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 계좌 <span class="d" aria-hidden="true">◆</span></span>
     <div class="hud">
       <div class="hud-l">
         <div class="sym" id="hudSym">PORTFOLIO</div>
@@ -454,14 +461,14 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
 
   <!-- positions -->
   <section class="panel">
-    <span class="plate"><span class="d">◆</span> 보유 종목 <span class="d">◆</span></span>
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 보유 종목 <span class="d" aria-hidden="true">◆</span></span>
     <div class="body scroll"><table id="positions"><tbody></tbody></table></div>
   </section>
 
   <!-- analyst room -->
   <section class="panel">
     <div class="room wood">
-      <span class="plate"><span class="d">◆</span> 애널리스트 데스크 <span class="d">◆</span></span>
+      <span class="plate"><span class="d" aria-hidden="true">◆</span> 애널리스트 데스크 <span class="d" aria-hidden="true">◆</span></span>
       <span class="round px" id="deskSubject">대기 중</span>
       <div class="seats" id="analystSeats"></div>
     </div>
@@ -470,7 +477,7 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
   <!-- debate room -->
   <section class="panel">
     <div class="room turf">
-      <span class="plate"><span class="d">◆</span> 토론장 <span class="d">◆</span></span>
+      <span class="plate"><span class="d" aria-hidden="true">◆</span> 토론장 <span class="d" aria-hidden="true">◆</span></span>
       <span class="round px" id="roundTag">ROUND —</span>
       <div class="duel" id="debateSeats"></div>
     </div>
@@ -479,7 +486,7 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
   <!-- risk committee -->
   <section class="panel">
     <div class="room turf">
-      <span class="plate"><span class="d">◆</span> 리스크 위원회 <span class="d">◆</span></span>
+      <span class="plate"><span class="d" aria-hidden="true">◆</span> 리스크 위원회 <span class="d" aria-hidden="true">◆</span></span>
       <span class="round px" id="riskTag">SCALE —</span>
       <div class="duel" id="riskSeats"></div>
     </div>
@@ -488,7 +495,7 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
   <!-- decision desk -->
   <section class="panel">
     <div class="room wood">
-      <span class="plate"><span class="d">◆</span> 결정 데스크 <span class="d">◆</span></span>
+      <span class="plate"><span class="d" aria-hidden="true">◆</span> 결정 데스크 <span class="d" aria-hidden="true">◆</span></span>
       <div class="duel" id="decisionSeats"></div>
     </div>
     <div class="body">
@@ -498,7 +505,7 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
 
   <!-- 마이페이지 · 계정 -->
   <section class="panel" id="account">
-    <span class="plate"><span class="d">◆</span> 마이페이지 · 계정 <span class="d">◆</span></span>
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 마이페이지 · 계정 <span class="d" aria-hidden="true">◆</span></span>
     <div class="body">
       <div class="acct">
         <div>
@@ -541,7 +548,7 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
 
   <!-- 마이페이지 · 투자 성향 -->
   <section class="panel">
-    <span class="plate"><span class="d">◆</span> 마이페이지 · 투자 성향 <span class="d">◆</span></span>
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 마이페이지 · 투자 성향 <span class="d" aria-hidden="true">◆</span></span>
     <div class="body">
       <div class="type">
         <div class="typebadge" id="pType">—<small>미진단</small></div>
@@ -560,7 +567,7 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
 
   <!-- 수동 개입 -->
   <section class="panel">
-    <span class="plate"><span class="d">◆</span> 수동 매매 · 자동매매 중에도 개입 <span class="d">◆</span></span>
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 수동 매매 · 자동매매 중에도 개입 <span class="d" aria-hidden="true">◆</span></span>
     <div class="body">
       <div class="manual">
         <div class="fld"><label>종목</label>
@@ -591,13 +598,13 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
 
   <!-- flow -->
   <section class="panel">
-    <span class="plate"><span class="d">◆</span> 수급 · 외국인 / 기관 / 개인 <span class="d">◆</span></span>
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 수급 · 외국인 / 기관 / 개인 <span class="d" aria-hidden="true">◆</span></span>
     <div class="body" id="flowBody"><div class="empty">수급 데이터 없음 — config 의 flow.provider 를 설정하세요</div></div>
   </section>
 
   <!-- feed -->
   <section class="panel">
-    <span class="plate"><span class="d">◆</span> 이벤트 로그 <span class="d">◆</span></span>
+    <span class="plate"><span class="d" aria-hidden="true">◆</span> 이벤트 로그 <span class="d" aria-hidden="true">◆</span></span>
     <div class="body"><div class="feed" id="feed"></div></div>
   </section>
 
@@ -606,7 +613,7 @@ form.auth .hint{font-size:10px;color:var(--muted);line-height:1.7}
   <!-- 시세 · 매매 — 오른쪽 -->
   <div class="deck-r">
     <section class="panel">
-      <span class="plate"><span class="d">◆</span> 시세 · 매매 <span class="d">◆</span></span>
+      <span class="plate"><span class="d" aria-hidden="true">◆</span> 시세 · 매매 <span class="d" aria-hidden="true">◆</span></span>
       <div class="quotebar">
         <select id="cSym" aria-label="종목"><option value="">—</option></select>
         <select id="cTf" aria-label="봉 주기">
