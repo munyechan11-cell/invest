@@ -8,7 +8,9 @@
  * 인증도 마찬가지입니다. 세션 쿠키가 붙는 응답을 캐시하면 로그아웃한 뒤에도
  * 남의 화면이 남습니다. /api/* 는 통째로 지나갑니다.
  */
-const SHELL = 'quant-shell-v2';
+// v3 — v2 껍데기에는 파싱이 깨진 화면이 들어 있습니다. 이름을 바꾸지
+// 않으면 오프라인일 때 그 죽은 화면이 계속 나옵니다.
+const SHELL = 'quant-shell-v3';
 const FILES = [
   '/',
   '/static/manifest.webmanifest',
