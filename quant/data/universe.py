@@ -343,6 +343,10 @@ class TradingStatusFilter(UniverseFilter):
                 if exit_:
                     await self._flag(ctx, s, exit_, report)
                 else:
+                    # 진입은 막히지만 청산은 가능한 상태. 갇혀 있던 종목이라면
+                    # 여기서 풀어줘야 합니다 — 안 풀면 "청산할 수 없습니다" 가
+                    # 사실이 아닌데도 계속 남습니다.
+                    await self._resolved(ctx, s)
                     report.reasons[s.ticker] = f"{self.name}: {entry} — 보유 중이라 유지"
             else:
                 await self._resolved(ctx, s)
@@ -357,6 +361,11 @@ class TradingStatusFilter(UniverseFilter):
             _, exit_ = self._assess(ctx, pos.symbol)
             if exit_:
                 await self._flag(ctx, pos.symbol, exit_, report)
+            else:
+                # 후보 목록 밖에 있는 보유 종목이 회복된 경우. 이 갈래에
+                # 해제가 없으면 거래가 재개돼도 갇힌 표시가 영구히 남고,
+                # 재개 알림도 영영 나가지 않습니다.
+                await self._resolved(ctx, pos.symbol)
 
         self._note_source(with_status, len(symbols))
         return out

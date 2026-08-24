@@ -409,3 +409,41 @@ def test_blocking_caution_warns_that_it_only_costs_money(caplog):
 
 def test_the_filter_is_registered_for_configs():
     assert BUILTIN_UNIVERSE_FILTERS["trading_status"] is TradingStatusFilter
+
+
+# ── 갇힘 표시는 풀려야 합니다 ────────────────────────────────────────────
+def test_a_holding_that_resumes_trading_stops_being_flagged_as_stuck():
+    """거래가 재개됐는데 "청산할 수 없습니다" 가 남으면 그건 거짓말입니다.
+
+    갇힘 표시는 트레이더와 노티파이어가 읽으라고 만든 것입니다. 한 번 켜진 뒤
+    안 꺼지면, 사용자는 팔 수 있는 종목을 못 판다고 믿게 됩니다.
+    """
+    ctx, s0 = make_ctx(), sym("000660")
+    seed(ctx, s0)
+    hold(ctx, s0)
+    filt = TradingStatusFilter()
+
+    set_trading_status(ctx, s0, status(halted=True))
+    run(filt, ctx, [s0])
+    assert stuck_positions(ctx)
+
+    # 거래 재개 — 다만 관리종목 지정은 남아 진입은 계속 막힙니다.
+    set_trading_status(ctx, s0, status(designation="관리종목"))
+    run(filt, ctx, [s0])
+    assert stuck_positions(ctx) == {}, "재개됐는데 갇힘 표시가 남았습니다"
+
+
+def test_a_holding_outside_the_candidate_list_is_also_released():
+    """앞선 필터가 이미 빼 버린 보유 종목도 회복되면 풀려야 합니다."""
+    ctx, s0 = make_ctx(), sym("000660")
+    seed(ctx, s0)
+    hold(ctx, s0)
+    filt = TradingStatusFilter()
+
+    set_trading_status(ctx, s0, status(halted=True))
+    run(filt, ctx, [])                      # 후보 목록에 없음
+    assert stuck_positions(ctx)
+
+    set_trading_status(ctx, s0, status())
+    run(filt, ctx, [])
+    assert stuck_positions(ctx) == {}

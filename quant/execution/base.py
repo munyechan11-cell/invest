@@ -141,6 +141,11 @@ class OrderReview:
     reason: str
 
 
+#: 취소 요청이 이만큼 지나면 성공을 더 기다리지 않습니다. 4봉은 어느 거래소든
+#: 정상 취소가 돌아오기에 넉넉하고, 그 뒤로도 안 돌아온다면 돌아오지 않습니다.
+CANCEL_PATIENCE_BARS = 4
+
+
 @dataclass
 class _Resting:
     """Our view of one order we sent, kept alive until it leaves the book."""
@@ -155,8 +160,24 @@ class _Resting:
     age: int = 0
     filled: Decimal = Decimal("0")
     cancel_requested: bool = False
+    #: 취소를 부탁한 뒤 몇 봉이 지났는가. 취소가 **성공한다는 보장이 없어서**
+    #: 셉니다 — KIS 어댑터의 취소는 지금 무조건 실패하고, 그러면 이 기록이
+    #: 영원히 남아 같은 종목의 주문을 계속 막습니다.
+    cancel_age: int = 0
     asks: int = 0
     action: AgeAction = AgeAction.HOLD
+
+    @property
+    def cancel_stale(self) -> bool:
+        """취소를 부탁한 지 너무 오래됐다 — 이제 없는 셈 칩니다.
+
+        취소는 요청이지 명령이 아닙니다. 거래소가 거절할 수도, 어댑터가
+        지원하지 않을 수도 있습니다(지금 KIS 가 그렇습니다). 성공을 무한정
+        기다리면 그 종목의 신규 진입이 영구히 잠기므로, 몇 봉 뒤에는 포기하고
+        평소처럼 계산합니다 — `projected_quantity` 가 브로커의 미체결을 그대로
+        빼주므로 이중 계상은 그쪽에서 막힙니다.
+        """
+        return self.cancel_requested and self.cancel_age >= CANCEL_PATIENCE_BARS
     reason: str = ""
 
 
@@ -230,6 +251,8 @@ class ExecutionModel(ABC):
                 self._resolved(rec)
                 self._resting.pop(oid)
                 continue
+            if rec.cancel_requested:
+                rec.cancel_age += 1
             if order.filled_qty > rec.filled:
                 # Progress at the venue is the opposite of a stalled order: the
                 # patience counter starts again from this fill.
@@ -413,8 +436,13 @@ class ExecutionModel(ABC):
         along.
         """
         key = symbol.key
-        if any(r.cancel_requested and r.order.symbol.key == key
-               for r in self._resting.values()):
+        # 청산은 어떤 이유로도 막지 않습니다. 취소 요청이 걸려 있다는 이유로
+        # 청산을 미루면, 취소가 실패하는 거래소에서는 그 종목이 영영 잠깁니다 —
+        # 손절도, 리스크 청산도, 사용자의 수동 매도도 나가지 못합니다.
+        if not reducing and any(
+                r.cancel_requested and not r.cancel_stale
+                and r.order.symbol.key == key
+                for r in self._resting.values()):
             return True
         if key in self._stood_down and self._amend_window_closed(ctx, symbol):
             return True
