@@ -197,9 +197,40 @@ class LiveBrokerage(Brokerage):
             log.warning("cancel failed for %s: %s", order.symbol.ticker, exc)
             return False
         if ok:
-            order.status = OrderStatus.CANCELED
+            await self._reap(order)
+            # 취소가 닿기 전에 전부 체결됐다면 그건 취소된 주문이 아닙니다.
+            # CANCELED 로 덮으면 방금 booked 한 체결과 상태가 서로 어긋납니다.
+            if order.remaining > 0:
+                order.status = OrderStatus.CANCELED
             self._orders.pop(order.id, None)
         return ok
+
+    async def _reap(self, order: Order) -> Decimal:
+        """장부에서 빼기 직전에, 취소보다 먼저 체결된 몫을 한 번 더 걷습니다.
+
+        취소를 냈다고 취소된 것은 아닙니다. 주문이 호가에 걸려 있는 동안
+        상대가 체결시켜 버렸을 수 있고, 그 체결은 취소 요청과 경주해서
+        이깁니다. 거래소에는 체결로 남았는데 여기서는 취소로 남으면, 그 주식은
+        계좌에 있으면서 엔진의 장부에는 없습니다 — 손절도 사이징도 하루 한도도
+        걸리지 않는 포지션이 생깁니다.
+
+        `poll_fills` 가 `self._orders` 를 훑기 때문에, 빼기 **전에** 불러야
+        합니다. 순서를 바꾸면 이 함수는 아무것도 못 찾습니다.
+
+        돌려주는 것은 이 주문이 실제로 체결된 총 수량입니다. 상위
+        (`quant/execution/base.py`)가 "취소가 체결에 졌다" 를 판정할 때 읽는
+        `order.filled_qty` 도 여기서 갱신됩니다.
+        """
+        try:
+            drained = await self.poll_fills()
+        except Exception as exc:            # noqa: BLE001 — 취소는 계속돼야 합니다
+            log.warning("취소 직전 체결 확인 실패 %s: %s", order.symbol.ticker, exc)
+            return order.filled_qty
+        if drained:
+            # poll_fills 는 큐를 비웁니다. 엔진이 아직 가져가지 않은 체결이라
+            # 그대로 두면 우리가 삼킨 것이 됩니다. 시간 순서대로 되돌려 놓습니다.
+            self._pending_fills[:0] = drained
+        return order.filled_qty
 
     async def open_orders(self) -> list[Order]:
         return [o for o in self._orders.values() if o.status.is_open]
