@@ -591,18 +591,6 @@ def _template_config(name: str | None):
         return None
 
 
-def build_alpha_desk(spec):
-    """설정에 적힌 데스크를 봇 없이 하나 세웁니다.
-
-    봇이 돌고 있으면 그 데스크를 그대로 쓰는 게 맞습니다(기억과 이력이
-    이어집니다). 꺼져 있을 때만 이 길로 옵니다 — 검색해서 고른 종목을
-    물어보려고 봇부터 켜게 만들지 않기 위해서입니다.
-    """
-    from quant.strategy.builder import _build_council, _build_desk
-    return (_build_desk(spec, None) if spec.type == "desk"
-            else _build_council(spec))
-
-
 def _standalone_context(cfg, symbol, bars):
     """심의 한 번을 위한 최소 Context.
 
@@ -1221,12 +1209,16 @@ def create_app(config: StrategyConfig | None = None,
         # 돌고 있는 봇의 설정을 먼저 쓰고, 없으면 화면이 고른 전략을 씁니다.
         # 봇이 꺼져 있을 때 시세를 보는 것이 이 화면의 절반이라, 봇을 켜야만
         # 호가를 볼 수 있으면 순서가 거꾸로입니다.
-        cfg = seat.run_config()
+        #
+        # `run_config()` 는 봇이 없으면 프로세스 기본 템플릿으로 물러섭니다.
+        # 그래서 `if cfg is None:` 안에 둔 strategy 처리는 **한 번도 실행되지
+        # 않았고**, 차트는 언제나 그 템플릿의 종목만 알았습니다 — 다른 전략을
+        # 고르면 그 전략의 종목이 "이 전략의 종목이 아닙니다" 로 404 였습니다.
+        cfg = (seat.run_config() if seat.running()
+               else (_template_config(strategy) or seat.run_config()))
         if cfg is None:
-            if not strategy:
-                raise HTTPException(
-                    400, "전략을 고르세요 — 어느 거래소에서 조회할지 알 수 없습니다.")
-            cfg = load_config(str(resolve_template(strategy)))
+            raise HTTPException(
+                400, "전략을 고르세요 — 어느 거래소에서 조회할지 알 수 없습니다.")
 
         symbol = next((s for s in _config_symbols(cfg)
                        if s.ticker.upper() == ticker.strip().upper()), None)
@@ -1409,14 +1401,6 @@ def create_app(config: StrategyConfig | None = None,
         if not ticker:
             raise HTTPException(400, "종목을 지정하세요")
 
-        plan = getattr(seat.user, "plan", "free")
-        own_key = "GOOGLE_API_KEY" in set(seat.registry.accounts.configured(seat.user.id))
-        usage = seat.registry.usage
-        allowed, why = await run_in_threadpool(
-            usage.allow, seat.user.id, plan, own_key)
-        if not allowed:
-            raise HTTPException(429, why)
-
         # 돌고 있는 봇이 있으면 그 설정으로 심의합니다(데스크의 기억과 이력이
         # 이어집니다). 꺼져 있으면 사용자가 고른 전략으로 — `run_config()` 는
         # 봇이 없을 때 프로세스 기본 템플릿으로 물러서므로, 그 값을 그대로
@@ -1428,27 +1412,54 @@ def create_app(config: StrategyConfig | None = None,
                 400, "전략을 먼저 고르세요 — 심의는 그 전략의 설정(봉 간격, "
                      "리스크 한도, 데스크 모델)을 그대로 씁니다.")
 
+        if not any(m.type in ("desk", "council") for m in cfg.alpha):
+            raise HTTPException(
+                400, f"'{cfg.name}' 전략에는 AI 데스크가 없습니다. "
+                     f"데스크가 있는 전략을 고르세요.")
+
+        # `own_key` 는 요금제 상한을 면제할지 정하는 값입니다. "GOOGLE_API_KEY
+        # 라는 이름이 등록돼 있는가" 로 판정하면, 아무 문자열이나 저장해 둔
+        # 사람이 상한을 없애면서 정작 심의는 운영자 키로 나갑니다 — 상한도
+        # 없고 운영자 집계에도 안 잡히는 조합입니다. 데스크가 **실제로 들고
+        # 있는 키**가 그 사람 것인지로 봅니다.
         model = seat.desk_model()
-        if model is None:
-            desk_spec = next((m for m in cfg.alpha if m.type in ("desk", "council")), None)
-            if desk_spec is None:
-                raise HTTPException(
-                    400, f"'{cfg.name}' 전략에는 AI 데스크가 없습니다. "
-                         f"데스크가 있는 전략을 고르세요.")
+        if model is not None:
+            # 돌고 있는 봇의 데스크를 그대로 씁니다 — 기억과 이력이 이어집니다.
+            # 자기 키로 도는지는 따로 물어야 합니다: 안 넣은 사람의 봇도
+            # 운영자 키로 잘 돕니다.
+            own_key = await run_in_threadpool(
+                seat.registry.desk_owns_key, seat.user.id, cfg)
+        else:
             try:
-                model = build_alpha_desk(desk_spec)
+                model, own_key = await run_in_threadpool(
+                    seat.registry.desk_for, seat.user.id, cfg)
             except Exception as exc:
                 log.warning("데스크 생성 실패: %s", exc)
                 # 사용자가 읽어야 하는 문장입니다. 원문이 영어면 무엇을 해야
                 # 하는지 알 수 없으므로, 가장 흔한 원인은 한국어로 바꿔 줍니다.
                 text = str(exc)
                 if "no API key" in text or "api key" in text.lower():
+                    # 이미 자기 키를 넣은 사람에게 "키를 넣으세요" 라고 말하면,
+                    # 맞는 말도 아니고 고칠 방법도 알려주지 못합니다.
+                    mine = await run_in_threadpool(
+                        seat.registry.desk_owns_key, seat.user.id, cfg)
                     raise HTTPException(
-                        503, "AI 데스크를 쓸 수 없습니다 — 서비스의 Gemini 키가 "
-                             "설정되지 않았거나 한도에 걸렸습니다. 마이페이지에서 "
-                             "본인 Gemini 키를 넣으면 바로 쓸 수 있습니다.") from None
+                        503,
+                        "넣어 두신 Gemini 키를 쓸 수 없습니다 — 값이 맞는지, "
+                        "해당 키에 Gemini API 사용 권한이 있는지 확인하세요."
+                        if mine else
+                        "AI 데스크를 쓸 수 없습니다 — 서비스의 Gemini 키가 "
+                        "설정되지 않았거나 한도에 걸렸습니다. 마이페이지에서 "
+                        "본인 Gemini 키를 넣으면 바로 쓸 수 있습니다.") from None
                 raise HTTPException(
                     503, f"데스크를 준비할 수 없습니다: {text}") from None
+
+        plan = getattr(seat.user, "plan", "free")
+        usage = seat.registry.usage
+        allowed, why = await run_in_threadpool(
+            usage.allow, seat.user.id, plan, own_key)
+        if not allowed:
+            raise HTTPException(429, why)
 
         symbol = next((s for s in _config_symbols(cfg)
                        if s.ticker.upper() == ticker), None)

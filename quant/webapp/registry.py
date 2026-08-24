@@ -573,6 +573,64 @@ class UserRegistry:
         wired = _with_credentials(cfg, self.accounts.secrets_for(user_id))
         return build_data_provider(wired)
 
+    def desk_owns_key(self, user_id: int, config: StrategyConfig) -> bool:
+        """이 사용자의 데스크가 **자기 키**로 도는가 — 데스크를 세우지 않고.
+
+        요금제 상한을 면제할지 정하는 값입니다. "GOOGLE_API_KEY 라는 이름이
+        등록돼 있는가" 로 판정하면 아무 문자열이나 저장해 둔 사람이 상한을
+        없애면서 정작 심의는 운영자 키로 나갑니다 — 상한도 없고 운영자
+        집계에도 안 잡히는 조합입니다.
+
+        한 자리라도 운영자 키로 돌면 False 입니다. 분석석은 자기 키, 결정석은
+        운영자 키로 도는 설정에서 "자기 키니까 무제한" 은 성립하지 않습니다.
+        """
+        spec = next((m for m in config.alpha if m.type in ("desk", "council")), None)
+        if spec is None:
+            return False
+        secrets = self.accounts.secrets_for(user_id)
+        wired = _with_credentials(self.prepare(user_id, config), secrets)
+        wired_spec = next(m for m in wired.alpha if m.type in ("desk", "council"))
+        slots = [wired_spec.params.get(s) for s in ("llm", "decision_llm")]
+        slots = [s for s in slots if isinstance(s, dict)]
+        if not slots:
+            return False
+        for llm in slots:
+            name = _LLM_SECRETS.get(str(llm.get("provider", "anthropic")), "")
+            mine = secrets.get(name, "") if name else ""
+            if not mine or llm.get("api_key") != mine:
+                return False
+        return True
+
+    def desk_for(self, user_id: int, config: StrategyConfig):
+        """이 사용자의 키로 세운 AI 데스크 — 봇과 무관하게.
+
+        `/api/evaluate` 가 부릅니다. 봇이 꺼져 있어도 종목 하나를 물어볼 수
+        있어야 하는데, 그때 원본 템플릿으로 데스크를 세우면 설정 파일에 키가
+        없으므로 `LLMConfig.resolved_key()` 가 **프로세스 환경변수** 로
+        폴백합니다 — 즉 사용자가 자기 Gemini 키를 넣어 두었어도 심의는
+        운영자 키로 나갑니다. 시세 프로바이더(`data_provider`)가 이미
+        `_with_credentials` 를 타는 것과 같은 이유로 여기도 태웁니다.
+
+        돌려주는 두 번째 값은 "이 데스크가 사용자 자기 키로 도는가" 입니다.
+        요금제 상한을 면제할지 정하는 값이라, **이름이 등록됐는지**가 아니라
+        **그 값이 실제로 데스크에 들어갔는지**로 판정해야 합니다. 아무 문자열이나
+        저장해 두면 상한이 사라지는데 정작 심의는 운영자 키로 나가는 조합이
+        가능해집니다.
+        """
+        spec = next((m for m in config.alpha if m.type in ("desk", "council")), None)
+        if spec is None:
+            return None, False
+
+        wired = _with_credentials(self.prepare(user_id, config),
+                                  self.accounts.secrets_for(user_id))
+        wired_spec = next(m for m in wired.alpha if m.type in ("desk", "council"))
+        own = self.desk_owns_key(user_id, config)
+
+        from quant.strategy.builder import _build_council, _build_desk
+        desk = (_build_desk(wired_spec, None) if wired_spec.type == "desk"
+                else _build_council(wired_spec))
+        return desk, own
+
     def build_trader(self, user_id: int, config: StrategyConfig):
         """이 사용자의 키로 세운 `LiveTrader`. 아직 돌지는 않습니다.
 
