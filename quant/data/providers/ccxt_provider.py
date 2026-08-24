@@ -55,6 +55,9 @@ class CcxtProvider(DataProvider):
             self.ex.set_sandbox_mode(True)
         self._markets_loaded = False
         self._lock = LazyLock()
+        #: 이 거래소가 받아 주는 페이지 크기. 거절당하면 줄이고 기억합니다 —
+        #: 바이낸스는 1000, 업비트는 200 이 상한입니다.
+        self._page_limit = 1000
 
     async def _ensure_markets(self) -> None:
         if self._markets_loaded:
@@ -99,10 +102,25 @@ class CcxtProvider(DataProvider):
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
         out: list[Bar] = []
         seen: set[int] = set()
+        # 페이지 크기는 거래소마다 다릅니다. 바이낸스는 1000 을 받고 업비트는
+        # 200 이 상한입니다. 큰 값을 박아 두면 상한이 낮은 거래소에서 **첫
+        # 요청부터** 거절당하고, 아래 except 가 경고 한 줄을 남기고 break 해서
+        # 봉 0개로 끝납니다 — 그 위에서 백테스트가 조용히 돕니다.
+        #
+        # 그래서 큰 값으로 시작해 거절당하면 반으로 줄입니다. 큰 거래소는
+        # 그대로 빠르고, 작은 거래소는 두세 번 만에 자기 상한을 찾습니다.
+        limit = self._page_limit
         while since < end_ms:
             try:
-                chunk = await self.ex.fetch_ohlcv(symbol.ticker, timeframe, since=since, limit=1000)
+                chunk = await self.ex.fetch_ohlcv(symbol.ticker, timeframe,
+                                                  since=since, limit=limit)
             except Exception as exc:
+                if limit > 100:
+                    limit //= 2
+                    self._page_limit = limit
+                    log.info("%s: 페이지 크기를 %d 로 줄입니다 (%s)",
+                             self.exchange_id, limit, exc)
+                    continue
                 log.warning("%s ohlcv failed for %s: %s", self.exchange_id, symbol.ticker, exc)
                 break
             if not chunk:
@@ -123,7 +141,40 @@ class CcxtProvider(DataProvider):
                 break
             since = advanced
         out.sort(key=lambda b: b.ts)
+        self._warn_on_gaps(symbol, timeframe, out, step_ms)
         return out
+
+    def _warn_on_gaps(self, symbol, timeframe: str, bars: list[Bar],
+                      step_ms: int) -> None:
+        """받은 시계열에 구멍이 있으면 말합니다.
+
+        거래소가 `since` 를 창의 시작이 아니라 **끝**으로 해석하면(업비트가
+        그렇습니다) 페이지마다 창의 마지막 구간만 돌아옵니다. 그러면 봉은
+        정상처럼 보이는데 사이가 몇 달씩 비어 있고, 지표는 그 건너뛴 봉들을
+        연속봉으로 계산합니다 — 200일 이동평균이 실제로는 몇 년을 덮습니다.
+        연율화도 같이 틀어집니다.
+
+        고치지는 못합니다(거래소의 의미론이라서). 다만 조용히 지나가지는
+        않습니다 — 구멍 난 시계열 위에서 나온 백테스트를 믿는 것이 이 종류의
+        결함이 실제로 돈을 잃는 방식입니다.
+        """
+        if len(bars) < 3:
+            return
+        step = step_ms / 1000.0
+        gaps = 0
+        worst = 0.0
+        for prev, cur in zip(bars, bars[1:]):
+            delta = (cur.ts - prev.ts).total_seconds()
+            # 주말·휴장은 정상입니다. 한 칸의 3배를 넘는 것만 셉니다.
+            if delta > step * 3:
+                gaps += 1
+                worst = max(worst, delta)
+        if gaps:
+            log.warning(
+                "%s %s %s: 봉 사이에 구멍 %d곳, 최대 %.1f일 — 거래소가 페이지를 "
+                "예상과 다르게 잘라 주고 있습니다. 이 시계열 위의 지표와 "
+                "연율화는 믿을 수 없습니다.",
+                self.exchange_id, symbol.ticker, timeframe, gaps, worst / 86400)
 
     async def quote(self, symbol):
         try:
