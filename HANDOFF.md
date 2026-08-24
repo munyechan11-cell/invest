@@ -135,34 +135,51 @@ quant/api/static/chart.js     캔들 차트
 **`install.sh` 를 돌릴 때마다 서비스가 재시작되므로, 장중에 배포하면 그날
 한도가 리셋됩니다.**
 
-수정본이 워크트리에 있습니다:
-`scratchpad/r3/2` — 검증까지 끝나면 머지하면 됩니다.
+수정본은 **원격 브랜치**에 있습니다: `origin/pending/daily-cap-survives-restart`
 
-### 그 밖에 워크트리에 있는 수정 (전부 전체 테스트 통과 상태)
+### 워크트리에 있던 것을 전부 브랜치로 옮겼습니다
 
-| 워크트리 | 무엇 |
-|---|---|
-| `scratchpad/r3/0` | 수동 대기주문이 화면에 안 보이고 취소도 안 됨 |
-| `scratchpad/r3/2` | **하루 한도 재시작 초기화** (위) |
-| `scratchpad/r3/3` | KIS 가 아직 안 끝난 당일 봉을 확정봉으로 줌 |
-| `scratchpad/r3/5` | 백테스트 성적표의 거래수·승률이 분할매도에 지배됨 |
-| `scratchpad/r3/6` | 봇 데스크 심의가 요금제 한도를 안 거침 |
-| `scratchpad/r3/fx` | 통화 환산 계층 (아래 5번) |
+세션 임시 폴더에 있으면 세션이 끝날 때 경로째 사라집니다. 전부
+`origin/pending/*` 으로 푸시했습니다. `git fetch` 하면 받아집니다.
 
-머지 방법:
+| 브랜치 | 무엇 | 상태 |
+|---|---|---|
+| `pending/toss-fees` | 토스 수수료·거래세 0원 | **이미 main 에 머지됨** |
+| `pending/pnl-split-by-mode` | 모의·실거래 손익 혼합 | **이미 main 에 머지됨** |
+| `pending/daily-cap-survives-restart` | **하루 한도 재시작 초기화** (위) | 검증 미완 |
+| `pending/manual-pending-orders` | 수동 대기주문이 화면에 안 보이고 취소 불가 | 검증 미완 |
+| `pending/kis-unfinished-daily-bar` | KIS 가 안 끝난 당일 봉을 확정봉으로 줌 | 검증 미완 |
+| `pending/backtest-trade-counting` | 성적표의 거래수·승률이 분할매도에 지배됨 | 검증 미완 |
+| `pending/desk-metering` | 봇 데스크 심의가 요금제 한도를 안 거침 | 검증 미완 |
+| `pending/fx-layer` | 통화 환산 계층 (아래 5번) | 검증 미완 |
+| `pending/toss-websocket` | 실시간 시세 — **못 했습니다**, 아래 참고 | — |
+
+**전부 갈라진 시점이 `4126f58` 입니다.** main 은 그 뒤로 여섯 커밋 더 갔으니
+그냥 머지하면 충돌합니다. 이렇게 하세요:
+
 ```bash
-git -C scratchpad/r3/2 add -A
-git -C scratchpad/r3/2 diff --cached > /tmp/p.patch
+git fetch origin
+git diff 4126f58 origin/pending/daily-cap-survives-restart > /tmp/p.patch
 git apply --3way /tmp/p.patch
 ```
 
-**주의**: 이 수정들은 두 번씩 반증당한 이력이 있습니다. 원래 결함 진단은
-매번 맞았는데 고치면서 새 결함을 만들었습니다. 머지 전에 diff 를 읽고,
-전체 테스트를 돌리고, 가능하면 되돌려서 테스트가 실제로 무는지 확인하세요.
+**"검증 미완" 의 뜻**: 코드는 완성돼 있고 각자 전체 테스트를 통과한 상태에서
+멈췄습니다. 안 끝난 것은 **적대적 검증** — "이 수정에 새 결함이 있는가" 를
+따지는 단계입니다.
+
+그게 왜 중요하냐면, 이 일곱 건은 **두 라운드 연속으로 반증당했습니다.** 원래
+결함 진단은 매번 맞았는데 고치는 과정에서 새 결함을 만들었습니다. 3라운드는
+"완벽한 수정" 이 아니라 "**반증되지 않는** 수정" 을 목표로 범위를 좁혀 다시
+짠 것입니다. 그래도 머지 전에는 직접 확인하세요:
+
+1. `git diff 4126f58 origin/pending/<브랜치>` 를 **끝까지 읽으세요.**
+2. 전체 테스트를 돌리세요.
+3. **수정을 되돌려서 테스트가 실제로 실패하는지 보세요.** 되돌려도 통과하는
+   테스트는 아무것도 지키지 않습니다 — 이 저장소에서 실제로 두 번 나왔습니다.
 
 ### 토스 실시간 시세(WebSocket) — 못 했습니다
 
-`scratchpad/r3/ws` 의 결론: **공식 스펙 파일에 소켓 프로토콜이 없습니다.**
+`pending/toss-websocket` 의 결론: **공식 스펙 파일에 소켓 프로토콜이 없습니다.**
 주소(`wss://openapi-ws.tossinvest.com/ws/v1`)만 있고 구독 메시지 형식·인증·
 메시지 종류가 문서에 없습니다. 추측으로 프로토콜을 지어내지 않았습니다.
 토스에 문의하거나 별도 문서를 구해야 합니다.
@@ -190,7 +207,7 @@ git apply --3way /tmp/p.patch
 
 `docs/cross_market.md` — 미국+국내+코인 동시 운용.
 
-1단계(**통화 환산 계층**)가 `scratchpad/r3/fx` 에 있습니다. 이건 크로스마켓을
+1단계(**통화 환산 계층**)가 `origin/pending/fx-layer` 에 있습니다. 이건 크로스마켓을
 안 하더라도 해야 합니다: 지금 원화 종목과 달러 종목을 한 유니버스에 넣으면
 **에러가 나지 않고** 7만(원)과 250(달러)이 그냥 더해집니다.
 
