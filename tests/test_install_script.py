@@ -84,3 +84,40 @@ def test_the_data_directory_is_not_world_readable():
     """남의 증권사 키가 사는 곳입니다."""
     assert 'install -d -o "$APP_USER" -g "$APP_USER" -m 700 "$DATA_DIR"' in TEXT
     assert 'chmod 600 "$ENV_FILE"' in TEXT
+
+
+# ── 도메인 붙이기 ────────────────────────────────────────────────────────
+DOMAIN_SH = Path("deploy/domain.sh")
+DOMAIN_TEXT = DOMAIN_SH.read_text(encoding="utf-8")
+
+
+def test_the_domain_script_is_valid_bash():
+    subprocess.run(["bash", "-n", str(DOMAIN_SH)], check=True)
+
+
+def test_it_checks_dns_before_asking_for_a_certificate():
+    """DNS 가 아직 다른 곳을 가리키면 발급이 실패하고 한동안 재시도가 막힙니다.
+
+    Let's Encrypt 는 실패를 세고, 몇 번 넘으면 그 도메인을 한 시간쯤 잠급니다.
+    확인 없이 시도하는 것은 그 시간을 버리는 일입니다.
+    """
+    dns = DOMAIN_TEXT[DOMAIN_TEXT.index("1/5"):DOMAIN_TEXT.index("2/5")]
+    assert "getent hosts" in dns
+    assert 'RESOLVED" != "$SERVER_IP' in dns
+    assert "재시도가 막힙니다" in dns
+
+
+def test_it_waits_for_the_certificate_before_declaring_success():
+    """Let's Encrypt 왕복에 몇 초 걸립니다 — 바로 확인하면 성공을 실패로 봅니다."""
+    tail = DOMAIN_TEXT[DOMAIN_TEXT.index("5/5"):]
+    assert "for _ in $(seq" in tail
+    assert "api/health" in tail
+
+
+def test_it_tells_the_app_its_own_origin():
+    assert "CORS_ORIGINS=https://$DOMAIN" in DOMAIN_TEXT
+
+
+def test_a_failure_says_where_to_look():
+    assert "journalctl -u caddy" in DOMAIN_TEXT
+    assert "ufw status" in DOMAIN_TEXT
