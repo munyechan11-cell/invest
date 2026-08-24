@@ -109,3 +109,37 @@ def test_the_desk_speaks_before_the_first_bar_closes():
         "봉 없이 도는 심의가 엔진을 돌립니다 — 시작 버튼이 곧 주문이 됩니다.")
     assert "_submit" not in src and "execution_model" not in src, (
         "봉 없이 도는 심의에서 주문 경로에 닿습니다")
+
+
+def test_a_failed_deliberation_says_so_where_the_button_was():
+    """실패는 누른 자리에 떠야 합니다.
+
+    데스크 옆 버튼을 눌렀는데 오류가 저 아래 수동매매 패널에만 뜨면, 사람은
+    아무 일도 안 일어난 줄 압니다 — 실제로 그렇게 보였습니다. 서버는 이유를
+    한국어로 만들어 보내는데(키 거절·시세 실패·봉 부족) 그 문장이 화면 어디에도
+    안 뜨면, 무엇을 고쳐야 할지 알 방법이 없습니다.
+    """
+    assert "function deskFailed" in SCRIPT, "실패를 데스크에 그리는 자리가 없습니다"
+    ask = re.search(r"async function askDeskFor\([^)]*\) \{(.*?)\n\}\n", SCRIPT, re.S)
+    assert ask, "askDeskFor 를 찾지 못했습니다"
+    catch = ask.group(1)[ask.group(1).index("catch"):]
+    assert "deskFailed" in catch, (
+        "심의가 실패했는데 데스크 자리에는 아무 말도 안 남습니다")
+    body = _body("deskFailed")
+    assert "bad" in body, "실패가 기다림과 같은 회색으로 보입니다"
+    assert "message" in body, (
+        "서버가 만들어 준 이유를 버리고 고정 문구만 띄웁니다 — 무엇을 고쳐야 "
+        "할지 알 수 없게 됩니다.")
+
+
+def test_it_asks_the_strategy_that_is_actually_running():
+    """봇이 돌면 선택기는 감춰지고 값도 리셋됩니다.
+
+    그 값으로 물으면 지금 돌고 있는 것과 다른 전략의 데스크에 묻게 되고,
+    돌아온 대답은 사용자가 보고 있는 전략의 판단이 아닙니다.
+    """
+    ask = re.search(r"async function askDeskFor\([^)]*\) \{(.*?)\n\}\n", SCRIPT, re.S).group(1)
+    call = ask[:ask.index("catch")]
+    assert "shownStrategy()" in call, (
+        "즉석 심의가 선택기 값으로 묻습니다 — 봇이 도는 동안 그 값은 "
+        "돌고 있는 전략이 아닙니다.")

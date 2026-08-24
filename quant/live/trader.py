@@ -67,6 +67,10 @@ class LiveTrader:
         minutes = float((spec.params.get("closed_cadence_minutes", 60) if spec else 0) or 0)
         self.closed_cadence_s = max(minutes, 5.0) * 60 if minutes else 0.0
         self._last_closed_deliberation = 0.0
+        # 마지막 심의 시도가 어떻게 됐는지. 화면이 "계속 심의합니다" 라고 써
+        # 놓고 아무것도 안 뜨면 그건 거짓말입니다 — 안 된 이유를 남겨야
+        # 그 자리에 대신 쓸 말이 생깁니다.
+        self.desk_note: str = ""
         self.notifier = TelegramNotifier(
             config.notify.telegram_bot_token, config.notify.telegram_chat_id,
             config.notify.on_events,
@@ -256,9 +260,16 @@ class LiveTrader:
         await self._deliberate_now("휴장 중")
 
     async def _deliberate_now(self, reason: str) -> None:
-        """봉을 기다리지 않고 지금 한 번 심의한다. 주문은 내지 않는다."""
+        """봉을 기다리지 않고 지금 한 번 심의한다. 주문은 내지 않는다.
+
+        여기서 조용히 돌아가는 길이 여럿입니다 — 데스크가 없거나, 한도에
+        걸렸거나, 볼 봉이 없거나. 그때마다 `desk_note` 에 이유를 남깁니다.
+        화면이 "계속 심의합니다" 라고 써 놓고 아무것도 안 뜨면 그건 거짓말이고,
+        사용자는 무엇을 고쳐야 할지 알 방법이 없습니다.
+        """
         desk = self.desk()
         if desk is None:
+            self.desk_note = "이 전략에는 AI 데스크가 없습니다"
             return
         # 이 심의는 사람이 ▶ 시작 을 누를 때마다 한 번씩 나갑니다. 껐다 켜기를
         # 반복하면 그만큼 반복되고, 데스크의 `cost_limit_usd` 는 봇을 새로
@@ -269,6 +280,7 @@ class LiveTrader:
             allowed, why = self.meter.allow()
             if not allowed:
                 log.info("%s 심의 건너뜀 — %s", reason, why)
+                self.desk_note = f"심의를 쉬는 중 — {why}"
                 return
         ctx = self.engine.ctx
         # 워밍업이 남긴 마지막 봉. 없으면 심의할 재료가 없는 것이고, 그건
@@ -279,6 +291,11 @@ class LiveTrader:
             if history:
                 last[symbol.key] = history[-1]
         if not last:
+            self.desk_note = ("볼 봉이 없습니다 — 유니버스가 비었거나 시세를 "
+                              "아직 받지 못했습니다")
+            return
+        if desk.status().get("disabled_reason"):
+            self.desk_note = desk.status()["disabled_reason"]
             return
         log.info("%s 심의 — 봉을 기다리지 않고 지금 상태로 한 번 봅니다", reason)
         before = desk.status()["llm_calls"], desk.estimated_cost_usd
@@ -290,6 +307,7 @@ class LiveTrader:
                 # 그 사이가 사람이 "예약" 이라고 부르는 구간입니다.
                 self.engine.insights.add(fresh)
                 self.engine.ledger.record(ctx, fresh)
+                self.desk_note = ""
                 for ins in fresh:
                     await ctx.bus.publish(EventType.INSIGHT, _insight_dict(ins))
         except asyncio.CancelledError:
@@ -298,13 +316,21 @@ class LiveTrader:
             # 여기서 죽으면 봇이 아예 안 뜹니다. 첫인상보다 돌아가는 쪽이
             # 중요하므로, 실패는 알리고 넘어갑니다.
             log.warning("%s 심의 실패: %s", reason, exc)
+            self.desk_note = f"{reason} 심의 실패 — {exc}"
             await ctx.bus.publish(EventType.ERROR,
                                   {"error": f"{reason} 심의 실패: {exc}"})
         finally:
             # 실패했어도 부른 만큼은 청구됩니다. 성공만 계량하면 실패한 호출의
             # 비용이 아무 계정에도 잡히지 않습니다.
+            after_calls = desk.status()["llm_calls"]
+            if after_calls == before[0] and not self.desk_note:
+                # 호출이 한 번도 안 나갔습니다. 데스크는 살아 있는데 이번
+                # 봉에서는 아무 종목도 새로 볼 것이 없었다는 뜻입니다
+                # (같은 봉은 한 번만 심의합니다).
+                self.desk_note = ("이 봉은 이미 심의했습니다 — 다음 봉이 "
+                                  "닫히면 다시 봅니다")
             if self.meter is not None:
-                calls = max(0, desk.status()["llm_calls"] - before[0])
+                calls = max(0, after_calls - before[0])
                 spent = max(0.0, desk.estimated_cost_usd - before[1])
                 if calls:
                     self.meter.record(calls, spent)
@@ -596,6 +622,8 @@ class LiveTrader:
             # 부르는 것이 이것입니다. 무엇이 나갈지 미리 보여야, 밤새 쌓인
             # 결정이 아침에 갑자기 체결되는 일이 없습니다.
             "queued": self._queued(),
+            # 마지막 심의 시도가 왜 아무것도 못 남겼는지. 잘 돌았으면 빈 문자열.
+            "desk_note": self.desk_note,
             "market": {
                 "calendar": getattr(self.calendar, "name", None),
                 "open": self.calendar.is_open(datetime.now(UTC)) if self.calendar else None,

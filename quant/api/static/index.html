@@ -940,7 +940,7 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
 
       <div class="manual" style="margin-top:14px">
         <div class="fld"><label for="mSymbol">종목</label>
-          <select id="mSymbol"><option value="">— 실행 중인 봇 없음 —</option></select></div>
+          <select id="mSymbol"><option value="">— 불러오는 중 —</option></select></div>
         <div class="fld"><label for="mQty">수량 (비우면 금액 사용)</label>
           <input id="mQty" type="number" step="any" placeholder="주"></div>
         <div class="fld"><label for="mNotional">금액</label>
@@ -2193,7 +2193,11 @@ async function refreshSymbols() {
     sel.innerHTML = syms.length
       ? syms.map(x => `<option value="${esc(x.ticker)}">${esc(symLabel(x.ticker, x.name))}` +
           `${x.invested ? " (보유)" : ""} — ${num(x.price, 2)}</option>`).join("")
-      : `<option value="">— 실행 중인 봇 없음 —</option>`;
+      // 종목이 없는 이유가 둘입니다 — 봇이 안 도는 것과, 봇은 도는데 필터가
+      // 후보를 전부 걸러낸 것. 둘을 같은 말로 덮으면 돌고 있는 봇을 두고
+      // "실행 중인 봇 없음" 을 읽게 됩니다.
+      : `<option value="">${document.body.classList.contains("running")
+            ? "— 이 전략에 볼 종목이 없습니다 —" : "— 실행 중인 봇 없음 —"}</option>`;
     if (keep) sel.value = keep;
     syncChartSymbols(syms);
   } catch {}
@@ -3465,8 +3469,11 @@ async function askDeskFor(raw) {
   if (side) { side.disabled = true; side.textContent = "◆ 심의 중… (최대 2분)"; }
   out.hidden = true;
   try {
+    // 봇이 돌고 있으면 선택기는 감춰져 있고 값도 리셋됩니다. 그 값으로
+    // 물으면 지금 돌고 있는 것과 **다른 전략**의 데스크에 묻게 됩니다.
+    const asked = shownStrategy();
     const d = await post("/api/evaluate",
-                         {ticker: raw, strategy: chartStrategy()});
+                         {ticker: raw, strategy: (asked && asked.id) || chartStrategy()});
     renderAsk(d, raw);
     // 16명이 실제로 말한 것을 그대로 재생합니다. 응답에 좌석별 발언이 전부
     // 들어 있는데(analysts·debate·risk_debate) 지금까지 요약 카드만 그리고
@@ -3475,7 +3482,11 @@ async function askDeskFor(raw) {
     scrollToDesk();
     playDeliberation(d);
   } catch (e) {
+    // 실패는 **누른 자리에** 떠야 합니다. 데스크 옆 버튼을 눌렀는데 오류가
+    // 저 아래 수동매매 패널에만 뜨면, 사람은 아무 일도 안 일어난 줄 압니다 —
+    // 실제로 그렇게 보였습니다("심의 눌러도 안되고 데스크에 안떠").
     note("#mMsg", "심의 실패: " + e.message, "err");
+    deskFailed(e.message);
   } finally {
     btn.disabled = false;
     btn.textContent = "◆ 16명에게 물어보기";
@@ -3515,6 +3526,23 @@ function renderAsk(d, ticker) {
       · ${m.billed_to === "own_key" ? "내 키로 결제" : "서비스 부담"}
       — 이건 의견이고 주문이 아닙니다. 아래에서 직접 내야 나갑니다.</div>`;
   out.hidden = false;
+}
+
+/* 심의가 실패했다는 사실을 데스크 자리에 그립니다.
+
+   서버는 이유를 한국어로 만들어 보냅니다 — 키가 거절됐는지, 시세를 못
+   받았는지, 과거 봉이 모자라는지. 그 문장이 화면 어디에도 안 뜨면 사용자는
+   "눌렀는데 아무 일도 없다" 만 겪고, 그 상태에서는 무엇을 고쳐야 할지 알
+   방법이 없습니다. */
+function deskFailed(message) {
+  const box = document.getElementById("say-analyst");
+  if (!box) return;
+  box.className = "saybox idle bad";
+  box.querySelector(".who").textContent = "심의하지 못했습니다";
+  box.querySelector(".line").textContent = message || "알 수 없는 이유";
+  const tag = $("#deskSubject");
+  if (tag) tag.textContent = "심의 실패";
+  scrollToDesk();
 }
 
 /* 재생 줄 — 속도 고르기와 다시 보기. */
@@ -3640,18 +3668,23 @@ function deskWaitReason() {
     const q = (botState || {}).queued || [];
     // 조사를 붙이면 앞말 받침에 따라 을/를 이 갈립니다. 목록이 무엇으로
     // 끝날지 모르므로 조사가 필요 없는 어순으로 씁니다.
+    // "그동안에도 계속 심의합니다" 는 실제로 심의가 돌 때만 참입니다. 안 돌면
+    // 서버가 그 이유를 `desk_note` 에 남기고, 여기서는 약속 대신 사실을 씁니다.
+    const note = (botState || {}).desk_note || "";
     const plan = q.length
       ? ` 개장하면 이것부터 검토합니다 — ${q.slice(0, 3).map(x =>
           tickerLabel(x.ticker) + (x.direction === "up" ? " 매수" : " 매도")
         ).join(", ")}` + (q.length > 3 ? ` 외 ${q.length - 3}건` : "") + "."
-      : " 그동안에도 데스크는 계속 심의합니다.";
+      : note ? ` ${note}`
+             : " 그동안에도 데스크는 계속 심의합니다.";
     return {kind: "closed", who: q.length ? `휴장 · 예약 ${q.length}건` : "휴장",
             line: `${mkt.calendar || "이 시장"} 이 닫혀 있습니다 — 개장까지 ` +
                   left + "." + plan,
             try_now: true};
   }
+  const note = (botState || {}).desk_note || "";
   return {kind: "waiting", who: "대기 중",
-          line: "다음 봉이 닫히면 심의가 시작되고, 발언은 여기 그대로 남습니다.",
+          line: note || "다음 봉이 닫히면 심의가 시작되고, 발언은 여기 그대로 남습니다.",
           try_now: true};
 }
 
