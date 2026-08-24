@@ -150,19 +150,23 @@ VENUES: list[VenueSpec] = [
 
 VENUES_BY_ID = {v.id: v for v in VENUES}
 
-#: non-venue settings the setup flow also writes
+#: 거래소가 아닌 설정 항목들. 다중 사용자 서비스에서는 서버가 이 중 일부만
+#: 화면에 내보냅니다 — `quant/api/server.py` 의 ACCOUNT_OPERATOR_FIELDS 참고.
+#:
+#: `QUANT_API_TOKEN` 은 여기 있었습니다. 그 토큰을 가진 요청은 **어느 계정이
+#: 보낸 것인지 구분되지 않아서**, 그것을 아는 사람은 남의 증권사 키로 주문을
+#: 낼 수 있었습니다. 다중 사용자에서는 성립할 수 없는 설계라 없앴습니다.
 OPERATOR_FIELDS = [
     ("OPERATOR_NAME", "이름 (기록용)", False),
-    ("ANTHROPIC_API_KEY", "Anthropic API 키 (AI 데스크용, 선택)", False),
+    ("GOOGLE_API_KEY", "Gemini API 키 (내 키로 AI 데스크를 쓸 때, 선택)", False),
     ("TELEGRAM_BOT_TOKEN", "텔레그램 봇 토큰 (알림, 선택)", False),
     ("TELEGRAM_CHAT_ID", "텔레그램 챗 ID (알림, 선택)", False),
-    ("QUANT_API_TOKEN", "대시보드 접근 토큰", False),
 ]
 
 
 #: 거래소·운영자 항목 말고도 설정 화면이 다루는 것으로 인정된 키들.
 _VETTED_EXTRA = (
-    "OPENAI_API_KEY", "GOOGLE_API_KEY",     # 데스크가 앤트로픽 외 제공자를 쓸 때
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY",  # 단일 운영자가 직접 파일에 넣을 때
     "CORS_ORIGINS",                         # 대시보드를 다른 출처에서 열 때
     "QUANT_LIMIT_DAILY_NOTIONAL", "QUANT_LIMIT_DAILY_ORDERS",
     "QUANT_LIMIT_DAILY_LOSS", "QUANT_LIMIT_DAILY_LOSS_PCT",
@@ -217,14 +221,13 @@ class SetupState:
     venues: list[str] = field(default_factory=list)
     has_llm: bool = False
     has_notifier: bool = False
-    has_api_token: bool = False
     updated_at: str = ""
 
     def to_dict(self) -> dict:
         return {
             "configured": self.configured, "operator": self.operator,
             "venues": self.venues, "has_llm": self.has_llm,
-            "has_notifier": self.has_notifier, "has_api_token": self.has_api_token,
+            "has_notifier": self.has_notifier,
             "updated_at": self.updated_at,
         }
 
@@ -273,7 +276,6 @@ class CredentialStore:
             has_llm=has("ANTHROPIC_API_KEY") or has("OPENAI_API_KEY")
             or has("GOOGLE_API_KEY"),
             has_notifier=has("TELEGRAM_BOT_TOKEN") and has("TELEGRAM_CHAT_ID"),
-            has_api_token=has("QUANT_API_TOKEN"),
             updated_at=stamp,
         )
 

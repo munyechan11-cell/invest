@@ -419,12 +419,23 @@ python -m quant serve configs/demo.yaml
 python -m quant serve configs/demo.yaml --port 8000
 ```
 
-Read-only view of equity, positions, trades and a live event stream over
-WebSocket. Starting and stopping a trader is CLI-only by design.
+Equity, positions, trades, a live event stream over WebSocket, candles with
+your own entry price on them, and the 16-seat deliberation as it happens.
+Bots start and stop from the dashboard as well as the CLI.
 
-Set `QUANT_API_TOKEN` before exposing it anywhere: the API can start and stop a
-live bot, and it will warn you loudly on startup if the token is unset. There
-are no user accounts, plans, or tiers — one operator, one token.
+**This is a multi-user service.** Each account holds its own encrypted broker
+credentials, its own daily caps, its own bot. Nothing is shared: credentials
+are decrypted per request and never reach `os.environ`, because a process-global
+is readable by every other user's bot.
+
+`QUANT_SECRET_KEY` (32+ chars) is required — it derives the key that encrypts
+every user's broker credentials, and the server refuses to start without it.
+Lose it and no stored credential can be recovered; everyone re-registers.
+
+There used to be a shared operator token instead. A request carrying it could
+not be attributed to any account, so anyone who had it could place orders with
+someone else's broker keys. That cannot be made safe in a multi-user service,
+so it is gone rather than deprecated.
 
 ---
 

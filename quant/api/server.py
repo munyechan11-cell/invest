@@ -425,13 +425,17 @@ ACCOUNT_KEYS: frozenset[str] = frozenset(WRITABLE_KEYS) - _SERVICE_SCOPED
 #: 제공자의 칸이 서 있으면 사용자는 그것이 필요한 값이라고 읽습니다.
 _BYO_LLM_KEY = "GOOGLE_API_KEY"
 
+#: 자기 키 칸에 붙는 설명. 계정 화면에서는 "선택"의 뜻이 달라집니다 —
+#: 넣지 않아도 데스크는 돌고, 넣으면 상한이 없어집니다.
+_BYO_LLM_LABEL = "Gemini API 키 — 넣으면 AI 데스크 사용 한도가 없어집니다 (선택)"
+
 ACCOUNT_OPERATOR_FIELDS = [
+    # BYO 키는 아래에서 계정용 설명을 달아 한 번만 넣습니다. 여기서 통과시키면
+    # 같은 칸이 두 번 서고, 화면은 둘 중 어느 쪽이 진짜인지 말해 주지 못합니다.
     (env, label, required)
     for env, label, required in OPERATOR_FIELDS
-    if env not in _SERVICE_SCOPED
-    and not (env.endswith("_API_KEY") and env != _BYO_LLM_KEY)
-] + [(_BYO_LLM_KEY, "Gemini API 키 — 넣으면 AI 데스크 사용 한도가 없어집니다 (선택)",
-      False)]
+    if env not in _SERVICE_SCOPED and not env.endswith("_API_KEY")
+] + [(_BYO_LLM_KEY, _BYO_LLM_LABEL, False)]
 
 #: 프로세스 환경에 남아 있으면 안 되는 이름들 — 계좌에 닿거나 사람에게 닿는 값.
 #:
@@ -829,7 +833,6 @@ class UserDesk(Desk):
                                ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY")),
                 "has_notifier": ("TELEGRAM_BOT_TOKEN" in configured
                                  and "TELEGRAM_CHAT_ID" in configured),
-                "has_api_token": False,
                 "updated_at": "",
             },
             "venues": venue_catalog(),

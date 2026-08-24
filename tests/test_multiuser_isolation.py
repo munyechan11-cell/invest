@@ -403,6 +403,23 @@ def test_the_account_screen_does_not_offer_the_operator_token_field(client):
     assert "ANTHROPIC_API_KEY" not in offered
 
 
+def test_the_byo_llm_field_appears_exactly_once(client):
+    """같은 칸이 두 번 서면 화면은 어느 쪽이 진짜인지 말해 주지 못합니다.
+
+    `OPERATOR_FIELDS` 에 Gemini 키를 넣으면서, 계정용 설명을 붙여 덧대는
+    줄이 그대로 남아 두 번 나왔습니다. 목록을 조립하는 코드가 둘로 갈려
+    있으면 언제든 다시 생깁니다.
+    """
+    a, _b = two_users(client)
+    fields = a.get("/api/setup").json()["operator_fields"]
+    envs = [f["env"] for f in fields]
+    assert len(envs) == len(set(envs)), f"중복된 칸: {envs}"
+    assert envs.count("GOOGLE_API_KEY") == 1
+    # 그리고 그 칸의 설명은 계정용이어야 합니다 — 단일 운영자용 문구가 아니라.
+    label = next(f["label"] for f in fields if f["env"] == "GOOGLE_API_KEY")
+    assert "한도" in label, f"계정 화면인데 설명이 운영자용입니다: {label}"
+
+
 def test_every_venue_field_the_setup_screen_shows_is_writable_by_a_user(client):
     """허용 목록이 화면과 어긋나면 사용자가 입력한 키가 조용히 사라집니다."""
     a, _b = two_users(client)
