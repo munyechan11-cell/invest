@@ -8,12 +8,12 @@
  * 인증도 마찬가지입니다. 세션 쿠키가 붙는 응답을 캐시하면 로그아웃한 뒤에도
  * 남의 화면이 남습니다. /api/* 는 통째로 지나갑니다.
  */
-// v4 — 화면 구조와 CSS가 크게 바뀌었습니다. 이름을 바꿔야 설치된 PWA의
-// 오프라인 첫 화면도 새 구조로 교체됩니다.
-const SHELL = 'quant-shell-v4';
+// v5 — 키보드 순서와 접근성 구조가 바뀌었습니다. 이름을 바꿔야 설치된
+// PWA의 오프라인 첫 화면도 같은 DOM과 글자 크기로 교체됩니다.
+const SHELL = 'quant-shell-v5';
 const FILES = [
   '/',
-  '/static/app.css?v=20260825-pixel-ui',
+  '/static/app.css?v=20260825-a11y-flow',
   '/static/chart.js',
   '/static/manifest.webmanifest',
   '/static/icons/icon-192.png',

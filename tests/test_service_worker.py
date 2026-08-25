@@ -55,7 +55,7 @@ def test_cache_write_failure_does_not_replace_a_fresh_response():
 
 
 def test_this_redesign_rotates_the_shell_and_stylesheet_url():
-    assert "quant-shell-v4" in SW
+    assert "quant-shell-v5" in SW
     stylesheet = re.search(r'href="(/static/app\.css\?v=[^"]+)"', HTML)
     assert stylesheet
     assert f"'{stylesheet.group(1)}'" in SW

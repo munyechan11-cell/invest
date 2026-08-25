@@ -69,6 +69,13 @@ button,input,select,textarea{font:inherit}
 svg,canvas{image-rendering:pixelated;shape-rendering:crispEdges}
 .px{font-family:var(--px);letter-spacing:.04em;-webkit-font-smoothing:none}
 .brand-short{display:none}
+.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;
+  margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;
+  white-space:nowrap!important;border:0!important}
+.skip-link{position:fixed;left:12px;top:8px;z-index:1000;min-height:44px;padding:9px 13px;
+  background:var(--gold);color:var(--bg);border:3px solid var(--bg);font-weight:700;
+  transform:translateY(-150%)}
+.skip-link:focus{transform:translateY(0)}
 
 /* 연동 검증 결과 — 단계마다 한 줄. */
 .vstep{font-size:12px;line-height:1.7;color:var(--dim)}
@@ -246,7 +253,7 @@ header.top{position:sticky;top:0;z-index:40;background:var(--bg);
 .needkey .alt button:hover{background:var(--gold);color:#000}
 .needkey .none{color:var(--muted);margin-top:7px;display:block}
 .mode{font-family:var(--px);font-size:12px;padding:3px 8px;border:2px solid var(--red);
-  color:var(--red);text-transform:uppercase}
+  color:var(--red);text-transform:uppercase;white-space:nowrap}
 .mode.dry{border-color:var(--gold);color:var(--gold)}
 .mode.backtest{border-color:var(--muted);color:var(--muted)}
 /* 실거래로 도는 동안에는 화면이 통째로 그 사실을 말합니다. 모의와 실거래를
@@ -393,7 +400,7 @@ tr:last-child td{border-bottom:0}
   padding:8px 12px;margin:0 0 10px;border:2px solid var(--line);
   background:var(--plate);font-size:12px;color:var(--muted)}
 .playbar .grow{flex:1 0 6px}
-.playbar button{font-family:var(--px);font-size:11px;padding:5px 10px;
+.playbar button{font-family:var(--px);font-size:12px;padding:5px 10px;
   min-width:44px;border:2px solid var(--line);background:none;color:var(--muted);
   cursor:pointer}
 .playbar button.on{border-color:var(--gold);color:var(--gold)}
@@ -461,7 +468,7 @@ table.acct td:first-child{font-variant-numeric:normal}
 @keyframes tape{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 .tape b{color:var(--gold);font-weight:400;margin-right:6px}
 
-.btn{font-family:var(--px);font-size:11px;min-height:44px;background:var(--plate);
+.btn{font-family:var(--px);font-size:12px;min-height:44px;background:var(--plate);
   border:2px solid var(--gold-dim);
   color:var(--gold);padding:5px 10px;cursor:pointer}
 .btn:hover{background:#1c2231}
@@ -477,7 +484,7 @@ select,#mSymbol{min-height:44px}
   align-items:end}
 .manual-orders{margin-top:14px;border:2px solid var(--line);background:#0c121d}
 .manual-orders summary{display:flex;min-height:44px;align-items:center;gap:10px;
-  padding:9px 11px;cursor:pointer;font-family:var(--px);font-size:11px;color:var(--gold)}
+  padding:9px 11px;cursor:pointer;font-family:var(--px);font-size:12px;color:var(--gold)}
 .manual-orders summary span{margin-left:auto;font-family:var(--kr);font-size:12px;
   color:var(--muted)}
 .manual-orders:not([open])>:not(summary){display:none}
@@ -748,7 +755,7 @@ form.auth[hidden]{display:none}
 form.auth .fld input{min-height:44px}
 form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
 /* Fingers, not mice: every control a new screen adds is at least 44px tall. */
-.btn.tap{min-height:44px;padding:10px 14px;font-size:11px}
+.btn.tap{min-height:44px;padding:10px 14px;font-size:12px}
 
 /* ── 마이페이지 · 계정 ─────────────────────────────────────────────── */
 /* 머리글이 sticky 라서, 그냥 스크롤하면 패널 이름표가 그 밑으로 들어갑니다.
@@ -790,6 +797,7 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
 
 /* 프레임: 1180px 안에 같은 무게의 두 기둥을 욱여넣지 않습니다. */
 .wrap{max-width:1400px;padding:0 24px 96px}
+#mainContent{scroll-margin-top:calc(var(--header-h,96px) + 18px)}
 footer{max-width:1400px;padding:22px 24px;color:var(--faint);font-size:13px}
 
 header.top{padding:10px 24px 11px;background:rgba(8,11,18,.98);
@@ -890,12 +898,10 @@ td{padding:9px 10px}
 
 /* 벤치마크의 강점인 '한눈에 보이는 조직도'를 가져오되, 발언 전문을 별도
    화면으로 쫓아내지 않습니다. 분석과 결론은 넓게, 대립하는 토론·리스크는
-   나란히 놓아 분석 → 반박 → 통제 → 판정의 흐름을 한 무대로 읽습니다. */
+   나란히 놓아 분석 → 반박 → 통제 → 판정의 흐름을 한 무대로 읽습니다.
+   키보드와 스크린리더도 같은 순서를 따라야 하므로 DOM 순서가 시각 순서의
+   단일 원본입니다. flex order로 핵심 구역을 다시 배치하지 않습니다. */
 body[data-page="trade"] #pageTrade{display:flex;flex-direction:column}
-#runner{order:1}
-#roomsHome{order:2}
-#manualPanel{order:3}
-#pageTrade>section:last-child{order:4}
 #rooms{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;
   align-items:start;
   margin-top:18px;scroll-margin-top:calc(var(--header-h,96px) + 18px)}
@@ -1038,6 +1044,7 @@ body[data-page="account"] #pageAccount{display:grid;
 
 @media(max-width:900px){
   header.top{position:relative;padding:8px 12px 10px}
+  #mainContent{scroll-margin-top:18px}
   .top-in{grid-template-columns:repeat(12,minmax(0,1fr));grid-template-rows:auto auto;
     gap:8px;overflow:visible;flex-wrap:initial}
   .top-in>*{min-width:0}
