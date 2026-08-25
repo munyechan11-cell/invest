@@ -439,6 +439,88 @@ def test_page_switcher_is_navigation_not_an_incomplete_tab_widget():
         "초기 현재 화면은 하나만 aria-current=page로 표시해야 합니다")
 
 
+def test_trade_dom_order_matches_the_visual_and_keyboard_flow():
+    markup = PAGE.read_text(encoding="utf-8")
+    trade = re.search(
+        r'<div\s+class="page"\s+id="pageTrade">(.*?)</div><!-- /page-trade -->',
+        markup,
+        re.S,
+    )
+    assert trade, "매매 화면을 찾을 수 없습니다"
+    flow = trade.group(1)
+    positions = [
+        flow.index('id="runner"'),
+        flow.index('id="roomsHome"'),
+        flow.index('id="manualPanel"'),
+        flow.index('id="feed"'),
+    ]
+    assert positions == sorted(positions), (
+        "DOM과 보이는 흐름이 다르면 키보드 포커스가 화면을 앞뒤로 뜁니다")
+
+    core_areas = ("#runner", "#roomsHome", "#manualPanel")
+    assert not any(
+        "order" in rule.declarations
+        and any(
+            _selector_targets(selector, area)
+            for selector in rule.selectors
+            for area in core_areas
+        )
+        for rule in RULES
+    ), "핵심 구역을 flex order로 재배치하면 DOM과 시각 순서가 다시 갈라집니다"
+
+
+def test_ephemeral_bubbles_are_hidden_and_persistent_speech_is_live():
+    markup = PAGE.read_text(encoding="utf-8")
+    assert (
+        'class="bubble neutral" id="bub-${s.key}" aria-hidden="true"' in markup
+    ), "시각 효과용 말풍선이 스크린리더에 중복 노출됩니다"
+
+    for room in ("analyst", "debate", "risk", "decision"):
+        saybox = re.search(
+            rf'<div class="saybox idle" id="say-{room}"([^>]*)>',
+            markup,
+        )
+        assert saybox, f"{room}의 지속 발언판이 없습니다"
+        assert "aria-live" not in saybox.group(1) and "role=" not in saybox.group(1), (
+            f"{room} 발언판이 같은 상태를 중복 공지합니다")
+
+    announcers = re.findall(
+        r'<div class="sr-only" id="deskAnnouncer" role="status"\s+'
+        r'aria-live="polite" aria-atomic="true"></div>',
+        markup,
+    )
+    assert len(announcers) == 1, "데스크 공지는 하나의 live region만 써야 합니다"
+
+    announcer = re.search(
+        r'function announceDesk\(message\) \{(.*?)\n\}', markup, re.S)
+    assert announcer and "next === lastDeskAnnouncement" in announcer.group(1), (
+        "같은 상태를 polling마다 다시 공지하지 않도록 값 변경을 검사해야 합니다")
+    plate_body = re.search(r"function plate\(key, text, tone\) \{(.*?)\n\}", markup, re.S)
+    availability = re.search(
+        r"function renderDeskAvailability\(\) \{(.*?)\n\}", markup, re.S)
+    assert plate_body and "announceDesk" in plate_body.group(1)
+    assert availability and availability.group(1).count("announceDesk") == 1
+
+
+def test_core_controls_are_readable_without_enlarging_pixel_seat_labels():
+    for selector in (".btn", ".btn.tap", ".playbar button", ".manual-orders summary"):
+        size = _pixel_size(_style(selector).get("font-size", ""))
+        assert size >= 12, f"{selector} 핵심 동작 글자가 {size}px로 너무 작습니다"
+
+    assert _style(".mode").get("white-space") == "nowrap", (
+        "운영 mode badge가 좁은 경계 폭에서 두 줄로 갈라집니다")
+    assert _pixel_size(_style(".seat .seatname").get("font-size", "")) == 11, (
+        "장식 밀도를 유지할 좌석 이름까지 키우면 픽셀 플로어가 다시 복잡해집니다")
+
+
+def test_skip_target_clears_the_sticky_header():
+    desktop_offset = _style("#mainContent", width=1440).get("scroll-margin-top", "")
+    assert "var(--header-h" in desktop_offset, (
+        "본문 건너뛰기 뒤 첫 조작부가 sticky header 아래에 가려집니다")
+    assert _style("#mainContent", width=900).get("scroll-margin-top") == "18px", (
+        "상단이 sticky가 아닌 모바일까지 큰 빈 여백을 남기면 안 됩니다")
+
+
 def _assert_show_page_updates_aria_current(markup: str) -> None:
     function = re.search(
         r"function\s+showPage\s*\([^)]*\)\s*\{(.*?)\n\}\s*\n\s*"

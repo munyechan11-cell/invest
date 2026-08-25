@@ -3,7 +3,8 @@
 이 문서 하나만 읽고 이어받을 수 있게 씁니다. 코드가 이미 말하는 것(구조,
 API 목록)은 안 적고, **코드를 읽어도 모르는 것**만 적습니다.
 
-작성 시점: 커밋 `7d59d0b`. 테스트 1286개 통과.
+이 문서의 커밋·테스트 수는 고정값으로 믿지 마세요. 이어받을 때
+`git rev-parse HEAD`와 전체 테스트를 다시 실행해 현재 상태를 확인합니다.
 
 ---
 
@@ -142,26 +143,21 @@ quant/api/static/chart.js     캔들 차트
 세션 임시 폴더에 있으면 세션이 끝날 때 경로째 사라집니다. 전부
 `origin/pending/*` 으로 푸시했습니다. `git fetch` 하면 받아집니다.
 
-| 브랜치 | 무엇 | 상태 |
+| 브랜치 | 무엇 | 검증 판정 |
 |---|---|---|
-| `pending/toss-fees` | 토스 수수료·거래세 0원 | **이미 main 에 머지됨** |
-| `pending/pnl-split-by-mode` | 모의·실거래 손익 혼합 | **이미 main 에 머지됨** |
-| `pending/daily-cap-survives-restart` | **하루 한도 재시작 초기화** (위) | 검증 미완 |
-| `pending/manual-pending-orders` | 수동 대기주문이 화면에 안 보이고 취소 불가 | 검증 미완 |
-| `pending/kis-unfinished-daily-bar` | KIS 가 안 끝난 당일 봉을 확정봉으로 줌 | 검증 미완 |
-| `pending/backtest-trade-counting` | 성적표의 거래수·승률이 분할매도에 지배됨 | 검증 미완 |
-| `pending/desk-metering` | 봇 데스크 심의가 요금제 한도를 안 거침 | 검증 미완 |
-| `pending/fx-layer` | 통화 환산 계층 (아래 5번) | 검증 미완 |
-| `pending/toss-websocket` | 실시간 시세 — **못 했습니다**, 아래 참고 | — |
+| `pending/toss-fees` | 토스 수수료·거래세 0원 | **반박됨 · 머지 금지** |
+| `pending/pnl-split-by-mode` | 모의·실거래 손익 혼합 | **반박됨 · 머지 금지** |
+| `pending/daily-cap-survives-restart` | **하루 한도 재시작 초기화** (위) | **반박됨 · 머지 금지** |
+| `pending/manual-pending-orders` | 수동 대기주문이 화면에 안 보이고 취소 불가 | **반박됨 · 머지 금지** |
+| `pending/kis-unfinished-daily-bar` | KIS 가 안 끝난 당일 봉을 확정봉으로 줌 | **반박됨 · 머지 금지** |
+| `pending/backtest-trade-counting` | 성적표의 거래수·승률이 분할매도에 지배됨 | **반박됨 · 머지 금지** |
+| `pending/desk-metering` | 봇 데스크 심의가 요금제 한도를 안 거침 | **반박됨 · 머지 금지** |
+| `pending/fx-layer` | 통화 환산 계층 (아래 5번) | **반박됨 · 머지 금지** |
+| `pending/toss-websocket` | 실시간 시세 | **반박됨 · 머지 금지** |
 
-**전부 갈라진 시점이 `4126f58` 입니다.** main 은 그 뒤로 여섯 커밋 더 갔으니
-그냥 머지하면 충돌합니다. 이렇게 하세요:
-
-```bash
-git fetch origin
-git diff 4126f58 origin/pending/daily-cap-survives-restart > /tmp/p.patch
-git apply --3way /tmp/p.patch
-```
+브랜치들은 과거 `4126f58`에서 갈라졌지만, 그 diff나 patch를 현재 main에
+적용하는 것은 검증 절차가 아닙니다. 현재 main에서 증상을 다시 재현하고 새
+수정을 별도로 설계해야 합니다.
 
 **검증 결과: 아홉 건 전부 반박이 나왔습니다.** 통과 0건.
 
@@ -180,12 +176,13 @@ git apply --3way /tmp/p.patch
 - 봇이 꺼져 있으면 실거래만 한 계정에 0 이 뜨던 것
 - 취소 경로에서 체결이 통째로 사라지던 것
 
-**머지 전에 하세요**
+**다시 고치기 전에 하세요**
 
 1. `docs/pending_review.md` 의 해당 절을 읽으세요.
-2. `git diff 4126f58 origin/pending/<브랜치>` 를 **끝까지** 읽으세요.
-3. 전체 테스트를 돌리세요.
-4. **수정을 되돌려서 테스트가 실제로 실패하는지 보세요.** 되돌려도 통과하는
+2. 현재 main에서 문서의 재현 절차와 관측값을 다시 확인하세요.
+3. 과거 diff는 실패 패턴을 이해하는 참고 자료로만 읽고 적용하지 마세요.
+4. 전체 테스트를 돌리세요.
+5. **수정을 되돌려서 테스트가 실제로 실패하는지 보세요.** 되돌려도 통과하는
    테스트는 아무것도 지키지 않습니다 — 이 저장소에서 실제로 두 번 나왔습니다.
 
 ---
@@ -211,9 +208,10 @@ git apply --3way /tmp/p.patch
 
 `docs/cross_market.md` — 미국+국내+코인 동시 운용.
 
-1단계(**통화 환산 계층**)가 `origin/pending/fx-layer` 에 있습니다. 이건 크로스마켓을
-안 하더라도 해야 합니다: 지금 원화 종목과 달러 종목을 한 유니버스에 넣으면
-**에러가 나지 않고** 7만(원)과 250(달러)이 그냥 더해집니다.
+`origin/pending/fx-layer`는 이 설계의 1단계를 시도했지만 3라운드 검증에서
+반박됐습니다. **구현으로 쓰거나 적용하지 마세요.** 통화 혼합 위험을 다시 다룰
+때는 `docs/pending_review.md`의 반박부터 읽고, 현재 main에서 독립 재현한 뒤 새
+스키마·이관 범위를 설계해야 합니다.
 
 2~4단계(`CompositeBrokerage`, 종목별 캘린더, 설정 스키마)는 미착수입니다.
 
@@ -221,14 +219,27 @@ git apply --3way /tmp/p.patch
 
 ## 6. 배포
 
+`origin/pending/*` 아홉 브랜치는 전부 반박됐습니다. **머지·cherry-pick하지
+마세요.** 먼저 `docs/pending_review.md`의 해당 절과 재현값을 읽어야 합니다.
+
+정적 UI(`quant/api/static/*`)만 바뀐 경우에는 검증된 정확한 SHA를 서버의
+`main`에 `git merge --ff-only <SHA>`로 반영합니다. 이 경로는 Python 프로세스를
+재시작하지 않습니다. 배포 전후 `quant`의 PID·시작 시각·`NRestarts`와
+`/api/health.started_at`이 모두 그대로인지 확인합니다.
+
+아래 설치 스크립트는 최초 프로비저닝이나 Python 의존성·서비스 정의 변경 때만
+쓰는 재시작 경로입니다. **평상시 코드 배포 명령이 아닙니다.** 특히
+`pending/daily-cap-survives-restart`의 반박된 수정안을 넣지 않은 현재 상태에서는
+장중 또는 손실 한도를 이어가야 하는 날에 실행하지 마세요.
+
 ```bash
 sudo bash /home/quant/app/deploy/install.sh
 ```
 
-여러 번 돌려도 안전합니다. 코드를 당기고 의존성을 맞추고 서비스를 재시작합니다.
+이 스크립트는 코드를 당기고 의존성을 맞춘 뒤 서비스를 재시작합니다.
 `QUANT_SECRET_KEY` 는 절대 다시 만들지 않습니다 — 그 값을 갈아엎으면 저장된
 증권사 키를 전부 못 읽습니다.
 
-배포 확인: `https://siftai.kr/api/health` 의 `started_at` 이 고친 시각보다
-**뒤**여야 합니다. 파이썬은 시작할 때 모듈을 읽으므로, 재시작 전에는 옛 코드가
-계속 돕니다 — 이것 때문에 몇 시간을 잃은 적이 있습니다.
+Python 코드까지 바꿔 의도적으로 재시작한 경우에만
+`https://siftai.kr/api/health`의 `started_at`이 배포 시각보다 뒤여야 합니다.
+정적 UI 배포에서는 반대로 `started_at`이 바뀌면 안 됩니다.

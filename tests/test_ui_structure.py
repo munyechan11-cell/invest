@@ -146,12 +146,34 @@ def test_dashboard_chrome_is_hidden_until_a_user_exists(html):
 
 @pytest.mark.parametrize("selector", [
     r'<header class="top app-only">',
-    r'<div class="wrap app-only">',
+    r'<main class="wrap app-only"\s+id="mainContent"',
     r'<footer class="app-only">',
     r'<div class="tape app-only">',
 ])
 def test_every_dashboard_region_is_gated(html, selector):
     assert re.search(selector, html), f"{selector} 가 로그인 게이트 밖에 있습니다"
+
+
+def test_dashboard_has_a_named_main_region_and_skip_link(tags):
+    main = _by_id(tags, "mainContent")
+    assert main == [("main", {
+        "class": "wrap app-only",
+        "id": "mainContent",
+        "aria-labelledby": "dashboardTitle",
+        "tabindex": "-1",
+    })]
+
+    heading = _by_id(tags, "dashboardTitle")
+    assert heading == [("h1", {"class": "sr-only", "id": "dashboardTitle"})]
+
+    skip_links = [
+        attrs for tag, attrs in tags
+        if tag == "a" and attrs.get("href") == "#mainContent"
+    ]
+    assert len(skip_links) == 1
+    assert {"skip-link", "app-only"}.issubset(
+        set(skip_links[0].get("class", "").split())
+    )
 
 
 def test_nothing_is_fetched_before_the_user_is_known(script):
