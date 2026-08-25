@@ -14,7 +14,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css?v=20260825-pixel-ui">
 </head>
 <body class="booting">
 
@@ -134,7 +134,7 @@
       <button class="btn tap" type="submit" id="registerSubmit">회원가입</button>
     </form>
 
-    <div class="msg" id="gateMsg" style="margin:0 12px 16px">
+    <div class="msg" id="gateMsg" role="status" aria-live="polite" style="margin:0 12px 16px">
       실거래에는 원금 손실 위험이 있습니다. 모의매매로 먼저 확인하세요.
     </div>
   </div>
@@ -145,21 +145,31 @@
 <header class="top app-only">
   <div class="top-in">
     <span class="conn" id="conn" role="img" aria-label="연결 상태 확인 중"></span>
-    <button type="button" class="brand" id="brandHome" title="홈으로"><i aria-hidden="true">◆</i> QUANT TRADING FLOOR <i aria-hidden="true">◆</i></button>
-    <span class="mode backtest px" id="mode">미가동</span>
+    <button type="button" class="brand" id="brandHome" title="홈으로"
+      aria-label="QUANT TRADING FLOOR 홈으로"><i aria-hidden="true">◆</i>
+      <span class="brand-full">QUANT TRADING FLOOR</span>
+      <span class="brand-short">QUANT</span><i aria-hidden="true">◆</i></button>
+    <span class="mode backtest px" id="mode" role="status"
+      aria-live="polite" aria-atomic="true">미가동</span>
     <!-- 잔고와 오늘 손익은 어느 화면에 있든 보여야 합니다. 계좌 탭에 있는
          숫자를 보려고 탭을 옮기면, 매매하다 말고 자리를 뜨게 됩니다. -->
     <span class="mini" id="miniAcct" hidden>
       <b id="miniEquity">—</b><i id="miniChange">—</i></span>
     <span class="grow"></span>
-    <nav class="pagetabs" id="pageTabs" role="tablist">
-      <button role="tab" data-page="trade" aria-selected="true">매매</button>
-      <button role="tab" data-page="account" aria-selected="false">내 계좌</button>
-      <button role="tab" data-page="me" aria-selected="false">마이페이지</button>
+    <nav class="pagetabs" id="pageTabs" aria-label="주요 화면">
+      <button data-page="trade" aria-current="page">매매</button>
+      <button data-page="account">내 계좌</button>
+      <button data-page="me">마이페이지</button>
     </nav>
-    <button class="btn" id="setupBtn">⚙ 설정</button>
-    <button class="btn" id="demoBtn">▶ 데모</button>
-    <button class="btn" id="tourBtn" title="첫 화면 안내를 다시 봅니다">? 안내</button>
+    <div class="headtools" id="headTools">
+      <button type="button" class="btn" id="headToolsToggle"
+        aria-expanded="false" aria-label="보조 도구 열기">••• 도구</button>
+      <div class="headtools-menu">
+        <button class="btn" id="setupBtn">⚙ 설정</button>
+        <button class="btn" id="demoBtn">▶ 데모</button>
+        <button class="btn" id="tourBtn" title="첫 화면 안내를 다시 봅니다">? 안내</button>
+      </div>
+    </div>
     <span class="tab on px" id="strategy">—</span>
     <!-- 이 서버가 언제 시작했는지. 코드를 고쳐도 재시작 전에는 옛 코드가
          돕니다 — 그 사실을 화면에서 알 수 있어야 합니다. -->
@@ -168,9 +178,9 @@
 </header>
 
 <div class="wrap app-only">
-  <div class="viewtabs" role="tablist">
-    <button id="tabDesk" role="tab" aria-selected="true">심의</button>
-    <button id="tabChart" role="tab" aria-selected="false">시세 · 매매</button>
+  <div class="viewtabs" role="group" aria-label="작업 영역">
+    <button id="tabDesk" aria-pressed="true">심의</button>
+    <button id="tabChart" aria-pressed="false">시세 · 매매</button>
   </div>
   <div class="deck">
   <div class="deck-l">
@@ -179,7 +189,7 @@
 
   <!-- 자동매매 — 종목까지 봇이 고릅니다. -->
   <section class="panel" id="runner">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 자동매매 <span class="d" aria-hidden="true">◆</span></span>
+    <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 자동매매 <span class="d" aria-hidden="true">◆</span></h2>
     <div class="body">
       <div class="runbar">
         <select id="strategyPick" aria-label="전략"></select>
@@ -205,23 +215,23 @@
         </details>
       </div>
       <div class="runsum" id="runSum"></div>
-      <div class="msg" id="runMsg"></div>
+      <div class="msg" id="runMsg" role="status" aria-live="polite"></div>
     </div>
   </section>
 
 
   <!-- ── 매매 (기본 화면) ────────────────────────────────────────────
-       위에서부터: 자동매매 → 수동매매 → 데스크 심의 → 이벤트.
+       화면 순서: 자동매매 → 데스크 심의 → 수동 개입 → 이벤트.
        계좌·보유·수익은 '내 계좌' 탭으로 옮겼습니다 — 매매하러 온 사람이
        잔고를 스크롤로 통과해야 할 이유가 없습니다. -->
   <!-- 수동 매매 — 내가 고른 종목을 내가 물어보고 내가 냅니다.
        자동매매는 봇이 종목까지 고르고, 여기는 종목을 내가 고릅니다. -->
   <section class="panel" id="manualPanel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 수동 매매 <span class="d" aria-hidden="true">◆</span></span>
+    <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 수동 개입 <span class="d" aria-hidden="true">◆</span></h2>
     <div class="body">
-      <p class="msg" style="margin-top:0">종목을 직접 찾아 <b>16명에게 물어본 뒤</b>
-        사고팝니다. 자동매매는 종목까지 봇이 고르고, 여기는 내가 고릅니다.
-        자동매매가 돌고 있어도 여기서 개입할 수 있습니다.</p>
+      <p class="msg" style="margin-top:0">종목을 직접 찾거나 자동매매에 개입합니다.
+        일반 주문은 오른쪽 <b>시세 · 매매</b> 티켓 한 곳에서 내고, 전략 밖 종목을
+        직접 주문해야 할 때만 아래 보조 주문을 엽니다.</p>
 
       <!-- 검색 -->
       <div class="pwform" style="margin-top:12px">
@@ -231,8 +241,11 @@
         <div style="align-self:end"><button class="btn tap" id="lkGo">찾기</button></div>
       </div>
       <div class="lkres" id="lkRes"></div>
-      <div class="msg" id="lkMsg" hidden></div>
+      <div class="msg" id="lkMsg" role="status" aria-live="polite" hidden></div>
 
+      <details class="manual-orders">
+        <summary>직접 주문 · 종목 청산 열기
+          <span>전략 밖 종목과 보조 경로</span></summary>
       <div class="manual" style="margin-top:14px">
         <div class="fld"><label for="mSymbol">종목</label>
           <select id="mSymbol"><option value="">— 불러오는 중 —</option></select></div>
@@ -247,12 +260,14 @@
         <button class="btn buy"  id="mBuy">매수</button>
         <button class="btn sell" id="mSell">매도</button>
         <button class="btn sell" id="mClose">이 종목 청산</button>
-        <span style="flex:1"></span>
+      </div>
+      </details>
+      <div class="actions safety-actions">
         <button class="btn" id="mPause">⏸ 자동매매 일시정지</button>
         <button class="btn warn" id="mCloseAll">⚠ 전체 청산</button>
       </div>
       <div class="pins" id="mPins"></div>
-      <div class="msg" id="mMsg">수동 주문은 알파·포트폴리오 계층을 건너뛰지만,
+      <div class="msg" id="mMsg" role="status" aria-live="polite">수동 주문은 알파·포트폴리오 계층을 건너뛰지만,
         주문 한도와 하루 한도 같은 브로커 안전장치는 그대로 적용됩니다.
         수동 매수한 종목은 전략이 되팔지 않도록 자동으로 고정됩니다 —
         아래 📌 목록에서 풀 수 있습니다.</div>
@@ -279,7 +294,7 @@
   <!-- analyst room -->
   <section class="panel">
     <div class="room wood">
-      <span class="plate"><span class="d" aria-hidden="true">◆</span> 애널리스트 데스크 <span class="d" aria-hidden="true">◆</span></span>
+      <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 애널리스트 데스크 <span class="d" aria-hidden="true">◆</span></h2>
       <span class="round px" id="deskSubject">대기 중</span>
       <div class="seats" id="analystSeats"></div>
       <div class="saybox idle" id="say-analyst"><b class="who">대기 중</b><p class="line">심의가 시작되면 여기에 발언이 그대로 남습니다.</p></div>
@@ -289,7 +304,7 @@
   <!-- debate room -->
   <section class="panel">
     <div class="room turf">
-      <span class="plate"><span class="d" aria-hidden="true">◆</span> 토론장 <span class="d" aria-hidden="true">◆</span></span>
+      <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 토론장 <span class="d" aria-hidden="true">◆</span></h2>
       <span class="round px" id="roundTag">라운드 —</span>
       <div class="duel" id="debateSeats"></div>
       <div class="saybox idle" id="say-debate"><b class="who">대기 중</b><p class="line">심의가 시작되면 여기에 발언이 그대로 남습니다.</p></div>
@@ -299,7 +314,7 @@
   <!-- risk committee -->
   <section class="panel">
     <div class="room turf">
-      <span class="plate"><span class="d" aria-hidden="true">◆</span> 리스크 위원회 <span class="d" aria-hidden="true">◆</span></span>
+      <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 리스크 위원회 <span class="d" aria-hidden="true">◆</span></h2>
       <span class="round px" id="riskTag">배율 —</span>
       <div class="duel" id="riskSeats"></div>
       <div class="saybox idle" id="say-risk"><b class="who">대기 중</b><p class="line">심의가 시작되면 여기에 발언이 그대로 남습니다.</p></div>
@@ -309,7 +324,7 @@
   <!-- decision desk -->
   <section class="panel">
     <div class="room wood">
-      <span class="plate"><span class="d" aria-hidden="true">◆</span> 결정 데스크 <span class="d" aria-hidden="true">◆</span></span>
+      <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 결정 데스크 <span class="d" aria-hidden="true">◆</span></h2>
       <div class="duel" id="decisionSeats"></div>
       <div class="saybox idle" id="say-decision"><b class="who">대기 중</b><p class="line">심의가 시작되면 여기에 발언이 그대로 남습니다.</p></div>
     </div>
@@ -321,7 +336,7 @@
 
   <!-- feed -->
   <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 이벤트 로그 <span class="d" aria-hidden="true">◆</span></span>
+    <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 이벤트 로그 <span class="d" aria-hidden="true">◆</span></h2>
     <div class="body"><div class="feed" id="feed"></div></div>
   </section>
 
@@ -331,7 +346,7 @@
   <div class="page" id="pageAccount" hidden>
   <!-- HUD -->
   <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 계좌 <span class="d" aria-hidden="true">◆</span></span>
+    <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 계좌 <span class="d" aria-hidden="true">◆</span></h2>
     <div class="hud">
       <div class="hud-l">
         <div class="sym" id="hudSym">전체 계좌</div>
@@ -339,7 +354,8 @@
         <div class="chg" id="hudChange">—</div>
         <div class="kpis" id="hudKpis"></div>
       </div>
-      <div class="hud-r"><canvas id="equity"></canvas></div>
+      <div class="hud-r"><canvas id="equity" role="img"
+        aria-label="계좌 자산 변화와 고점 대비 하락을 보여주는 차트"></canvas></div>
     </div>
   </section>
 
@@ -347,13 +363,13 @@
        들고 있는 것이고, 이건 계좌에 실제로 있는 것입니다. 둘은 다를 수
        있습니다: 다른 데서 산 종목, 봇을 켜기 전부터 있던 종목. -->
   <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 증권사 계좌 <span class="d" aria-hidden="true">◆</span></span>
+    <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 증권사 계좌 <span class="d" aria-hidden="true">◆</span></h2>
     <div class="body" id="brokerAcct"><div class="dim">불러오는 중…</div></div>
   </section>
 
   <!-- positions -->
   <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 봇이 들고 있는 것 <span class="d" aria-hidden="true">◆</span></span>
+    <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 봇이 들고 있는 것 <span class="d" aria-hidden="true">◆</span></h2>
     <div class="body scroll"><table id="positions"><tbody></tbody></table></div>
   </section>
 
@@ -364,7 +380,7 @@
        돈까지 "실현 수익" 이라고 부르게 되고, 모의에서 크게 벌고 실거래에서
        잃은 사람이 자기가 벌고 있다고 믿습니다. 그래서 한 번에 한 쪽만 셉니다. -->
   <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 실현 수익 <span class="d" aria-hidden="true">◆</span></span>
+    <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 실현 수익 <span class="d" aria-hidden="true">◆</span></h2>
     <div class="body">
       <div class="row" style="margin-bottom:9px">
         <label class="dim" for="pnlMode" style="margin-right:8px">매매 구분</label>
@@ -385,7 +401,7 @@
 
   <!-- 매매 기록 -->
   <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 매매 기록 <span class="d" aria-hidden="true">◆</span></span>
+    <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 매매 기록 <span class="d" aria-hidden="true">◆</span></h2>
     <div class="body">
       <div class="scroll"><table class="tradelog"><tbody id="tradeLog"></tbody></table></div>
       <div class="row" style="margin-top:10px">
@@ -412,7 +428,7 @@
        심의를 읽으러 온 사람이 설정 화면을 스크롤로 통과해야 합니다. -->
   <div id="mypage">
   <section class="panel" id="planPanel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 요금제 <span class="d" aria-hidden="true">◆</span></span>
+    <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 요금제 <span class="d" aria-hidden="true">◆</span></h2>
     <div class="body">
       <div id="planNow" class="dim">확인 중…</div>
       <div class="pwform" style="margin-top:12px">
@@ -426,7 +442,7 @@
   </section>
 
   <section class="panel" id="account">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 마이페이지 · 계정 <span class="d" aria-hidden="true">◆</span></span>
+    <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 마이페이지 · 계정 <span class="d" aria-hidden="true">◆</span></h2>
     <div class="body">
       <div class="acct">
         <div>
@@ -476,7 +492,7 @@
 
   <!-- 마이페이지 · 투자 성향 -->
   <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 마이페이지 · 투자 성향 <span class="d" aria-hidden="true">◆</span></span>
+    <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 마이페이지 · 투자 성향 <span class="d" aria-hidden="true">◆</span></h2>
     <div class="body">
       <div class="type">
         <div class="typebadge" id="pType">—<small>미진단</small></div>
@@ -502,7 +518,7 @@
   <!-- 시세 · 매매 — 오른쪽 -->
   <div class="deck-r">
     <section class="panel">
-      <span class="plate"><span class="d" aria-hidden="true">◆</span> 시세 · 매매 <span class="d" aria-hidden="true">◆</span></span>
+      <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 시세 · 매매 <span class="d" aria-hidden="true">◆</span></h2>
       <div class="quotebar">
         <select id="cSym" aria-label="종목"><option value="">—</option></select>
         <select id="cTf" aria-label="봉 주기">
@@ -512,7 +528,8 @@
         <span class="stale" id="cStale" hidden>지연</span>
         <span class="last" id="cLast">—</span>
       </div>
-      <div id="chartBox"><canvas id="chart"></canvas></div>
+      <div id="chartBox"><canvas id="chart" role="img"
+        aria-label="선택한 종목의 가격 차트. 지정가는 아래 입력칸에 직접 입력할 수 있습니다."></canvas></div>
       <div class="mypos" id="cPos"></div>
       <div class="ticket">
         <div class="row">
@@ -522,21 +539,21 @@
             <input id="cNotional" type="number" step="any" placeholder="예: 500000"></div>
         </div>
         <div>
-          <label for="cLimit">지정가 — 차트를 눌러 고르세요 (비우면 시장가)</label>
+          <label for="cLimit">지정가 — 직접 입력하거나 차트를 눌러 고르세요 (비우면 시장가)</label>
           <input id="cLimit" type="number" step="any" placeholder="시장가">
         </div>
         <div class="go">
           <button class="btn buy" id="cBuy">매수</button>
           <button class="btn sell" id="cSell">매도</button>
         </div>
-        <div class="hint" id="cMsg">수동 주문도 하루 한도와 주문당 한도를 그대로 받습니다.
+        <div class="hint" id="cMsg" role="status" aria-live="polite">수동 주문도 하루 한도와 주문당 한도를 그대로 받습니다.
           매수한 종목은 전략이 되팔지 않도록 고정됩니다.</div>
       </div>
     </section>
 
   <!-- flow -->
   <section class="panel">
-    <span class="plate"><span class="d" aria-hidden="true">◆</span> 수급 · 외국인 / 기관 / 개인 <span class="d" aria-hidden="true">◆</span></span>
+    <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 수급 · 외국인 / 기관 / 개인 <span class="d" aria-hidden="true">◆</span></h2>
     <div class="body" id="flowBody"><div class="empty">아직 수급 자료가 없습니다 — 봇이 돌기 시작하면 채워집니다</div></div>
   </section>
   </div>
@@ -548,10 +565,11 @@
   과거 성과는 예측이 아니며, 매매에는 원금 손실 위험이 있습니다.
 </footer>
 
-<div class="overlay" id="setup">
+<div class="overlay" id="setup" role="dialog" aria-modal="true"
+     aria-labelledby="setupTitle">
   <div class="sheet">
     <header>
-      <h2>◆ 초기 설정 ◆</h2>
+      <h2 id="setupTitle">◆ 초기 설정 ◆</h2>
       <span style="flex:1"></span>
       <button class="btn tap" id="setupClose">닫기</button>
     </header>
@@ -621,7 +639,7 @@
         <button class="btn tap" id="setupSave">저장</button>
         <span style="flex:1"></span>
       </div>
-      <div class="msg" id="setupMsg"></div>
+      <div class="msg" id="setupMsg" role="status" aria-live="polite"></div>
     </div>
   </div>
 </div>
@@ -658,6 +676,13 @@ const num = (n, d = 0) => n == null || !isFinite(n) ? "—"
 const pct = n => n == null || !isFinite(n) ? "—" : (n >= 0 ? "+" : "") + Number(n).toFixed(2) + "%";
 const cls = n => n > 0 ? "up" : n < 0 ? "down" : "";
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const reduceMotion = () =>
+  window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+function scrollToView(el, block = "start", inline = "nearest",
+                      behavior = reduceMotion() ? "auto" : "smooth") {
+  if (!el) return;
+  el.scrollIntoView({behavior, block, inline});
+}
 
 /* ── 종목 이름 ────────────────────────────────────────────────────────
    "005930" 만 뜨면 그 종목이 무엇인지는 외운 사람만 압니다. 이름을 앞에
@@ -1055,7 +1080,7 @@ function drawEquity() {
   ctx.beginPath();
   equity.forEach((p, i) => { peak = Math.max(peak, p.equity);
     i ? ctx.lineTo(X(i), Y(peak)) : ctx.moveTo(X(i), Y(peak)); });
-  ctx.strokeStyle = "#2a3140"; ctx.lineWidth = 1; ctx.stroke();
+  ctx.strokeStyle = tok("--edge"); ctx.lineWidth = 1; ctx.stroke();
   const up = vals[vals.length - 1] >= vals[0];
   ctx.beginPath();
   equity.forEach((p, i) => i ? ctx.lineTo(X(i), Y(p.equity)) : ctx.moveTo(X(i), Y(p.equity)));
@@ -1231,7 +1256,10 @@ async function refresh() {
       // 도는 중인지 확인할 방법이 없습니다.
       $("#strategy").textContent = runningLabel(s.strategy);
       const m = $("#mode");
-      m.textContent = MODE_BADGE[s.mode] || s.mode || "미가동";
+      const nextMode = MODE_BADGE[s.mode] || s.mode || "미가동";
+      // 같은 polling 값으로 live region을 계속 다시 쓰면 screen reader가 같은
+      // 상태를 반복 공지할 수 있습니다. 실제 mode가 바뀐 순간만 알립니다.
+      if (m.textContent !== nextMode) m.textContent = nextMode;
       // 배지는 낱말 하나만 들어갑니다. 사전의 온전한 설명("모의 매매 —
       // 실시간 시세, 가상 체결")은 마우스를 올리면 나옵니다.
       m.title = modeKo(s.mode) || "";
@@ -1374,12 +1402,14 @@ $("#demoBtn").addEventListener("click", () => {
 /* 심의가 벌어지는 곳으로 내립니다. 데모든 실제든, 방금 시작한 사람이
    다음에 보려는 것은 그것입니다. */
 function scrollToDesk() {
+  // CSS 가 한 기둥씩 보여주는 폭과 같은 경계를 씁니다. 먼저 숨은 desk 를
+  // 열어야 getClientRects() 가 실제 위치를 돌려줍니다.
+  const viewportWidth = typeof innerWidth === "number" ? innerWidth : 1280;
+  if (typeof showView === "function" && viewportWidth <= 1120) showView("desk");
   const rooms = document.getElementById("rooms");
   if (!rooms || !rooms.getClientRects().length) return;
-  // 모바일에서는 시세 탭에 있을 수 있습니다 — 데스크는 반대편입니다.
-  if (typeof showView === "function" && innerWidth <= 1000) showView("desk");
   requestAnimationFrame(() => {
-    rooms.scrollIntoView({behavior: "smooth", block: "start"});
+    scrollToView(rooms, "start");
   });
 }
 
@@ -1652,7 +1682,7 @@ $("#pRetake").onclick = async () => {
   profileSkipped = false;
   $("#quiz").style.display = "";
   await openSetup();
-  $("#stepProfile").scrollIntoView({behavior: "smooth", block: "start"});
+  scrollToView($("#stepProfile"), "start");
 };
 
 async function loadQuiz() {
@@ -1794,7 +1824,8 @@ function renderVenues() {
       const on = head.parentElement.classList.toggle("on");
       head.setAttribute("aria-expanded", String(on));
     };
-    head.setAttribute("aria-expanded", "false");
+    head.setAttribute(
+      "aria-expanded", String(head.parentElement.classList.contains("on")));
     head.onclick = toggle;
     head.onkeydown = (ev) => {
       if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); }
@@ -1918,8 +1949,67 @@ async function loadLimits() {
   } catch {}
 }
 
+let setupReturnFocus = null;
+let setupInerted = [];
+
+function closeSetup() {
+  const setup = $("#setup");
+  if (!setup.classList.contains("on")) return;
+  setup.classList.remove("on");
+  setupInerted.forEach(el => { el.inert = false; });
+  setupInerted = [];
+  const fallback = [setupReturnFocus, $("#setupBtn"), $("#headToolsToggle"),
+    $("#acctSetupBtn"), $("#brandHome")]
+    .find(el => el instanceof HTMLElement && el !== document.body &&
+      !el.inert && !el.hasAttribute("disabled") && el.getClientRects().length);
+  fallback?.focus({preventScroll: true});
+  setupReturnFocus = null;
+  // 연동을 막 끝낸 사람이 이 안내의 대상입니다. 다음 접속까지 미루면
+  // 그 사이에 빈 화면을 혼자 헤매게 됩니다.
+  maybeTour(me);
+}
+
+function trapSetupFocus(ev) {
+  const setup = $("#setup");
+  if (!setup.classList.contains("on")) return;
+  if (ev.key === "Escape") {
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    closeSetup();
+    return;
+  }
+  if (ev.key !== "Tab") return;
+  const stops = [...setup.querySelectorAll(
+    'button:not(:disabled), input:not(:disabled), select:not(:disabled), ' +
+    'textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
+  )].filter(el => el.getClientRects().length);
+  if (!stops.length) return;
+  const first = stops[0], last = stops[stops.length - 1];
+  if (!setup.contains(document.activeElement)) {
+    ev.preventDefault();
+    first.focus();
+  } else if (ev.shiftKey && document.activeElement === first) {
+    ev.preventDefault();
+    last.focus();
+  } else if (!ev.shiftKey && document.activeElement === last) {
+    ev.preventDefault();
+    first.focus();
+  }
+}
+addEventListener("keydown", trapSetupFocus);
+
 async function openSetup() {
-  $("#setup").classList.add("on");
+  const setup = $("#setup");
+  if (!setup.classList.contains("on")) {
+    setupReturnFocus = document.activeElement;
+    setup.classList.add("on");
+    setupInerted = [...document.body.children].filter(el => {
+      if (el === setup || el.inert) return false;
+      el.inert = true;
+      return true;
+    });
+    $("#setupClose").focus({preventScroll: true});
+  }
   try {
     await loadSetup();
   } catch (e) {
@@ -1937,12 +2027,28 @@ async function openSetup() {
 
 $("#setupBtn").onclick = openSetup;
 $("#acctSetupBtn").onclick = openSetup;
-$("#setupClose").onclick = () => {
-  $("#setup").classList.remove("on");
-  // 연동을 막 끝낸 사람이 이 안내의 대상입니다. 다음 접속까지 미루면
-  // 그 사이에 빈 화면을 혼자 헤매게 됩니다.
-  maybeTour(me);
+$("#setupClose").onclick = closeSetup;
+$("#headToolsToggle").onclick = () => {
+  const open = $("#headTools").classList.toggle("on");
+  $("#headToolsToggle").setAttribute("aria-expanded", String(open));
 };
+$("#headTools").addEventListener("click", ev => {
+  const button = ev.target.closest("button");
+  if (!button || button.id === "headToolsToggle") return;
+  $("#headTools").classList.remove("on");
+  $("#headToolsToggle").setAttribute("aria-expanded", "false");
+});
+addEventListener("pointerdown", ev => {
+  if ($("#headTools").contains(ev.target)) return;
+  $("#headTools").classList.remove("on");
+  $("#headToolsToggle").setAttribute("aria-expanded", "false");
+});
+addEventListener("keydown", ev => {
+  if (ev.key !== "Escape" || !$("#headTools").classList.contains("on")) return;
+  $("#headTools").classList.remove("on");
+  $("#headToolsToggle").setAttribute("aria-expanded", "false");
+  $("#headToolsToggle").focus();
+});
 
 
 /* 성향 진단은 건너뛸 수 있습니다. 건너뛰면 서버가 진단 전에 쓰는 중립 프로필로
@@ -2137,7 +2243,7 @@ function openAuth(which) {
   document.body.classList.add("showauth");
   showTab(which);
   const card = $("#authCard");
-  card.scrollIntoView({behavior: "smooth", block: "center"});
+  scrollToView(card, "center");
   // 열자마자 첫 칸에 커서를 둡니다 — 열어 놓고 또 클릭하게 만들지 않습니다.
   const first = card.querySelector(which === "register" ? "#rgName" : "#liEmail");
   if (first) setTimeout(() => first.focus(), 260);
@@ -2442,9 +2548,15 @@ document.getElementById("cSell").onclick = () => chartOrder("sell");
 /* 좁은 화면에서는 한 번에 하나만 봅니다 */
 function showView(view) {
   document.body.dataset.view = view;
-  document.getElementById("tabDesk").setAttribute("aria-selected", String(view === "desk"));
-  document.getElementById("tabChart").setAttribute("aria-selected", String(view === "chart"));
+  document.getElementById("tabDesk").setAttribute("aria-pressed", String(view === "desk"));
+  document.getElementById("tabChart").setAttribute("aria-pressed", String(view === "chart"));
   if (view === "chart" && chart) chart.resize();
+  // 한쪽 기둥을 오래 스크롤한 뒤 다른 탭으로 바꾸면 새 기둥도 같은 scrollY를
+  // 이어받아 종목·주기·현재가가 화면 위로 사라집니다. 좁은 화면 탭은 새 작업의
+  // 시작이므로 deck 상단으로 복귀합니다.
+  const viewportWidth = typeof innerWidth === "number" ? innerWidth : 1280;
+  if (viewportWidth <= 1120) requestAnimationFrame(() =>
+    document.querySelector(".deck")?.scrollIntoView({block: "start"}));
 }
 document.getElementById("tabDesk").onclick = () => showView("desk");
 document.getElementById("tabChart").onclick = () => showView("chart");
@@ -3081,8 +3193,10 @@ function showPage(name) {
   const known = ["trade", "account", "me"];
   const page = known.includes(name) ? name : "trade";
   document.body.dataset.page = page;
-  $("#pageTabs").querySelectorAll("[data-page]").forEach(b =>
-    b.setAttribute("aria-selected", String(b.dataset.page === page)));
+  $("#pageTabs").querySelectorAll("[data-page]").forEach(b => {
+    if (b.dataset.page === page) b.setAttribute("aria-current", "page");
+    else b.removeAttribute("aria-current");
+  });
   ["Trade", "Account", "Me"].forEach(id => {
     const el = document.getElementById("page" + id);
     if (el) el.hidden = id.toLowerCase() !== page;
@@ -3090,7 +3204,14 @@ function showPage(name) {
   scrollTo({top: 0, behavior: "instant"});
   // 계좌 화면은 열릴 때 숫자를 새로 받아야 합니다 — 몇 분 전 값을 보여주면
   // 그게 지금 잔고인지 알 수 없습니다.
-  if (page === "account") { loadPnl(); loadTradeLog(); loadBrokerAccount(); }
+  if (page === "account") {
+    loadPnl();
+    loadTradeLog();
+    loadBrokerAccount();
+    // 계좌 canvas도 숨은 동안 폭이 0 입니다. 열린 다음 프레임에서 다시 그려야
+    // 빈 검은 칸이 아니라 자산선 또는 "기록 없음" 안내가 보입니다.
+    requestAnimationFrame(drawEquity);
+  }
   if (page === "me") loadPlan();
   // 차트 캔버스는 숨어 있는 동안 폭이 0 입니다. 돌아오면 다시 재야 합니다.
   if (page === "trade" && chart) requestAnimationFrame(() => chart.resize());
@@ -3317,7 +3438,7 @@ document.getElementById("runStart").onclick = async () => {
     // 위 안내가 이미 대안까지 말하고 있습니다. 여기서 키 이름을 한 번 더
     // 늘어놓으면 같은 막다른 길을 두 번 읽게 됩니다.
     renderMissingKeys(st);
-    $("#stNeed")?.scrollIntoView({behavior: "smooth", block: "center"});
+    scrollToView($("#stNeed"), "center");
     return note("#runMsg", "이 전략은 지금 못 돕니다 — 위 안내를 보세요", "err");
   }
   // 실거래는 CLI 가 콘솔에서 묻는 것과 **같은 확인**을 받습니다 — 전략 이름을
@@ -3463,8 +3584,10 @@ function tourShow() {
   // 그려 놓고 정작 버튼은 화면 밖에 두게 됩니다.
   let r = target.getBoundingClientRect();
   if (r.top < 0 || r.bottom > innerHeight || r.left < 0 || r.right > innerWidth) {
-    target.scrollIntoView({block: r.height > innerHeight * 0.8 ? "start" : "center",
-                           inline: "nearest", behavior: "instant"});
+    // 바로 다음 줄에서 rect 를 다시 읽으므로 smooth animation을 기다리면
+    // 안내 ring이 스크롤 전 위치에 남습니다. 이 경로만 동기 스크롤합니다.
+    scrollToView(target, r.height > innerHeight * 0.8 ? "start" : "center",
+                 "nearest", "auto");
     r = target.getBoundingClientRect();
   }
   // 대상이 화면보다 크면 링을 화면 안으로 자릅니다. 잘린 변은 테두리를
@@ -3537,8 +3660,13 @@ function tourEnd() {
   document.body.classList.remove("touring");
   tourInerted.forEach(el => { el.inert = false; });
   tourInerted = [];
+  // 모바일에서는 ? 안내를 누른 도구 menu가 곧 닫혀 원래 버튼도 tourBtn도
+  // 숨습니다. 숨은 요소나 focus 불가능한 nav 대신, 사용자가 방금 있던 header의
+  // 보이는 control로 돌아갑니다.
   const back = [tourReturnFocus, document.getElementById("tourBtn"),
-                document.getElementById("pageTabs")]
+                document.getElementById("headToolsToggle"),
+                document.querySelector('#pageTabs [aria-current="page"]'),
+                document.getElementById("brandHome")]
     .find(el => el && el.focus && el.getClientRects().length);
   if (back) back.focus();
   tourReturnFocus = null;

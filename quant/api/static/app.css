@@ -29,37 +29,46 @@
    있고, 스택에는 이름이 그대로 남아 있어서 선언만 되살리면 바로 잡힙니다. */
 
 :root{
-  --bg:#07080c; --panel:#0e1119; --plate:#151a25; --line:#252c3a;
-  --gold:#f0c040; --gold-dim:#8a6f27; --red:#e0453c;
+  --bg:#080b12; --panel:#111824; --plate:#182233; --line:#344057;
+  --gold:#f3c85b; --gold-dim:#c5a349; --red:#f05d56;
   /* 한국 색 논리: 오르면 빨강, 내리면 파랑. 시세 패널과 차트는 이미
      이쪽이었고 티커·이벤트만 서구식이라, 같은 상승이 한 화면에서
      초록과 빨강으로 동시에 칠해지고 있었습니다. */
   /* 방향(등락) — 한국식: 오르면 빨강, 내리면 파랑. 여기 말고는 쓰지 않습니다. */
-  --up:#ff5a52; --down:#5b9dff;
+  --up:#ff6b63; --down:#6ea8fe;
   /* 상태(성공·경고·실패) — 방향과 별개입니다. 겸용하면 한국식으로 바꾸는
      순간 "저장 완료" 가 빨강이 되고 "오류" 가 파랑이 됩니다. */
-  --ok:#57d977; --warn:#f0c040; --bad:#ff8a83;
-  --ink:#e8ecf2; --muted:#7b8494; --white:#fff;
-  --wood:#8a6a45; --wood-dark:#6d5236; --turf:#2f6b4a; --turf-dark:#255840;
+  --ok:#62d486; --warn:#f3c85b; --bad:#ff918a;
+  --ink:#f3f6fa; --muted:#aab4c4; --white:#fff;
+  --wood:#7b6044; --wood-dark:#624b35; --turf:#2e6549; --turf-dark:#24523d;
   --px:"Silkscreen","PixelKR","PixelKR2",ui-monospace,"SFMono-Regular",Menlo,monospace;
-  --kr:"PixelKR","PixelKR2","Silkscreen","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  /* 본문은 읽는 글입니다. 픽셀 폰트는 --px 를 직접 쓰는 제목과 상태표에만
+     남깁니다. PixelKR 파일을 나중에 넣어도 장문 전체가 픽셀화되지 않습니다. */
+  --kr:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard",
+       "Noto Sans KR","Malgun Gothic",sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
 
   /* 시세·주문 패널이 쓰는 이름들. chart.js 와 같은 어휘를 쓰되 값은 여기서
      한 번만 정합니다 — 캔버스와 그 주변이 다른 색을 쓰면 같은 화면으로
      보이지 않습니다. 한국 색 논리: 오르면 빨강. */
-  --sang:#ff5a52; --ha:#5b9dff;
-  --bone:#e8ecf2; --dim:#9aa4b6; --faint:#7b8494;
+  --sang:#ff6b63; --ha:#6ea8fe;
+  --bone:#f3f6fa; --dim:#b7c0ce; --faint:#919daf;
   /* 입력칸 테두리는 글자가 아니라 '여기부터 여기까지가 칸이다' 라는
      정보입니다. WCAG 1.4.11 은 그런 경계에 3:1 을 요구합니다. */
-  --rule:#252c3a; --edge:#38415a; --field:#5a6480; --panel2:#151a25; --void:#07080c;
+  --rule:#344057; --edge:#5f6d89; --field:#657391; --panel2:#182233; --void:#080b12;
+  --shadow:#04060a; --focus:#ffe083;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{background:var(--bg);color:var(--ink)}
-body{font-family:var(--kr);font-size:14px;line-height:1.5;
-     image-rendering:pixelated;-webkit-font-smoothing:none;overflow-x:hidden}
+html,body{min-height:100%;background:var(--bg);color:var(--ink)}
+html{scrollbar-color:var(--edge) var(--bg)}
+body{font-family:var(--kr);font-size:15px;line-height:1.65;
+     image-rendering:pixelated;-webkit-font-smoothing:antialiased;
+     text-rendering:optimizeLegibility;overflow-x:hidden}
+button,input,select,textarea{font:inherit}
+::selection{background:var(--gold);color:var(--bg)}
 svg,canvas{image-rendering:pixelated;shape-rendering:crispEdges}
-.px{font-family:var(--px);letter-spacing:.04em}
+.px{font-family:var(--px);letter-spacing:.04em;-webkit-font-smoothing:none}
+.brand-short{display:none}
 
 /* 연동 검증 결과 — 단계마다 한 줄. */
 .vstep{font-size:12px;line-height:1.7;color:var(--dim)}
@@ -119,7 +128,7 @@ body[data-page="account"] .viewtabs{display:none}
   background:transparent;border:0;border-right:1px solid var(--rule);
   color:var(--dim);cursor:pointer}
 .pagetabs button:last-child{border-right:0}
-.pagetabs button[aria-selected="true"]{color:var(--gold);background:rgba(240,192,64,.10)}
+.pagetabs button[aria-current="page"]{color:var(--gold);background:rgba(240,192,64,.10)}
 @media(max-width:640px){.pagetabs button{padding:0 10px;font-size:11px}}
 
 /* 잔고 미니 표시 — 어느 화면에 있든 보입니다. */
@@ -243,9 +252,14 @@ header.top{position:sticky;top:0;z-index:40;background:var(--bg);
 /* 실거래로 도는 동안에는 화면이 통째로 그 사실을 말합니다. 모의와 실거래를
    같은 화면으로 두면 어느 쪽인지 헷갈리는 순간이 반드시 오고, 그 순간에
    누르는 버튼은 진짜 돈을 씁니다. */
-body.live .mode{background:var(--red);color:#fff;border-color:var(--red);
+body.live .mode{background:var(--red);color:var(--bg);border-color:var(--red);
   animation:livepulse 2.4s ease-in-out infinite}
-@keyframes livepulse{0%,100%{opacity:1}50%{opacity:.62}}
+/* 실거래 표식 자체를 흐리면 pulse 중 작은 글자의 대비도 함께 무너집니다.
+   바깥 halo만 움직여 mode와 글자는 항상 완전 불투명하게 둡니다. */
+@keyframes livepulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(240,93,86,.12)}
+  50%{box-shadow:0 0 0 4px rgba(240,93,86,.34)}
+}
 body.live .top{border-bottom:3px solid var(--red)}
 .livebar{display:none}
 body.live .livebar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
@@ -380,7 +394,8 @@ tr:last-child td{border-bottom:0}
   background:var(--plate);font-size:12px;color:var(--muted)}
 .playbar .grow{flex:1 0 6px}
 .playbar button{font-family:var(--px);font-size:11px;padding:5px 10px;
-  border:2px solid var(--line);background:none;color:var(--muted);cursor:pointer}
+  min-width:44px;border:2px solid var(--line);background:none;color:var(--muted);
+  cursor:pointer}
 .playbar button.on{border-color:var(--gold);color:var(--gold)}
 .playbar button:hover:not(:disabled){border-color:var(--gold);color:var(--gold)}
 .playbar button:disabled{opacity:.4;cursor:default}
@@ -426,7 +441,7 @@ table.acct td:first-child{font-variant-numeric:normal}
 .flowrow:last-child{border-bottom:0}
 .flowsym{font-family:var(--px);font-size:11px}
 .bars{display:flex;gap:3px;align-items:center;height:22px}
-.bars .b{flex:1;height:100%;position:relative;background:#12161f;border:1px solid var(--line)}
+.bars .b{flex:1;height:100%;position:relative;background:#12161f;border:1px solid var(--edge)}
 .bars .b i{position:absolute;left:0;right:0;bottom:0;display:block}
 .bars .lbl{font-family:var(--px);font-size:11px;color:var(--muted);width:42px;text-align:right}
 
@@ -460,6 +475,16 @@ table.acct td:first-child{font-variant-numeric:normal}
 select,#mSymbol{min-height:44px}
 .manual{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;
   align-items:end}
+.manual-orders{margin-top:14px;border:2px solid var(--line);background:#0c121d}
+.manual-orders summary{display:flex;min-height:44px;align-items:center;gap:10px;
+  padding:9px 11px;cursor:pointer;font-family:var(--px);font-size:11px;color:var(--gold)}
+.manual-orders summary span{margin-left:auto;font-family:var(--kr);font-size:12px;
+  color:var(--muted)}
+.manual-orders:not([open])>:not(summary){display:none}
+.manual-orders[open] summary{border-bottom:2px solid var(--line)}
+.manual-orders>.manual,.manual-orders>.actions{margin-left:12px;margin-right:12px}
+.manual-orders>.actions{margin-bottom:12px}
+.safety-actions{margin-top:14px;justify-content:flex-end}
 .fld{display:flex;flex-direction:column;gap:4px;min-width:0}
 .fld label{font-family:var(--px);font-size:11px;color:var(--muted);letter-spacing:.05em}
 .fld input,.fld select{min-height:44px;background:#0a0d14;border:2px solid var(--field);color:var(--ink);
@@ -478,7 +503,7 @@ select,#mSymbol{min-height:44px}
 .gauge{margin-top:4px}
 .gauge .lab{display:flex;justify-content:space-between;font-family:var(--px);font-size:11px;
   color:var(--muted)}
-.gauge .track{height:8px;background:#0a0d14;border:1px solid var(--line);margin-top:3px}
+.gauge .track{height:8px;background:#0a0d14;border:1px solid var(--edge);margin-top:3px}
 .gauge .track i{display:block;height:100%;background:var(--ok)}
 .gauge.hot .track i{background:var(--gold)}
 .gauge.over .track i{background:var(--red)}
@@ -532,9 +557,9 @@ select,#mSymbol{min-height:44px}
 .ax .axl{display:flex;justify-content:space-between;font-family:var(--px);font-size:11px;
   color:var(--muted)}
 .ax .axl b{color:var(--gold);font-weight:400}
-.ax .bar{position:relative;height:10px;background:#0a0d14;border:1px solid var(--line);
+.ax .bar{position:relative;height:10px;background:#0a0d14;border:1px solid var(--edge);
   margin-top:3px}
-.ax .bar span{position:absolute;top:0;bottom:0;left:50%;width:2px;background:var(--line)}
+.ax .bar span{position:absolute;top:0;bottom:0;left:50%;width:2px;background:var(--edge)}
 .ax .bar i{position:absolute;top:1px;bottom:1px;background:var(--gold);min-width:3px}
 .ax input[type=range]{width:100%;margin-top:4px;accent-color:var(--gold)}
 .derived{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;
@@ -571,7 +596,7 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
   .viewtabs button{border:0;border-right:1px solid var(--rule);min-height:46px;
     font-family:var(--px);font-size:11px;background:transparent;color:var(--dim);cursor:pointer}
   .viewtabs button:last-child{border-right:0}
-  .viewtabs button[aria-selected="true"]{color:var(--gold);background:rgba(255,198,74,.09)}
+  .viewtabs button[aria-pressed="true"]{color:var(--gold);background:rgba(255,198,74,.09)}
   body[data-view="chart"] .deck-l,
   body[data-view="desk"]  .deck-r{display:none}
 }
@@ -752,6 +777,350 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
 .steps span.now{border-color:var(--gold);color:var(--gold)}
 .steps span.skipped{border-color:var(--gold-dim);color:var(--gold)}
 .step .head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.step p{font-family:var(--kr);font-size:14px;line-height:1.7}
+.venue .note{font-size:13px;line-height:1.7}
 .step .head .mark{font-family:var(--px);font-size:11px;color:var(--muted);margin-left:auto}
 .step .head .mark.done{color:var(--ok)}
 .venue .head{min-height:44px}
+
+/* ── 2026 Pilot UI pass ────────────────────────────────────────────────
+   두 벤치마크의 픽셀 플로어는 유지하되, 실제 운영 화면에서 먼저 읽혀야 하는
+   것은 현재 모드·핵심 행동·시세·안전 한도입니다. 장식은 방과 짧은 레이블에
+   모으고, 장문과 숫자는 읽기 전용 서체와 넓은 간격으로 분리합니다. */
+
+/* 프레임: 1180px 안에 같은 무게의 두 기둥을 욱여넣지 않습니다. */
+.wrap{max-width:1400px;padding:0 24px 96px}
+footer{max-width:1400px;padding:22px 24px;color:var(--faint);font-size:13px}
+
+header.top{padding:10px 24px 11px;background:rgba(8,11,18,.98);
+  border-bottom:2px solid var(--gold-dim)}
+.top-in{max-width:1400px;display:grid;
+  grid-template-columns:12px auto auto minmax(100px,1fr) auto auto auto auto;
+  grid-template-rows:auto auto;align-items:center;column-gap:10px;row-gap:8px;
+  overflow:visible}
+.top-in>.conn{grid-column:1;grid-row:1}
+.top-in>.brand{grid-column:2;grid-row:1;min-height:44px;display:inline-flex;
+  align-items:center;gap:7px;font-size:16px;letter-spacing:.045em}
+.top-in>.mode{grid-column:3;grid-row:1;min-height:32px;display:inline-flex;
+  align-items:center;padding:4px 9px}
+.top-in>.mini{grid-column:4;grid-row:1;justify-self:start;min-height:36px;
+  padding:6px 10px;border-color:var(--edge);background:var(--panel)}
+.top-in>.mini[hidden]{display:none}
+.top-in>.grow{display:none}
+.top-in>.pagetabs{grid-column:5/9;grid-row:1;justify-self:end}
+.top-in>#strategy{grid-column:2/5;grid-row:2;justify-self:start;min-width:0;
+  max-width:100%;min-height:36px;display:block;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;border:1px solid var(--line);padding:7px 10px;background:var(--panel)}
+.headtools,.headtools-menu{display:contents}
+.headtools>#headToolsToggle{display:none}
+.top-in .headtools-menu>.btn{min-width:68px;white-space:nowrap}
+.top-in #setupBtn{grid-column:5;grid-row:2}
+.top-in #demoBtn{grid-column:6;grid-row:2}
+.top-in #tourBtn{grid-column:7;grid-row:2}
+.top-in>#serverSince{grid-column:8;grid-row:2;justify-self:end}
+.pagetabs{border-color:var(--edge);background:var(--panel)}
+.pagetabs button{min-height:44px;padding:0 17px;font-family:var(--kr);
+  font-size:14px;font-weight:700;letter-spacing:-.01em;color:var(--muted)}
+.pagetabs button[aria-current="page"]{color:var(--bg);background:var(--gold)}
+.conn{border:2px solid var(--bg);outline:1px solid var(--edge)}
+.conn.on{box-shadow:0 0 0 3px rgba(98,212,134,.18)}
+body.live .top{border-bottom:3px solid var(--red)}
+
+/* 픽셀 프레임은 모든 내용을 둘러싸는 상자 하나로 충분합니다. 제목표가
+   패널 밖에 떠다니지 않게 rail 로 붙여 스캔 순서를 고정합니다. */
+.panel{position:relative;margin-top:18px;border-color:var(--line);
+  background:var(--panel);box-shadow:4px 4px 0 var(--shadow)}
+.panel>.plate{display:flex;width:100%;min-height:38px;margin:0;padding:9px 14px;
+  border:0;border-bottom:2px solid var(--line);border-left:4px solid var(--gold-dim);
+  background:var(--plate);color:var(--ink);font-size:12px;font-weight:400;
+  letter-spacing:.04em}
+.panel>.plate .d{color:var(--gold)}
+.body{padding:18px}
+
+/* 실제 읽는 글은 system sans, 식별자와 숫자만 mono/pixel 입니다. */
+.msg{font-family:var(--kr);font-size:13.5px;line-height:1.7;padding:9px 11px;
+  border-left-width:4px;color:var(--muted)}
+.stitem span,.stbrief,.needkey,.saybox .line,.ticket .hint,.empty,
+.venue .note,.q .qt,.q .qh,.opt,.fact span,.step3 p{font-family:var(--kr)}
+.ticket .hint,.card .cap p,.link .hint{
+  font-family:var(--kr);font-size:13px;line-height:1.65}
+table{font-family:var(--kr);font-size:13px}
+th{font-size:12px;font-weight:700;color:var(--muted);padding:9px 10px}
+td{padding:9px 10px}
+.num,table.tradelog .tl-num,table.acct td:not(:first-child){font-family:var(--mono)}
+.feed{font-family:var(--kr);font-size:13px;line-height:1.55}
+.feed div{padding:7px 0}
+.feed .t,.feed .ty{font-family:var(--mono);font-size:12px}
+.dim{color:var(--muted)}
+
+/* 자동매매 설명은 한 덩어리의 장문 대신 신호 단위로 놓습니다. 넓은 화면에서는
+   세 칸으로 줄여, 현재 심의가 설정 설명 아래에 묻히지 않게 합니다. */
+.stbrief{padding:14px 15px;background:#0c121d;border-color:var(--line)}
+.stlist{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px}
+.stitem{display:block;padding:10px 11px;border-left:3px solid var(--edge);
+  background:var(--panel2)}
+.stitem b{display:block;margin-bottom:5px;font-size:13px}
+.stitem span{display:block;font-size:13px;line-height:1.65;color:var(--muted)}
+.stmore summary{min-height:44px;font-size:12px}
+.stmore .r{padding:9px 0;font-size:13px}
+
+/* 핵심 작업은 판단 2 : 시세 1 비율입니다. 좁아질 때는 화면 탭으로 명시적으로
+   갈라, 차트를 긴 문서 아래에 묻지 않습니다. */
+.deck{grid-template-columns:minmax(0,2fr) minmax(380px,1fr);gap:22px}
+.deck-r{top:calc(var(--header-h,96px) + 18px);
+  max-height:calc(100dvh - var(--header-h,96px) - 30px);
+  scrollbar-width:thin;scrollbar-color:var(--edge) transparent}
+.deck-r::-webkit-scrollbar,.scroll::-webkit-scrollbar{width:9px;height:9px}
+.deck-r::-webkit-scrollbar-track,.scroll::-webkit-scrollbar-track{background:transparent}
+.deck-r::-webkit-scrollbar-thumb,.scroll::-webkit-scrollbar-thumb{
+  background:var(--edge);border:2px solid var(--panel)}
+.quotebar{display:grid;grid-template-columns:minmax(0,1fr) auto auto;
+  align-items:center;gap:10px;padding:14px 16px}
+.quotebar select{min-width:0}
+.quotebar .last{font-size:28px;margin-left:0;text-align:right}
+#chartBox{height:320px;background:#0a0f18}
+.mypos{padding:13px 16px;gap:10px}
+.mypos .k{font-family:var(--kr);font-size:12px;letter-spacing:0}
+.ticket{padding:16px;gap:12px}
+.ticket .row{grid-template-columns:repeat(2,minmax(0,1fr))}
+.ticket .row>*{min-width:0}
+.ticket label{font-family:var(--kr);font-size:13px;letter-spacing:0;color:var(--muted)}
+.ticket input{font-size:15px}
+.ticket .go button{min-height:48px}
+
+/* 벤치마크의 강점인 '한눈에 보이는 조직도'를 가져오되, 발언 전문을 별도
+   화면으로 쫓아내지 않습니다. 분석과 결론은 넓게, 대립하는 토론·리스크는
+   나란히 놓아 분석 → 반박 → 통제 → 판정의 흐름을 한 무대로 읽습니다. */
+body[data-page="trade"] #pageTrade{display:flex;flex-direction:column}
+#runner{order:1}
+#roomsHome{order:2}
+#manualPanel{order:3}
+#pageTrade>section:last-child{order:4}
+#rooms{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;
+  align-items:start;
+  margin-top:18px;scroll-margin-top:calc(var(--header-h,96px) + 18px)}
+body.demoing #rooms{display:grid}
+#rooms>.panel{min-width:0;margin-top:0}
+#rooms>.panel:first-child,#rooms>.panel:last-child{grid-column:1/-1}
+.room{height:auto;padding:50px 14px 14px}
+.room .plate{min-height:38px;padding:8px 13px;border-color:var(--line)}
+.room .round{min-height:38px;display:flex;align-items:center;padding:6px 11px;
+  color:var(--ink);border-color:var(--line)}
+.seats{display:grid;grid-template-columns:repeat(4,minmax(68px,1fr));gap:4px;
+  align-items:end}
+.seats .seat{width:100%}
+/* 4열 좌석은 각 줄의 첫·마지막 말풍선을 방 안쪽으로 당깁니다. 숨은
+   말풍선도 layout 폭에는 들어가므로, 이 규칙이 없으면 중간 화면에서 잘립니다. */
+.seats .seat:nth-child(4n+1) .bubble{left:0;right:auto;transform:none}
+.seats .seat:nth-child(4n) .bubble{left:auto;right:0;transform:none}
+.seats .seat:nth-child(4n+1) .bubble:after{left:34px;right:auto}
+.seats .seat:nth-child(4n) .bubble:after{left:auto;right:30px}
+@media(min-width:901px){
+  #rooms>.panel:first-child .seats{
+    grid-template-columns:repeat(8,minmax(68px,1fr))}
+  #rooms>.panel:first-child .seats .seat .bubble{
+    left:50%;right:auto;transform:translateX(-50%)}
+  #rooms>.panel:first-child .seats .seat .bubble:after{
+    left:50%;right:auto;margin-left:-5px}
+  #rooms>.panel:first-child .seats .seat:nth-child(8n+1) .bubble{
+    left:0;right:auto;transform:none}
+  #rooms>.panel:first-child .seats .seat:nth-child(8n) .bubble{
+    left:auto;right:0;transform:none}
+  #rooms>.panel:first-child .seats .seat:nth-child(8n+1) .bubble:after{
+    left:34px;right:auto;margin-left:-5px}
+  #rooms>.panel:first-child .seats .seat:nth-child(8n) .bubble:after{
+    left:auto;right:30px;margin-left:-5px}
+}
+.duel{gap:5px;flex-wrap:nowrap}
+.duel .seat{width:100px;padding-top:112px;flex:0 1 100px}
+.duel .vs{font-size:14px;padding:0 0 39px}
+.seat .seatname{font-size:11px}
+.seat .role{font-family:var(--kr);font-size:12px;line-height:1.45}
+.saybox{min-height:86px;margin-top:14px;padding:12px 14px;background:#090e17;
+  border-color:#302316}
+.saybox .who{font-size:11px;margin-bottom:7px}
+.saybox .line{font-size:14px;line-height:1.7}
+
+/* 내 계좌에서 사라진 오른쪽 기둥을 그대로 예약하던 결함을 없앱니다. */
+body[data-page="account"] .deck,body[data-page="me"] .deck{
+  grid-template-columns:minmax(0,1fr)}
+body[data-page="account"] #pageAccount{display:grid;
+  grid-template-columns:minmax(0,1fr);gap:18px;align-items:start}
+#pageAccount>.panel{margin-top:0}
+#pageAccount>.panel{grid-column:1/-1}
+.hud{grid-template-columns:minmax(300px,.9fr) minmax(360px,1.1fr)}
+.hud-l{padding:22px 24px}.hud-r{padding:16px 18px;min-height:190px}
+#equity{height:180px}
+.big{font-family:var(--mono);font-size:38px;letter-spacing:-.035em;text-shadow:none}
+.kpis{gap:14px}.kpi .k{font-family:var(--kr);font-size:12px;letter-spacing:0}
+.kpi .v{font-family:var(--mono);font-size:16px}
+.pnlgrid{grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.pnlcard{padding:14px 15px;background:#0c121d;border-color:var(--line)}
+.pnlcard .lab{color:var(--muted)}
+.pnlcard .v{font-size:22px;margin-top:7px}
+
+/* 입력·버튼은 현재 상태를 분명히 보이고 손가락 한 칸보다 작아지지 않습니다. */
+.btn{min-height:44px;padding:8px 13px;background:var(--plate);border-color:var(--edge)}
+.btn:hover:not(:disabled){background:#223047;border-color:var(--gold);color:var(--focus)}
+.btn:active:not(:disabled){transform:translate(2px,2px)}
+.btn.buy{border-color:var(--up)}.btn.sell{border-color:var(--down)}
+.fld{gap:7px}.fld label{font-family:var(--kr);font-size:13px;font-weight:700;
+  letter-spacing:0;color:var(--muted)}
+.fld input,.fld select,.pwform input{font-family:var(--kr);font-size:15px;
+  background:var(--panel2);border-color:var(--field);padding:9px 11px}
+.fld input::placeholder,.ticket input::placeholder,.pwform input::placeholder{
+  color:var(--faint);opacity:1}
+.pagetabs button,.brand,.stmore summary,.playbar button,.opt,.trynow button,
+.needkey .alt button,.venue .head{min-height:44px}
+.pin button{min-width:44px;min-height:44px}
+.opt{padding:10px 11px;font-size:13px}
+.ax input[type=range]{min-height:44px}
+:focus-visible{outline-color:var(--focus)}
+
+/* 로그인 전 화면도 작은 중앙 포스터 대신 읽기 좋은 제품 설명으로 둡니다. */
+.land{max-width:1120px;padding:34px 24px 64px}
+.hero{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(280px,.75fr);
+  grid-template-areas:"title title" "copy actions" "note actions";
+  column-gap:48px;row-gap:14px;padding:38px 40px 34px;text-align:left;
+  border-color:var(--gold-dim);box-shadow:6px 6px 0 var(--shadow)}
+.hero h1{grid-area:title;font-size:clamp(22px,3.2vw,34px);line-height:1.4;
+  text-shadow:3px 3px 0 var(--shadow)}
+.hero .sub{grid-area:copy;max-width:58ch;margin:0;font-size:17px;line-height:1.8}
+.hero .cta{grid-area:actions;display:grid;align-content:center;justify-content:stretch;
+  margin:0;gap:10px}
+.hero .cta .btn{width:100%;font-size:12px}
+.hero .note{grid-area:note;margin:0;font-size:13px;color:var(--muted)}
+.steps3{grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:26px}
+.step3{padding:20px 19px;border-color:var(--line);box-shadow:3px 3px 0 var(--shadow)}
+.step3 .n{color:var(--gold);font-size:12px}
+.step3 h3{font-size:14px}.step3 p{font-size:14px;line-height:1.75}
+.facts{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:26px}
+.fact{padding:18px 19px;border-color:var(--line)}
+.fact b{font-size:12px}.fact span{font-size:14px;line-height:1.75}
+.warnbox{margin-top:26px;padding:20px 19px}.warnbox p{font-size:14px}
+
+@media(max-width:1120px){
+  .deck{grid-template-columns:minmax(0,1fr)}
+  .deck{scroll-margin-top:calc(var(--header-h,96px) + 52px)}
+  .stlist{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .deck-r{position:static;max-height:none;overflow:visible}
+  .viewtabs{display:grid;grid-template-columns:1fr 1fr;position:sticky;
+    top:var(--header-h,96px);z-index:38;border:1px solid var(--edge);
+    border-bottom:0;background:var(--panel)}
+  .viewtabs button{min-height:48px;border:0;border-right:1px solid var(--rule);
+    font-family:var(--kr);font-size:14px;font-weight:700;background:var(--panel);
+    color:var(--muted)}
+  .viewtabs button:last-child{border-right:0}
+  .viewtabs button[aria-pressed="true"]{color:var(--bg);background:var(--gold)}
+  body[data-view="chart"] .deck-l,body[data-view="desk"] .deck-r{display:none}
+  body[data-page="account"] .viewtabs,body[data-page="me"] .viewtabs{display:none}
+  body[data-page="account"] .deck-r,body[data-page="me"] .deck-r{display:none}
+}
+
+@media(max-width:820px){
+  .wrap{padding:0 14px 80px}
+  .stlist{grid-template-columns:minmax(0,1fr)}
+  #rooms,body.demoing #rooms{grid-template-columns:minmax(0,1fr)}
+  #rooms>.panel{grid-column:1}
+  body[data-page="account"] #pageAccount{grid-template-columns:minmax(0,1fr)}
+  #pageAccount>.panel{grid-column:1!important}
+  .hud{grid-template-columns:minmax(0,1fr)}
+  .hud-l{border-right:0;border-bottom:2px solid var(--line)}
+  .hud-r{min-height:150px}
+  #equity{height:140px}
+  .pnlgrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .hero{grid-template-columns:minmax(0,1fr);grid-template-areas:
+    "title" "copy" "actions" "note";padding:30px 24px;row-gap:18px}
+  .hero .cta{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .hero .cta .btn:last-child{grid-column:1/-1}
+  .steps3{grid-template-columns:minmax(0,1fr)}
+}
+
+@media(max-width:900px){
+  header.top{position:relative;padding:8px 12px 10px}
+  .top-in{grid-template-columns:repeat(12,minmax(0,1fr));grid-template-rows:auto auto;
+    gap:8px;overflow:visible;flex-wrap:initial}
+  .top-in>*{min-width:0}
+  .top-in>.conn{grid-column:1;grid-row:1;justify-self:center}
+  .top-in>.brand{grid-column:2/5;grid-row:1;font-size:12px;overflow:hidden;
+    white-space:nowrap;text-overflow:ellipsis}
+  .top-in>.mode{grid-column:5/8;grid-row:1;font-size:12px;overflow:hidden;
+    white-space:nowrap;text-overflow:ellipsis}
+  .top-in>.mini{grid-column:8/10;grid-row:1;justify-self:stretch;min-width:0;
+    overflow:hidden;justify-content:flex-end}
+  .top-in>.mini>*{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .top-in>.pagetabs{grid-column:1/-1;grid-row:2;justify-self:stretch;width:100%}
+  .pagetabs button{width:33.333%;padding:0 6px}
+  .top-in>.headtools{display:block;grid-column:10/13;grid-row:1;position:relative;
+    min-width:0;justify-self:stretch}
+  .headtools>#headToolsToggle{display:flex;min-height:44px;padding:4px 6px;
+    align-items:center;justify-content:center;font-size:12px;white-space:nowrap}
+  .headtools-menu{display:none;position:absolute;right:0;top:calc(100% + 6px);
+    z-index:70;min-width:148px;padding:6px;background:var(--panel);
+    border:2px solid var(--edge);box-shadow:4px 4px 0 var(--shadow)}
+  .headtools.on>.headtools-menu{display:grid;gap:6px}
+  .headtools-menu .btn{grid-column:auto!important;grid-row:auto!important;width:100%;
+    min-width:44px;justify-self:stretch;white-space:nowrap}
+  .top-in>#strategy,.top-in>#serverSince{display:none}
+  .viewtabs{top:0}
+  .deck{scroll-margin-top:52px}
+  .panel{margin-top:14px;box-shadow:3px 3px 0 var(--shadow)}
+  .panel>.plate{padding:8px 11px}.body{padding:14px}
+  .manual{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .actions .btn{flex:1 1 140px}
+  .seats{grid-template-columns:repeat(4,minmax(68px,1fr))}
+  .bubble{max-width:min(186px,calc(100vw - 54px))}
+  .land{padding:20px 14px 50px}
+  .facts{grid-template-columns:minmax(0,1fr)}
+}
+
+@media(max-width:520px){
+  body{font-size:15px}
+  .wrap{padding-left:10px;padding-right:10px}
+  .brand-full,.brand i:last-child{display:none}
+  .brand-short{display:inline}
+  .manual{grid-template-columns:minmax(0,1fr)}
+  .ticket .row{grid-template-columns:minmax(0,1fr)}
+  .quotebar{grid-template-columns:minmax(0,1fr) auto}
+  .quotebar .last{grid-column:1/-1;text-align:left;font-size:25px}
+  #chartBox{height:280px}
+  .pnlgrid{grid-template-columns:minmax(0,1fr)}
+  .hud-l{padding:18px}.big{font-size:30px}
+  .hero{padding:25px 18px}.hero h1{font-size:21px}
+  .hero .sub{font-size:15px}.hero .cta{grid-template-columns:minmax(0,1fr)}
+  .hero .cta .btn:last-child{grid-column:1}
+  .duel{gap:2px}.duel .seat{width:92px;flex-basis:92px}.duel .vs{font-size:12px}
+}
+
+@media(max-width:360px){
+  /* 320px에서는 4×68px 좌석과 세 명 토론줄이 room 안쪽 폭보다 큽니다.
+     overflow를 숨겨 성공처럼 보이게 하지 않고, 2명씩 다음 줄로 보냅니다. */
+  #rooms .seats{grid-template-columns:repeat(2,minmax(68px,1fr))}
+  #rooms .seats .seat .bubble{
+    left:50%;right:auto;transform:translateX(-50%)}
+  #rooms .seats .seat .bubble:after{
+    left:50%;right:auto;margin-left:-5px}
+  #rooms .seats .seat:nth-child(odd) .bubble{left:0;right:auto;transform:none}
+  #rooms .seats .seat:nth-child(even) .bubble{left:auto;right:0;transform:none}
+  #rooms .seats .seat:nth-child(odd) .bubble:after{left:34px;right:auto}
+  #rooms .seats .seat:nth-child(even) .bubble:after{left:auto;right:30px}
+  #rooms .duel{flex-wrap:wrap;justify-content:center}
+  #rooms .duel .vs{display:none}
+  #rooms .duel .seat{width:92px;flex:0 0 92px}
+  #rooms .duel .seat .bubble{
+    left:50%;right:auto;transform:translateX(-50%)}
+  #rooms .duel .seat .bubble:after{
+    left:50%;right:auto;margin-left:-5px}
+  #rooms #seat-bull .bubble,#rooms #seat-risk_aggressive .bubble,
+  #rooms #seat-research_manager .bubble{left:0;right:auto;transform:none}
+  #rooms #seat-bear .bubble,#rooms #seat-risk_conservative .bubble,
+  #rooms #seat-trader .bubble{left:auto;right:0;transform:none}
+  #rooms #seat-bull .bubble:after,#rooms #seat-risk_aggressive .bubble:after,
+  #rooms #seat-research_manager .bubble:after{left:34px;right:auto}
+  #rooms #seat-bear .bubble:after,#rooms #seat-risk_conservative .bubble:after,
+  #rooms #seat-trader .bubble:after{left:auto;right:30px}
+}
+
+@media(prefers-reduced-motion:reduce){
+  .bubble{transition:none}
+}

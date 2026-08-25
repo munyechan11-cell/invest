@@ -33,8 +33,12 @@ def screen() -> str:
     이걸 읽는 검사들이 갈라짐을 몰라도 됩니다.
     """
     page = markup()
-    return page.replace('<link rel="stylesheet" href="/static/app.css">',
-                        "<style>\n" + style() + "\n</style>", 1)
+    return re.sub(
+        r'<link rel="stylesheet" href="/static/app\.css(?:\?[^" ]+)?">',
+        "<style>\n" + style() + "\n</style>",
+        page,
+        count=1,
+    )
 
 
 def script() -> str:

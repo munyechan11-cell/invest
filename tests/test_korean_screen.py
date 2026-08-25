@@ -346,7 +346,11 @@ def _call_in_page(fn: str, calls: list[list]) -> list[str]:
                # "이름이 없으면 빈 값" 이 바로 검사하려던 경우인데.
                + "var out = [];\n"
                + f"for (var i = 0; i < cases.length; i++) out.push({fn}.apply(null, cases[i]));\n"
-               + "print(JSON.stringify(out));\n")
+               # Node 는 console.log, JavaScriptCore 는 print 를 제공합니다.
+               # 어느 한쪽 이름을 고정하면 로컬은 통과하고 CI 만 깨집니다.
+               + "var write = (typeof console !== 'undefined' && console.log) "
+               + "  ? console.log : print;\n"
+               + "write(JSON.stringify(out));\n")
     with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
                                      encoding="utf-8") as fh:
         fh.write(program)

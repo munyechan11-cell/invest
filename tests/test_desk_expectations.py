@@ -114,6 +114,13 @@ def test_the_demo_does_the_same():
     assert "scrollToDesk()" in demo[:400]
 
 
+def test_the_desk_is_revealed_before_its_geometry_is_checked():
+    """1001–1120px chart view에서도 데모가 숨은 방에서 재생되면 안 됩니다."""
+    body = re.search(r"function scrollToDesk\(\) \{(.*?)\n\}", SCRIPT, re.S).group(1)
+    assert "viewportWidth <= 1120" in body
+    assert body.index('showView("desk")') < body.index("getClientRects().length")
+
+
 def test_switching_strategy_clears_a_symbol_that_no_longer_exists():
     """옛 종목이 남으면 "AAPL 는 이 전략의 종목이 아닙니다" 를 계속 보게 됩니다.
 
