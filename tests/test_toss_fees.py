@@ -54,6 +54,20 @@ class FakeToss:
 
     async def request(self, method, path, *, params=None, json=None, account=False):
         self.calls.append((method, path))
+        # Live Toss orders now fail closed until an official account-capital
+        # snapshot has succeeded.  Fee tests are not account tests, so give the
+        # pre-submit reconciliation a valid empty account instead of letting the
+        # order-response fixture masquerade as /holdings.
+        if path == "/api/v1/holdings":
+            return {
+                "marketValue": {"amount": {"krw": "0", "usd": None}},
+                "items": [],
+            }
+        if path == "/api/v1/buying-power":
+            currency = str((params or {}).get("currency") or "KRW")
+            return {"currency": currency, "cashBuyingPower": "10000000"}
+        if method == "GET" and path == "/api/v1/orders":
+            return {"orders": [], "nextCursor": None, "hasNext": False}
         return self.reply
 
     async def close(self):
@@ -84,6 +98,37 @@ def _kr_fee_model(sell_tax_bps: float | None = None):
 
 
 async def _poll_once(broker: TossBrokerage, order: Order, remote: dict):
+    # Keep the individual cost assertions compact while exercising the official
+    # v1.2.14 Order.execution shape.  The adapter consumes cumulative amount and
+    # cost fields, never a top-level averagePrice.
+    if "execution" not in remote:
+        filled = Decimal(str(remote.get("filledQuantity") or 0))
+        average = remote.get("averagePrice")
+        price = Decimal(str(average)) if average is not None else None
+        amount = filled * price if price is not None else None
+        fee = (broker._fill_fee(order, filled, float(price), TS)
+               if filled > 0 and price is not None else None)
+        remote = {
+            "orderId": order.broker_id,
+            "symbol": order.symbol.ticker,
+            "side": "BUY" if order.side is OrderSide.BUY else "SELL",
+            "orderType": "LIMIT" if order.type is OrderType.LIMIT else "MARKET",
+            "timeInForce": "DAY",
+            "status": "FILLED" if filled == order.quantity else "PARTIAL_FILLED",
+            "price": str(order.limit_price) if order.limit_price is not None else None,
+            "quantity": str(order.quantity),
+            "currency": order.symbol.quote_currency,
+            "orderedAt": "2026-07-01T12:59:00+09:00",
+            "execution": {
+                "filledQuantity": str(filled),
+                "averageFilledPrice": str(price) if price is not None else None,
+                "filledAmount": str(amount) if amount is not None else None,
+                "commission": str(fee) if fee is not None else None,
+                "tax": "0" if fee is not None else None,
+                "filledAt": "2026-07-01T13:00:00+09:00" if filled else None,
+                "settlementDate": None,
+            },
+        }
     broker._orders[order.id] = order
     broker.client = FakeToss(remote)
     return await broker.poll_fills()
@@ -170,33 +215,34 @@ async def test_a_fill_with_no_price_is_not_booked_as_a_free_one():
     취소합니다. 그래서 거래소에 체결로 남은 것이 여기서는 사라졌고, 손절도
     사이징도 하루 한도도 걸리지 않는 포지션이 생겼습니다.
 
-    수량은 반드시 잡습니다. 단가는 주문이 들고 있는 지정가로 대신합니다.
+    공식 execution 이 누적 금액과 평균가를 둘 다 잃었다면 지정가로 청구액을
+    지어내지 않고 채널을 잠급니다. 취소 경로도 이를 미체결 확인으로 오인하면
+    안 됩니다.
     """
     broker = _brokerage(_kr_fee_model())
     order = _order(OrderSide.BUY)          # 지정가 주문
-    fills = await _poll_once(broker, order, {"filledQuantity": "10",
-                                             "averagePrice": None})
-    assert len(fills) == 1, "체결이 통째로 사라졌습니다 — 취소 경로에서 영구 손실"
-    assert order.filled_qty == QTY, "수량이 안 잡히면 손절이 이 포지션을 못 봅니다"
-    assert fills[0].price == float(order.limit_price)
-    assert fills[0].fee > 0, "지정가로 계산할 수 있는데 수수료를 0 으로 뒀습니다"
+    with pytest.raises(Exception, match="filledAmount"):
+        await _poll_once(broker, order, {"filledQuantity": "10",
+                                         "averagePrice": None})
+    assert order.filled_qty == 0
+    assert not broker.fill_channel_ok
 
 
 async def test_a_fill_with_no_price_at_all_is_not_given_an_invented_fee():
     """지정가마저 없으면(시장가) 수수료를 계산할 근거가 없습니다.
 
-    그래도 수량은 잡습니다 — 없는 포지션이 되는 것이 원가 모르는 포지션보다
-    나쁩니다. 다만 수수료는 **지어내지 않습니다**.
+    시장가도 누적 금액이 없으면 정확한 체결 delta를 만들 수 없습니다. 주문을
+    공짜로 장부화하지 않고 다음 주문을 fail-closed 합니다.
     """
     broker = _brokerage(_kr_fee_model())
     order = Order(KRX, OrderSide.BUY, QTY, type=OrderType.MARKET)
     order.broker_id = "T-1"
     order.status = OrderStatus.SUBMITTED
-    fills = await _poll_once(broker, order, {"filledQuantity": "10",
-                                             "averagePrice": None})
-    assert len(fills) == 1
-    assert fills[0].price == 0.0
-    assert fills[0].fee == 0.0
+    with pytest.raises(Exception, match="filledAmount"):
+        await _poll_once(broker, order, {"filledQuantity": "10",
+                                         "averagePrice": None})
+    assert order.filled_qty == 0
+    assert not broker.fill_channel_ok
 
 
 async def test_an_unpriced_market_fill_is_not_booked_on_the_submit_path_either():
@@ -212,25 +258,24 @@ async def test_an_unpriced_market_fill_is_not_booked_on_the_submit_path_either()
     assert broker._pending_fills == []
 
 
-async def test_the_same_fill_costs_the_same_on_both_booking_paths():
-    """주문 응답 경로와 조회 경로가 같은 체결에 다른 값을 매기면 안 됩니다.
-
-    둘 중 하나만 고치면 어느 쪽으로 체결이 들어왔느냐에 따라 같은 매매의
-    비용이 달라집니다.
-    """
+async def test_create_response_never_books_a_fill_but_detail_does():
+    """OrderResponse has no execution; only the detail response may book it."""
     fee_model = _kr_fee_model(sell_tax_bps=20.0)
     submitted = _brokerage(fee_model, {"orderId": "T-1", "filledQuantity": "10",
                                        "averagePrice": "70000"})
-    # `_orders` 에 넣지 않고 부르므로 `poll_fills` 는 조회를 돌지 않고 큐만 비웁니다.
-    await submitted._venue_submit(_order(OrderSide.SELL))
+    order = _order(OrderSide.SELL)
+    # The adapter now rejects long-only oversells before HTTP. This test is
+    # about create-vs-detail fill accounting, so give the sell a real holding.
+    submitted.portfolio.position(order.symbol).quantity = order.quantity
+    await submitted._venue_submit(order)
     from_submit = await submitted.poll_fills()
-    assert len(from_submit) == 1
+    assert from_submit == []
 
     polled = _brokerage(fee_model)
-    from_poll = await _poll_once(polled, _order(OrderSide.SELL),
+    from_poll = await _poll_once(polled, order,
                                  {"filledQuantity": "10", "averagePrice": "70000"})
-    assert from_submit[0].fee == pytest.approx(from_poll[0].fee)
-    assert from_submit[0].fee > 0
+    assert len(from_poll) == 1
+    assert from_poll[0].fee > 0
 
 
 async def test_a_fully_filled_order_still_reaches_filled():

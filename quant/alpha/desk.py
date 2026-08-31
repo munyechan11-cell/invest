@@ -739,7 +739,10 @@ class TradingDesk(AlphaModel):
                 ) if avg_vol > 0 and last.close > 0 else None,
             },
             "포트폴리오": {
-                "총자산": round(ctx.equity, 2),
+                # 증권사 실계좌 총자산이 아니라 이 전략에 배정된 장부입니다.
+                # `starting_cash` 가 실계좌 잔고처럼 모델 발언에 섞이지 않게
+                # 출처를 필드 이름 자체에 남깁니다.
+                "전략 장부 평가액": round(ctx.equity, 2),
                 "보유종목수": len(ctx.portfolio.open_positions),
                 "현금비중%": round(ctx.portfolio.cash / max(ctx.equity, 1e-9) * 100, 1),
                 "현재낙폭%": round(ctx.portfolio.drawdown * 100, 2),

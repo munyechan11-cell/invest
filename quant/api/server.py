@@ -278,6 +278,30 @@ class StartRequest(BaseModel):
     confirm: str = ""
 
 
+class ReconciliationConfirmations(BaseModel):
+    """Five independent checks performed in the operator's Toss app."""
+
+    model_config = {"extra": "forbid"}
+
+    open_orders: str = Field(..., min_length=1, max_length=80)
+    today_fills: str = Field(..., min_length=1, max_length=80)
+    holdings: str = Field(..., min_length=1, max_length=80)
+    cash: str = Field(..., min_length=1, max_length=80)
+    daily_loss: str = Field(..., min_length=1, max_length=80)
+
+
+class ReconciliationArchiveRequest(BaseModel):
+    """Exact, auditable request to retire one quarantined Toss-live run."""
+
+    model_config = {"extra": "forbid"}
+
+    config_path: str = Field(..., min_length=1, max_length=200)
+    run_id: int = Field(..., gt=0)
+    reason: str = Field(..., min_length=10, max_length=500)
+    confirmations: ReconciliationConfirmations
+    acknowledgement: str = Field(..., min_length=1, max_length=100)
+
+
 #: 이 주소들만 "내 컴퓨터에서만 보인다" 고 말할 수 있습니다.
 _LOOPBACK = {"127.0.0.1", "::1", "localhost", ""}
 
@@ -625,8 +649,16 @@ async def _verify_kis(values: dict[str, str]) -> dict:
 
 
 async def _verify_toss(values: dict[str, str]) -> dict:
-    """토스도 같은 이유로 시세까지 봅니다."""
-    from quant.brokerage.toss_broker import TossProvider, toss_token
+    """토큰뿐 아니라 실제로 주문 전 필요한 계좌 truth까지 읽습니다.
+
+    전에는 현재가만 성공하면 연동 성공이라고 했습니다. 하지만 시세는 계좌
+    헤더를 쓰지 않아, 계좌번호를 ``accountSeq`` 자리에 그대로 넣은 설정도
+    통과했습니다. 시작 뒤에야 잔고가 400으로 죽고 설정의 80만원이 실제 잔고
+    행세를 했습니다. 여기서는 주문 없이 accounts/holdings/buying-power까지
+    같은 길을 먼저 밟습니다.
+    """
+    from quant.brokerage.toss_broker import TossBrokerage, TossProvider, toss_token
+    from quant.core.account import Portfolio
     from quant.core.types import Symbol
 
     cid, secret = values["TOSS_CLIENT_ID"], values["TOSS_CLIENT_SECRET"]
@@ -640,8 +672,38 @@ async def _verify_toss(values: dict[str, str]) -> dict:
                 "error": "클라이언트 ID·시크릿으로 토큰을 받지 못했습니다. "
                          "토스증권 Open API 콘솔에서 발급한 값이 맞는지 확인하세요."}
 
+    account_no = values.get("TOSS_ACCOUNT_NO", "")
+    broker = TossBrokerage(
+        Portfolio(0.0, "KRW"), client_id=cid, client_secret=secret,
+        account_no=account_no, live=False, reconcile_on_start=False,
+    )
+    try:
+        overview = await broker.account_overview()
+        buying_power = overview.get("cash_buying_power") or {}
+        market_value = overview.get("market_value") or {}
+        if not isinstance(buying_power.get("KRW"), (int, float)):
+            raise ValueError("KRW 현금 매수 가능 금액이 없습니다")
+        if not isinstance(market_value.get("KRW"), (int, float)):
+            raise ValueError("KRW 보유 주식 평가금액이 없습니다")
+        steps.append({"step": "실계좌 식별·잔고 조회", "ok": True,
+                      "detail": "accountSeq·보유주식·현금 매수 가능 금액 확인"})
+    except Exception as exc:                       # noqa: BLE001
+        steps.append({"step": "실계좌 식별·잔고 조회", "ok": False,
+                      "detail": _short(exc)})
+        return {
+            "ok": False,
+            "steps": steps,
+            "error": "토큰은 유효하지만 등록한 계좌를 안전하게 식별하거나 "
+                     "실제 잔고를 읽지 못했습니다. 계좌번호/accountSeq와 Open API "
+                     "계좌 조회 권한을 확인하세요 — 이 상태에서는 실거래를 "
+                     "시작하지 않습니다.",
+        }
+    finally:
+        with contextlib.suppress(Exception):
+            await broker.close()
+
     provider = TossProvider(client_id=cid, client_secret=secret,
-                            account_no=values.get("TOSS_ACCOUNT_NO", ""))
+                            account_no=account_no)
     sample = Symbol("005930", venue="toss", quote_currency="KRW")
     try:
         quote = await provider.quote(sample)
@@ -657,7 +719,7 @@ async def _verify_toss(values: dict[str, str]) -> dict:
         with contextlib.suppress(Exception):
             await provider.close()
     return {"ok": True, "steps": steps,
-            "detail": "토큰과 현재가까지 확인했습니다."}
+            "detail": "토큰·실계좌 잔고·현재가까지 읽기 전용으로 확인했습니다."}
 
 
 def _short(exc: Exception) -> str:
@@ -979,7 +1041,13 @@ class Desk:
         return budget.status()
 
     async def sync(self) -> dict:
-        return await self.require_trader().engine.brokerage.sync()
+        engine = self.require_trader().engine
+        # A cumulative live fill can appear in both the order detail and the
+        # holdings snapshot.  The normal trader tick books order fills before
+        # adopting venue truth; the operator-triggered sync must preserve that
+        # exact ordering or this button can double cash/quantity accounting.
+        await engine.settle_live_fills()
+        return await engine.brokerage.sync()
 
     # ── 파일 ─────────────────────────────────────────────────────────────
     @property
@@ -1043,6 +1111,13 @@ class Desk:
         raise NotImplementedError
 
     async def stop(self) -> dict:
+        raise NotImplementedError
+
+    def reconciliation_status(self, config_path: str) -> dict:
+        raise NotImplementedError
+
+    def archive_reconciliation(self,
+                               req: ReconciliationArchiveRequest) -> dict:
         raise NotImplementedError
 
     def record(self, action: str, detail: str = "") -> None:
@@ -1218,6 +1293,22 @@ class UserDesk(Desk):
 
     async def stop(self) -> dict:
         return await self.registry.stop(self.user.id)
+
+    def reconciliation_status(self, config_path: str) -> dict:
+        cfg = self.load_strategy(config_path)
+        return self.registry.reconciliation_status(self.user.id, cfg)
+
+    def archive_reconciliation(self,
+                               req: ReconciliationArchiveRequest) -> dict:
+        cfg = self.load_strategy(req.config_path)
+        return self.registry.archive_reconciliation(
+            self.user.id,
+            cfg,
+            run_id=req.run_id,
+            reason=req.reason,
+            confirmations=req.confirmations.model_dump(),
+            acknowledgement=req.acknowledgement,
+        )
 
     def record(self, action: str, detail: str = "") -> None:
         self.accounts.record(self.user.id, action, detail)
@@ -2375,6 +2466,19 @@ def create_app(config: StrategyConfig | None = None,
     @app.post("/api/trader/stop")
     async def stop_trader(seat: Desk = Depends(desk)):
         return await seat.stop()
+
+    @app.get("/api/trader/reconciliation")
+    async def reconciliation_status(
+            config_path: str = Query(..., min_length=1, max_length=200),
+            seat: Desk = Depends(desk)):
+        """Show the exact quarantined Toss-live run for this signed-in owner."""
+        return seat.reconciliation_status(config_path)
+
+    @app.post("/api/trader/reconciliation/archive")
+    async def archive_reconciliation(
+            req: ReconciliationArchiveRequest, seat: Desk = Depends(desk)):
+        """Preserve one manually reconciled run and make the next start fresh."""
+        return seat.archive_reconciliation(req)
 
     @app.post("/api/trader/sync")
     async def sync_positions(seat: Desk = Depends(desk)):

@@ -81,7 +81,10 @@ function __El() {
       if (where === "beforeend") this.innerHTML += html;
       else this.innerHTML = html + this.innerHTML;
     },
-    addEventListener: function () {}, removeEventListener: function () {},
+    addEventListener: function (type, handler) {
+      if (type === "submit") this.onsubmit = handler;
+    },
+    removeEventListener: function () {},
     dispatchEvent: function (ev) {
       var h = this["on" + (ev && ev.type)];
       if (typeof h === "function") h.call(this, ev);
@@ -89,7 +92,11 @@ function __El() {
     },
     focus: function () {}, blur: function () {}, click: function () {},
     scrollIntoView: function () {}, closest: function () { return null; },
-    querySelector: function () { return null; }, querySelectorAll: function () { return []; },
+    querySelector: function (s) {
+      return (s === ".who" || s === ".line" || s === "span" || s === "tbody")
+        ? __El() : null;
+    },
+    querySelectorAll: function () { return []; },
     getBoundingClientRect: function () { return {width: 600, height: 44, top: 0, left: 0}; },
     getContext: function () {
       return {setTransform: function () {}, clearRect: function () {},
@@ -105,6 +112,7 @@ function __El() {
 }
 
 var __els = {};
+var __bubbleSpans = [__El(), __El(), __El()];
 function __get(sel) {
   if (!__els[sel]) __els[sel] = __El();
   return __els[sel];
@@ -115,7 +123,7 @@ var document = {
   documentElement: __El(), body: __El(), head: __El(),
   getElementById: function (id) { return __get("#" + id); },
   querySelector: function (s) { return __get(s); },
-  querySelectorAll: function () { return []; },
+  querySelectorAll: function (s) { return s === ".bubble span" ? __bubbleSpans : []; },
   createElement: function (t) { var e = __El(); e.tagName = t; return e; },
   createTextNode: function () { return __El(); },
   addEventListener: function () {}, removeEventListener: function () {},
@@ -152,6 +160,7 @@ function requestAnimationFrame() { return 0; }
 function cancelAnimationFrame() {}
 function addEventListener() {}
 function removeEventListener() {}
+function scrollTo() {}
 function matchMedia() { return {matches: false, addListener: function () {},
   addEventListener: function () {}}; }
 function getComputedStyle() { return {getPropertyValue: function () { return ""; }}; }
@@ -212,6 +221,15 @@ function __log1(tag, n, total) {
           trades: [{symbol: tag, side: "buy", quantity: 1, entry_price: 1,
                     exit_price: 2, pnl: n, pnl_pct: 0.5,
                     exit_ts: "2026-01-02T03:04:05+00:00", exit_tag: tag}]};
+}
+function __logPage(tag, offset, count, total) {
+  var rows = [];
+  for (var i = 0; i < count; i++) {
+    rows.push({symbol: tag + (offset + i), side: "buy", quantity: 1,
+               entry_price: 1, exit_price: 2, pnl: i + 1, pnl_pct: 0.5,
+               exit_ts: "2026-01-02T03:04:05+00:00", exit_tag: tag});
+  }
+  return {total: total, offset: offset, trades: rows};
 }
 function __serve(pnlBody, logBody) {
   __routes = function (u) {
@@ -294,6 +312,145 @@ var __out = {};
   await __settle();
   out.running_urls = __urls();
   out.running_pick = __el("pnlMode").value;
+
+  // ⑥ 첫 페이지가 아직 답하지 않았는데 '더 보기'가 들어오면 두
+  //    요청이 모두 offset=0 이 됩니다. 하나만 나가고 40줄로 끝나야 합니다.
+  tradeShown = 40;
+  tradeLoadPending = false;
+  __el("tradeLog").innerHTML = "<tr><td>OLD</td></tr>";
+  __el("tradeMore").hidden = false;
+  __el("tradeMore").disabled = false;
+  __clear();
+  __routes = function (u) {
+    if (u.indexOf("/api/tradelog") === 0) {
+      return {__hold: __logPage("PAGE", 0, 40, 60)};
+    }
+    return undefined;
+  };
+  var firstPage = loadTradeLog(false);
+  await __settle();
+  out.page_pending_hidden = __el("tradeMore").hidden;
+  out.page_pending_disabled = __el("tradeMore").disabled;
+  var duplicatePage = loadTradeLog(true);
+  await __settle();
+  out.page_urls = __urls();
+  var pageReleases = __held.splice(0);
+  pageReleases.forEach(function (release) { release(); });
+  await Promise.all([firstPage, duplicatePage]);
+  await __settle();
+  out.page_rows = (__el("tradeLog").innerHTML.match(/<tr>/g) || []).length;
+  out.page_shown = tradeShown;
+  out.page_count = __el("tradeCount").textContent;
+  out.page_done_hidden = __el("tradeMore").hidden;
+  out.page_done_disabled = __el("tradeMore").disabled;
+
+  // ⑦ A의 응답을 붙잡은 채 로그아웃하고 B로 로그인한 다음 A를
+  //    풀어도 B의 숫자·체결만 남아야 합니다. A의 실거래 모드 기억도
+  //    B의 모의매만 있는 기록 자동선택을 막아서는 안 됩니다.
+  var realStart = start;
+  start = function () { started = true; };
+  signedIn({id: "A", email: "a@example.test", display_name: "A"});
+  pnlMode = "live";
+  seenRunMode = "live";
+  __el("pnlMode").value = "live";
+  __el("brokerAcct").innerHTML = "A_ACCOUNT_SECRET";
+  __el("deskSubject").textContent = "A_SECRET_SUBJECT 결정 완료";
+  __el("verdict").innerHTML = "A_SECRET_VERDICT";
+  __el("strategy").textContent = "A_SECRET_STRATEGY";
+  __el("mode").textContent = "실거래";
+  __bubbleSpans.forEach(function (el, i) { el.textContent = "A_SECRET_BUBBLE_" + i; });
+  __routes = function (u) {
+    if (u.indexOf("/api/pnl") === 0) return {__hold: __pnl(111111)};
+    if (u.indexOf("/api/tradelog") === 0) {
+      return {__hold: __log1("A_SECRET_TRADE", 111111)};
+    }
+    return undefined;
+  };
+  var oldPnl = loadPnl();
+  var oldLog = loadTradeLog(false);
+  await __settle();
+  var oldReleases = __held.splice(0);
+  signedOut();
+  out.logout_grid = __el("pnlGrid").innerHTML;
+  out.logout_rows = __el("tradeLog").innerHTML;
+  out.logout_count = __el("tradeCount").textContent;
+  out.logout_broker = __el("brokerAcct").innerHTML;
+  out.logout_more_hidden = __el("tradeMore").hidden;
+  out.logout_more_disabled = __el("tradeMore").disabled;
+  signedIn({id: "B", email: "b@example.test", display_name: "B"});
+  out.b_mode_after_login = pnlMode;
+  out.b_seen_after_login = seenRunMode;
+  out.b_desk_after_login = __el("deskSubject").textContent;
+  out.b_verdict_after_login = __el("verdict").innerHTML;
+  out.b_strategy_after_login = __el("strategy").textContent;
+  out.b_header_mode_after_login = __el("mode").textContent;
+  out.b_bubbles_after_login = __bubbleSpans.map(function (el) { return el.textContent; });
+  var bPnl = __pnl(222);
+  bPnl.modes = ["dry_run"];
+  __serve(bPnl, __log1("B_ONLY_TRADE", 222));
+  await loadPnl();
+  await loadTradeLog(false);
+  __snap(out, "before_a_release");
+  oldReleases.forEach(function (release) { release(); });
+  await Promise.all([oldPnl, oldLog]);
+  await __settle();
+  __snap(out, "after_a_release");
+  out.after_a_count = __el("tradeCount").textContent;
+
+  // ⑧ A가 누른 logout HTTP가 답하기 전 다른 경로로 A 세션이
+  //    끝났습니다. 이때 B login을 보내면 오래된 logout 응답의
+  //    Max-Age=0가 B 쿠키까지 지웁니다. logout이 끝나기 전엔 login이 0건,
+  //    끝난 뒤에만 B login이 나가야 합니다.
+  signedIn({id: "A_LOGOUT", email: "logout-a@example.test", display_name: "A"});
+  __routes = function (u) {
+    if (u.indexOf("/api/auth/logout") === 0) return {__hold: {ok: true}};
+    return undefined;
+  };
+  var pendingLogout = __el("logoutBtn").onclick();
+  await __settle();
+  out.logout_action_pending_disabled = __el("logoutBtn").disabled;
+  var logoutReleases = __held.splice(0);
+  signedOut();
+  out.logout_lock_survives_reset = logoutInFlight;
+  out.logout_login_disabled_during_hold = __el("loginSubmit").disabled;
+  out.logout_auth_buttons_during_hold = ["loginSubmit", "registerSubmit", "pwSubmit"]
+    .map(function (id) { return __el(id).disabled; });
+  __el("liEmail").value = "logout-b@example.test";
+  __el("liPassword").value = "valid-password";
+  __clear();
+  var blockedLogin = __el("loginForm").onsubmit({preventDefault: function () {}});
+  var blockedRegister = __el("registerForm").onsubmit({preventDefault: function () {}});
+  var blockedPassword = __el("passwordForm").onsubmit({preventDefault: function () {}});
+  await Promise.all([blockedLogin, blockedRegister, blockedPassword]);
+  await __settle();
+  out.logout_blocked_urls = __urls();
+  out.logout_blocked_user = me;
+  out.logout_blocked_message = __el("gateMsg").textContent;
+  out.logout_order = [];
+  logoutReleases.forEach(function (release) { release(); });
+  await pendingLogout;
+  await __settle();
+  out.logout_order.push("logout_settled");
+  out.logout_lock_after_release = logoutInFlight;
+  out.logout_login_disabled_after_release = __el("loginSubmit").disabled;
+  __routes = function (u) {
+    if (u.indexOf("/api/auth/login") === 0) {
+      out.logout_order.push("login_requested");
+      return {user: {id: "B_LOGOUT", email: "logout-b@example.test",
+                     display_name: "B"}};
+    }
+    return undefined;
+  };
+  __clear();
+  var acceptedLogin = __el("loginForm").onsubmit({preventDefault: function () {}});
+  await acceptedLogin;
+  await __settle();
+  out.logout_login_urls = __urls();
+  out.logout_race_user = me && me.id;
+  out.logout_race_body = document.body.className;
+  out.logout_race_account = __el("acctWho").innerHTML;
+  out.logout_race_lock = logoutInFlight;
+  start = realStart;
   } catch (e) { out.crash = String(e && e.stack || e); }
   __say("<<<" + JSON.stringify(out) + ">>>");
 })();
@@ -441,6 +598,71 @@ def test_the_screen_follows_the_mode_the_bot_is_running_in(screen):
         assert all(_mode_of(u) == "live" for u in asked), asked
 
 
+def test_a_pending_first_page_blocks_a_duplicate_offset_zero_page(screen):
+    """첫 쪽이 오기 전 '더 보기'도 offset=0을 청하면 40줄이 두 번 붙습니다."""
+    asked = _asked(_obs(screen, "page_urls"), "/api/tradelog")
+    assert len(asked) == 1, asked
+    assert "offset=0" in asked[0], asked
+    assert _obs(screen, "page_pending_hidden") is True
+    assert _obs(screen, "page_pending_disabled") is True
+    assert _obs(screen, "page_rows") == 40
+    assert _obs(screen, "page_shown") == 40
+    assert _obs(screen, "page_count") == "40 / 60건"
+    assert _obs(screen, "page_done_hidden") is False
+    assert _obs(screen, "page_done_disabled") is False
+
+
+def test_signing_out_clears_account_scoped_profit_and_trade_dom(screen):
+    """로그아웃 직후에는 다음 계정이 보기 전에 A의 금융정보가 남지 않습니다."""
+    for key in ("logout_grid", "logout_rows", "logout_count", "logout_broker"):
+        assert _obs(screen, key) == "", f"{key}: {_obs(screen, key)!r}"
+    assert _obs(screen, "logout_more_hidden") is True
+    assert _obs(screen, "logout_more_disabled") is False
+
+
+def test_user_a_late_responses_never_render_after_user_b_logs_in(screen):
+    """A pending → logout → B login → A resolve 순서에서 A 값은 폐기합니다."""
+    assert _obs(screen, "b_mode_after_login") == "dry_run"
+    assert _obs(screen, "b_seen_after_login") == ""
+    assert _obs(screen, "b_desk_after_login") == ""
+    assert _obs(screen, "b_verdict_after_login") == ""
+    assert _obs(screen, "b_strategy_after_login") == "—"
+    assert _obs(screen, "b_header_mode_after_login") == "미가동"
+    assert _obs(screen, "b_bubbles_after_login") == ["", "", ""]
+    assert _obs(screen, "after_a_release_grid") == _obs(
+        screen, "before_a_release_grid")
+    assert _obs(screen, "after_a_release_rows") == _obs(
+        screen, "before_a_release_rows")
+    assert "222" in _obs(screen, "after_a_release_grid")
+    assert "B_ONLY_TRADE" in _obs(screen, "after_a_release_rows")
+    assert "111111" not in _obs(screen, "after_a_release_grid")
+    assert "111,111" not in _obs(screen, "after_a_release_grid")
+    assert "A_SECRET_TRADE" not in _obs(screen, "after_a_release_rows")
+    assert _obs(screen, "after_a_count") == "1 / 1건"
+
+
+def test_login_waits_until_the_previous_logout_http_has_settled(screen):
+    """오래된 logout의 쿠키 삭제가 새 login 응답 뒤에 도착할 틈을 없앱니다."""
+    assert _obs(screen, "logout_action_pending_disabled") is True
+    assert _obs(screen, "logout_lock_survives_reset") is True
+    assert _obs(screen, "logout_login_disabled_during_hold") is True
+    assert _obs(screen, "logout_auth_buttons_during_hold") == [True, True, True]
+    assert not _asked(_obs(screen, "logout_blocked_urls"), "/api/auth/login")
+    assert not _asked(_obs(screen, "logout_blocked_urls"), "/api/auth/register")
+    assert not _asked(_obs(screen, "logout_blocked_urls"), "/api/auth/password")
+    assert _obs(screen, "logout_blocked_user") is None
+    assert "로그아웃 요청을 마치는 중" in _obs(screen, "logout_blocked_message")
+    assert _obs(screen, "logout_lock_after_release") is False
+    assert _obs(screen, "logout_login_disabled_after_release") is False
+    asked = _asked(_obs(screen, "logout_login_urls"), "/api/auth/login")
+    assert len(asked) == 1, asked
+    assert _obs(screen, "logout_order") == ["logout_settled", "login_requested"]
+    assert _obs(screen, "logout_race_user") == "B_LOGOUT"
+    assert _obs(screen, "logout_race_body") == "authed"
+    assert "logout-b@example.test" in _obs(screen, "logout_race_account")
+    assert _obs(screen, "logout_race_lock") is False
+
+
 # ── 엔진이 없는 곳에서도 남는 최소한의 그물 ──────────────────────────────
 def test_every_call_site_in_the_source_carries_a_mode():
     """엔진이 없는 기계(배포 서버)에서 도는 것은 이것뿐입니다.
@@ -474,7 +696,7 @@ def test_a_failed_switch_does_not_leave_a_table_you_can_append_to():
     body = re.search(r"async function loadTradeLog\(more\) \{(.*?)\n\}",
                      SCRIPT, re.S).group(1)
     catch = body[body.index("catch"):body.index("const rows")]
-    assert "tradeMore" in catch, (
+    assert "tradeMore" in catch or "moreButton" in catch, (
         "요청이 실패했는데 '더 보기' 를 살려 둡니다 — 누르면 두 모드가 한 표에 "
         "섞입니다.")
     assert "tradeLog" in catch, (
@@ -505,3 +727,48 @@ def test_a_stopped_bot_does_not_show_zero_to_a_live_only_account():
     assert "length !== 1" in body, (
         "양쪽 다 기록이 있을 때도 한쪽을 골라 버립니다 — 사람이 고른 것을 "
         "덮으면 안 됩니다.")
+
+
+def test_authenticated_pnl_and_trade_loaders_have_session_and_request_epochs():
+    """모드만 같아도 사용자가 다르면 응답을 그려서는 안 됩니다."""
+    pnl = re.search(r"async function loadPnl\(\) \{(.*?)\n\}", SCRIPT, re.S).group(1)
+    trades = re.search(
+        r"async function loadTradeLog\(more\) \{(.*?)\n\}", SCRIPT, re.S
+    ).group(1)
+    for body, generation in (
+        (pnl, "pnlLoadGeneration"), (trades, "tradeLogGeneration")
+    ):
+        assert "authEpoch" in body
+        assert generation in body
+    assert "requestedOffset" in trades
+    assert "tradeLoadPending" in trades
+
+
+def test_core_auth_handlers_gate_success_error_and_finally_by_identity():
+    """옛 auth action의 catch/finally도 새 사용자의 DOM을 만지면 안 됩니다."""
+    password = SCRIPT[
+        SCRIPT.index('$("#passwordForm").addEventListener'):
+        SCRIPT.index('$("#logoutBtn").onclick')
+    ]
+    logout = SCRIPT[
+        SCRIPT.index('$("#logoutBtn").onclick'):
+        SCRIPT.index("/* ── 로그인 · 회원가입")
+    ]
+    login = SCRIPT[
+        SCRIPT.index('$("#loginForm").addEventListener'):
+        SCRIPT.index('$("#registerForm").addEventListener')
+    ]
+    register = SCRIPT[
+        SCRIPT.index('$("#registerForm").addEventListener'):
+        SCRIPT.index("/* ── 부팅")
+    ]
+    for name, handler in {
+        "password": password,
+        "logout": logout,
+        "login": login,
+        "register": register,
+    }.items():
+        assert "const epoch = authEpoch" in handler, name
+        assert "const identity = authIdentity(me)" in handler, name
+        assert "authActionIsCurrent(epoch, identity)" in handler, name
+        assert "finally" in handler, name

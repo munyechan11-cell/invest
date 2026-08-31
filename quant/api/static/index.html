@@ -153,10 +153,10 @@
       <span class="brand-short">QUANT</span><i aria-hidden="true">◆</i></button>
     <span class="mode backtest px" id="mode" role="status"
       aria-live="polite" aria-atomic="true">미가동</span>
-    <!-- 잔고와 오늘 손익은 어느 화면에 있든 보여야 합니다. 계좌 탭에 있는
-         숫자를 보려고 탭을 옮기면, 매매하다 말고 자리를 뜨게 됩니다. -->
+    <!-- 이 숫자는 현재 봇의 운용 장부입니다. 실거래에서는 증권사 동기화본,
+         그 밖에는 설정 장부이므로 아래 라벨도 `capital_source`를 따라갑니다. -->
     <span class="mini" id="miniAcct" hidden>
-      <b id="miniEquity">—</b><i id="miniChange">—</i></span>
+      <span class="dim" id="miniBookSource">봇 장부</span><b id="miniEquity">—</b><i id="miniChange">—</i></span>
     <span class="grow"></span>
     <nav class="pagetabs" id="pageTabs" aria-label="주요 화면">
       <button data-page="trade" aria-current="page">매매</button>
@@ -230,6 +230,10 @@
   <!-- 데스크 — 로그인 전 데모에서도 이 묶음만 보여줍니다.
        #roomsHome 은 데모가 끝나고 되돌아올 자리입니다. -->
   <div id="roomsHome">
+  <p class="msg" id="deskBookSource" style="margin:0 0 10px">
+    심의 속 자산 금액은 <b id="deskBookKind">봇 전략 장부 · 조회값 없음</b> 기준입니다. 실제 증권사 잔고는
+    <b>내 계좌 → 실제 증권사 잔고</b>에서 확인하세요.
+  </p>
   <!-- 사람이 읽는 속도로 나옵니다. 기본이 2배쯤으로 빨라서 발언이 눈에 담기기
        전에 다음 줄로 넘어갔습니다 — 16명이 무슨 말을 했는지 보려고 켠 화면인데
        그걸 못 읽으면 아무 의미가 없습니다. 다시 볼 수도 있어야 합니다. -->
@@ -348,27 +352,97 @@
 
   <!-- ── 내 계좌 ──────────────────────────────────────────────────── -->
   <div class="page" id="pageAccount" hidden>
-  <!-- HUD -->
-  <section class="panel">
-    <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 계좌 <span class="d" aria-hidden="true">◆</span></h2>
-    <div class="hud">
-      <div class="hud-l">
-        <div class="sym" id="hudSym">전체 계좌</div>
-        <div class="big" id="hudEquity">—</div>
-        <div class="chg" id="hudChange">—</div>
-        <div class="kpis" id="hudKpis"></div>
+  <!-- 비정상 종료된 실거래 실행은 자동으로 이어 붙이지 않습니다. 서버가
+       `required:true`라고 확인한 경우에만 이 복구 절차를 엽니다. -->
+  <section class="panel recovery-card" id="reconciliationCard" hidden
+           aria-labelledby="reconciliationTitle">
+    <h2 class="plate" id="reconciliationTitle"><span class="d" aria-hidden="true">◆</span>
+      실거래 실행 복구 확인 <span class="d" aria-hidden="true">◆</span></h2>
+    <div class="body">
+      <p class="recovery-lead"><b>자동 주문은 격리된 상태입니다.</b>
+        토스 앱의 실제 계좌와 아래 다섯 항목을 직접 대조한 뒤에만 이전 실행을
+        보존 처리할 수 있습니다. 이 절차는 봇을 시작하지 않습니다.</p>
+
+      <dl class="recovery-meta" aria-label="격리된 실행 정보">
+        <div><dt>실행 번호</dt><dd id="reconciliationRunId">—</dd></div>
+        <div><dt>전략</dt><dd id="reconciliationStrategy">—</dd></div>
+        <div><dt>모드</dt><dd id="reconciliationMode">—</dd></div>
+        <div class="wide"><dt>격리 이유</dt><dd id="reconciliationInstructions">—</dd></div>
+      </dl>
+
+      <div class="recovery-preserve">
+        <b>기존 실행과 거래 기록은 삭제하지 않습니다.</b>
+        확인이 끝나면 기존 실행은 감사 가능한 기록으로 보존됩니다. 보존 처리한
+        날에는 다시 시작할 수 없고, 다음 한국 날짜의 허용 시각부터 새 실행으로
+        시작할 수 있습니다. 이 버튼이 자동매매를 켜지는 않습니다.
       </div>
-      <div class="hud-r"><canvas id="equity" role="img"
-        aria-label="계좌 자산 변화와 고점 대비 하락을 보여주는 차트"></canvas></div>
+
+      <fieldset class="recovery-checks" id="reconciliationChecks">
+        <legend>토스 앱에서 직접 대조한 항목 5개</legend>
+        <label><input type="checkbox" id="reconciliationOpenOrders">
+          <span id="reconciliationOpenOrdersText">미체결 주문을 확인했습니다</span></label>
+        <label><input type="checkbox" id="reconciliationTodayFills">
+          <span id="reconciliationTodayFillsText">당일 체결을 대조했습니다</span></label>
+        <label><input type="checkbox" id="reconciliationHoldings">
+          <span id="reconciliationHoldingsText">보유 수량을 대조했습니다</span></label>
+        <label><input type="checkbox" id="reconciliationCash">
+          <span id="reconciliationCashText">현금을 대조했습니다</span></label>
+        <label><input type="checkbox" id="reconciliationDailyLoss">
+          <span id="reconciliationDailyLossText">당일 손실을 대조했습니다</span></label>
+      </fieldset>
+
+      <div class="fld recovery-reason">
+        <label for="reconciliationReason">보존 처리 사유 (10~500자)</label>
+        <textarea id="reconciliationReason" minlength="10" maxlength="500"
+          rows="4" required aria-describedby="reconciliationReasonHelp"></textarea>
+        <span class="dim" id="reconciliationReasonHelp">누가 무엇을 대조했는지 남기세요.
+          <b id="reconciliationReasonCount">0 / 500자</b></span>
+      </div>
+
+      <div class="recovery-ack">
+        <p>아래 확인 문구를 띄어쓰기까지 그대로 입력하세요.</p>
+        <code id="reconciliationAckPhrase">—</code>
+        <div class="fld">
+          <label for="reconciliationAck">정확한 확인 문구</label>
+          <input id="reconciliationAck" type="text" autocomplete="off"
+            spellcheck="false" aria-describedby="reconciliationAckPhrase" required>
+        </div>
+      </div>
+
+      <div class="msg recovery-message" id="reconciliationMsg" role="status"
+           aria-live="polite" tabindex="-1"></div>
+      <div class="actions recovery-actions">
+        <button class="btn tap warn" type="button" id="reconciliationSubmit" disabled>
+          이전 실행을 보존하고 새 실행 준비
+        </button>
+      </div>
     </div>
   </section>
 
   <!-- 증권사 계좌 — 봇이 꺼져 있어도 보입니다. 아래 "보유 종목" 은 봇이
        들고 있는 것이고, 이건 계좌에 실제로 있는 것입니다. 둘은 다를 수
        있습니다: 다른 데서 산 종목, 봇을 켜기 전부터 있던 종목. -->
-  <section class="panel">
-    <h2 class="plate"><span class="d" aria-hidden="true">◆</span> 증권사 계좌 <span class="d" aria-hidden="true">◆</span></h2>
-    <div class="body" id="brokerAcct"><div class="dim">불러오는 중…</div></div>
+  <section class="panel" aria-labelledby="brokerAcctTitle">
+    <h2 class="plate" id="brokerAcctTitle"><span class="d" aria-hidden="true">◆</span> 실제 증권사 잔고 <span class="d" aria-hidden="true">◆</span></h2>
+    <div class="body" id="brokerAcct">
+      <div class="dim" role="status" aria-live="polite">불러오는 중…</div>
+    </div>
+  </section>
+
+  <!-- 이 HUD 는 `/api/status.portfolio`, 즉 봇이 운용하는 전략 장부입니다.
+       증권사 실계좌보다 뒤에 두고 이름에도 차이를 적습니다. -->
+  <section class="panel" id="botBookPanel">
+    <h2 class="plate"><span class="d" aria-hidden="true">◆</span> <span id="botBookTitle">봇 전략 장부 · 조회값 없음</span> <span class="d" aria-hidden="true">◆</span></h2>
+    <div class="hud">
+      <div class="hud-l">
+        <div class="sym" id="hudSym">봇 전략 장부 · 미가동</div>
+        <div class="big" id="hudEquity">—</div>
+        <div class="chg" id="hudChange">—</div>
+        <div class="kpis" id="hudKpis"></div>
+      </div>
+      <div class="hud-r"><canvas id="equity" role="img"
+        aria-label="봇 전략 장부의 자산 변화와 고점 대비 하락을 보여주는 차트"></canvas></div>
+    </div>
   </section>
 
   <!-- positions -->
@@ -904,14 +978,35 @@ let playSpeed = 1;
 /* 마지막으로 재생한 심의. 다시 보려면 이게 있어야 합니다 — 놓친 사람에게
    "다음 심의를 기다리세요" 는 답이 아닙니다(일봉이면 내일입니다). */
 let lastPlayed = null;
+//: 전략을 바꾼 뒤 늦게 깨어난 옛 재생이 새 전략의 방을 덮지 못하게 합니다.
+//: `clearTimeout` 으로는 이미 기다리는 Promise 를 취소할 수 없으므로 세대값을
+//: 바꾸고, 모든 기다림 직후 자기 세대가 아직 유효한지 확인합니다.
+let playGeneration = 0;
+//: 재생 세대와 조회 세대는 다릅니다. 전략을 바꿀 때 이미 재생 중인 발언뿐
+//: 아니라, 아직 `/api/desk` 응답을 기다리는 옛 전략 요청도 버려야 합니다.
+let deskRequestGeneration = 0;
+
+function cancelDeliberationReplay() {
+  deskRequestGeneration += 1;
+  playGeneration += 1;
+  playing = false;
+  lastPlayed = null;
+  resetFloor();
+  $("#verdict").classList.add("hidden");
+  syncPlayBar();
+}
 
 async function playDeliberation(d, opts) {
   if (playing) return;
+  const generation = ++playGeneration;
   playing = true;
   // 호출부가 준 값은 그 심의의 성격(데모는 조금 빠르게)이고, 사람이 고른
   // 배속은 그 위에 곱해집니다. 둘을 섞지 않으면 설정이 무시됩니다.
   const speed = ((opts && opts.speed) || 1) / Math.max(playSpeed, 0.25);
-  const wait = ms => sleep(ms * speed);
+  const wait = async ms => {
+    await sleep(ms * speed);
+    return generation === playGeneration;
+  };
   lastPlayed = (opts && opts.demo) ? null : d;
   syncPlayBar();
   try {
@@ -931,9 +1026,9 @@ async function playDeliberation(d, opts) {
         : ((r.key_points || [])[0] || stance);
       say(a.key, `[${stance} ${Math.round((r.conviction || 0) * 100)}%] ${line}`,
           TONE[r.stance] || "neutral");
-      await wait(850);
+      if (!(await wait(850))) return;
     }
-    await wait(450);
+    if (!(await wait(450))) return;
 
     // 2) 강세 vs 약세, round by round
     const rounds = (d.debate && d.debate.rounds) || [];
@@ -944,11 +1039,11 @@ async function playDeliberation(d, opts) {
         if (!r) continue;
         hush(side === "bull" ? "bear" : "bull");
         say(side, r.argument || "", side);
-        await wait(1800);
+        if (!(await wait(1800))) return;
       }
     }
     hush("bull"); hush("bear");
-    await wait(300);
+    if (!(await wait(300))) return;
 
     // 3) 리스크 위원회 — aggressive vs conservative, then the neutral verdict
     const riskRounds = (d.risk_debate && d.risk_debate.rounds) || [];
@@ -960,7 +1055,7 @@ async function playDeliberation(d, opts) {
         const scale = Math.round((r.proposed_scale || 0) * 100);
         say(key, `배율 ${scale}% — ${r.argument || ""}`,
             side === "aggressive" ? "bull" : "bear");
-        await wait(1600);
+        if (!(await wait(1600))) return;
       }
     }
     if (d.risk) {
@@ -970,7 +1065,7 @@ async function playDeliberation(d, opts) {
           (d.vetoed ? "⛔ 거부: " + (d.veto_reason || "") : `최종 배율 ${scale}% — `) +
           (d.risk.reasoning || ""),
           d.vetoed ? "bear" : "neutral");
-      await wait(1800);
+      if (!(await wait(1800))) return;
     }
     hush("risk_aggressive"); hush("risk_conservative");
 
@@ -980,14 +1075,14 @@ async function playDeliberation(d, opts) {
           `[${actionKo(d.plan.rating)}] ${d.plan.rationale || ""}`,
           (d.plan.rating || "").includes("buy") ? "bull"
             : (d.plan.rating || "").includes("sell") ? "bear" : "neutral");
-      await wait(1700);
+      if (!(await wait(1700))) return;
     }
     if (d.trade) {
       const how = ENTRY_STYLE_KO[d.trade.entry_style] || d.trade.entry_style || "";
       say("trader",
           `${how} ${d.trade.tranches ? "· " + d.trade.tranches + "분할" : ""} — ${d.trade.execution_note || ""}`,
           "neutral");
-      await wait(1600);
+      if (!(await wait(1600))) return;
     }
     say("head", `${actionKo(d.action || "hold")} · 확신 ${Math.round((d.conviction || 0) * 100)}% — ${d.rationale || ""}`,
         (d.action || "").includes("buy") ? "bull"
@@ -996,8 +1091,10 @@ async function playDeliberation(d, opts) {
     $("#deskSubject").textContent = (opts && opts.demo ? "데모 · " : "") +
       subject + " 결정 완료";
   } finally {
-    playing = false;
-    syncPlayBar();
+    if (generation === playGeneration) {
+      playing = false;
+      syncPlayBar();
+    }
   }
 }
 
@@ -1037,17 +1134,79 @@ function renderVerdict(d, demo) {
 /* ── data plumbing ───────────────────────────────────────────────────── */
 /* The session lives in an HttpOnly cookie, so the browser must be told to
    send it — and nothing here ever holds a token, which is the point. */
+// A response belongs not just to a URL but to the authenticated identity that
+// started it.  Logging out does not cancel bytes already in flight; without an
+// epoch, user A's slow response can resolve after user B logs in on the same tab.
+let authEpoch = 0;
+// Logout 응답의 Set-Cookie 삭제는 JavaScript가 응답을 읽기 전에 브라우저가
+// 적용합니다. 따라서 같은 탭에서는 logout HTTP가 끝날 때까지 새 세션을 만드는
+// 요청 자체를 보내지 않습니다. 이 잠금은 탭마다 따로이므로 다른 탭까지 막지는
+// 못합니다 — 서버 쪽 세대 쿠키 없이는 그 경계를 닫을 수 없습니다.
+let logoutInFlight = false;
+const AUTH_MUTATION_WAIT =
+  "로그아웃 요청을 마치는 중입니다 — 잠시 후 다시 로그인할 수 있습니다.";
+
+function authIdentity(user) {
+  if (!user || typeof user !== "object") return "";
+  if (user.id != null) return `id:${String(user.id)}`;
+  return `email:${String(user.email || "").trim().toLowerCase()}`;
+}
+
+function staleAuthResponse() {
+  const error = new Error("이전 로그인 세션의 응답을 폐기했습니다");
+  error.name = "StaleAuthResponse";
+  return error;
+}
+
+function isStaleAuthResponse(error) {
+  return !!error && error.name === "StaleAuthResponse";
+}
+
+function requireAuthEpoch(epoch) {
+  if (epoch !== authEpoch) throw staleAuthResponse();
+}
+
+function authActionIsCurrent(epoch, identity) {
+  return epoch === authEpoch && identity === authIdentity(me);
+}
+
+function syncAuthMutationControls() {
+  ["loginSubmit", "registerSubmit", "pwSubmit", "logoutBtn"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = logoutInFlight;
+  });
+}
+
+function rejectAuthMutationDuringLogout() {
+  if (!logoutInFlight) return false;
+  syncAuthMutationControls();
+  note("#gateMsg", AUTH_MUTATION_WAIT, "");
+  return true;
+}
+
+function releaseLogoutMutation() {
+  logoutInFlight = false;
+  syncAuthMutationControls();
+  const gate = $("#gateMsg");
+  if (gate.textContent === AUTH_MUTATION_WAIT) note("#gateMsg", "", "");
+}
+
 async function api(path) {
+  const epoch = authEpoch;
   const r = await fetch(path, {credentials: "same-origin"});
+  requireAuthEpoch(epoch);
   if (r.status === 401) { signedOut(); throw new Error("로그인이 필요합니다"); }
   if (!r.ok) {
     // 서버는 무엇이 잘못됐는지 한국어로 말해 줍니다. 그걸 버리고 "404
     // /api/candles" 만 보여주면, 사용자는 자기가 무엇을 해야 하는지 알 수
     // 없습니다 — 주소는 사용자가 고칠 수 있는 것이 아닙니다.
     const body = await r.json().catch(() => ({}));
+    requireAuthEpoch(epoch);
     throw new Error(body.detail || body.error || `${r.status} ${path}`);
   }
-  return r.json();
+  const body = await r.json();
+  requireAuthEpoch(epoch);
+  return body;
 }
 
 /* ── 부품 이름 사전 ───────────────────────────────────────────────────
@@ -1059,7 +1218,8 @@ async function api(path) {
    영어 식별자가 뜨는 것보다 훨씬 나쁩니다. */
 let GLOSSARY = {};
 async function loadGlossary() {
-  try { GLOSSARY = await api("/api/glossary"); } catch { GLOSSARY = {}; }
+  try { GLOSSARY = await api("/api/glossary"); }
+  catch (e) { if (!isStaleAuthResponse(e)) GLOSSARY = {}; }
 }
 const alphaKo = id => ((GLOSSARY.alpha || {})[id] || {}).ko || id || "";
 const modeKo = id => (GLOSSARY.mode || {})[id] || id || "";
@@ -1105,17 +1265,38 @@ function drawEquity() {
   ctx.strokeStyle = tok(up ? "--up" : "--down"); ctx.lineWidth = 2; ctx.stroke();
 }
 
+/* `/api/status.portfolio` 는 모드에 따라 출처가 다릅니다. backtest/dry-run의
+   configured 장부와, 실거래에서 증권사 자산을 채택한 venue 장부를 같은 이름으로
+   부르면 둘 중 하나는 반드시 거짓이 됩니다. `동기화본`은 최신 실계좌 조회 그
+   자체가 아니라 봇이 마지막으로 채택한 운용 장부라는 경계도 남깁니다. */
+function setBotBookSource(source) {
+  let title = "봇 전략 장부 · 조회값 없음";
+  let mini = "봇 장부";
+  if (source === "venue") {
+    title = "봇 운용 장부 · 실계좌 동기화본";
+    mini = "봇 장부 · 실계좌 동기화";
+  } else if (source === "configured") {
+    title = "봇 전략 장부 · 설정값 (실계좌 잔고 아님)";
+    mini = "봇 장부 · 설정값";
+  }
+  $("#botBookTitle").textContent = title;
+  $("#miniBookSource").textContent = mini;
+  $("#deskBookKind").textContent = title;
+  return title;
+}
+
 function renderHud(p) {
   if (!p) return;
-  // 잔고는 어느 화면에 있든 보여야 합니다 — 계좌 탭에 있는 숫자를 보려고
-  // 탭을 옮기면 매매하다 말고 자리를 뜨게 됩니다.
+  const bookTitle = setBotBookSource(p.capital_source);
+  // 이 값은 봇이 의사결정에 쓰는 운용 장부입니다. 화면 어디에 있든 출처를
+  // 떼지 않고, 실거래에서 증권사와 동기화된 경우도 그 사실을 숨기지 않습니다.
   renderMini({equity: p.equity, change_pct: p.total_return_pct});
   $("#hudEquity").textContent = num(p.equity, 0) + (p.currency === "KRW" ? "" : "");
   const ch = $("#hudChange");
   ch.textContent = pct(p.total_return_pct);
   ch.className = "chg " + cls(p.total_return_pct);
   // 통화 코드(KRW·USD)는 티커와 같은 부류입니다 — 번역하면 오히려 못 알아봅니다.
-  $("#hudSym").textContent = "전체 계좌 · " + (p.currency || "");
+  $("#hudSym").textContent = bookTitle + (p.currency ? " · " + p.currency : "");
   const items = [
     ["현금", num(p.cash, 0), ""],
     ["고점 대비", pct(-Math.abs(p.drawdown_pct || 0)), p.drawdown_pct > 10 ? "down" : ""],
@@ -1135,6 +1316,22 @@ function renderHud(p) {
         <td class="num">${num(x.last_price, 2)}</td>
         <td class="num ${cls(x.unrealized_pct)}">${pct(x.unrealized_pct)}</td></tr>`).join("")
     : `<tr><td class="empty">보유 없음</td></tr>`;
+}
+
+/* `/api/status` 가 실패하거나 portfolio 없이 "미가동" 을 답하면 직전 전략의
+   숫자를 남기지 않습니다. 그 숫자는 이미 낡았을 뿐 아니라, 실제 계좌 패널
+   바로 아래에서는 현재 실잔고로 오인될 수 있습니다. */
+function clearBotBook(reason) {
+  renderMini(null);
+  const bookTitle = setBotBookSource(null);
+  $("#hudEquity").textContent = "—";
+  $("#hudChange").textContent = "—";
+  $("#hudChange").className = "chg";
+  $("#hudKpis").innerHTML = "";
+  $("#hudSym").textContent = bookTitle + " · " + (reason || "미가동");
+  const body = $("#positions").querySelector("tbody");
+  if (body) body.innerHTML =
+    `<tr><td class="empty">${esc(reason || "봇이 실행 중이 아닙니다")}</td></tr>`;
 }
 
 function renderFlow(data) {
@@ -1231,9 +1428,17 @@ function pushEvent(e) {
 }
 
 /* ── polling + stream ────────────────────────────────────────────────── */
+let refreshGeneration = 0;
+
+function invalidateRefresh() {
+  refreshGeneration += 1;
+}
+
 async function refresh() {
+  const generation = ++refreshGeneration;
   try {
     const h = await api("/api/health");
+    if (generation !== refreshGeneration) return;
     setConn(h.trader_running);
     if (h.started_at) {
       const t = new Date(h.started_at);
@@ -1250,10 +1455,14 @@ async function refresh() {
       note("#runMsg", "봇이 멈췄습니다 — " + h.last_error, "err");
     }
     if (h.trader_running) lastBotError = "";
-  } catch { setConn(false); }
+  } catch {
+    if (generation !== refreshGeneration) return;
+    setConn(false);
+  }
 
   try {
     const s = await api("/api/status");
+    if (generation !== refreshGeneration) return;
     botState = s;
     // **어떤 전략이 돌고 있는가는 서버만 압니다.** 선택기는 새로고침 때마다
     // "연동이 끝난 첫 전략" 으로 리셋되고, 봇이 도는 동안에는 감춰져 있어서
@@ -1282,16 +1491,44 @@ async function refresh() {
       m.title = modeKo(s.mode) || "";
       m.className = "mode px " + (s.mode === "live" ? "" : s.mode === "dry_run" ? "dry" : "backtest");
       renderHud(s.portfolio);
+    } else {
+      clearBotBook(s.message || "미가동");
     }
-  } catch {}
+  } catch {
+    if (generation !== refreshGeneration) return;
+    clearBotBook("상태 조회 실패");
+  }
 
-  try { equity = (await api("/api/equity?limit=1200")).points || []; drawEquity(); } catch {}
-  try { renderTape((await api("/api/universe")).symbols); } catch {}
-  try { renderFlow(await api("/api/flow")); } catch {}
+  try {
+    const points = await api("/api/equity?limit=1200");
+    if (generation !== refreshGeneration) return;
+    equity = points.points || [];
+    drawEquity();
+  } catch {
+    if (generation !== refreshGeneration) return;
+  }
+  try {
+    const universe = await api("/api/universe");
+    if (generation !== refreshGeneration) return;
+    renderTape(universe.symbols);
+  } catch {
+    if (generation !== refreshGeneration) return;
+  }
+  try {
+    const flow = await api("/api/flow");
+    if (generation !== refreshGeneration) return;
+    renderFlow(flow);
+  } catch {
+    if (generation !== refreshGeneration) return;
+  }
 
   // Replay the newest deliberation we have not shown yet.
+  if (generation !== refreshGeneration) return;
+  const deskGeneration = ++deskRequestGeneration;
   try {
     const d = await api("/api/desk?limit=1");
+    if (generation !== refreshGeneration ||
+        deskGeneration !== deskRequestGeneration) return;
     deskState = d;
     try { renderDeskAvailability(); } catch (e) { console.error(e); }
     const latest = (d.deliberations || [])[0];
@@ -1331,6 +1568,34 @@ function shownStrategy() {
 }
 
 let socket = null, ping = null;
+//: reconnect 때 서버는 최근 이벤트 50개를 연달아 보냅니다. 그 payload를 바로
+//: 그리면 status가 실패해 지운 옛 장부와 이전 전략 심의가 다시 살아납니다.
+//: stream은 "무언가 바뀌었다"는 신호로만 쓰고, 현재 상태는 인증된 HTTP 계약을
+//: 다시 읽습니다. trailing debounce라 50개 replay도 refresh 한 번이 됩니다.
+const STREAM_REFRESH_DEBOUNCE_MS = 160;
+let streamRefreshTimer = null;
+
+function cancelStreamRefresh() {
+  if (streamRefreshTimer !== null) clearTimeout(streamRefreshTimer);
+  streamRefreshTimer = null;
+}
+
+function scheduleStreamRefresh() {
+  cancelStreamRefresh();
+  streamRefreshTimer = setTimeout(() => {
+    streamRefreshTimer = null;
+    if (me) refresh();
+  }, STREAM_REFRESH_DEBOUNCE_MS);
+}
+
+function handleStreamEvent(e) {
+  if (!e || typeof e !== "object") return;
+  if (e.type === "equity" || e.type === "deliberation") {
+    scheduleStreamRefresh();
+  }
+  pushEvent(e);
+}
+
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   // 세션은 HttpOnly 쿠키입니다. 웹소켓 핸드셰이크에도 같은 쿠키가 실려
@@ -1338,13 +1603,9 @@ function connect() {
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
   socket = ws;
   ws.onmessage = m => {
+    if (socket !== ws) return;
     let e; try { e = JSON.parse(m.data); } catch { return; }
-    if (e.type === "equity") { renderHud(e.payload); return; }
-    if (e.type === "deliberation") {
-      lastShown = (e.payload || {}).decided_at;
-      playDeliberation(e.payload);
-    }
-    pushEvent(e);
+    handleStreamEvent(e);
   };
   // A dashboard that silently goes stale is worse than one that says it is offline.
   // But a *signed-out* dashboard must not keep knocking, so the retry asks first.
@@ -1433,13 +1694,16 @@ function scrollToDesk() {
 
 /* ── 수동 개입 ───────────────────────────────────────────────────────── */
 async function post(path, body) {
+  const epoch = authEpoch;
   const r = await fetch(path, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     credentials: "same-origin",
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  requireAuthEpoch(epoch);
   const data = await r.json().catch(() => ({}));
+  requireAuthEpoch(epoch);
   if (!r.ok) {
     // A 401 on the login form itself is "wrong password", not "session gone" —
     // dropping the user to the gate they are already standing on would just
@@ -1677,18 +1941,26 @@ $("#pApply").onclick = async () => {
   $("#pAxes").querySelectorAll("[data-range]").forEach(el => {
     overrides[el.dataset.range] = parseFloat(el.value);
   });
+  const epoch = authEpoch;
   try {
-    const res = await fetch("/api/profile", {
+    const response = await fetch("/api/profile", {
       method: "PATCH",
       headers: {"Content-Type": "application/json"},
       credentials: "same-origin",
       body: JSON.stringify({overrides}),
-    }).then(r => r.json());
+    });
+    requireAuthEpoch(epoch);
+    const res = await response.json();
+    requireAuthEpoch(epoch);
+    if (!response.ok) {
+      throw new Error(res.detail || res.error || `${response.status} /api/profile`);
+    }
     renderProfile(res);
     note("#pMsg", res.applied_now
       ? "적용 완료 — 사이즈·손절·한도는 즉시 반영, 봉 주기와 알파 구성은 재시작 필요"
       : "저장 완료 — 다음 실행부터 적용됩니다", "ok");
   } catch (e) {
+    if (isStaleAuthResponse(e)) return;
     note("#pMsg", "실패: " + e.message, "err");
   }
 };
@@ -1703,11 +1975,16 @@ $("#pRetake").onclick = async () => {
 };
 
 async function loadQuiz() {
+  const epoch = authEpoch;
   try {
     const data = await api("/api/profile/questions");
+    if (epoch !== authEpoch) return false;
     quizQuestions = data.questions || [];
     renderQuiz();
-  } catch {}
+  } catch (e) {
+    if (isStaleAuthResponse(e) || epoch !== authEpoch) return false;
+  }
+  return epoch === authEpoch;
 }
 
 async function loadProfile() {
@@ -1916,11 +2193,17 @@ function renderVenues() {
    그것이 덮어써지는 일이 실제로 일어나고, 그때 거래소는 그냥 "거부" 라고만
    답합니다. 길이와 접두사만 보면 그런 경우는 대부분 드러납니다. */
 async function inspectSecrets() {
+  const epoch = authEpoch;
   const out = $("#inspectOut");
   out.innerHTML = `<div class="vstep">확인 중…</div>`;
   let d;
   try { d = await api("/api/setup/inspect"); }
-  catch (e) { out.innerHTML = `<div class="vsum bad">❌ ${esc(e.message)}</div>`; return; }
+  catch (e) {
+    if (isStaleAuthResponse(e) || epoch !== authEpoch) return;
+    out.innerHTML = `<div class="vsum bad">❌ ${esc(e.message)}</div>`;
+    return;
+  }
+  if (epoch !== authEpoch) return;
   const rows = d.secrets || [];
   if (!rows.length) {
     out.innerHTML = `<div class="vstep">저장된 값이 없습니다.</div>`;
@@ -2016,6 +2299,7 @@ function trapSetupFocus(ev) {
 addEventListener("keydown", trapSetupFocus);
 
 async function openSetup() {
+  const epoch = authEpoch;
   const setup = $("#setup");
   if (!setup.classList.contains("on")) {
     setupReturnFocus = document.activeElement;
@@ -2030,15 +2314,20 @@ async function openSetup() {
   try {
     await loadSetup();
   } catch (e) {
+    if (isStaleAuthResponse(e) || epoch !== authEpoch) return;
     note("#setupMsg", "설정을 불러오지 못했습니다: " + e.message, "err");
     return;
   }
+  if (epoch !== authEpoch) return;
   renderVenues();
   renderOperator();
   renderLinks();
   await loadLimits();
+  if (epoch !== authEpoch) return;
   await loadQuiz();
+  if (epoch !== authEpoch) return;
   await loadProfile();
+  if (epoch !== authEpoch) return;
   renderSteps();
 }
 
@@ -2201,6 +2490,7 @@ function passwordProblem(pw) {
 
 $("#passwordForm").addEventListener("submit", async ev => {
   ev.preventDefault();
+  if (rejectAuthMutationDuringLogout()) return;
   const current = $("#pwCurrent").value;
   const next = $("#pwNew").value;
   if (next !== $("#pwConfirm").value) {
@@ -2210,23 +2500,46 @@ $("#passwordForm").addEventListener("submit", async ev => {
   const problem = passwordProblem(next);
   if (problem) { note("#pwMsg", problem, "err"); return; }
 
-  $("#pwSubmit").disabled = true;
+  const epoch = authEpoch;
+  const identity = authIdentity(me);
+  const submit = $("#pwSubmit");
+  submit.disabled = true;
   try {
     await post("/api/auth/password", {current_password: current, new_password: next});
+    if (!authActionIsCurrent(epoch, identity)) return;
     // 비밀번호를 바꾸면 서버가 모든 세션을 끊습니다. 화면도 그 사실대로 굴어야
     // 하고, 입력칸은 더 이상 쓸 데가 없으니 바로 비웁니다.
     ["#pwCurrent", "#pwNew", "#pwConfirm"].forEach(s => ($(s).value = ""));
     signedOut();
     note("#gateMsg", "비밀번호를 바꿨습니다 — 새 비밀번호로 다시 로그인하세요.", "ok");
   } catch (e) {
+    if (isStaleAuthResponse(e) || !authActionIsCurrent(epoch, identity)) return;
     note("#pwMsg", "변경 실패: " + e.message, "err");
   } finally {
-    $("#pwSubmit").disabled = false;
+    if (authActionIsCurrent(epoch, identity)) submit.disabled = false;
   }
 });
 
 $("#logoutBtn").onclick = async () => {
-  try { await post("/api/auth/logout"); } catch {}
+  if (logoutInFlight) return;
+  const epoch = authEpoch;
+  const identity = authIdentity(me);
+  const button = $("#logoutBtn");
+  logoutInFlight = true;
+  syncAuthMutationControls();
+  try {
+    await post("/api/auth/logout");
+  } catch (e) {
+    // 네트워크 실패여도 같은 사용자는 화면에서 로그아웃하던 기존 동작을
+    // 유지합니다. 다만 그사이 계정이 바뀌었다면 옛 버튼은 아무것도 못 합니다.
+    if (isStaleAuthResponse(e) || !authActionIsCurrent(epoch, identity)) return;
+  } finally {
+    // epoch가 바뀌었더라도 네트워크 응답은 끝났습니다. 여기서 잠금을 풀어야
+    // 현재 로그인 화면이 영원히 비활성으로 남지 않습니다.
+    releaseLogoutMutation();
+  }
+  if (!authActionIsCurrent(epoch, identity)) return;
+  button.disabled = false;
   signedOut();
   note("#gateMsg", "로그아웃했습니다.", "ok");
 };
@@ -2304,19 +2617,142 @@ $("#ctaLogin").onclick = () => openAuth("login");
 /* 세션은 HttpOnly 쿠키에 있습니다. 여기서 토큰을 읽거나 저장하지 않는 것이
    요점이라, 로그인 여부는 서버에 물어보는 것 말고는 알 방법이 없습니다. */
 async function whoami() {
+  const epoch = authEpoch;
   try {
     const r = await fetch("/api/auth/me", {credentials: "same-origin"});
+    requireAuthEpoch(epoch);
     if (!r.ok) return null;
     const data = await r.json();
+    requireAuthEpoch(epoch);
     const user = data && data.user ? data.user : data;
     return user && user.email ? user : null;
-  } catch {
+  } catch (e) {
+    if (isStaleAuthResponse(e)) throw e;
     return null;
   }
 }
 
+function stopIdentityRuntime() {
+  timers.forEach(clearInterval);
+  timers = [];
+  clearInterval(ping);
+  ping = null;
+  if (socket) { const s = socket; socket = null; s.close(); }
+}
+
+function invalidateIdentityBoundWork() {
+  invalidateRefresh();
+  invalidateBrokerAccount();
+  cancelDeliberationReplay();
+  cancelStreamRefresh();
+  pnlLoadGeneration += 1;
+  tradeLogGeneration += 1;
+  tradeLoadPending = false;
+  reconciliationGeneration += 1;
+  reconciliationSubmitPending = false;
+}
+
+function clearIdentityBoundUi(reason) {
+  const clearHtml = ids => ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = "";
+  });
+  const clearText = ids => ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = "";
+  });
+
+  clearHtml([
+    "pnlGrid", "tradeLog", "brokerAcct", "mPins", "mBudget", "mAskOut",
+    "feed", "tape", "flowBody", "planNow", "pType", "pAxes", "pDerived",
+    "quiz", "quizResult", "cPos", "inspectOut", "setupVenues",
+    "setupOperator", "setupSteps", "venueLinks", "lkRes", "strategyPick",
+    "stMeta", "stSignals", "stDetail", "stNeed", "mSymbol", "cSym",
+    "verdict",
+  ]);
+  clearText([
+    "pnlModeShown", "tradeModeShown", "tradeCount", "setupWho", "quizProg",
+    "runSum", "cLast", "acctWho", "deskSubject", "deskAnnouncer",
+  ]);
+  ["mMsg", "cMsg", "runMsg", "setupMsg", "linkMsg", "pMsg", "pwMsg",
+   "refMsg", "lkMsg"].forEach(id => note("#" + id, "", ""));
+  document.querySelectorAll(".bubble span").forEach(el => { el.textContent = ""; });
+
+  const more = $("#tradeMore");
+  more.hidden = true;
+  more.disabled = false;
+  $("#strategy").textContent = "—";
+  $("#mode").textContent = "미가동";
+  $("#mode").className = "mode px";
+  $("#serverSince").textContent = "";
+  setConn(false);
+  $("#pnlMode").value = "dry_run";
+  $("#mAskOut").hidden = true;
+  $("#mPause").textContent = "⏸ 자동매매 일시정지";
+  $("#mPause").className = "btn";
+  $("#lkGo").disabled = false;
+  // 다른 경로의 signedOut가 UI를 초기화해도, 아직 도착하지 않은 logout
+  // Set-Cookie보다 새 login이 앞서 나가서는 안 됩니다.
+  syncAuthMutationControls();
+  $("#stBrief").hidden = true;
+  $("#stNeed").hidden = true;
+  $("#cStale").hidden = true;
+  ["mQty", "mNotional", "mLimit", "cQty", "cNotional", "cLimit", "lkQ",
+   "refCode", "lNotional", "lOrders", "lLoss", "lLossPct", "pwCurrent",
+   "pwNew", "pwConfirm"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = "";
+  });
+
+  const chartCanvas = $("#chart");
+  if (chartCanvas && chartCanvas.getContext) {
+    chartCanvas.getContext("2d").clearRect(0, 0, chartCanvas.width, chartCanvas.height);
+  }
+  clearReconciliationUi();
+  clearBotBook(reason || "로그아웃됨");
+}
+
+function resetIdentityBoundState(reason) {
+  seenRunMode = "";
+  pnlMode = "dry_run";
+  tradeShown = 0;
+  tradeLoadPending = false;
+  paused = false;
+  limitsSet = false;
+  profileDone = false;
+  profileSkipped = false;
+  quizQuestions = [];
+  quizAnswers = {};
+  quizInteractive = false;
+  setupCatalog = null;
+  configuredKeys = {};
+  linkedVenues = [];
+  strategies = [];
+  chartData = null;
+  chart = null;
+  equity = [];
+  botState = null;
+  deskState = null;
+  runningStrategy = "";
+  lastShown = null;
+  lastBotError = "";
+  drawEquity();
+  clearIdentityBoundUi(reason);
+}
+
+function beginIdentityTransition(reason) {
+  authEpoch += 1;
+  started = false;
+  invalidateIdentityBoundWork();
+  stopIdentityRuntime();
+  resetIdentityBoundState(reason);
+}
+
 function signedIn(user) {
   if (document.body.classList.contains("demoing")) closeDemoStage();
+  if (authIdentity(me) !== authIdentity(user)) {
+    beginIdentityTransition("계정 전환됨");
+  }
   me = user;
   document.body.className = "authed";
   // 이 줄 전까지 헤더는 display:none 이었습니다. 배치가 한 번 돌고 나서
@@ -2327,62 +2763,70 @@ function signedIn(user) {
 }
 
 function signedOut() {
-  if (!me && document.body.classList.contains("anon")) return;
+  // 이미 로그아웃 화면이어도 세대를 올립니다. 첫 로그아웃 직후 시작된
+  // `/api/auth/me` 같은 요청까지 다음 로그인에 살아남아서는 안 됩니다.
+  beginIdentityTransition("로그아웃됨");
   me = null;
-  started = false;
-  // 폴링과 소켓을 실제로 멈춥니다. 세션이 끊긴 화면이 8초마다 401 을 두드리면
-  // 로그인 화면 뒤에서 서버를 때리는 유령이 됩니다.
-  timers.forEach(clearInterval);
-  timers = [];
-  clearInterval(ping);
-  if (socket) { const s = socket; socket = null; s.close(); }
-  setupCatalog = null;
-  configuredKeys = {};
-  linkedVenues = [];
+  // 설정창이 열려 있었다면 뒤 화면의 inert도 함께 풉니다.
+  setupInerted.forEach(el => { el.inert = false; });
+  setupInerted = [];
+  setupReturnFocus = null;
   $("#setup").classList.remove("on");
-  $("#venueLinks").innerHTML = "";
-  $("#acctWho").textContent = "—";
   document.body.className = "anon";
   showTab("login");
+  if (logoutInFlight) note("#gateMsg", AUTH_MUTATION_WAIT, "");
   scrollTo(0, 0);
 }
 
 $("#loginForm").addEventListener("submit", async ev => {
   ev.preventDefault();
+  if (rejectAuthMutationDuringLogout()) return;
   const email = $("#liEmail").value.trim();
   const password = $("#liPassword").value;
   if (!email || !password) {
     note("#gateMsg", "이메일과 비밀번호를 입력하세요", "err");
     return;
   }
-  $("#loginSubmit").disabled = true;
+  const epoch = authEpoch;
+  const identity = authIdentity(me);
+  const submit = $("#loginSubmit");
+  submit.disabled = true;
   try {
     const res = await post("/api/auth/login", {email, password});
+    if (!authActionIsCurrent(epoch, identity)) return;
     $("#liPassword").value = "";
     const user = res && res.user && res.user.email ? res.user : await whoami();
+    if (!authActionIsCurrent(epoch, identity)) return;
     if (!user) throw new Error("세션을 만들지 못했습니다");
     note("#gateMsg", "", "");
     signedIn(user);
   } catch (e) {
+    if (isStaleAuthResponse(e) || !authActionIsCurrent(epoch, identity)) return;
     note("#gateMsg", "로그인 실패: " + e.message, "err");
   } finally {
-    $("#loginSubmit").disabled = false;
+    if (authActionIsCurrent(epoch, identity)) submit.disabled = false;
   }
 });
 
 $("#registerForm").addEventListener("submit", async ev => {
   ev.preventDefault();
+  if (rejectAuthMutationDuringLogout()) return;
   const email = $("#rgEmail").value.trim();
   const password = $("#rgPassword").value;
   const display_name = $("#rgName").value.trim();
   const problem = passwordProblem(password);
   if (problem) { note("#gateMsg", problem, "err"); return; }
 
-  $("#registerSubmit").disabled = true;
+  const epoch = authEpoch;
+  const identity = authIdentity(me);
+  const submit = $("#registerSubmit");
+  submit.disabled = true;
   try {
     const res = await post("/api/auth/register", {email, password, display_name});
+    if (!authActionIsCurrent(epoch, identity)) return;
     $("#rgPassword").value = "";
     const user = res && res.user && res.user.email ? res.user : await whoami();
+    if (!authActionIsCurrent(epoch, identity)) return;
     if (user) {
       note("#gateMsg", "", "");
       signedIn(user);
@@ -2394,9 +2838,10 @@ $("#registerForm").addEventListener("submit", async ev => {
       note("#gateMsg", "가입 완료 — 로그인하세요.", "ok");
     }
   } catch (e) {
+    if (isStaleAuthResponse(e) || !authActionIsCurrent(epoch, identity)) return;
     note("#gateMsg", "가입 실패: " + e.message, "err");
   } finally {
-    $("#registerSubmit").disabled = false;
+    if (authActionIsCurrent(epoch, identity)) submit.disabled = false;
   }
 });
 
@@ -2421,7 +2866,7 @@ function start() {
   refresh();
   connect();
   timers.push(setInterval(refresh, 15000));
-  loadQuiz().then(loadProfile);
+  loadQuiz().then(current => { if (current) loadProfile(); });
   // 아직 아무 곳도 연동되지 않았으면 설정부터 — 그 전에는 봇이 돌 수 없습니다.
   // 전략 목록은 **연동 정보를 받은 뒤에** 그려야 합니다. 먼저 그리면
   // `configuredKeys` 가 아직 비어 있어서 모든 전략에 "연동 필요" 가 붙고,
@@ -2438,7 +2883,11 @@ function start() {
 (async () => {
   const user = await whoami();
   if (user) signedIn(user); else signedOut();
-})();
+})().catch(e => {
+  // 부팅 중 시작한 `/auth/me` 보다 새 로그인/로그아웃이 앞섰습니다. 새
+  // 세션을 옛 부팅 응답으로 로그아웃시키지 않습니다.
+  if (!isStaleAuthResponse(e)) signedOut();
+});
 
 
 /* ── 시세 · 매매 (오른쪽) ──────────────────────────────────────────────
@@ -2489,15 +2938,18 @@ function syncChartSymbols(syms) {
 async function loadChart() {
   const sel = document.getElementById("cSym");
   if (!sel || !sel.value || !me) return;
+  const epoch = authEpoch;
   try {
     const q = new URLSearchParams({ ticker: sel.value,
                                     timeframe: document.getElementById("cTf").value,
                                     count: "160", strategy: chartStrategy() });
     chartData = await api("/api/candles?" + q);
   } catch (e) {
+    if (isStaleAuthResponse(e) || epoch !== authEpoch) return;
     note("#cMsg", "시세를 불러오지 못했습니다: " + e.message, "err");
     return;
   }
+  if (epoch !== authEpoch) return;
   // 성공했으면 옛 오류를 지웁니다. 안 지우면 "AAPL 는 이 전략의 종목이
   // 아닙니다" 가 다른 종목을 보고 있는 동안에도 계속 서 있습니다 — 화면이
   // 지금 상태가 아니라 과거 어느 시점을 말하게 됩니다.
@@ -2592,6 +3044,283 @@ if ("serviceWorker" in navigator) {
    빈 표뿐입니다. 무엇이 없어서 못 켜는지도 여기서 말해 줍니다. */
 let strategies = [];
 
+/* ── 비정상 종료 실거래 실행 복구 ──────────────────────────────────
+   서버가 현재 선택한 Toss 실거래 전략에 `required:true`를 답한 경우만
+   카드가 열립니다. 이전 실행을 장부에 합치거나 봇을 시작하는 기능이 아니라,
+   사람이 Toss 앱과 대조한 증거를 남긴 뒤 그 실행을 감사 기록으로 보존하는
+   절차입니다. */
+const RECONCILIATION_FIELDS = [
+  ["open_orders", "reconciliationOpenOrders", "reconciliationOpenOrdersText"],
+  ["today_fills", "reconciliationTodayFills", "reconciliationTodayFillsText"],
+  ["holdings", "reconciliationHoldings", "reconciliationHoldingsText"],
+  ["cash", "reconciliationCash", "reconciliationCashText"],
+  ["daily_loss", "reconciliationDailyLoss", "reconciliationDailyLossText"],
+];
+let reconciliationGeneration = 0;
+let reconciliationSnapshot = null;
+let reconciliationSubmitPending = false;
+
+function selectedReconciliationStrategy() {
+  const id = chartStrategy();
+  const strategy = strategies.find(item => item && item.id === id);
+  return strategy && strategy.mode === "live" && strategy.broker === "toss"
+    ? strategy : null;
+}
+
+function setReconciliationMessage(text, kind, moveFocus) {
+  const box = $("#reconciliationMsg");
+  if (!box) return;
+  box.className = "msg recovery-message" + (kind ? " " + kind : "");
+  box.textContent = text || "";
+  if (moveFocus && text && typeof box.focus === "function") box.focus();
+}
+
+function clearReconciliationUi() {
+  reconciliationSnapshot = null;
+  reconciliationSubmitPending = false;
+  const card = document.getElementById("reconciliationCard");
+  if (!card) return;
+  card.hidden = true;
+  card.classList.remove("resolved");
+  ["reconciliationRunId", "reconciliationStrategy", "reconciliationMode",
+   "reconciliationInstructions", "reconciliationAckPhrase"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = "";
+  });
+  RECONCILIATION_FIELDS.forEach(([, inputId, textId]) => {
+    const input = document.getElementById(inputId);
+    const text = document.getElementById(textId);
+    if (input) { input.checked = false; input.disabled = false; }
+    if (text) text.textContent = "";
+  });
+  ["reconciliationReason", "reconciliationAck"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.value = ""; el.disabled = false; }
+  });
+  const count = document.getElementById("reconciliationReasonCount");
+  if (count) count.textContent = "0 / 500자";
+  const checks = document.getElementById("reconciliationChecks");
+  if (checks) checks.disabled = false;
+  const submit = document.getElementById("reconciliationSubmit");
+  if (submit) submit.disabled = true;
+  setReconciliationMessage("", "", false);
+}
+
+function reconciliationRequestIsCurrent(epoch, identity, generation, configPath) {
+  return epoch === authEpoch && identity === authIdentity(me) && !!me
+    && generation === reconciliationGeneration
+    && chartStrategy() === configPath;
+}
+
+function reconciliationReasonLength() {
+  const reason = $("#reconciliationReason").value || "";
+  return Array.from(reason.trim()).length;
+}
+
+function reconciliationFormProblem() {
+  if (!reconciliationSnapshot) return ["복구할 실행을 다시 조회하세요.", null];
+  if (reconciliationSnapshot.botRunning) {
+    return ["봇이 실행 중입니다. 완전히 정지한 뒤 상태를 다시 확인하세요.", null];
+  }
+  for (const [, inputId] of RECONCILIATION_FIELDS) {
+    const input = document.getElementById(inputId);
+    if (!input || !input.checked) {
+      return ["토스 앱에서 다섯 항목을 모두 대조하세요.", input];
+    }
+  }
+  const reasonLength = reconciliationReasonLength();
+  if (reasonLength < 10 || reasonLength > 500) {
+    return ["보존 처리 사유를 10자 이상 500자 이하로 입력하세요.",
+            $("#reconciliationReason")];
+  }
+  if ($("#reconciliationAck").value !== reconciliationSnapshot.acknowledgement) {
+    return ["확인 문구를 띄어쓰기까지 그대로 입력하세요.",
+            $("#reconciliationAck")];
+  }
+  return ["", null];
+}
+
+function syncReconciliationSubmit() {
+  const reason = $("#reconciliationReason");
+  const count = $("#reconciliationReasonCount");
+  if (reason && count) count.textContent =
+    `${Array.from(reason.value || "").length} / 500자`;
+  const submit = $("#reconciliationSubmit");
+  if (!submit) return;
+  const [problem] = reconciliationFormProblem();
+  submit.disabled = reconciliationSubmitPending || !!problem;
+}
+
+function reconciliationResponseProblem(data) {
+  if (!data || data.required !== true || !data.run ||
+      !Number.isInteger(data.run.id) || data.run.id <= 0 ||
+      data.run.mode !== "live" || typeof data.run.strategy !== "string" ||
+      typeof data.recovery_instructions !== "string" ||
+      !data.recovery_instructions.trim() ||
+      typeof data.acknowledgement_phrase !== "string" ||
+      !data.acknowledgement_phrase) {
+    return "복구 상태 응답이 불완전합니다. 새로고침한 뒤 다시 확인하세요.";
+  }
+  const phrases = data.confirmation_phrases;
+  if (!phrases || RECONCILIATION_FIELDS.some(([key]) =>
+      typeof phrases[key] !== "string" || !phrases[key])) {
+    return "복구 확인 문구를 받지 못했습니다. 새로고침한 뒤 다시 확인하세요.";
+  }
+  if (typeof data.bot_running !== "boolean") {
+    return "봇 실행 상태를 확인하지 못했습니다. 새로고침한 뒤 다시 확인하세요.";
+  }
+  return "";
+}
+
+function reconciliationArchiveResponseProblem(data) {
+  if (!data || data.archived !== true ||
+      data.fresh_run_on_next_start !== true ||
+      typeof data.message !== "string" || !data.message.trim() ||
+      typeof data.next_start_allowed_at !== "string" ||
+      !/(?:Z|[+-]\d{2}:\d{2})$/i.test(data.next_start_allowed_at) ||
+      !Number.isFinite(new Date(data.next_start_allowed_at).getTime())) {
+    return "보존 처리 응답에서 다음 시작 가능 시각을 확인하지 못했습니다. " +
+      "자동매매를 시작하지 말고 상태를 다시 조회하세요.";
+  }
+  return "";
+}
+
+function reconciliationAllowedAtKo(value) {
+  return new Date(value).toLocaleString("ko-KR", {
+    timeZone: "Asia/Seoul", year: "numeric", month: "long", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
+async function loadReconciliationStatus() {
+  const generation = ++reconciliationGeneration;
+  clearReconciliationUi();
+  const strategy = selectedReconciliationStrategy();
+  if (!me || !strategy) return;
+  const epoch = authEpoch;
+  const identity = authIdentity(me);
+  const configPath = strategy.id;
+  let data;
+  try {
+    data = await api("/api/trader/reconciliation?config_path=" +
+                     encodeURIComponent(configPath));
+  } catch (error) {
+    // GET 실패만으로 위험 카드를 만들지는 않습니다. 서버가 required:true라고
+    // 확인하지 않은 상태를 격리 실행처럼 보이게 하면 정상 계정도 막힙니다.
+    return;
+  }
+  if (!reconciliationRequestIsCurrent(
+        epoch, identity, generation, configPath)) return;
+  if (!data || data.required !== true) return;
+
+  const card = $("#reconciliationCard");
+  card.hidden = false;
+  const responseProblem = reconciliationResponseProblem(data);
+  if (responseProblem) {
+    setReconciliationMessage(responseProblem, "err", false);
+    $("#reconciliationSubmit").disabled = true;
+    return;
+  }
+
+  const snapshot = {
+    configPath,
+    runId: data.run.id,
+    botRunning: data.bot_running,
+    phrases: Object.fromEntries(RECONCILIATION_FIELDS.map(([key]) =>
+      [key, data.confirmation_phrases[key]])),
+    acknowledgement: data.acknowledgement_phrase,
+  };
+  reconciliationSnapshot = snapshot;
+  $("#reconciliationRunId").textContent = String(data.run.id);
+  $("#reconciliationStrategy").textContent = data.run.strategy;
+  $("#reconciliationMode").textContent = "실거래";
+  $("#reconciliationInstructions").textContent = data.recovery_instructions;
+  RECONCILIATION_FIELDS.forEach(([key, , textId]) => {
+    $("#" + textId).textContent = snapshot.phrases[key];
+  });
+  $("#reconciliationAckPhrase").textContent = snapshot.acknowledgement;
+  if (snapshot.botRunning) {
+    setReconciliationMessage(
+      "봇이 실행 중입니다. 완전히 정지한 뒤 이 화면을 다시 열어 확인하세요.",
+      "err", false);
+  } else {
+    setReconciliationMessage(
+      "다섯 항목과 확인 문구를 모두 확인해야 보존 처리를 진행할 수 있습니다.",
+      "", false);
+  }
+  syncReconciliationSubmit();
+}
+
+function focusReconciliationProblem(problem, field) {
+  setReconciliationMessage(problem, "err", true);
+  if (field && typeof field.focus === "function") field.focus();
+}
+
+RECONCILIATION_FIELDS.forEach(([, inputId]) => {
+  const input = document.getElementById(inputId);
+  if (input) input.onchange = syncReconciliationSubmit;
+});
+$("#reconciliationReason").oninput = syncReconciliationSubmit;
+$("#reconciliationAck").oninput = syncReconciliationSubmit;
+
+$("#reconciliationSubmit").onclick = async () => {
+  const snapshot = reconciliationSnapshot;
+  const [problem, field] = reconciliationFormProblem();
+  if (problem) { focusReconciliationProblem(problem, field); return; }
+  if (!snapshot || reconciliationSubmitPending) return;
+
+  const epoch = authEpoch;
+  const identity = authIdentity(me);
+  const generation = reconciliationGeneration;
+  const reason = $("#reconciliationReason").value.trim();
+  reconciliationSubmitPending = true;
+  syncReconciliationSubmit();
+  setReconciliationMessage("기존 실행을 보존 처리하는 중입니다.", "", false);
+  try {
+    const result = await post("/api/trader/reconciliation/archive", {
+      config_path: snapshot.configPath,
+      run_id: snapshot.runId,
+      reason,
+      confirmations: Object.fromEntries(RECONCILIATION_FIELDS.map(
+        ([key]) => [key, snapshot.phrases[key]])),
+      acknowledgement: snapshot.acknowledgement,
+    });
+    if (!reconciliationRequestIsCurrent(
+          epoch, identity, generation, snapshot.configPath) ||
+        reconciliationSnapshot !== snapshot) return;
+    const responseProblem = reconciliationArchiveResponseProblem(result);
+    if (responseProblem) throw new Error(responseProblem);
+
+    reconciliationSubmitPending = false;
+    reconciliationSnapshot = null;
+    $("#reconciliationCard").classList.add("resolved");
+    RECONCILIATION_FIELDS.forEach(([, inputId]) => {
+      const input = $("#" + inputId);
+      input.checked = false;
+      input.disabled = true;
+    });
+    $("#reconciliationChecks").disabled = true;
+    $("#reconciliationReason").value = "";
+    $("#reconciliationReason").disabled = true;
+    $("#reconciliationAck").value = "";
+    $("#reconciliationAck").disabled = true;
+    $("#reconciliationReasonCount").textContent = "0 / 500자";
+    $("#reconciliationSubmit").disabled = true;
+    setReconciliationMessage(
+      result.message.trim() + " 다음 시작 가능 시각: " +
+      reconciliationAllowedAtKo(result.next_start_allowed_at) +
+      " (한국 시간). 자동매매는 시작하지 않았습니다.", "ok", true);
+  } catch (error) {
+    if (isStaleAuthResponse(error) || !reconciliationRequestIsCurrent(
+          epoch, identity, generation, snapshot.configPath) ||
+        reconciliationSnapshot !== snapshot) return;
+    reconciliationSubmitPending = false;
+    syncReconciliationSubmit();
+    setReconciliationMessage(
+      "보존 처리하지 못했습니다: " + error.message, "err", true);
+  }
+};
+
 /* 이 전략을 사람이 부르는 이름. 설정에 `label_ko` 가 없으면 식별자로
    떨어집니다 — 이름이 없다고 목록에서 사라지는 것보다 낫습니다. */
 const stLabel = st => (st && (st.label_ko || st.name)) || "";
@@ -2629,6 +3358,7 @@ async function loadStrategies() {
   const ready = strategies.find(st => !(st.requires || []).some(k => !linked.has(k)));
   sel.value = keep || (ready ? ready.id : (strategies[0] || {}).id || "");
   renderStrategyBrief();
+  loadReconciliationStatus();
   if (chart) loadChart();
 }
 
@@ -2753,65 +3483,132 @@ function hasDesk(st) {
    꺼져 있어도, 한 번도 안 돌았어도, 다른 데서 산 종목이어도 여기 나와야
    합니다. 그러지 않으면 연동을 마친 사람이 빈 화면을 보고 "연동이 안 됐다"
    로 읽습니다 — 실제로 그렇게 읽혔습니다. */
+let brokerAccountGeneration = 0;
+
+function invalidateBrokerAccount() {
+  brokerAccountGeneration += 1;
+}
+
 async function loadBrokerAccount() {
   const box = $("#brokerAcct");
   if (!box) return;
+  const generation = ++brokerAccountGeneration;
+  const strategy = chartStrategy();
+  // 새 조회가 시작된 순간 옛 숫자를 먼저 지웁니다. 실패할 때까지 몇 초 동안
+  // 이전 계좌를 "현재" 값처럼 보여 주는 것도 fallback 과 다르지 않습니다.
+  box.innerHTML = `<div class="dim" role="status" aria-live="polite">` +
+    `실제 증권사 잔고를 불러오는 중…</div>`;
   let d;
   try {
     d = await api("/api/account/broker?strategy=" +
-                  encodeURIComponent(chartStrategy()));
+                  encodeURIComponent(strategy));
   } catch (e) {
-    box.innerHTML = `<div class="dim">계좌를 불러오지 못했습니다: ${esc(e.message)}</div>`;
+    if (generation !== brokerAccountGeneration) return;
+    box.innerHTML = `<div class="dim" role="status" aria-live="polite">` +
+      `계좌를 불러오지 못했습니다: ${esc(e.message)}</div>`;
+    return;
+  }
+  // 전략 A의 느린 응답이 전략 B의 최신 계좌 위에 도착해도 버립니다.
+  if (generation !== brokerAccountGeneration) return;
+  if (!d || typeof d !== "object") {
+    box.innerHTML = `<div class="dim" role="status" aria-live="polite">` +
+      `계좌를 불러오지 못했습니다: 응답 형식 오류</div>`;
     return;
   }
   if (d.supported === false) {
-    box.innerHTML = `<div class="dim">${esc(d.message || "이 증권사는 계좌 조회를 지원하지 않습니다")}</div>`;
+    box.innerHTML = `<div class="dim" role="status" aria-live="polite">` +
+      `${esc(d.message || "이 증권사는 계좌 조회를 지원하지 않습니다")}</div>`;
     return;
   }
   if (d.error) {
-    box.innerHTML = `<div class="dim">${esc(d.error)}</div>`;
+    box.innerHTML = `<div class="dim" role="status" aria-live="polite">` +
+      `${esc(d.error)}</div>`;
     return;
   }
   // 통화별로 따로 옵니다. 증권사가 합쳐 주지 않는 것을 화면이 합치면 그
-  // 순간 환차손익이 매매 손익에 섞입니다 — 나란히 씁니다.
-  const money = (m) => Object.entries(m || {}).map(([cur, v]) =>
+  // 순간 환차손익이 매매 손익에 섞입니다 — 나란히 씁니다. 비수치 값은
+  // `NaN원`으로 자신 있게 그리지 않고 조회 불가로 취급합니다.
+  const cleanMoney = (m) => Object.fromEntries(
+    (m && typeof m === "object" && !Array.isArray(m) ? Object.entries(m) : [])
+      // 서버 계약은 `{KRW:number, USD:number}` 입니다. `Number(false) === 0`,
+      // `Number([]) === 0`, `Number(" ") === 0` 이므로 강제 변환은 조회 실패를
+      // 실제 0원처럼 보이게 합니다. JSON number만 받습니다.
+      .filter(([cur, value]) => (cur === "KRW" || cur === "USD") &&
+        typeof value === "number" && Number.isFinite(value)));
+  const money = (m) => Object.entries(cleanMoney(m)).map(([cur, v]) =>
     (cur === "USD" ? "$" : "") + Number(v).toLocaleString("ko-KR",
       {maximumFractionDigits: cur === "USD" ? 2 : 0}) +
-    (cur === "KRW" ? "원" : "")).join("  ·  ") || "—";
-  const signed = (m) => Object.entries(m || {}).map(([cur, v]) => {
+    (cur === "KRW" ? "원" : "")).join("  ·  ") || "조회 불가";
+  const signed = (m) => Object.entries(cleanMoney(m)).map(([cur, v]) => {
     const cls = v > 0 ? "plus" : v < 0 ? "minus" : "";
     const sign = v > 0 ? "+" : "";
     return `<b class="${cls}">${sign}${(cur === "USD" ? "$" : "")}` +
       `${Number(v).toLocaleString("ko-KR", {maximumFractionDigits: cur === "USD" ? 2 : 0})}` +
       `${cur === "KRW" ? "원" : ""}</b>`;
-  }).join("  ·  ") || "—";
-  const pct = (v) => v == null ? "" : ` (${(v * 100).toFixed(2)}%)`;
+  }).join("  ·  ") || "조회 불가";
+  const pct = (v) => typeof v !== "number" || !Number.isFinite(v)
+    ? "" : ` (${(v * 100).toFixed(2)}%)`;
+  const hasMoney = (m) => Object.keys(cleanMoney(m)).length > 0;
+  const plain = (v, digits) => typeof v !== "number" || !Number.isFinite(v)
+    ? "—" : v.toLocaleString("ko-KR", {maximumFractionDigits: digits});
+
+  // 서로 다른 출처입니다. `investable_assets` 는 서버가 **동일 통화끼리만**
+  // 합산한 값이고, 없을 때 `cash` 나 전략 starting_cash 로 재계산하지 않습니다.
+  const cashBuyingPower = d.cash_buying_power;
+  const holdingsValue = d.market_value;
+  const investableAssets = d.investable_assets;
+  const legacyCash = d.cash;
+  const source = d.source === "toss" ? "토스증권 실계좌 API"
+               : d.source === "kis" ? "한국투자증권 실계좌 API"
+               : (d.source ? `${d.source} 실계좌 API` : "증권사 실계좌 API");
 
   // 종목마다 지금 얼마어치를 들고 있는지가 계좌를 볼 때 가장 먼저 찾는
   // 숫자입니다. 수량과 현재가를 놓고 사람이 곱하게 두지 않습니다.
-  const rows = (d.items || []).map(x => `<tr>
-      <td class="gold">${esc(symLabel(x.ticker, x.name))}</td>
-      <td>${Number(x.quantity).toLocaleString("ko-KR")}</td>
-      <td>${x.avg_price == null ? "—" : Number(x.avg_price).toLocaleString("ko-KR")}</td>
-      <td>${x.last_price == null ? "—" : Number(x.last_price).toLocaleString("ko-KR")}</td>
-      <td>${esc(money(x.market_value))}</td>
-      <td>${signed(x.pnl)}${pct(x.pnl_pct)}</td>
-    </tr>`).join("");
+  const rows = (Array.isArray(d.items) ? d.items : [])
+    .filter(x => x && typeof x === "object" && !Array.isArray(x))
+    .map(x => {
+      // JSON row여도 ticker/name이 object면 `[object Object]`라는 가짜 종목이
+      // 됩니다. 표시 가능한 식별자가 없는 행은 버리고 나머지 정상 행은 살립니다.
+      const ticker = typeof x.ticker === "string" || typeof x.ticker === "number"
+        ? String(x.ticker) : "";
+      const name = typeof x.name === "string" || typeof x.name === "number"
+        ? String(x.name) : "";
+      const label = symLabel(ticker, name);
+      if (!label) return "";
+      return `<tr>
+        <td class="gold">${esc(label)}</td>
+        <td>${plain(x.quantity, 8)}</td>
+        <td>${plain(x.avg_price, 2)}</td>
+        <td>${plain(x.last_price, 2)}</td>
+        <td>${esc(money(x.market_value))}</td>
+        <td>${signed(x.pnl)}${pct(x.pnl_pct)}</td>
+      </tr>`;
+    }).join("");
 
   box.innerHTML =
-    `<div class="r"><b>평가금액</b><span>${esc(money(d.market_value))}</span></div>` +
-    `<div class="r"><b>투자원금</b><span>${esc(money(d.invested))}</span></div>` +
+    `<div class="dim" style="margin-bottom:8px">출처: ${esc(source)}</div>` +
+    `<div class="r"><b>운용 가능 자산</b><span>${esc(money(investableAssets))}</span></div>` +
+    `<div class="r"><b>현금 매수가능금액</b><span>${esc(money(cashBuyingPower))}</span></div>` +
+    `<div class="r"><b>보유주식 평가금액</b><span>${esc(money(holdingsValue))}</span></div>` +
+    // 구형 응답은 보여 주기만 합니다. 운용가능자산 계산에는 절대 쓰지 않습니다.
+    (!hasMoney(cashBuyingPower) && hasMoney(legacyCash)
+      ? `<div class="r"><b>예수금 · 구형 응답</b><span>${esc(money(legacyCash))}</span></div>`
+      : "") +
+    `<div class="dim" style="margin:7px 0 10px">현금 매수가능금액과 보유주식은 ` +
+      `증권사 응답, 운용 가능 자산은 서버가 같은 통화끼리 계산했습니다. ` +
+      `조회할 수 없는 값은 봇 전략 장부로 채우지 않습니다.</div>` +
+    `<div class="r"><b>주식 매수원금</b><span>${esc(money(d.invested))}</span></div>` +
     `<div class="r"><b>평가손익</b><span>${signed(d.pnl)}${pct(d.pnl_pct)}</span></div>` +
     `<div class="r"><b>오늘 손익</b><span>${signed(d.daily_pnl)}${pct(d.daily_pnl_pct)}</span></div>` +
-    // 토스는 예수금을 주지 않습니다. 0 으로 채우면 "돈이 없다" 로 읽힙니다.
-    (d.cash == null
-      ? `<div class="dim" style="margin-top:7px">예수금은 증권사 API 가 제공하지 않아 표시하지 않습니다.</div>`
-      : `<div class="r"><b>예수금</b><span>${esc(money(d.cash))}</span></div>`) +
     (rows
-      ? `<table class="acct" style="margin-top:11px"><thead><tr>
-           <th>종목</th><th>수량</th><th>평단</th><th>현재가</th>
-           <th>평가금액</th><th>평가손익</th>
-         </tr></thead><tbody>${rows}</tbody></table>`
+      ? `<div class="acct-scroll" role="region" tabindex="0" ` +
+          `aria-label="실제 증권사 보유주식 표. 좌우로 스크롤할 수 있습니다.">` +
+          `<table class="acct"><caption class="sr-only">실제 증권사 보유주식</caption>` +
+          `<thead><tr>
+             <th scope="col">종목</th><th scope="col">수량</th>` +
+             `<th scope="col">평단</th><th scope="col">현재가</th>` +
+             `<th scope="col">평가금액</th><th scope="col">평가손익</th>
+           </tr></thead><tbody>${rows}</tbody></table></div>`
       : `<div class="dim" style="margin-top:9px">보유 중인 종목이 없습니다.</div>`);
 }
 
@@ -2828,6 +3625,7 @@ const PNL_LABEL = {today: "오늘", week: "이번 주", month: "이번 달", yea
    두 화면 어디에도 안 나옵니다 — 합쳐서 보여 주는 것보다는 낫지만, 그때는
    선택기에 항목을 늘려야 합니다. */
 let pnlMode = "dry_run";
+let pnlLoadGeneration = 0;
 
 //: 마지막으로 서버가 말한 "돌고 있는 봇의 모드". 같은 값이 계속 오는 동안
 //: 아무것도 하지 않기 위해서만 있습니다.
@@ -2870,9 +3668,6 @@ function adoptRecordedMode(modes) {
   if (known.length !== 1) return;     // 없거나 둘 다면 고르지 않습니다
   if (known[0] === pnlMode) return;
   setPnlMode(known[0]);
-  // 모드가 바뀌었으니 숫자와 표를 그 모드로 다시 받습니다.
-  loadPnl();
-  loadTradeLog();
 }
 
 function setPnlMode(m) {
@@ -2892,14 +3687,21 @@ async function loadPnl() {
   //: 이 응답이 어느 모드를 물어본 것인지. 그려 넣을 때 다시 `pnlMode` 를
   //: 읽으면, 기다리는 사이에 모드가 바뀐 경우 A 의 숫자가 B 의 이름표를
   //: 달게 됩니다.
+  const epoch = authEpoch;
+  const generation = ++pnlLoadGeneration;
   const asked = pnlMode;
   let d;
   try { d = await api(`/api/pnl?mode=${encodeURIComponent(asked)}`); } catch { return; }
-  if (asked !== pnlMode) return;      // 늦게 온 남의 모드 응답
+  if (epoch !== authEpoch || generation !== pnlLoadGeneration ||
+      asked !== pnlMode) return;      // 늦게 온 남의 계정·모드 응답
   // 봇이 꺼져 있으면 어느 모드를 볼지 정할 근거가 없습니다. 서버가 "기록이
   // 실제로 있는 모드" 를 함께 보내므로 그것을 씁니다 — 안 쓰면 실거래만
   // 해 온 사람이 장 마감 후에 0 을 봅니다.
   adoptRecordedMode(d.modes);
+  // `adoptRecordedMode` 가 모드를 바꾸면 새 요청을 시작합니다. 그 순간 이
+  // 응답은 옛 모드가 되므로, 아래 숫자 한 칸도 건드리지 않습니다.
+  if (epoch !== authEpoch || generation !== pnlLoadGeneration ||
+      asked !== pnlMode) return;
   const p = d.periods || {};
   // 이름표와 숫자는 여기서 **함께** 찍힙니다. 사이에 await 가 없으므로 둘이
   // 갈릴 틈이 없습니다 — 한쪽만 바꾸는 경로를 만들지 마세요.
@@ -2921,17 +3723,32 @@ async function loadPnl() {
    `/api/trades` 는 지금 돌고 있는 실행만 봅니다. 어제 껐다 켰으면 어제
    거래가 사라지는데, "내가 뭘 사고팔았나" 는 재시작과 무관한 질문입니다. */
 let tradeShown = 0;
+let tradeLogGeneration = 0;
+let tradeLoadPending = false;
 
 async function loadTradeLog(more) {
   //: 실현 수익 칸과 **같은** 모드를 봅니다. 표와 그 위 숫자가 서로 다른
   //: 모드를 세면, 둘을 맞춰 보려는 사람이 어느 쪽도 믿을 수 없게 됩니다.
+  if (more && tradeLoadPending) return;
+  const epoch = authEpoch;
+  const generation = ++tradeLogGeneration;
   const asked = pnlMode;
+  const requestedOffset = more ? tradeShown : 0;
+  const moreButton = $("#tradeMore");
+  const previousMoreHidden = moreButton.hidden;
+  tradeLoadPending = true;
+  moreButton.hidden = true;
+  moreButton.disabled = true;
   if (!more) tradeShown = 0;
   let d;
   try {
-    d = await api(`/api/tradelog?limit=40&offset=${more ? tradeShown : 0}`
+    d = await api(`/api/tradelog?limit=40&offset=${requestedOffset}`
                   + `&mode=${encodeURIComponent(asked)}`);
-  } catch {
+  } catch (e) {
+    if (epoch !== authEpoch || generation !== tradeLogGeneration ||
+        asked !== pnlMode) return;
+    tradeLoadPending = false;
+    moreButton.disabled = false;
     // 모드를 바꾸는 첫 요청이 실패하면(502·재시작·모바일 끊김) 표에는 **앞
     // 모드의 줄**이 그대로 남아 있는데 `tradeShown` 은 이미 0 입니다. 그
     // 상태에서 '더 보기' 를 누르면 새 모드의 줄이 옛 줄 아래에 이어 붙어,
@@ -2940,14 +3757,26 @@ async function loadTradeLog(more) {
       $("#tradeLog").innerHTML =
         `<tr><td colspan="7" class="dim">기록을 불러오지 못했습니다 — 잠시 후 다시 시도합니다.</td></tr>`;
       $("#tradeCount").textContent = "";
-      $("#tradeMore").hidden = true;
+      moreButton.hidden = true;
+    } else {
+      // 다음 쪽만 실패했다면 이미 성공한 줄은 그대로 두고 다시 누를 길을
+      // 돌려줍니다. 첫 쪽 실패와 달리 앞줄의 모드와 offset은 유효합니다.
+      moreButton.hidden = previousMoreHidden;
     }
     return;
   }
-  // "더 보기" 로 청한 40줄이 모드가 바뀐 뒤에 도착하면, 그대로 이어 붙었을
-  // 때 한 표 안에 두 모드가 섞입니다 — 이 결함의 원래 모습 그대로입니다.
-  if (asked !== pnlMode) return;
-  const rows = (d.trades || []).map(t => {
+  // "더 보기" 로 청한 40줄이 계정·모드·첫 쪽이 바뀐 뒤에 도착하면, 그대로
+  // 이어 붙였을 때 한 표 안에 두 사용자의 체결이나 중복 쪽이 섞입니다.
+  if (epoch !== authEpoch || generation !== tradeLogGeneration ||
+      asked !== pnlMode) return;
+  if (more && requestedOffset !== tradeShown) {
+    tradeLoadPending = false;
+    moreButton.disabled = false;
+    moreButton.hidden = true;
+    return;
+  }
+  const trades = Array.isArray(d.trades) ? d.trades : [];
+  const rows = trades.map(t => {
     const pnl = t.pnl || 0;
     const cls = pnl > 0 ? "up" : pnl < 0 ? "down" : "";
     const pct = t.pnl_pct == null ? "" : ` (${pct2(t.pnl_pct)})`;
@@ -2972,9 +3801,13 @@ async function loadTradeLog(more) {
     `<tr><td class="dim" style="padding:14px 5px">아직 완료된 매매가 없습니다.
       사고 <b>팔아서</b> 손익이 확정되면 여기에 한 줄씩 쌓입니다 — 아직 들고
       있는 종목은 위 <b>보유 종목</b>에 있습니다.</td></tr>`;
-  tradeShown = (more ? tradeShown : 0) + (d.trades || []).length;
-  $("#tradeCount").textContent = d.total ? `${tradeShown} / ${d.total}건` : "";
-  $("#tradeMore").hidden = tradeShown >= (d.total || 0);
+  tradeShown = requestedOffset + trades.length;
+  const total = typeof d.total === "number" && Number.isFinite(d.total)
+    ? Math.max(0, d.total) : 0;
+  $("#tradeCount").textContent = total ? `${tradeShown} / ${total}건` : "";
+  moreButton.hidden = tradeShown >= total;
+  moreButton.disabled = false;
+  tradeLoadPending = false;
 }
 
 const pct2 = n => (n == null || !isFinite(n)) ? "—"
@@ -2998,7 +3831,16 @@ $("#strategyPick").onchange = () => {
   // 설명 렌더가 죽어도 종목·차트·수익은 따라와야 합니다. 한 줄이 던지면
   // 나머지 넷이 통째로 멈추고, 화면은 옛 전략을 그대로 보여줍니다.
   try { renderStrategyBrief(); } catch (e) { console.error(e); }
-  try { renderDeskAvailability(); } catch (e) { console.error(e); }
+  // 재생 중인 옛 전략의 발언과 다시 보기까지 끊은 뒤 새 전략의 빈 상태를
+  // 강제로 그립니다. deliberation 배열이 남아 있어도 보존하면 안 됩니다.
+  cancelDeliberationReplay();
+  // 이 선택 전에 시작된 status/desk polling도 옛 전략 응답입니다.
+  invalidateRefresh();
+  try { renderDeskAvailability(true); } catch (e) { console.error(e); }
+  // 계좌 조회도 전략별 브로커를 쓰므로, 이전 요청을 먼저 무효화합니다.
+  invalidateBrokerAccount();
+  if (document.body.dataset.page === "account") loadBrokerAccount();
+  loadReconciliationStatus();
   refreshSymbols();
   loadPnl();
   loadTradeLog();
@@ -3011,6 +3853,7 @@ $("#strategyPick").onchange = () => {
    찾을 수 있어야 합니다. 6자리 코드는 증권사에 직접 물어보고, 이름은
    전에 조회한 것과 전략에 들어 있는 것 안에서 찾습니다. */
 async function lookup() {
+  const epoch = authEpoch;
   const q = $("#lkQ").value.trim();
   const res = $("#lkRes"), msg = $("#lkMsg");
   res.innerHTML = ""; msg.hidden = true;
@@ -3021,9 +3864,11 @@ async function lookup() {
     d = await api(`/api/lookup?q=${encodeURIComponent(q)}` +
                   `&strategy=${encodeURIComponent(chartStrategy())}`);
   } catch (e) {
+    if (isStaleAuthResponse(e) || epoch !== authEpoch) return;
     note("#lkMsg", "찾기 실패: " + e.message, "err"); msg.hidden = false;
     $("#lkGo").disabled = false; return;
   }
+  if (epoch !== authEpoch) return;
   $("#lkGo").disabled = false;
   const rows = d.results || [];
   if (!rows.length) {
@@ -3226,6 +4071,7 @@ function showPage(name) {
     loadPnl();
     loadTradeLog();
     loadBrokerAccount();
+    loadReconciliationStatus();
     // 계좌 canvas도 숨은 동안 폭이 0 입니다. 열린 다음 프레임에서 다시 그려야
     // 빈 검은 칸이 아니라 자산선 또는 "기록 없음" 안내가 보입니다.
     requestAnimationFrame(drawEquity);
@@ -3244,7 +4090,13 @@ $("#brandHome").onclick = () => showPage("trade");
 /* 잔고와 오늘 손익은 어느 화면에 있든 보입니다. */
 function renderMini(payload) {
   const box = $("#miniAcct");
-  if (!payload || !(payload.equity > 0)) { box.hidden = true; return; }
+  if (!payload || !(payload.equity > 0)) {
+    box.hidden = true;
+    $("#miniEquity").textContent = "—";
+    $("#miniChange").textContent = "—";
+    $("#miniChange").className = "";
+    return;
+  }
   box.hidden = false;
   $("#miniEquity").textContent = num(payload.equity);
   const el = $("#miniChange");
@@ -3330,7 +4182,7 @@ function deskWaitReason() {
           try_now: true};
 }
 
-function renderDeskAvailability() {
+function renderDeskAvailability(force) {
   const st = shownStrategy();
   const has = !!st && (st.signals || []).some(g => g.id === "desk" || g.id === "council");
   document.body.classList.toggle("nodesk", !!st && !has);
@@ -3345,7 +4197,7 @@ function renderDeskAvailability() {
   // **데스크가 죽은 경우는 예외입니다.** 쿼터가 마르면 포지션을 든 채 장중에
   // 데스크가 꺼지는데, 그때 마지막 강세 발언이 그대로 남아 있으면 사람은 그걸
   // 지금 판단으로 읽습니다. 빨간 표시가 가장 필요한 순간이 하필 그때입니다.
-  if (r.kind !== "broken" && (deskState?.deliberations || []).length) {
+  if (!force && has && r.kind !== "broken" && (deskState?.deliberations || []).length) {
     renderTryNow(false);
     return;
   }
@@ -3694,8 +4546,14 @@ function tourEnd() {
   if (me && me.tour_seen) return;
   // 봤다는 사실은 계정에 답니다. 실패하면 로컬 표시도 세우지 않습니다 —
   // 그래야 다음 접속에 한 번 더 떠서, 못 본 사람이 못 본 채로 남지 않습니다.
+  const epoch = authEpoch;
+  const identity = authIdentity(me);
   fetch("/api/auth/tour-seen", {method: "POST", credentials: "same-origin"})
-    .then(r => { if (r.ok && me) me.tour_seen = true; })
+    .then(r => {
+      if (r.ok && epoch === authEpoch && identity === authIdentity(me) && me) {
+        me.tour_seen = true;
+      }
+    })
     .catch(() => {});
 }
 

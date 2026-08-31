@@ -35,6 +35,18 @@ class Portfolio:
 
     def __init__(self, starting_cash: float, base_currency: str = "USD"):
         self.starting_cash = float(starting_cash)
+        # ``starting_cash`` is the configured strategy allocation.  That is the
+        # right source of truth for backtests, dry-runs and brokers where one
+        # strategy deliberately owns only a slice of a larger account.
+        #
+        # A venue can explicitly opt into account-authoritative capital (see
+        # ``LiveBrokerage.venue_capital_truth``).  In that mode the configured
+        # number must not remain the return denominator: a legacy 800,000 KRW
+        # config attached to a 420,000 KRW account would start at -47.5% and trip
+        # the drawdown kill-switch before doing any useful work.  Keep the two
+        # meanings separate instead of silently rewriting the operator's config.
+        self.capital_source = "configured"
+        self.performance_baseline = float(starting_cash)
         self.cash = float(starting_cash)
         self.base_currency = base_currency
         self.positions: dict[str, Position] = {}
@@ -42,6 +54,13 @@ class Portfolio:
         self.equity_curve: list[EquityPoint] = []
         self.high_water_mark = float(starting_cash)
         self.total_fees = 0.0
+        # Total venue valuation, including holdings that are visible at the
+        # account but not represented by a locally managed Position.  ``None``
+        # means local marks remain authoritative.  Crucially this is *not* added
+        # to cash: stock value can size/risk the account, but it cannot fund a buy.
+        self._venue_holdings_value: float | None = None
+        self._venue_gross_exposure: float | None = None
+        self._venue_net_exposure: float | None = None
         # entry context kept per symbol so a round trip can be reconstructed
         self._entry: dict[str, tuple[datetime, float, str]] = {}
         # entry-side fees owed by the quantity still held, charged to each
@@ -71,14 +90,20 @@ class Portfolio:
     # ── valuation ────────────────────────────────────────────────────────
     @property
     def holdings_value(self) -> float:
+        if self.capital_source == "venue" and self._venue_holdings_value is not None:
+            return self._venue_holdings_value
         return sum(p.market_value for p in self.open_positions)
 
     @property
     def gross_exposure(self) -> float:
+        if self.capital_source == "venue" and self._venue_gross_exposure is not None:
+            return self._venue_gross_exposure
         return sum(abs(p.market_value) for p in self.open_positions)
 
     @property
     def net_exposure(self) -> float:
+        if self.capital_source == "venue" and self._venue_net_exposure is not None:
+            return self._venue_net_exposure
         return sum(p.market_value for p in self.open_positions)
 
     @property
@@ -96,7 +121,8 @@ class Portfolio:
 
     @property
     def total_return(self) -> float:
-        return self.equity / self.starting_cash - 1.0 if self.starting_cash else 0.0
+        baseline = self.performance_baseline
+        return self.equity / baseline - 1.0 if baseline else 0.0
 
     @property
     def drawdown(self) -> float:
@@ -107,6 +133,58 @@ class Portfolio:
     def free_cash(self, reserve_pct: float = 0.0) -> float:
         """Cash available for new entries after holding back a reserve."""
         return max(0.0, self.cash - self.equity * reserve_pct)
+
+    def adopt_venue_capital(
+        self,
+        *,
+        cash: float,
+        holdings_value: float,
+        gross_exposure: float | None = None,
+        net_exposure: float | None = None,
+    ) -> bool:
+        """Adopt one already-validated account snapshot atomically.
+
+        Returns ``True`` when this is the first venue-authoritative snapshot for
+        the run.  The caller validates currency, finiteness and sign before this
+        method; keeping mutation here makes it impossible to adopt cash from one
+        response while retaining holdings from a failed second response.
+
+        The first snapshot establishes the live performance/drawdown baseline.
+        Later snapshots preserve that baseline across ordinary syncs and process
+        restarts.  Cash transfers need separate flow accounting; they must never
+        be disguised as strategy PnL by rebasing on every poll.
+        """
+        first = self.capital_source != "venue"
+        self.cash = float(cash)
+        self._venue_holdings_value = float(holdings_value)
+        self._venue_gross_exposure = float(
+            holdings_value if gross_exposure is None else gross_exposure
+        )
+        self._venue_net_exposure = float(
+            holdings_value if net_exposure is None else net_exposure
+        )
+        self.capital_source = "venue"
+        equity = self.equity
+        if first:
+            self.performance_baseline = equity
+            self.high_water_mark = equity
+        else:
+            self.high_water_mark = max(self.high_water_mark, equity)
+        return first
+
+    def restore_capital_state(self, source: str, performance_baseline: float) -> None:
+        """Restore durable baseline metadata without trusting stale venue totals.
+
+        Venue cash/holdings are deliberately *not* restored here.  A successful
+        live sync has to provide them again before new exposure is permitted.
+        """
+        if source != "venue":
+            return
+        self.capital_source = "venue"
+        self.performance_baseline = float(performance_baseline)
+        self._venue_holdings_value = None
+        self._venue_gross_exposure = None
+        self._venue_net_exposure = None
 
     # ── mutation ─────────────────────────────────────────────────────────
     def mark(self, symbol: Symbol, price: float) -> None:
@@ -152,6 +230,18 @@ class Portfolio:
         self.cash -= notional * fill.side.sign
         self.cash -= fill.fee
         self.total_fees += fill.fee
+
+        # Between two account snapshots, keep the venue total coherent with fills
+        # the engine has actually observed.  The next sync replaces this estimate
+        # with the venue's number.  This does not turn holdings into buying power:
+        # only ``cash`` is consulted by the broker's cash guard.
+        if self.capital_source == "venue" and self._venue_holdings_value is not None:
+            delta = notional * fill.side.sign
+            self._venue_holdings_value = max(0.0, self._venue_holdings_value + delta)
+            if self._venue_gross_exposure is not None:
+                self._venue_gross_exposure = max(0.0, self._venue_gross_exposure + delta)
+            if self._venue_net_exposure is not None:
+                self._venue_net_exposure += delta
 
         pos.apply(fill)
 
@@ -244,6 +334,8 @@ class Portfolio:
             "closed_trades": len(self.closed_trades),
             "total_fees": round(self.total_fees, 2),
             "currency": self.base_currency,
+            "capital_source": self.capital_source,
+            "performance_baseline": round(self.performance_baseline, 2),
             "positions": [
                 {
                     "symbol": p.symbol.ticker,

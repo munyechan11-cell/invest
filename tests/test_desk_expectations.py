@@ -53,6 +53,12 @@ def test_the_screen_says_when_no_deliberation_is_coming():
         "않습니다 — 사용자는 봇이 멈춘 줄 압니다.")
 
 
+def test_desk_money_is_visibly_labelled_as_strategy_book_money():
+    assert 'id="deskBookSource"' in HTML
+    assert "심의 속 자산 금액은" in HTML and "봇 전략 장부" in HTML
+    assert "실제 증권사 잔고" in HTML
+
+
 def test_waiting_forever_and_waiting_a_while_look_different():
     """"대기 중" 하나로 네 상황을 덮으면 사람은 고장을 기다림으로 읽습니다.
 
@@ -76,7 +82,9 @@ def test_waiting_forever_and_waiting_a_while_look_different():
 def test_a_dead_desk_is_not_painted_as_a_patient_one():
     """기다려도 안 되는 상태는 눈에 다르게 보여야 합니다."""
     assert ".saybox.bad" in HTML, "'영영 안 됨' 을 나타낼 스타일이 없습니다"
-    body = re.search(r"function renderDeskAvailability\(\) \{(.*?)\n\}", SCRIPT, re.S).group(1)
+    body = re.search(
+        r"function renderDeskAvailability\([^)]*\) \{(.*?)\n\}", SCRIPT, re.S
+    ).group(1)
     assert 'r.kind === "broken"' in body, "고장 상태에 다른 표시를 붙이지 않습니다"
 
 
@@ -99,6 +107,29 @@ def test_it_reacts_to_changing_the_strategy():
     onchange = re.search(r'\$\("#strategyPick"\)\.onchange = \(\) => \{(.*?)\n\};',
                          SCRIPT, re.S).group(1)
     assert "renderDeskAvailability" in onchange
+
+
+def test_strategy_change_cancels_old_speech_before_drawing_the_new_room():
+    onchange = re.search(r'\$\("#strategyPick"\)\.onchange = \(\) => \{(.*?)\n\};',
+                         SCRIPT, re.S).group(1)
+    assert "cancelDeliberationReplay()" in onchange
+    assert "renderDeskAvailability(true)" in onchange
+    assert onchange.index("cancelDeliberationReplay()") < onchange.index(
+        "renderDeskAvailability(true)"), "새 안내를 그린 뒤 옛 재생을 취소합니다"
+
+    cancel = re.search(
+        r"function cancelDeliberationReplay\(\) \{(.*?)\n\}", SCRIPT, re.S
+    ).group(1)
+    assert "playGeneration += 1" in cancel
+    assert "lastPlayed = null" in cancel, "옛 전략 심의를 다시 볼 수 있습니다"
+
+    replay = re.search(
+        r"async function playDeliberation\([^)]*\) \{(.*?)\n\}", SCRIPT, re.S
+    ).group(1)
+    waits = re.findall(r"await wait\(", replay)
+    guarded = re.findall(r"if \(!\(await wait\(", replay)
+    assert waits and len(guarded) == len(waits), (
+        "취소 뒤 깨어난 비동기 재생이 옛 발언을 다시 그릴 수 있습니다")
 
 
 def test_starting_a_bot_takes_you_to_where_it_happens():
@@ -133,5 +164,7 @@ def test_switching_strategy_clears_a_symbol_that_no_longer_exists():
 
 @pytest.mark.parametrize("room", ["analyst", "debate", "risk", "decision"])
 def test_every_room_gets_the_message(room):
-    body = re.search(r"function renderDeskAvailability\(\) \{(.*?)\n\}", SCRIPT, re.S).group(1)
+    body = re.search(
+        r"function renderDeskAvailability\([^)]*\) \{(.*?)\n\}", SCRIPT, re.S
+    ).group(1)
     assert room in body

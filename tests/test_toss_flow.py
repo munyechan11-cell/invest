@@ -103,7 +103,8 @@ class FakeToss:
 def provider(fake: FakeToss) -> TossFlowProvider:
     # 토큰 캐시를 채워 두면 발급 왕복이 사라집니다. 이 프로바이더가 브로커의
     # `toss_token` 을 그대로 쓰기 때문에 가능한 일입니다.
-    T._TOKENS[CLIENT_ID[:10]] = ("test-token", time.time() + 3600)
+    T._TOKENS[T._token_cache_key(CLIENT_ID, "test-secret")] = (
+        "test-token", time.time() + 3600)
     p = TossFlowProvider(client_id=CLIENT_ID, client_secret="test-secret")
     p._client._http = httpx.AsyncClient(transport=httpx.MockTransport(fake))
     return p
@@ -120,7 +121,8 @@ async def run(fake: FakeToss, start: datetime = START, end: datetime = END):
 # ── 등록 ─────────────────────────────────────────────────────────────────
 def test_the_provider_is_registered_under_toss():
     """설정이 `flow.provider: toss` 라고 적을 수 있어야 의미가 있습니다."""
-    T._TOKENS[CLIENT_ID[:10]] = ("test-token", time.time() + 3600)
+    T._TOKENS[T._token_cache_key(CLIENT_ID, "s")] = (
+        "test-token", time.time() + 3600)
     made = create_flow_provider("toss", client_id=CLIENT_ID, client_secret="s")
     assert isinstance(made, TossFlowProvider)
 

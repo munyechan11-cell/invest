@@ -58,6 +58,29 @@ class StateInUseError(RuntimeError):
     """Another live process already owns this state DB."""
 
 
+class RecoveryArchiveError(RuntimeError):
+    """A quarantined run could not be archived without weakening safety."""
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
+
+RECOVERY_CONFIRMATION_PHRASES = {
+    "open_orders": "토스 앱 미체결 없음 확인",
+    "today_fills": "토스 앱 당일 체결 대조 완료",
+    "holdings": "토스 앱 보유 수량 대조 완료",
+    "cash": "토스 앱 현금 대조 완료",
+    "daily_loss": "토스 앱 당일 손실 대조 완료",
+}
+RECOVERY_ACKNOWLEDGEMENT_PHRASE = "기존 실행을 보존하고 새 실행으로 시작합니다"
+RECOVERY_INSTRUCTIONS = (
+    "이전 실거래 실행이 안전 종료를 완료하지 못했습니다. 토스 앱에서 미체결, "
+    "당일 체결, 보유 수량, 현금, 당일 손실을 대조한 뒤 기존 실행을 보존하고 "
+    "새 실행으로 시작하세요. 주문 이력은 자동 복원되지 않습니다."
+)
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,9 +88,31 @@ CREATE TABLE IF NOT EXISTS runs (
   mode TEXT NOT NULL,
   started_at TEXT NOT NULL,
   stopped_at TEXT,
+  requires_reconciliation INTEGER NOT NULL DEFAULT 0,
+  archived_at TEXT,
+  archive_reason TEXT,
+  archived_by TEXT,
   starting_cash REAL NOT NULL,
   config_json TEXT
 );
+CREATE TABLE IF NOT EXISTS run_recovery_audit (
+  run_id INTEGER PRIMARY KEY,
+  archived_at TEXT NOT NULL,
+  archived_by TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  confirmations_json TEXT NOT NULL,
+  FOREIGN KEY(run_id) REFERENCES runs(id)
+);
+CREATE TRIGGER IF NOT EXISTS run_recovery_audit_no_update
+BEFORE UPDATE ON run_recovery_audit
+BEGIN
+  SELECT RAISE(ABORT, 'run recovery audit is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS run_recovery_audit_no_delete
+BEFORE DELETE ON run_recovery_audit
+BEGIN
+  SELECT RAISE(ABORT, 'run recovery audit is immutable');
+END;
 CREATE TABLE IF NOT EXISTS fills (
   id TEXT PRIMARY KEY,
   run_id INTEGER NOT NULL,
@@ -110,6 +155,8 @@ CREATE TABLE IF NOT EXISTS run_state (
   realized_pnl REAL NOT NULL DEFAULT 0,
   high_water_mark REAL NOT NULL DEFAULT 0,
   total_fees REAL NOT NULL DEFAULT 0,
+  capital_source TEXT NOT NULL DEFAULT 'configured',
+  performance_baseline REAL NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS locks (
@@ -211,8 +258,56 @@ class StateStore:
         if "closes_position" not in have:
             self.conn.execute(
                 "ALTER TABLE trades ADD COLUMN closes_position INTEGER NOT NULL DEFAULT 1")
+        have_runs = {
+            r["name"] for r in self.conn.execute("PRAGMA table_info(runs)")
+        }
+        if "requires_reconciliation" not in have_runs:
+            self.conn.execute(
+                "ALTER TABLE runs ADD COLUMN requires_reconciliation INTEGER "
+                "NOT NULL DEFAULT 0"
+            )
+            # Before this explicit marker existed, an absent stopped_at was the
+            # only durable evidence that a process had not completed its safety
+            # checks. Preserve that uncertainty during migration. A false
+            # positive requires manual reconciliation; a false negative can
+            # transmit a second real order after an unseen fill.
+            self.conn.execute(
+                "UPDATE runs SET requires_reconciliation = "
+                "CASE WHEN stopped_at IS NULL THEN 1 ELSE 0 END"
+            )
+        for column in ("archived_at", "archive_reason", "archived_by"):
+            if column not in have_runs:
+                self.conn.execute(f"ALTER TABLE runs ADD COLUMN {column} TEXT")
+        # Older live runs stored only the configured cash and high-water mark.
+        # Defaulting them to ``configured`` is deliberate: the first successful
+        # account-authoritative sync then establishes a fresh venue baseline,
+        # instead of reviving a legacy 800k config as if it were today's balance.
+        have_state = {
+            r["name"] for r in self.conn.execute("PRAGMA table_info(run_state)")
+        }
+        if "capital_source" not in have_state:
+            self.conn.execute(
+                "ALTER TABLE run_state ADD COLUMN capital_source TEXT NOT NULL "
+                "DEFAULT 'configured'"
+            )
+        if "performance_baseline" not in have_state:
+            self.conn.execute(
+                "ALTER TABLE run_state ADD COLUMN performance_baseline REAL NOT NULL "
+                "DEFAULT 0"
+            )
         self.conn.commit()
         self.run_id: int | None = None
+        # Set only by ``restore_positions`` from the durable run_state source.
+        # LiveTrader passes this explicit fact to the broker before its first
+        # account sync; inferring a restart from a cash number would confuse a
+        # genuine first-time account adoption with a stale live ledger.
+        self.restored_venue_truth = False
+        # Separate from stopped_at because read-only API routes historically use
+        # ``resume_run`` to select a run and therefore clear stopped_at. This
+        # marker is raised before live connect and only a verified clean shutdown
+        # clears it; a crash can never look clean merely because the first account
+        # snapshot is still stale.
+        self.restored_reconciliation_required = False
         self._owns = False
         self._lock_fd: int | None = None
         #: `remember_ticker` 의 upsert 를 감싸는 잠금. 이 값이 **없어서**
@@ -371,12 +466,26 @@ class StateStore:
 
     # ── runs ─────────────────────────────────────────────────────────────
     def start_run(self, strategy: str, mode: str, starting_cash: float,
-                  config_json: str = "") -> int:
+                  config_json: str = "", *, now: datetime | None = None) -> int:
         self._claim()
+        # Defense in depth for callers outside the web registry. An archived
+        # Toss run intentionally starts a new ledger, but never while *any*
+        # Toss strategy on this user's account is unresolved or still on the
+        # archived KST day. Different templates share the same real account and
+        # therefore the same daily-loss allowance.
+        target_is_toss_live = bool(
+            mode == "live" and self._stored_toss_live_config(config_json, strategy)
+        )
+        if target_is_toss_live:
+            self.assert_toss_account_start_allowed(now=now)
+        self.restored_reconciliation_required = False
+        self.restored_venue_truth = False
+        started_at = self._recovery_now(now).isoformat()
         cur = self.conn.execute(
-            "INSERT INTO runs(strategy, mode, started_at, starting_cash, config_json) "
-            "VALUES(?,?,?,?,?)",
-            (strategy, mode, datetime.now(UTC).isoformat(), starting_cash, config_json),
+            "INSERT INTO runs(strategy, mode, started_at, requires_reconciliation, "
+            "starting_cash, config_json) VALUES(?,?,?,?,?,?)",
+            (strategy, mode, started_at, 0,
+             starting_cash, config_json),
         )
         self.conn.commit()
         self.run_id = cur.lastrowid
@@ -392,21 +501,363 @@ class StateStore:
         cash. In live mode that is a second position on top of the first.
         """
         row = self.conn.execute(
-            "SELECT id FROM runs WHERE strategy=? AND mode=? ORDER BY id DESC LIMIT 1",
+            "SELECT id, requires_reconciliation, archived_at FROM runs "
+            "WHERE strategy=? AND mode=? ORDER BY id DESC LIMIT 1",
             (strategy, mode),
         ).fetchone()
-        if not row:
+        # The latest row is the lifecycle head for this strategy/mode. If it
+        # was archived after explicit manual reconciliation, going farther
+        # back would resurrect the very stale ledger the operator retired.
+        if not row or row["archived_at"] is not None:
+            self.run_id = None
+            self.restored_reconciliation_required = False
+            self.restored_venue_truth = False
             return None
         self.run_id = row["id"]
+        self.restored_reconciliation_required = bool(
+            row["requires_reconciliation"]
+        )
         self.conn.execute("UPDATE runs SET stopped_at=NULL WHERE id=?", (self.run_id,))
         self.conn.commit()
         return self.run_id
 
+    @staticmethod
+    def _recovery_now(now: datetime | None = None) -> datetime:
+        value = now or datetime.now(UTC)
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise RecoveryArchiveError(
+                "reconciliation_time_invalid",
+                "복구 시각에는 UTC 오프셋이 필요합니다.",
+            )
+        return value.astimezone(UTC)
+
+    @classmethod
+    def _next_kst_start(cls, archived_at: str | None) -> datetime | None:
+        if archived_at is None:
+            return None
+        if not isinstance(archived_at, str):
+            raise RecoveryArchiveError(
+                "reconciliation_archive_time_invalid",
+                "보관 시각을 검증할 수 없어 새 실거래를 시작하지 않습니다.",
+            )
+        try:
+            text = archived_at[:-1] + "+00:00" if archived_at.endswith("Z") else archived_at
+            archived = datetime.fromisoformat(text)
+        except (TypeError, ValueError) as exc:
+            raise RecoveryArchiveError(
+                "reconciliation_archive_time_invalid",
+                "보관 시각을 검증할 수 없어 새 실거래를 시작하지 않습니다.",
+            ) from exc
+        if archived.tzinfo is None or archived.utcoffset() is None:
+            raise RecoveryArchiveError(
+                "reconciliation_archive_time_invalid",
+                "보관 시각에 UTC 오프셋이 없어 새 실거래를 시작하지 않습니다.",
+            )
+        archived_kst = archived.astimezone(UTC) + _KST_OFFSET
+        next_day = archived_kst.date() + timedelta(days=1)
+        return (
+            datetime(next_day.year, next_day.month, next_day.day, tzinfo=UTC)
+            - _KST_OFFSET
+        )
+
+    def recovery_start_gate(self, strategy: str, mode: str,
+                            *, now: datetime | None = None) -> dict:
+        """Block a fresh ledger until the KST day after an archived head."""
+        row = self.conn.execute(
+            "SELECT id, archived_at FROM runs WHERE strategy=? AND mode=? "
+            "ORDER BY id DESC LIMIT 1", (strategy, mode)
+        ).fetchone()
+        next_start = self._next_kst_start(
+            row["archived_at"] if row is not None else None
+        )
+        current = self._recovery_now(now)
+        return {
+            "run_id": int(row["id"]) if row is not None else None,
+            "restart_blocked": bool(next_start and current < next_start),
+            "next_start_allowed_at": (
+                next_start.isoformat() if next_start is not None else None
+            ),
+        }
+
+    def toss_account_start_gate(self, *, now: datetime | None = None) -> dict:
+        """Account-wide gate over each Toss-live strategy's lifecycle head.
+
+        The newest *valid Toss-live* row per strategy/mode is the head. A later
+        KIS run reusing the same strategy name must not erase an archived Toss
+        run's cooldown, because it is a different brokerage account.
+        """
+        rows = self.conn.execute(
+            "SELECT id, strategy, mode, requires_reconciliation, archived_at, "
+            "config_json FROM runs WHERE mode='live' ORDER BY id DESC"
+        ).fetchall()
+        seen: set[tuple[str, str]] = set()
+        required: list[sqlite3.Row] = []
+        cutoffs: list[datetime] = []
+        for row in rows:
+            if not self._stored_toss_live_config(
+                    row["config_json"], row["strategy"]):
+                continue
+            pair = (row["strategy"], row["mode"])
+            if pair in seen:
+                continue
+            seen.add(pair)
+            if bool(row["requires_reconciliation"]) and row["archived_at"] is None:
+                required.append(row)
+            cutoff = self._next_kst_start(row["archived_at"])
+            if cutoff is not None:
+                cutoffs.append(cutoff)
+
+        blocking = required[0] if required else None
+        next_start = max(cutoffs) if cutoffs else None
+        current = self._recovery_now(now)
+        return {
+            "reconciliation_required": blocking is not None,
+            "blocking_run_id": int(blocking["id"]) if blocking is not None else None,
+            "blocking_strategy": (
+                blocking["strategy"] if blocking is not None else None
+            ),
+            "restart_blocked": bool(next_start and current < next_start),
+            "next_start_allowed_at": (
+                next_start.isoformat() if next_start is not None else None
+            ),
+        }
+
+    def assert_toss_account_start_allowed(
+            self, *, now: datetime | None = None) -> dict:
+        """Fail closed before a Toss-live run is resumed or created."""
+        gate = self.toss_account_start_gate(now=now)
+        if gate["reconciliation_required"]:
+            raise RecoveryArchiveError(
+                "reconciliation_required",
+                f"'{gate['blocking_strategy']}' 실행의 수동 복구가 먼저 필요합니다 "
+                f"(run {gate['blocking_run_id']}).",
+            )
+        if gate["restart_blocked"]:
+            raise RecoveryArchiveError(
+                "reconciliation_start_blocked_until_next_kst_day",
+                "당일 한도가 초기화되지 않도록 보관한 날에는 새 실거래를 "
+                f"시작할 수 없습니다. {gate['next_start_allowed_at']} 이후 다시 "
+                "시작하세요.",
+            )
+        return gate
+
+    def reconciliation_run(self, strategy: str, mode: str,
+                           *, now: datetime | None = None) -> dict | None:
+        """Return the lifecycle head for exactly one strategy/mode pair."""
+        row = self.conn.execute(
+            "SELECT id, strategy, mode, started_at, stopped_at, "
+            "requires_reconciliation, archived_at, archive_reason, archived_by, "
+            "config_json "
+            "FROM runs WHERE strategy=? AND mode=? ORDER BY id DESC LIMIT 1",
+            (strategy, mode),
+        ).fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        config_json = out.pop("config_json")
+        out["_stored_toss_live"] = self._stored_toss_live_config(
+            config_json, strategy
+        )
+        out["requires_reconciliation"] = bool(out["requires_reconciliation"])
+        out["required"] = bool(
+            out["mode"] == "live"
+            and out["requires_reconciliation"]
+            and out["archived_at"] is None
+        )
+        next_start = self._next_kst_start(out["archived_at"])
+        out["restart_blocked"] = bool(
+            next_start and self._recovery_now(now) < next_start
+        )
+        out["next_start_allowed_at"] = (
+            next_start.isoformat() if next_start is not None else None
+        )
+        return out
+
+    @staticmethod
+    def _validate_recovery_proof(
+            reason: str, confirmations: dict[str, str],
+            acknowledgement: str) -> tuple[str, str]:
+        clean_reason = (reason or "").strip()
+        if not 10 <= len(clean_reason) <= 500:
+            raise RecoveryArchiveError(
+                "reconciliation_reason_invalid",
+                "복구 사유는 앞뒤 공백을 제외하고 10자 이상 500자 이하로 적어 주세요.",
+            )
+        supplied = {str(k): str(v).strip() for k, v in confirmations.items()}
+        if supplied != RECOVERY_CONFIRMATION_PHRASES:
+            missing = [
+                key for key, phrase in RECOVERY_CONFIRMATION_PHRASES.items()
+                if supplied.get(key) != phrase
+            ]
+            raise RecoveryArchiveError(
+                "reconciliation_confirmation_required",
+                "토스 앱 대조 확인이 정확하지 않습니다: " + ", ".join(missing),
+            )
+        clean_ack = (acknowledgement or "").strip()
+        if clean_ack != RECOVERY_ACKNOWLEDGEMENT_PHRASE:
+            raise RecoveryArchiveError(
+                "reconciliation_acknowledgement_required",
+                "기존 실행을 보존하고 새 실행으로 시작한다는 문구를 정확히 입력하세요.",
+            )
+        proof_json = json.dumps(
+            {"confirmations": supplied, "acknowledgement": clean_ack},
+            ensure_ascii=False, sort_keys=True,
+        )
+        return clean_reason, proof_json
+
+    @staticmethod
+    def _stored_toss_live_config(raw: str | None, strategy: str) -> bool:
+        try:
+            config = json.loads(raw or "")
+        except (TypeError, json.JSONDecodeError):
+            return False
+        broker = config.get("broker") if isinstance(config, dict) else None
+        return bool(
+            isinstance(broker, dict)
+            and config.get("name") == strategy
+            and config.get("mode") == "live"
+            and broker.get("type") == "toss"
+        )
+
+    def archive_reconciliation_run(
+            self, *, run_id: int, strategy: str, mode: str, operator: str,
+            reason: str, confirmations: dict[str, str],
+            acknowledgement: str, now: datetime | None = None) -> dict:
+        """Archive one exact quarantined Toss-live lifecycle head atomically.
+
+        No trading object is built here. The evidence is a human comparison in
+        Toss, not a reconstructed fill, so the existing ledger remains intact
+        and the next start creates a separate run.
+        """
+        clean_reason, proof_json = self._validate_recovery_proof(
+            reason, confirmations, acknowledgement
+        )
+        clean_operator = (operator or "").strip()
+        if not clean_operator:
+            raise RecoveryArchiveError(
+                "reconciliation_operator_required",
+                "복구를 수행한 사용자를 확인할 수 없습니다.",
+            )
+        if mode != "live":
+            raise RecoveryArchiveError(
+                "reconciliation_not_required",
+                "실거래 격리 실행만 보관할 수 있습니다.",
+            )
+
+        self._claim()
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            row = self.conn.execute(
+                "SELECT id, strategy, mode, requires_reconciliation, archived_at, "
+                "archive_reason, archived_by, config_json FROM runs "
+                "WHERE strategy=? AND mode=? ORDER BY id DESC LIMIT 1",
+                (strategy, mode),
+            ).fetchone()
+            if row is None or int(row["id"]) != int(run_id):
+                raise RecoveryArchiveError(
+                    "reconciliation_run_changed",
+                    "복구 대상으로 확인한 실행이 최신 실행과 다릅니다. 상태를 다시 조회하세요.",
+                )
+            if not self._stored_toss_live_config(row["config_json"], strategy):
+                raise RecoveryArchiveError(
+                    "reconciliation_stored_config_mismatch",
+                    "저장된 실행이 Toss 실거래였음을 검증할 수 없어 보관하지 않았습니다.",
+                )
+
+            audit = self.conn.execute(
+                "SELECT archived_at, archived_by, reason, confirmations_json "
+                "FROM run_recovery_audit WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if row["archived_at"] is not None:
+                if (
+                    audit is not None
+                    and audit["archived_at"] == row["archived_at"]
+                    and audit["archived_by"] == clean_operator
+                    and audit["reason"] == clean_reason
+                    and audit["confirmations_json"] == proof_json
+                ):
+                    self.conn.commit()
+                    return {
+                        "archived": True,
+                        "idempotent": True,
+                        "run_id": int(row["id"]),
+                        "strategy": row["strategy"],
+                        "mode": row["mode"],
+                        "archived_at": row["archived_at"],
+                        "next_start_allowed_at": self._next_kst_start(
+                            row["archived_at"]
+                        ).isoformat(),
+                    }
+                raise RecoveryArchiveError(
+                    "reconciliation_archive_conflict",
+                    "이 실행은 이미 다른 복구 확인으로 보관되었습니다.",
+                )
+            if not bool(row["requires_reconciliation"]):
+                raise RecoveryArchiveError(
+                    "reconciliation_not_required",
+                    "안전 종료된 실행은 복구 보관 대상이 아닙니다.",
+                )
+
+            archived_at = self._recovery_now(now).isoformat()
+            next_start_allowed_at = self._next_kst_start(archived_at).isoformat()
+            updated = self.conn.execute(
+                "UPDATE runs SET archived_at=?, archive_reason=?, archived_by=? "
+                "WHERE id=? AND archived_at IS NULL AND requires_reconciliation=1",
+                (archived_at, clean_reason, clean_operator, run_id),
+            )
+            if updated.rowcount != 1:
+                raise RecoveryArchiveError(
+                    "reconciliation_run_changed",
+                    "복구 실행 상태가 동시에 변경되었습니다. 상태를 다시 조회하세요.",
+                )
+            self.conn.execute(
+                "INSERT INTO run_recovery_audit(run_id, archived_at, archived_by, "
+                "reason, confirmations_json) VALUES(?,?,?,?,?)",
+                (run_id, archived_at, clean_operator, clean_reason, proof_json),
+            )
+            self.conn.execute(
+                "INSERT INTO events(run_id, ts, type, payload) VALUES(?,?,?,?)",
+                (run_id, archived_at, "reconciliation_archived", json.dumps({
+                    "archived_at": archived_at,
+                    "archived_by": clean_operator,
+                    "reason": clean_reason,
+                    "confirmations": dict(RECOVERY_CONFIRMATION_PHRASES),
+                    "acknowledgement": RECOVERY_ACKNOWLEDGEMENT_PHRASE,
+                }, ensure_ascii=False, sort_keys=True)),
+            )
+            self.conn.commit()
+            return {
+                "archived": True,
+                "idempotent": False,
+                "run_id": int(row["id"]),
+                "strategy": row["strategy"],
+                "mode": row["mode"],
+                "archived_at": archived_at,
+                "next_start_allowed_at": next_start_allowed_at,
+            }
+        except Exception:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
+
+    def mark_reconciliation_required(self) -> None:
+        """Persist the crash quarantine before live brokerage activity starts."""
+        if self.run_id is None:
+            raise RuntimeError("실행 기록이 없어 계좌 재조정 플래그를 저장할 수 없습니다")
+        self._claim()
+        self.conn.execute(
+            "UPDATE runs SET requires_reconciliation=1 WHERE id=?",
+            (self.run_id,),
+        )
+        self.conn.commit()
+
     def stop_run(self) -> None:
         if self.run_id is None:
             return
-        self.conn.execute("UPDATE runs SET stopped_at=? WHERE id=?",
-                          (datetime.now(UTC).isoformat(), self.run_id))
+        self.conn.execute(
+            "UPDATE runs SET stopped_at=?, requires_reconciliation=0 WHERE id=?",
+            (datetime.now(UTC).isoformat(), self.run_id),
+        )
         self.conn.commit()
 
     # ── writes ───────────────────────────────────────────────────────────
@@ -478,10 +929,12 @@ class StateStore:
         self._claim()
         self.conn.execute(
             "INSERT OR REPLACE INTO run_state(run_id, cash, realized_pnl, "
-            "high_water_mark, total_fees, updated_at) VALUES(?,?,?,?,?,?)",
+            "high_water_mark, total_fees, capital_source, performance_baseline, "
+            "updated_at) VALUES(?,?,?,?,?,?,?,?)",
             (self.run_id, portfolio.cash,
              sum(p.realized_pnl for p in portfolio.positions.values()),
              portfolio.high_water_mark, portfolio.total_fees,
+             portfolio.capital_source, portfolio.performance_baseline,
              datetime.now(UTC).isoformat()),
         )
         self.conn.execute("DELETE FROM positions WHERE run_id=?", (self.run_id,))
@@ -947,6 +1400,7 @@ class StateStore:
         *approximately* right rather than from zero.
         """
         self._claim()
+        self.restored_venue_truth = False
         state = self.conn.execute(
             "SELECT * FROM run_state WHERE run_id=?", (self.run_id,)
         ).fetchone()
@@ -954,6 +1408,10 @@ class StateStore:
             portfolio.cash = state["cash"]
             portfolio.total_fees = state["total_fees"]
             portfolio.high_water_mark = max(state["high_water_mark"], 0.0) or portfolio.cash
+            portfolio.restore_capital_state(
+                state["capital_source"], state["performance_baseline"]
+            )
+            self.restored_venue_truth = state["capital_source"] == "venue"
             log.info("복원: 현금 %.2f, 최고자산 %.2f", portfolio.cash,
                      portfolio.high_water_mark)
         else:

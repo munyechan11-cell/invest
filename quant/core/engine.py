@@ -46,6 +46,10 @@ from quant.risk.protections import ProtectionManager
 log = logging.getLogger("quant.engine")
 
 
+class UnsafeShutdownError(RuntimeError):
+    """The broker could not prove that no order remains live at the venue."""
+
+
 class Engine:
     def __init__(
         self,
@@ -76,6 +80,7 @@ class Engine:
         self.manual = manual or ManualControl()
         brokerage.budget = self.budget
         brokerage.portfolio = ctx.portfolio
+        ctx.brokerage = brokerage
         self.bars_processed = 0
         # An empty `ctx.universe` is ambiguous on its own — it means both "this
         # strategy never configured selection" and "the screen admitted nothing
@@ -101,10 +106,87 @@ class Engine:
                                                  "mode": self.ctx.run_mode.value})
 
     async def stop(self) -> None:
-        for order in await self.brokerage.open_orders():
-            await self.brokerage.cancel(order)
-        await self.brokerage.close()
-        self._started = False
+        issues: list[str] = []
+        causes: list[BaseException] = []
+        try:
+            try:
+                open_orders = list(await self.brokerage.open_orders())
+            except Exception as exc:  # noqa: BLE001 — uncertainty is itself unsafe
+                open_orders = []
+                issues.append(f"로컬 미결 주문 조회 실패: {exc}")
+                causes.append(exc)
+            for order in open_orders:
+                try:
+                    canceled = await self.brokerage.cancel(order)
+                except Exception as exc:  # noqa: BLE001 — drain other orders too
+                    canceled = False
+                    causes.append(exc)
+                    issues.append(
+                        f"{order.symbol.ticker} 주문 취소 확인 중 오류: {exc}"
+                    )
+                if not canceled:
+                    issues.append(
+                        f"{order.symbol.ticker} 주문의 취소 완료를 확인하지 못했습니다"
+                    )
+            # A cancel acknowledgement can lose a race to a partial/full fill.
+            # ``LiveBrokerage.cancel`` deliberately puts those fills back in its
+            # queue so the engine remains the only accounting writer.  Shutdown
+            # has no next polling cycle, therefore it must drain that queue before
+            # LiveTrader persists the final portfolio snapshot.
+            try:
+                await self.settle_live_fills()
+            except Exception as exc:  # noqa: BLE001 — close only after recording doubt
+                issues.append(f"마지막 체결 조회를 확인하지 못했습니다: {exc}")
+                causes.append(exc)
+            if (getattr(self.brokerage, "sends_orders", False)
+                    and not getattr(self.brokerage, "fill_channel_ok", True)):
+                detail = getattr(
+                    self.brokerage, "fill_channel_error", "체결 조회 상태 불명",
+                )
+                issues.append(f"체결 조회 채널이 복구되지 않았습니다: {detail}")
+
+            try:
+                remaining = list(await self.brokerage.open_orders())
+            except Exception as exc:  # noqa: BLE001
+                remaining = []
+                issues.append(f"취소 후 로컬 미결 주문 재확인 실패: {exc}")
+                causes.append(exc)
+            if remaining:
+                names = ", ".join(order.symbol.ticker for order in remaining[:5])
+                issues.append(
+                    f"취소 후에도 로컬 미결 주문 {len(remaining)}건이 남았습니다"
+                    + (f" ({names})" if names else "")
+                )
+
+            remote_count = getattr(
+                self.brokerage, "shutdown_remote_open_order_count", None
+            )
+            if remote_count is not None:
+                try:
+                    count = int(await remote_count())
+                except Exception as exc:  # noqa: BLE001
+                    issues.append(f"증권사 미결 주문 최종 확인 실패: {exc}")
+                    causes.append(exc)
+                else:
+                    if count:
+                        issues.append(f"증권사에 미결 주문 {count}건이 남았습니다")
+        finally:
+            # Even an unsafe shutdown must release the HTTP session. The process
+            # is no longer trading, but the run is deliberately not marked clean.
+            try:
+                await self.brokerage.close()
+            except Exception as exc:  # noqa: BLE001
+                issues.append(f"증권사 연결 종료 실패: {exc}")
+                causes.append(exc)
+            self._started = False
+        if issues:
+            detail = "; ".join(dict.fromkeys(issues))
+            message = (
+                f"안전한 종료를 확인하지 못했습니다: {detail}. 정상 종료로 기록하지 "
+                "않습니다. 토스 앱에서 미체결 주문과 당일 체결을 직접 확인하고, "
+                "보유수량과 일일 손실 한도를 대조한 뒤 다시 시작하세요"
+            )
+            raise UnsafeShutdownError(message) from (causes[0] if causes else None)
         await self.bus.publish(EventType.STATE, {"state": "stopped"})
 
     def set_universe(self, symbols: list[Symbol]) -> None:
@@ -123,7 +205,13 @@ class Engine:
             self.alpha.on_universe_changed(self.ctx, added, removed)
 
     # ── the pipeline ─────────────────────────────────────────────────────
-    async def on_bars(self, bars: dict[str, Bar], ts: datetime | None = None) -> None:
+    async def on_bars(
+        self,
+        bars: dict[str, Bar],
+        ts: datetime | None = None,
+        *,
+        settle: bool = True,
+    ) -> None:
         if not bars:
             return
         ctx = self.ctx
@@ -132,7 +220,7 @@ class Engine:
             ctx.clock.set(bar_ts)
 
         # 1 — fills first, using the bar that just closed
-        fills = await self._settle(bars)
+        fills = await self._settle(bars) if settle else []
 
         # 2 — mark the book. History is kept for *every* symbol in the batch,
         # not just the active universe: a name that drops out of the universe
@@ -308,8 +396,38 @@ class Engine:
             for rejection in self.brokerage.rejections[seen_rejections:]:
                 await self.bus.publish(EventType.ORDER_REJECTED, rejection)
         else:
-            fills.extend(await _drain_live_fills(self.brokerage))
+            return await self.settle_live_fills()
 
+        return await self._book_fills(fills)
+
+    async def settle_live_fills(self) -> list[Fill]:
+        """Poll and book live fills once, before venue reconciliation.
+
+        A live venue can expose one cumulative fill through both its order and
+        holdings endpoints. Booking the holdings snapshot first and then the
+        fill doubles quantity/cash. LiveTrader calls this method first, syncs
+        venue truth second, then calls ``on_bars(settle=False)`` so strategy
+        decisions see the reconciled account without re-booking the same fill.
+        """
+        if isinstance(self.brokerage, PaperBrokerage):
+            return []
+        try:
+            fills = await _drain_live_fills(self.brokerage)
+        except Exception:
+            # One adapter poll can validate order A, cache its fill, then fail
+            # while reading order B. Preserve A's already-proven accounting but
+            # re-raise B's error so the fill channel remains fail-closed.
+            try:
+                cached = _drain_cached_live_fills(self.brokerage)
+                if cached:
+                    await self._book_fills(cached)
+            except Exception:  # noqa: BLE001 — preserve the original poll failure
+                log.exception("could not book verified fills after live poll failure")
+            raise
+        return await self._book_fills(fills)
+
+    async def _book_fills(self, fills: list[Fill]) -> list[Fill]:
+        """Apply fills and publish their accounting events exactly once."""
         for fill in fills:
             closed = self.ctx.portfolio.apply_fill(fill)
             await self.bus.publish(EventType.ORDER_FILLED, _fill_dict(fill))
@@ -342,6 +460,14 @@ async def _drain_live_fills(brokerage: Brokerage) -> list[Fill]:
     if getter is None:
         return []
     return await getter()
+
+
+def _drain_cached_live_fills(brokerage: Brokerage) -> list[Fill]:
+    """Network-free fallback for fills validated before a batch poll failed."""
+    getter = getattr(brokerage, "drain_pending_fills", None)
+    if getter is None:
+        return []
+    return getter()
 
 
 # ── serialisation helpers (used by the event stream and the API) ─────────

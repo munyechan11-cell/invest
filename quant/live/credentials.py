@@ -102,9 +102,10 @@ VENUES: list[VenueSpec] = [
         fields=[
             ("TOSS_CLIENT_ID", "클라이언트 ID", True),
             ("TOSS_CLIENT_SECRET", "클라이언트 시크릿", True),
-            ("TOSS_ACCOUNT_NO", "계좌번호", True),
+            ("TOSS_ACCOUNT_NO", "계좌번호 또는 accountSeq", True),
         ],
-        note_ko="⚠️ 토스 Open API에는 모의투자 환경이 없습니다. 따라서 이 엔진의 "
+        note_ko="계좌번호는 저장 후 /accounts 결과의 accountSeq로 안전하게 변환합니다. "
+                "⚠️ 토스 Open API에는 모의투자 환경이 없습니다. 따라서 이 엔진의 "
                 "dry_run 모드(실시간 시세 + 가상 체결)로 충분히 검증한 뒤에만 "
                 "실거래로 넘어가세요. https://corp.tossinvest.com/ko/open-api",
         paper_supported=False,
