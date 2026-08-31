@@ -14,7 +14,7 @@ import logging
 from abc import ABC, abstractmethod
 from decimal import Decimal
 
-from quant.core.types import Order, OrderSide, RunMode, Symbol
+from quant.core.types import Order, OrderSide, OrderType, RunMode, Symbol
 
 log = logging.getLogger("quant.brokerage")
 
@@ -40,9 +40,25 @@ class Brokerage(ABC):
         if self.portfolio is None:
             return False
         held = self.portfolio.quantity(order.symbol)
-        if held == 0:
+        if held == 0 or order.quantity <= 0 or order.quantity > abs(held):
             return False
         return (held > 0) == (order.side is OrderSide.SELL)
+
+    def exact_flatten_order_type(
+        self,
+        symbol: Symbol,
+        current_quantity: Decimal,
+        target_quantity: Decimal,
+    ) -> OrderType | None:
+        """Venue-only escape hatch for an off-grid exact-to-flat exit.
+
+        Lot grids normally apply symmetrically. A venue may explicitly allow a
+        narrower liquidation route (for example, fractional US MARKET SELL)
+        without allowing fractional entries. Execution consults this capability
+        only when the target is exactly flat; ordinary sizing still uses the
+        Symbol lot size.
+        """
+        return None
 
     def _budget_check(self, order: Order) -> tuple[bool, str]:
         if self.budget is None or not self.budget.configured:

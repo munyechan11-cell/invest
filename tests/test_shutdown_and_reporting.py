@@ -6,6 +6,7 @@ mid-cycle. And a report whose '초과'(excess) column is measured against a
 benchmark that was never loaded is not an excess column at all.
 """
 import asyncio
+import json
 import os
 import signal
 import sqlite3
@@ -15,6 +16,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from quant.backtest.runner import run_backtest
+from quant.brokerage.live_base import LiveBrokerage
 from quant.config.schema import (
     BacktestConfig,
     BrokerConfig,
@@ -30,8 +32,10 @@ from quant.config.schema import (
     UniverseConfig,
 )
 from quant.core.clock import next_candle_close
+from quant.core.engine import UnsafeShutdownError
 from quant.core.types import UTC, RunMode
 from quant.data.providers.local import SyntheticProvider
+from quant.live.state import StateStore
 from quant.live.trader import LiveTrader
 
 TICKERS = ["AAA", "BBB", "CCC"]
@@ -70,6 +74,33 @@ def live_config() -> StrategyConfig:
 
 def make_trader(tmp_path, name="s.db") -> LiveTrader:
     return LiveTrader(live_config(), state_path=str(tmp_path / name))
+
+
+class _TruthBroker(LiveBrokerage):
+    venue_capital_truth = True
+
+    def __init__(self, trader):
+        super().__init__(trader.engine.ctx.portfolio, live=True)
+        self.budget = trader.engine.budget
+
+    async def _venue_capital(self):
+        return {
+            "currency": self.portfolio.base_currency,
+            "cash": self.portfolio.cash,
+            "holdings_value": 0.0,
+        }
+
+    async def _venue_positions(self):
+        return {}
+
+    async def _venue_open_orders(self):
+        return []
+
+    async def _venue_submit(self, _order):
+        return "test-order"
+
+    async def _venue_cancel(self, _order):
+        return True
 
 
 def stopped_at(db_path):
@@ -182,6 +213,148 @@ def test_shutdown_is_idempotent(tmp_path):
 
     asyncio.run(scenario())
     assert stopped_at(tmp_path / "twice.db") is not None
+
+
+def test_verified_clean_truth_shutdown_clears_the_crash_quarantine(tmp_path):
+    db = tmp_path / "clean-truth.db"
+    trader = make_trader(tmp_path, db.name)
+    trader.engine.brokerage = _TruthBroker(trader)
+
+    async def scenario():
+        await trader.start()
+        await trader.shutdown()
+
+    asyncio.run(scenario())
+
+    restarted = make_trader(tmp_path, db.name)
+    restarted.engine.brokerage = _TruthBroker(restarted)
+
+    async def restart_scenario():
+        await restarted.start()
+        assert restarted.running
+        await restarted.shutdown()
+
+    asyncio.run(restart_scenario())
+
+    assert stopped_at(db) is not None
+    conn = sqlite3.connect(str(db))
+    try:
+        required = conn.execute(
+            "SELECT requires_reconciliation FROM runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert required == 0
+
+
+def test_unsafe_shutdown_is_persisted_without_a_clean_stop_notification(tmp_path):
+    db = tmp_path / "unsafe.db"
+    trader = make_trader(tmp_path, db.name)
+    trader.engine.brokerage = _TruthBroker(trader)
+    messages: list[str] = []
+
+    async def scenario():
+        await trader.start()
+
+        async def unsafe_stop():
+            raise UnsafeShutdownError("증권사에 미결 주문 1건이 남았습니다")
+
+        async def capture(text):
+            messages.append(text)
+            return True
+
+        trader.engine.stop = unsafe_stop
+        trader.notifier.send = capture
+        with pytest.raises(UnsafeShutdownError, match="미결 주문 1건"):
+            await trader.shutdown()
+
+    asyncio.run(scenario())
+
+    assert stopped_at(db) is None
+    conn = sqlite3.connect(str(db))
+    try:
+        event_type, raw = conn.execute(
+            "SELECT type, payload FROM events ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    payload = json.loads(raw)
+    assert event_type == "unsafe_shutdown"
+    assert payload["manual_verification_required"] is True
+    conn = sqlite3.connect(str(db))
+    try:
+        required = conn.execute(
+            "SELECT requires_reconciliation FROM runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert required == 1
+    assert messages and "토스 앱" in messages[-1]
+    assert all("⏹ stopped" not in message for message in messages)
+
+
+def test_failed_start_closes_resources_and_releases_state_for_retry(tmp_path):
+    db = tmp_path / "failed-start.db"
+    trader = make_trader(tmp_path, db.name)
+    closed: list[str] = []
+
+    async def no_warmup():
+        return None
+
+    async def fail_connect():
+        raise RuntimeError("account truth unavailable")
+
+    def closer(name):
+        async def close():
+            closed.append(name)
+        return close
+
+    trader.warmup = no_warmup
+    trader.engine.start = fail_connect
+    trader.engine.brokerage.close = closer("broker")
+    trader.notifier.close = closer("notifier")
+    trader.provider.close = closer("provider")
+
+    with pytest.raises(RuntimeError, match="account truth unavailable"):
+        asyncio.run(trader.run())
+
+    assert closed == ["broker", "notifier", "provider"]
+    assert stopped_at(db) is not None
+    retry = StateStore(db)
+    retry.start_run("retry", "live", 1_000.0)
+    retry.close()
+
+
+def test_unclean_restart_failure_cannot_mark_the_run_clean_on_retry(tmp_path):
+    db = tmp_path / "unclean-retry.db"
+    seed = StateStore(db)
+    seed.start_run("lifecycle-test", RunMode.DRY_RUN.value, 100_000.0)
+    seed.mark_reconciliation_required()
+    seed.close()  # crash: no verified stop_run
+
+    async def no_warmup():
+        return None
+
+    async def fail_connect():
+        raise RuntimeError("manual reconciliation required")
+
+    for _attempt in range(2):
+        trader = make_trader(tmp_path, db.name)
+        trader.engine.brokerage = _TruthBroker(trader)
+        trader.warmup = no_warmup
+        trader.engine.start = fail_connect
+        with pytest.raises(RuntimeError, match="manual reconciliation required"):
+            asyncio.run(trader.run())
+
+        assert stopped_at(db) is None
+        conn = sqlite3.connect(str(db))
+        try:
+            required = conn.execute(
+                "SELECT requires_reconciliation FROM runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert required == 1
 
 
 def test_status_reports_stopping_before_the_flush_finishes(tmp_path):

@@ -51,6 +51,14 @@ from quant.core.types import UTC, RunMode
 from quant.live.credentials import VENUES_BY_ID
 from quant.live.profile import InvestorProfile, ProfileStore, apply_profile
 from quant.live.spend import SpendMeter
+from quant.live.state import (
+    RECOVERY_ACKNOWLEDGEMENT_PHRASE,
+    RECOVERY_CONFIRMATION_PHRASES,
+    RECOVERY_INSTRUCTIONS,
+    RecoveryArchiveError,
+    StateInUseError,
+    StateStore,
+)
 from quant.webapp.accounts import Accounts
 from quant.webapp.usage import UsageStore
 
@@ -145,6 +153,20 @@ class NotRunning(RuntimeProblem):
 
     def __init__(self) -> None:
         super().__init__("실행 중인 봇이 없습니다")
+
+
+class ReconciliationProblem(RuntimeProblem):
+    """An operator recovery request failed a named fail-closed invariant."""
+
+    def __init__(self, code: str, message: str, status: int = 400,
+                 details: dict | None = None):
+        self.code = code
+        self.status = status
+        self.details = details or {}
+        super().__init__(message)
+
+    def to_dict(self) -> dict:
+        return {**super().to_dict(), **self.details}
 
 
 # ── 어느 자격증명이 어느 인자로 들어가는가 ───────────────────────────────
@@ -408,6 +430,170 @@ class UserRegistry:
     def state_path(self, user_id: int) -> str:
         """이 사용자의 상태 DB 경로. 포지션·현금·잠금·핀·일일 원장이 여기 있습니다."""
         return str(self.paths(user_id).state_db)
+
+    @staticmethod
+    def _assert_toss_live_recovery_config(config: StrategyConfig) -> None:
+        if config.mode is not RunMode.LIVE or config.broker.type != "toss":
+            raise ReconciliationProblem(
+                "reconciliation_not_toss_live",
+                "Toss 실거래 전략의 격리 실행만 이 복구 절차를 사용할 수 있습니다.",
+            )
+
+    def reconciliation_status(self, user_id: int,
+                              config: StrategyConfig,
+                              *, now: datetime | None = None) -> dict:
+        """Describe one owner's exact Toss-live lifecycle head, read only."""
+        uid = self._uid(user_id)
+        self._assert_toss_live_recovery_config(config)
+        store = StateStore(self.state_path(uid))
+        try:
+            run = store.reconciliation_run(
+                config.name, RunMode.LIVE.value, now=now
+            )
+            account_gate = store.toss_account_start_gate(now=now)
+        except RecoveryArchiveError as exc:
+            raise ReconciliationProblem(exc.code, str(exc), status=409) from exc
+        finally:
+            store.close()
+        stored_toss_live = bool(
+            run is not None and run.pop("_stored_toss_live", False)
+        )
+        if run is not None and run["required"] and not stored_toss_live:
+            raise ReconciliationProblem(
+                "reconciliation_stored_config_mismatch",
+                "저장된 실행이 Toss 실거래였음을 검증할 수 없어 복구 상태를 "
+                "열지 않았습니다.",
+                status=409,
+            )
+        if run is not None:
+            # The account-wide gate below is authoritative. These exact-run
+            # fields are removed so two subtly different answers cannot escape
+            # in one response.
+            run.pop("restart_blocked", None)
+            run.pop("next_start_allowed_at", None)
+        account_required = bool(account_gate["reconciliation_required"])
+        restart_blocked = bool(account_gate["restart_blocked"])
+        next_start_allowed_at = account_gate["next_start_allowed_at"]
+        if run is not None and run["required"]:
+            message = RECOVERY_INSTRUCTIONS
+        elif account_required:
+            message = (
+                f"'{account_gate['blocking_strategy']}' 실거래 실행의 수동 복구가 "
+                f"먼저 필요합니다 (run {account_gate['blocking_run_id']})."
+            )
+        elif restart_blocked:
+            message = (
+                "당일 한도가 초기화되지 않도록 보관한 날에는 새 실거래를 "
+                f"시작할 수 없습니다. {next_start_allowed_at} 이후 다시 시작하세요."
+            )
+        else:
+            message = "현재 이 전략에 수동 복구가 필요한 실행은 없습니다."
+        return {
+            "required": bool(run and run["required"]),
+            "run": run,
+            "bot_running": self.trader(uid) is not None,
+            "account_reconciliation_required": account_required,
+            "blocking_run_id": account_gate["blocking_run_id"],
+            "blocking_strategy": account_gate["blocking_strategy"],
+            "restart_blocked": restart_blocked,
+            "next_start_allowed_at": next_start_allowed_at,
+            "confirmation_phrases": dict(RECOVERY_CONFIRMATION_PHRASES),
+            "acknowledgement_phrase": RECOVERY_ACKNOWLEDGEMENT_PHRASE,
+            "recovery_instructions": RECOVERY_INSTRUCTIONS,
+            "message": message,
+        }
+
+    def _assert_recovery_start_allowed(
+            self, user_id: int, config: StrategyConfig,
+            *, now: datetime | None = None) -> None:
+        """Reject unsafe Toss-account starts before a trader/task exists."""
+        if config.mode is not RunMode.LIVE or config.broker.type != "toss":
+            return
+        uid = self._uid(user_id)
+        store = StateStore(self.state_path(uid))
+        try:
+            gate = store.toss_account_start_gate(now=now)
+        except RecoveryArchiveError as exc:
+            raise ReconciliationProblem(exc.code, str(exc), status=409) from exc
+        finally:
+            store.close()
+        if gate["reconciliation_required"]:
+            raise ReconciliationProblem(
+                "reconciliation_required",
+                f"'{gate['blocking_strategy']}' 실거래 실행의 수동 복구가 먼저 "
+                f"필요합니다 (run {gate['blocking_run_id']}).",
+                status=409,
+                details={
+                    "blocking_run_id": gate["blocking_run_id"],
+                    "blocking_strategy": gate["blocking_strategy"],
+                },
+            )
+        if gate["restart_blocked"]:
+            raise ReconciliationProblem(
+                "reconciliation_start_blocked_until_next_kst_day",
+                "당일 한도가 초기화되지 않도록 보관한 날에는 새 실거래를 "
+                f"시작할 수 없습니다. {gate['next_start_allowed_at']} 이후 다시 "
+                "시작하세요.",
+                status=409,
+                details={
+                    "next_start_allowed_at": gate["next_start_allowed_at"],
+                },
+            )
+
+    def archive_reconciliation(
+            self, user_id: int, config: StrategyConfig, *, run_id: int,
+            reason: str, confirmations: dict[str, str],
+            acknowledgement: str) -> dict:
+        """Retire an exact quarantined run without constructing a broker."""
+        uid = self._uid(user_id)
+        self._assert_toss_live_recovery_config(config)
+        if self.trader(uid) is not None:
+            raise ReconciliationProblem(
+                "reconciliation_bot_running",
+                "봇이 실행 중입니다. 안전하게 완전히 정지한 뒤 다시 확인하세요.",
+                status=409,
+            )
+
+        store = StateStore(self.state_path(uid))
+        try:
+            result = store.archive_reconciliation_run(
+                run_id=run_id,
+                strategy=config.name,
+                mode=RunMode.LIVE.value,
+                operator=f"user:{uid}",
+                reason=reason,
+                confirmations=confirmations,
+                acknowledgement=acknowledgement,
+            )
+        except StateInUseError as exc:
+            raise ReconciliationProblem(
+                "reconciliation_state_in_use",
+                "상태 DB를 다른 프로세스가 사용 중입니다. 봇과 작업자를 모두 "
+                "종료한 뒤 다시 시도하세요.",
+                status=409,
+            ) from exc
+        except RecoveryArchiveError as exc:
+            status = 409 if exc.code in {
+                "reconciliation_run_changed",
+                "reconciliation_archive_conflict",
+                "reconciliation_stored_config_mismatch",
+            } else 400
+            raise ReconciliationProblem(exc.code, str(exc), status=status) from exc
+        finally:
+            store.close()
+
+        if not result["idempotent"]:
+            self._note(uid, "reconciliation_archived",
+                       f"run {result['run_id']} {result['strategy']}")
+        return {
+            **result,
+            "fresh_run_on_next_start": True,
+            "message": (
+                "기존 실행과 감사 기록을 보존했습니다. 당일 한도 초기화를 막기 "
+                "위해 오늘은 새 실거래를 시작할 수 없습니다. 표시된 다음 시작 "
+                "가능 시각 이후 새 실행으로 시작하세요."
+            ),
+        }
 
     # ── 투자 성향 ────────────────────────────────────────────────────────
     def profile_store(self, user_id: int) -> ProfileStore:
@@ -736,6 +922,11 @@ class UserRegistry:
         existing = self._bots.get(uid)
         if existing is not None and existing.alive:
             raise AlreadyRunning(existing.strategy)
+
+        # This happens before build_trader/create_task. A UI request therefore
+        # gets a synchronous 409 instead of briefly showing a bot that later
+        # dies when StateStore's defense-in-depth check runs.
+        self._assert_recovery_start_allowed(uid, config)
 
         # 여기부터 슬롯을 채울 때까지 `await` 가 없습니다. 이벤트 루프가 중간에
         # 다른 요청으로 넘어가지 못하므로, 같은 사용자의 동시 요청 두 개가 둘 다

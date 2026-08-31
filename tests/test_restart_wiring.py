@@ -6,6 +6,7 @@ state.py 에 저장·복원 메서드가 있어도 trader.py 가 부르지 않�
 **LiveTrader 를 통해** 검증합니다.
 """
 import inspect
+import sqlite3
 from datetime import datetime
 
 from quant.core.types import UTC
@@ -32,6 +33,72 @@ def test_start_restores_the_budget_whether_or_not_it_resumed():
 
 def test_start_restores_operator_pins():
     assert "restore_pins" in _source("start")
+
+
+def test_start_arms_restored_venue_truth_before_connecting_the_broker():
+    source = _source("start")
+    restored = source.index("restore_positions")
+    armed = source.index("expect_restored_venue_truth")
+    connected = source.index("await self.engine.start()")
+
+    assert restored < armed < connected
+    assert "self.state.restored_venue_truth" in source
+    assert "self.state.restored_reconciliation_required" in source
+    assert source.index("mark_reconciliation_required") < connected
+
+
+def test_read_only_resume_cannot_clear_an_unclean_run_marker(tmp_path):
+    db = str(tmp_path / "unclean.db")
+    active = StateStore(db)
+    active.start_run("live", "live", 100.0)
+    assert not active.restored_reconciliation_required
+    active.mark_reconciliation_required()
+    active.close()
+
+    reader = StateStore(db)
+    assert reader.resume_run("live", "live")
+    assert reader.restored_reconciliation_required
+    reader.close()
+
+    restarted = StateStore(db)
+    assert restarted.resume_run("live", "live")
+    assert restarted.restored_reconciliation_required
+    restarted.close()
+
+
+def test_verified_clean_stop_clears_the_reconciliation_marker(tmp_path):
+    db = str(tmp_path / "clean.db")
+    active = StateStore(db)
+    active.start_run("live", "live", 100.0)
+    active.mark_reconciliation_required()
+    active.stop_run()
+    active.close()
+
+    restarted = StateStore(db)
+    assert restarted.resume_run("live", "live")
+    assert not restarted.restored_reconciliation_required
+    restarted.close()
+
+
+def test_legacy_unfinished_run_migrates_into_reconciliation_quarantine(tmp_path):
+    db = str(tmp_path / "legacy-unclean.db")
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "strategy TEXT NOT NULL, mode TEXT NOT NULL, started_at TEXT NOT NULL, "
+        "stopped_at TEXT, starting_cash REAL NOT NULL, config_json TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO runs(strategy, mode, started_at, starting_cash) "
+        "VALUES('live','live','2026-08-31T00:00:00+00:00',100)"
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = StateStore(db)
+    assert migrated.resume_run("live", "live")
+    assert migrated.restored_reconciliation_required
+    migrated.close()
 
 
 def test_pins_are_saved_on_the_equity_tick_and_on_shutdown():

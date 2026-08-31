@@ -50,6 +50,9 @@ class Context:
         self._pending: dict[str, Any] = {}
         self._pinned: dict[str, str] = {}
         self.benchmark: Symbol | None = None
+        # Engine wires the active brokerage here so the execution layer can
+        # query narrow venue capabilities without hard-coding venue names.
+        self.brokerage = None
 
     # ── time ─────────────────────────────────────────────────────────────
     @property

@@ -406,12 +406,23 @@ tr:last-child td{border-bottom:0}
 .playbar button.on{border-color:var(--gold);color:var(--gold)}
 .playbar button:hover:not(:disabled){border-color:var(--gold);color:var(--gold)}
 .playbar button:disabled{opacity:.4;cursor:default}
-table.acct{width:100%;border-collapse:collapse;font-size:12px}
+/* `.acct` 는 아래 profile 카드에서 grid로도 씁니다. holdings table은 더 구체적인
+   선택자로 native table formatting context를 되살려 thead/tbody 열을 맞춥니다. */
+table.acct{display:table;width:100%;border-collapse:collapse;font-size:12px}
 table.acct th{text-align:left;color:var(--muted);font-weight:400;
   padding:5px 8px;border-bottom:1px solid var(--line)}
 table.acct td{padding:5px 8px;border-bottom:1px solid var(--line);
   font-variant-numeric:tabular-nums}
 table.acct td:first-child{font-variant-numeric:normal}
+.acct-scroll{max-width:100%;margin-top:11px;overflow-x:auto;overflow-y:hidden;
+  overscroll-behavior-inline:contain;-webkit-overflow-scrolling:touch}
+.acct-scroll:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+.acct-scroll table.acct{min-width:640px}
+#brokerAcct .r{display:grid;grid-template-columns:minmax(132px,1fr) minmax(0,1fr);
+  gap:12px;align-items:baseline;padding:8px 0;border-top:1px solid var(--rule)}
+#brokerAcct .r>b{color:var(--dim);font-weight:600;line-height:1.5}
+#brokerAcct .r>span{min-width:0;text-align:right;color:var(--ink);font-family:var(--mono);
+  font-variant-numeric:tabular-nums;line-height:1.5;overflow-wrap:anywhere}
 .saybox.bad{border-color:var(--bad)}
 .saybox.bad .who{color:var(--bad)}
 .saybox.bad .line{color:var(--ink)}
@@ -776,6 +787,56 @@ form.auth .hint{font-size:12px;color:var(--muted);line-height:1.7}
   align-items:end;margin-top:8px}
 .pwform input{min-height:44px}
 
+/* ── 비정상 종료 실거래 복구 ────────────────────────────────────────
+   위험 작업은 픽셀 장식을 유지하되 빨간색 하나에만 뜻을 맡기지 않습니다.
+   제목·설명·다섯 대조 항목이 함께 "왜 막혔는가"를 말합니다. */
+.recovery-card[hidden]{display:none!important}
+.recovery-card{border:3px solid var(--bad);box-shadow:5px 5px 0 var(--shadow)}
+.recovery-card>.plate{color:var(--bad);border-bottom-color:var(--bad)}
+.recovery-lead{border:2px solid var(--bad);background:rgba(255,145,138,.08);
+  padding:13px 14px;font-size:14px;line-height:1.75;color:var(--ink);word-break:keep-all}
+.recovery-lead b{display:block;font-family:var(--px);font-size:12px;color:var(--bad);
+  margin-bottom:6px}
+.recovery-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;
+  margin-top:14px}
+.recovery-meta>div{min-width:0;border:2px solid var(--line);background:var(--panel2);
+  padding:10px 11px}
+.recovery-meta>.wide{grid-column:1/-1}
+.recovery-meta dt{font-family:var(--px);font-size:10px;color:var(--muted)}
+.recovery-meta dd{margin:6px 0 0;font-family:var(--kr);font-size:14px;line-height:1.6;
+  color:var(--ink);overflow-wrap:anywhere}
+.recovery-preserve{margin-top:12px;border-left:4px solid var(--gold);padding:9px 12px;
+  background:rgba(240,192,64,.07);font-size:13px;line-height:1.75;color:var(--dim)}
+.recovery-preserve b{display:block;color:var(--gold);font-family:var(--px);
+  font-size:11px;margin-bottom:4px}
+.recovery-checks{margin-top:14px;border:2px solid var(--edge);padding:10px 12px 12px;
+  display:grid;gap:6px;min-width:0}
+.recovery-checks legend{padding:0 7px;font-family:var(--px);font-size:11px;color:var(--gold)}
+.recovery-checks label{display:grid;grid-template-columns:28px minmax(0,1fr);gap:9px;
+  align-items:center;min-height:44px;padding:6px 8px;border:1px solid var(--line);
+  background:#0b1019;font-size:14px;line-height:1.55;cursor:pointer}
+.recovery-checks input{width:22px;height:22px;margin:0;accent-color:var(--gold)}
+.recovery-checks input:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.recovery-reason{margin-top:14px}
+.recovery-reason textarea{width:100%;min-height:104px;resize:vertical;background:var(--panel2);
+  border:2px solid var(--field);color:var(--ink);padding:10px 11px;
+  font-family:var(--kr);font-size:15px;line-height:1.6}
+.recovery-reason textarea:focus{border-color:var(--gold)}
+#reconciliationReasonHelp{display:flex;justify-content:space-between;gap:10px;
+  flex-wrap:wrap;font-size:12px;line-height:1.5}
+#reconciliationReasonCount{font-family:var(--mono);font-weight:400;color:var(--muted)}
+.recovery-ack{margin-top:14px;border:2px dashed var(--bad);padding:12px;background:#100d12}
+.recovery-ack p{font-size:13px;color:var(--dim);line-height:1.6}
+.recovery-ack code{display:block;margin:8px 0 10px;padding:9px 10px;background:#05070b;
+  color:var(--bad);font-family:var(--kr);font-size:14px;line-height:1.6;
+  white-space:normal;overflow-wrap:anywhere;user-select:text}
+.recovery-message:empty{display:none}
+.recovery-message{margin-top:12px;line-height:1.7}
+.recovery-actions{justify-content:flex-end}
+.recovery-actions .btn{min-width:min(100%,320px)}
+.recovery-card.resolved{border-color:var(--ok)}
+.recovery-card.resolved>.plate{color:var(--ok);border-bottom-color:var(--ok)}
+
 /* ── 설정 진행 상태 ────────────────────────────────────────────────── */
 .steps{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
 .steps span{font-family:var(--px);font-size:11px;border:2px solid var(--line);
@@ -1045,7 +1106,7 @@ body[data-page="account"] #pageAccount{display:grid;
 @media(max-width:900px){
   header.top{position:relative;padding:8px 12px 10px}
   #mainContent{scroll-margin-top:18px}
-  .top-in{grid-template-columns:repeat(12,minmax(0,1fr));grid-template-rows:auto auto;
+  .top-in{grid-template-columns:repeat(12,minmax(0,1fr));grid-template-rows:auto auto auto;
     gap:8px;overflow:visible;flex-wrap:initial}
   .top-in>*{min-width:0}
   .top-in>.conn{grid-column:1;grid-row:1;justify-self:center}
@@ -1053,10 +1114,10 @@ body[data-page="account"] #pageAccount{display:grid;
     white-space:nowrap;text-overflow:ellipsis}
   .top-in>.mode{grid-column:5/8;grid-row:1;font-size:12px;overflow:hidden;
     white-space:nowrap;text-overflow:ellipsis}
-  .top-in>.mini{grid-column:8/10;grid-row:1;justify-self:stretch;min-width:0;
-    overflow:hidden;justify-content:flex-end}
-  .top-in>.mini>*{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .top-in>.pagetabs{grid-column:1/-1;grid-row:2;justify-self:stretch;width:100%}
+  .top-in>.mini{grid-column:1/-1;grid-row:2;justify-self:stretch;min-width:0;
+    overflow:visible;justify-content:flex-start;flex-wrap:wrap}
+  .top-in>.mini>*{min-width:0;overflow:visible;text-overflow:clip;white-space:normal}
+  .top-in>.pagetabs{grid-column:1/-1;grid-row:3;justify-self:stretch;width:100%}
   .pagetabs button{width:33.333%;padding:0 6px}
   .top-in>.headtools{display:block;grid-column:10/13;grid-row:1;position:relative;
     min-width:0;justify-self:stretch}
@@ -1097,6 +1158,11 @@ body[data-page="account"] #pageAccount{display:grid;
   .hero .sub{font-size:15px}.hero .cta{grid-template-columns:minmax(0,1fr)}
   .hero .cta .btn:last-child{grid-column:1}
   .duel{gap:2px}.duel .seat{width:92px;flex-basis:92px}.duel .vs{font-size:12px}
+  #brokerAcct .r{grid-template-columns:minmax(118px,1fr) minmax(0,1fr);gap:9px}
+  .recovery-meta{grid-template-columns:minmax(0,1fr)}
+  .recovery-meta>.wide{grid-column:1}
+  .recovery-checks{padding:9px}
+  .recovery-actions .btn{width:100%;min-width:0}
 }
 
 @media(max-width:360px){

@@ -260,6 +260,15 @@ def test_the_brief_is_sliced_per_seat():
     assert "기술지표" not in sliced       # not this seat's job
 
 
+def test_the_brief_names_strategy_equity_as_a_book_not_the_real_account():
+    desk = TradingDesk(ScriptedLLM(), memory=False)
+    brief = desk.build_brief(make_ctx(), SYM)
+    portfolio = brief["포트폴리오"]
+    assert portfolio["전략 장부 평가액"] > 0
+    assert "총자산" not in portfolio, (
+        "설정상 starting_cash를 증권사 실계좌 총자산처럼 모델에 보냅니다")
+
+
 def test_deliberation_is_published_as_an_event():
     seen = []
     desk = TradingDesk(ScriptedLLM(), memory=False)

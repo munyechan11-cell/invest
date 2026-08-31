@@ -276,8 +276,11 @@ def test_unlink_is_two_step_and_deletes_the_stored_key(script):
 def test_signing_out_stops_the_polling(script):
     handler = script[script.index("function signedOut()"):]
     handler = handler[:handler.index("\n}\n")]
-    assert "clearInterval" in handler
-    assert "s.close()" in handler, "웹소켓이 로그아웃 뒤에도 살아 있습니다"
+    assert "beginIdentityTransition" in handler
+    runtime = script[script.index("function stopIdentityRuntime()") :]
+    runtime = runtime[: runtime.index("\n}\n")]
+    assert "clearInterval" in runtime
+    assert "s.close()" in runtime, "웹소켓이 로그아웃 뒤에도 살아 있습니다"
 
 
 # ── 자격증명은 화면으로 돌아오지 않는다 ─────────────────────────────────
@@ -325,6 +328,100 @@ def test_the_page_never_prints_a_secret_into_a_message(script):
     handler = script[script.index('$("#setupSave").onclick'):]
     handler = handler[:handler.index("\n};")]
     assert "values[" not in handler.split("post(")[1]
+
+
+# ── 비정상 종료 실거래 실행 복구 ────────────────────────────────────────
+def test_reconciliation_card_is_hidden_and_named_by_default(tags):
+    card = _by_id(tags, "reconciliationCard")
+    assert card == [("section", {
+        "class": "panel recovery-card",
+        "id": "reconciliationCard",
+        "hidden": "",
+        "aria-labelledby": "reconciliationTitle",
+    })]
+    assert _by_id(tags, "reconciliationTitle")
+
+
+def test_reconciliation_requires_five_explicit_toss_checks(markup, tags):
+    checks = [
+        "reconciliationOpenOrders",
+        "reconciliationTodayFills",
+        "reconciliationHoldings",
+        "reconciliationCash",
+        "reconciliationDailyLoss",
+    ]
+    assert _by_id(tags, "reconciliationChecks") == [(
+        "fieldset", {"class": "recovery-checks", "id": "reconciliationChecks"}
+    )]
+    assert re.search(
+        r'<fieldset class="recovery-checks" id="reconciliationChecks">\s*'
+        r'<legend>[^<]*5개</legend>', markup,
+    )
+    for field_id in checks:
+        assert _by_id(tags, field_id) == [(
+            "input", {"type": "checkbox", "id": field_id}
+        )]
+        assert re.search(
+            rf"<label>\s*<input type=\"checkbox\" id=\"{field_id}\">",
+            markup,
+        ), f"{field_id} 에 접근 가능한 label이 없습니다"
+
+
+def test_reconciliation_reason_and_acknowledgement_are_labeled(tags):
+    reason = _by_id(tags, "reconciliationReason")
+    assert reason == [("textarea", {
+        "id": "reconciliationReason",
+        "minlength": "10",
+        "maxlength": "500",
+        "rows": "4",
+        "required": "",
+        "aria-describedby": "reconciliationReasonHelp",
+    })]
+    acknowledgement = _by_id(tags, "reconciliationAck")
+    assert acknowledgement == [("input", {
+        "id": "reconciliationAck",
+        "type": "text",
+        "autocomplete": "off",
+        "spellcheck": "false",
+        "aria-describedby": "reconciliationAckPhrase",
+        "required": "",
+    })]
+    labels = {attrs.get("for") for tag, attrs in tags if tag == "label"}
+    assert {"reconciliationReason", "reconciliationAck"} <= labels
+
+
+def test_reconciliation_result_is_announced_and_cannot_submit_on_load(tags):
+    message = _by_id(tags, "reconciliationMsg")
+    assert message == [("div", {
+        "class": "msg recovery-message",
+        "id": "reconciliationMsg",
+        "role": "status",
+        "aria-live": "polite",
+        "tabindex": "-1",
+    })]
+    submit = _by_id(tags, "reconciliationSubmit")
+    assert submit == [("button", {
+        "class": "btn tap warn",
+        "type": "button",
+        "id": "reconciliationSubmit",
+        "disabled": "",
+    })]
+
+
+def test_reconciliation_card_precedes_the_live_account_balance(markup):
+    """위험 상태는 잔고 숫자보다 먼저 보여야 운영자가 놓치지 않습니다."""
+    assert markup.index('id="reconciliationCard"') < markup.index('id="brokerAcct"')
+
+
+def test_reconciliation_card_has_an_explicit_mobile_collapse(html):
+    assert re.search(
+        r"@media\(max-width:520px\)\{.*?\.recovery-meta"
+        r"\{grid-template-columns:minmax\(0,1fr\)\}", html, re.S,
+    )
+    assert re.search(
+        r"@media\(max-width:520px\)\{.*?\.recovery-actions \.btn"
+        r"\{width:100%;min-width:0\}", html, re.S,
+    )
 
 
 # ── 휴대폰 ───────────────────────────────────────────────────────────────

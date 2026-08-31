@@ -91,6 +91,67 @@ def _run(cases: list[dict]) -> list[dict]:
         Path(js).unlink(missing_ok=True)
 
 
+def _render_after_switch() -> dict:
+    """옛 심의가 있는 상태에서 규칙 전략으로 바꾼 뒤 실제 방 문구를 봅니다."""
+    engine = _engine()
+    assert engine, "엔진 없음"
+    path, args = engine
+    src = "\n".join([
+        _fn("deskWaitReason"),
+        _fn("shownStrategy"),
+        _fn("renderDeskAvailability"),
+        "renderDeskAvailability();",
+        "var out = {subject: elements.deskSubject.textContent, rooms: {}};",
+        "for (var i = 0; i < roomNames.length; i++) {",
+        "  var room = roomNames[i];",
+        "  out.rooms[room] = elements['say-' + room].line.textContent;",
+        "}",
+        "write(JSON.stringify(out));",
+    ])
+    prelude = r"""
+var roomNames = ["analyst", "debate", "risk", "decision"];
+function sayBox() {
+  var who = {textContent: "옛 심의"};
+  var line = {textContent: "총자산 800,000원"};
+  return {className: "saybox", who: who, line: line,
+    querySelector: function (selector) { return selector === ".who" ? who : line; }};
+}
+var elements = {deskSubject: {textContent: "옛 종목 결정 완료"}};
+for (var i = 0; i < roomNames.length; i++) elements["say-" + roomNames[i]] = sayBox();
+var RUNNING = false;
+var document = {
+  body: {classList: {
+    contains: function (name) { return RUNNING && name === "running"; },
+    toggle: function () {}
+  }},
+  getElementById: function (id) { return elements[id] || null; }
+};
+var $ = function (selector) {
+  return document.getElementById(String(selector).replace(/^#/, ""));
+};
+var RULES = {id:"rules", name:"rules", label_ko:"규칙 전략",
+  signals:[{id:"ema_cross"}], requires:[], tickers:[]};
+var strategies = [RULES], deskState = {deliberations:[{rationale:"총자산 800,000원"}]};
+var botState = null, runningStrategy = "";
+function chartStrategy() { return "rules"; }
+function stLabel(st) { return st.label_ko || st.name || ""; }
+function renderTryNow() {}
+function announceDesk() {}
+var write = (typeof console !== "undefined" && console.log) ? console.log : print;
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                     encoding="utf-8") as fh:
+        fh.write(prelude + src)
+        js = fh.name
+    try:
+        proc = subprocess.run([path, *args, js], capture_output=True, text=True,
+                              timeout=60)
+        assert proc.returncode == 0, proc.stderr or proc.stdout
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+    finally:
+        Path(js).unlink(missing_ok=True)
+
+
 DESK = {"id": "kr_toss_desk", "name": "kr-toss-desk",
         "signals": [{"id": "desk"}], "requires": [], "tickers": []}
 RULES = {"id": "kr_toss", "name": "kr-toss-flow",
@@ -171,6 +232,15 @@ def test_a_refresh_does_not_make_it_talk_about_another_strategy():
     }])[0]
     assert got["kind"] == "broken", got
     assert "소진" in got["line"], got["line"]
+
+
+def test_switching_to_a_rules_strategy_erases_the_old_800k_deliberation():
+    got = _render_after_switch()
+    assert got["subject"] == "심의 없음"
+    assert set(got["rooms"]) == {"analyst", "debate", "risk", "decision"}
+    for line in got["rooms"].values():
+        assert "규칙 기반" in line, got
+        assert "800,000" not in line, got
 
 
 def test_reverting_the_fix_fails_this_test():

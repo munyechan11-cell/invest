@@ -371,13 +371,16 @@ def _percentage(value: str) -> float:
     return float(match.group(1)) if match else 0.0
 
 
-def test_mobile_header_is_a_two_row_grid_without_horizontal_scroll():
+def test_mobile_header_is_a_three_row_grid_without_horizontal_scroll():
     for width in (900, 760, 420, 320):
         header = _style(".top-in", width=width)
         assert header.get("display") == "grid", f"{width}px header가 grid가 아닙니다"
         rows = header.get("grid-template-rows", "")
-        assert _grid_track_count(rows) == 2, (
-            f"{width}px header는 2행이어야 합니다: {rows or '미정의'}")
+        # 출처·금액을 좁은 첫 행에 욱여넣으면 전부 말줄임되어 무엇의 잔고인지
+        # 읽을 수 없습니다. 봇 장부를 독립된 둘째 행에 두고 navigation은 셋째
+        # 행 전체 폭을 씁니다.
+        assert _grid_track_count(rows) == 3, (
+            f"{width}px header는 3행이어야 합니다: {rows or '미정의'}")
         overflow_x = header.get("overflow-x", header.get("overflow", "visible"))
         assert overflow_x == "visible", (
             f"{width}px header가 내용을 숨기거나 가로 scroll을 만듭니다: "
@@ -395,6 +398,8 @@ def test_mobile_header_is_a_two_row_grid_without_horizontal_scroll():
             f"{width}px에서 핵심 page navigation이 숨겨집니다")
         assert tabs_slot.get("grid-column", "").replace(" ", "") == "1/-1", (
             f"{width}px page tabs가 header 전체 폭을 쓰지 않습니다")
+        assert tabs_slot.get("grid-row") == "3", (
+            f"{width}px page tabs가 장부 출처와 같은 행에서 충돌합니다")
         assert tabs_slot.get("width") == "100%", (
             f"{width}px page tabs 폭이 viewport grid보다 커질 수 있습니다")
         assert 0 < _percentage(tab_button.get("width", "")) <= 34, (
@@ -497,7 +502,7 @@ def test_ephemeral_bubbles_are_hidden_and_persistent_speech_is_live():
         "같은 상태를 polling마다 다시 공지하지 않도록 값 변경을 검사해야 합니다")
     plate_body = re.search(r"function plate\(key, text, tone\) \{(.*?)\n\}", markup, re.S)
     availability = re.search(
-        r"function renderDeskAvailability\(\) \{(.*?)\n\}", markup, re.S)
+        r"function renderDeskAvailability\([^)]*\) \{(.*?)\n\}", markup, re.S)
     assert plate_body and "announceDesk" in plate_body.group(1)
     assert availability and availability.group(1).count("announceDesk") == 1
 

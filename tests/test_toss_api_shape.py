@@ -28,6 +28,7 @@ def test_the_host_is_the_documented_one():
     ("orderbook_path", "/api/v1/orderbook"),
     ("accounts_path", "/api/v1/accounts"),
     ("holdings_path", "/api/v1/holdings"),
+    ("buying_power_path", "/api/v1/buying-power"),
     ("orders_path", "/api/v1/orders"),
 ])
 def test_every_path_matches_the_spec(key, path):

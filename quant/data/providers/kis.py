@@ -8,6 +8,7 @@ not an optimisation.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import time
@@ -25,7 +26,7 @@ log = logging.getLogger("quant.data.kis")
 REAL_HOST = "https://openapi.koreainvestment.com:9443"
 MOCK_HOST = "https://openapivts.koreainvestment.com:29443"
 
-_TOKENS: dict[str, tuple[str, float]] = {}
+_TOKENS: dict[bytes, tuple[str, float]] = {}
 _TOKEN_LOCK = asyncio.Lock()
 
 
@@ -35,7 +36,14 @@ def kis_host(paper: bool) -> str:
 
 async def kis_token(app_key: str, app_secret: str, paper: bool) -> str:
     """Fetch-or-reuse an access token. Cached per (key, environment)."""
-    cache_key = f"{app_key[:8]}:{paper}"
+    # KIS app keys share provider-controlled prefixes. Prefix-only caching lets
+    # one user's bearer token authenticate another user's account requests.
+    # Include the complete credential pair and environment without retaining
+    # either plaintext value as a dictionary key.
+    cache_key = hashlib.sha256(
+        app_key.encode("utf-8") + b"\0" + app_secret.encode("utf-8")
+        + (b"\1" if paper else b"\0")
+    ).digest()
     cached = _TOKENS.get(cache_key)
     if cached and cached[1] > time.time() + 120:
         return cached[0]

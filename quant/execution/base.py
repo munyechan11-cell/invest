@@ -388,6 +388,19 @@ class ExecutionModel(ABC):
         return KRX_CANCEL_ONLY_FROM <= _kst(ctx.now).time() < KRX_REGULAR.close
 
     # -- shared helpers --------------------------------------------------
+    @staticmethod
+    def _exact_flatten_order_type(
+        ctx: Context,
+        symbol: Symbol,
+        current: Decimal,
+        target: Decimal,
+    ) -> OrderType | None:
+        brokerage = getattr(ctx, "brokerage", None)
+        capability = getattr(brokerage, "exact_flatten_order_type", None)
+        if capability is None:
+            return None
+        return capability(symbol, current, target)
+
     def _deltas(self, ctx: Context, targets: list[PortfolioTarget]
                 ) -> list[tuple[PortfolioTarget, Decimal, float]]:
         """(target, signed delta quantity, price) for every target worth acting on."""
@@ -400,7 +413,13 @@ class ExecutionModel(ABC):
             # Diff against *projected* holdings — filled position plus anything
             # already resting — or an unfilled order is re-sent every bar.
             current = ctx.projected_quantity(t.symbol)
-            delta = t.symbol.round_qty(t.quantity - current)
+            raw_delta = t.quantity - current
+            exact_exit = self._exact_flatten_order_type(
+                ctx, t.symbol, current, t.quantity,
+            )
+            # A venue capability may preserve only an exact-to-flat remainder.
+            # Ordinary entries/rebalances still obey the symmetric Symbol grid.
+            delta = raw_delta if exact_exit is not None else t.symbol.round_qty(raw_delta)
             if delta == 0:
                 continue
 
@@ -462,6 +481,18 @@ class ExecutionModel(ABC):
             self._cross_next.pop(target.symbol.key)
             order_type, limit_price, tif = self._crossing(ctx, target.symbol, side)
             tag_suffix = f"{tag_suffix} | 미체결 청산 긴급 전환"
+        exact_exit = self._exact_flatten_order_type(
+            ctx,
+            target.symbol,
+            ctx.projected_quantity(target.symbol),
+            target.quantity,
+        )
+        if exact_exit is not None:
+            # Toss's fractional US remainder is legal only as MARKET SELL. A
+            # patient execution model must not turn this safety exit into an
+            # invalid LIMIT order merely because entries normally rest first.
+            order_type, limit_price, tif = exact_exit, None, TimeInForce.DAY
+            tag_suffix = f"{tag_suffix} | exact fractional exit"
         order = Order(
             symbol=target.symbol,
             side=side,

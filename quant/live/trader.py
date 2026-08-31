@@ -179,6 +179,12 @@ class LiveTrader:
 
     async def start(self) -> None:
         cfg = self.config
+        # This must precede resume_run. Otherwise a different Toss strategy's
+        # old clean run can be resumed without reaching start_run's account-wide
+        # defense, bypassing both an unresolved run and its same-KST-day cooldown.
+        # It performs SQLite reads only: no warm-up, broker connect, or order call.
+        if cfg.mode is RunMode.LIVE and cfg.broker.type == "toss":
+            self.state.assert_toss_account_start_allowed()
         resumed = self.resume and self.state.resume_run(cfg.name, cfg.mode.value)
         if not resumed:
             self.state.start_run(cfg.name, cfg.mode.value, cfg.portfolio.starting_cash,
@@ -197,11 +203,43 @@ class LiveTrader:
             pinned = self.state.restore_pins(self.engine.ctx, symbols)
             log.info("run %s 복원: 포지션 %d건, 핀 %d건", self.state.run_id,
                      restored, pinned)
+        if isinstance(self.engine.brokerage, LiveBrokerage):
+            # This is a durable StateStore fact, not a guess from the cash value.
+            # A first-ever real-account adoption may import existing holdings;
+            # a resumed venue ledger must instead explain every quantity/cash
+            # difference before the process is allowed to overwrite it.
+            self.engine.brokerage.expect_restored_venue_truth(
+                resumed and self.state.restored_venue_truth,
+                reconciliation_required=(
+                    resumed and self.state.restored_reconciliation_required
+                ),
+            )
         # Bind the ledger whether or not we resumed. A fresh run has to survive
         # its own first crash too, and a daily cap that a restart clears is not
         # a cap — it is a cap plus a reset button the failure mode presses.
         self.state.restore_budget(self.engine.budget, datetime.now(UTC))
+        capital_source_before_connect = self.engine.ctx.portfolio.capital_source
+        # Commit the crash quarantine before the broker can perform any live
+        # activity. Only Engine.stop's verified no-open-order path reaches
+        # ``stop_run`` and clears it again.
+        if (isinstance(self.engine.brokerage, LiveBrokerage)
+                and self.engine.brokerage.uses_venue_capital):
+            self.state.mark_reconciliation_required()
         await self.engine.start()
+        portfolio = self.engine.ctx.portfolio
+        if (capital_source_before_connect != "venue"
+                and portfolio.capital_source == "venue"):
+            # A legacy run's day ledger may also carry the configured 800k as
+            # its percentage-loss denominator. Correct it exactly once, when a
+            # valid venue snapshot replaces the configured source; ordinary
+            # restarts retain the day's original, already-real baseline.
+            ledger = self.engine.budget.roll(datetime.now(UTC), portfolio.equity)
+            ledger.starting_equity = portfolio.equity
+            self.state.save_budget(self.engine.budget)
+        # Persist the venue baseline before announcing the bot as running. If a
+        # deploy lands before the first candle, the next process must still know
+        # that configured starting_cash is not live account truth.
+        self.state.snapshot_positions(portfolio)
         self.started_at = datetime.now(UTC)
         self.running = True
 
@@ -375,13 +413,13 @@ class LiveTrader:
     # ── the loop ─────────────────────────────────────────────────────────
     async def run(self) -> None:
         self._task = asyncio.current_task()
-        await self.start()
-        if self._stop is not None and self._stop.is_set():
-            # A signal during warm-up: start() has just set running = True, so
-            # without this the stop would be forgotten until the next signal.
-            self.running = False
-        tf = self.config.data.timeframe
         try:
+            await self.start()
+            if self._stop is not None and self._stop.is_set():
+                # A signal during warm-up: start() has just set running = True, so
+                # without this the stop would be forgotten until the next signal.
+                self.running = False
+            tf = self.config.data.timeframe
             while self.running:
                 if await self._wait_for_market():
                     continue
@@ -403,7 +441,10 @@ class LiveTrader:
             log.warning("cancelled mid-cycle — flushing state and exiting")
             self.running = False
         finally:
-            await self.shutdown()
+            if self.started_at is None:
+                await self._cleanup_failed_start()
+            else:
+                await self.shutdown()
 
     #: 수동 주문 대기열을 얼마나 자주 비우는가. 사람이 버튼을 누르고 이만큼은
     #: 기다릴 수 있지만, 그보다 길면 "안 눌렸나" 싶어 다시 누릅니다.
@@ -501,7 +542,15 @@ class LiveTrader:
         try:
             await self._refresh_universe()
             bars = await self._fetch_new_bars()
+            fills_pre_settled = False
             if isinstance(self.engine.brokerage, LiveBrokerage):
+                # One cumulative fill is visible through both the order and
+                # holdings endpoints. Book the order fill first, then let venue
+                # truth correct the final account. Reversing these two steps
+                # applies the same trade twice (qty/cash), while polling again
+                # inside on_bars would duplicate fee/trade events.
+                await self.engine.settle_live_fills()
+                fills_pre_settled = True
                 # Cheap insurance: reconcile every cycle so drift is caught in
                 # minutes rather than after a bad restart.
                 #
@@ -514,7 +563,7 @@ class LiveTrader:
             if not bars:
                 log.debug("no new closed bars this cycle")
                 return
-            await self.engine.on_bars(bars)
+            await self.engine.on_bars(bars, settle=not fills_pre_settled)
             self.last_bar_ts = max(b.ts for b in bars.values())
             self.errors = 0
         except asyncio.CancelledError:
@@ -562,6 +611,58 @@ class LiveTrader:
         return out
 
     # ── shutdown ─────────────────────────────────────────────────────────
+    async def _cleanup_failed_start(self) -> None:
+        """Release every resource acquired before startup became runnable.
+
+        This path never cancels or submits orders.  It exists for failures in
+        warm-up, account reconciliation, or broker connect, before normal
+        ``shutdown`` is eligible to run.
+        """
+        if self._stopped:
+            return
+        self._stopped = True
+        self.running = False
+        log.warning("startup failed — releasing %s resources", self.config.name)
+        for label, close in (
+            ("broker", self.engine.brokerage.close),
+            ("notifier", self.notifier.close),
+            ("provider", self.provider.close),
+        ):
+            try:
+                await close()
+            except Exception:  # noqa: BLE001 — cleanup must continue
+                log.exception("could not close %s after startup failure", label)
+        try:
+            # Do not stamp somebody else's active run if acquisition itself was
+            # what failed. A fresh/resumed run we successfully claimed should
+            # be visibly stopped before ownership is released.
+            # Do not let a config/broker change become an escape hatch. The
+            # marker describes the prior run, not the adapter selected for this
+            # failed retry; only a fully started run that later passes Engine.stop
+            # may clear it.
+            preserve_quarantine = self.state.restored_reconciliation_required
+            if self.state._owns and not preserve_quarantine:
+                self.state.stop_run()
+            elif self.state._owns:
+                self.state.record_event(
+                    "reconciliation_required",
+                    {
+                        "manual_verification_required": True,
+                        "recovery": (
+                            "토스 앱에서 당일 체결·미체결 주문과 실제 보유수량·현금, "
+                            "일일 손실 한도를 대조한 뒤 기존 상태를 보관하고 새 실행으로 "
+                            "초기화하세요"
+                        ),
+                    },
+                )
+        except Exception:  # noqa: BLE001 — ownership release still comes next
+            log.exception("could not mark failed startup as stopped")
+        finally:
+            try:
+                self.state.close()
+            except Exception:  # noqa: BLE001 — best-effort final release
+                log.exception("could not close state after startup failure")
+
     async def shutdown(self) -> None:
         if self._stopped or (not self.running and self.started_at is None):
             return
@@ -570,21 +671,66 @@ class LiveTrader:
         self._stopped = True
         self.running = False
         log.warning("shutting down %s", self.config.name)
+        shutdown_error: BaseException | None = None
         try:
             await self.engine.stop()
+        except BaseException as exc:  # cancellation/uncertainty is never a clean stop
+            shutdown_error = exc
         finally:
-            self.state.snapshot_positions(self.engine.ctx.portfolio)
-            self.state.save_locks(self.engine.ctx.export_locks())
-            self.state.save_pins(self.engine.ctx.pinned)
-            self.state.stop_run()
-            await self.notifier.send(
-                f"⏹ stopped {self.config.name}\n"
-                f"equity {self.engine.ctx.portfolio.equity:,.2f} "
-                f"({self.engine.ctx.portfolio.total_return:+.2%})"
-            )
-            await self.notifier.close()
-            await self.provider.close()
-            self.state.close()
+            try:
+                self.state.snapshot_positions(self.engine.ctx.portfolio)
+                self.state.save_locks(self.engine.ctx.export_locks())
+                self.state.save_pins(self.engine.ctx.pinned)
+            except Exception as exc:  # noqa: BLE001 — still release every resource
+                log.exception("could not persist the final live state")
+                if shutdown_error is None:
+                    shutdown_error = exc
+
+            if shutdown_error is None:
+                self.state.stop_run()
+                try:
+                    await self.notifier.send(
+                        f"⏹ stopped {self.config.name}\n"
+                        f"equity {self.engine.ctx.portfolio.equity:,.2f} "
+                        f"({self.engine.ctx.portfolio.total_return:+.2%})"
+                    )
+                except Exception:  # noqa: BLE001 — notification is not settlement
+                    log.exception("could not notify the clean shutdown")
+            else:
+                unsafe = (
+                    "안전한 종료를 확인하지 못해 정상 종료로 기록하지 않았습니다. "
+                    "토스 앱에서 미체결 주문과 당일 체결을 확인하고, 실제 보유수량과 "
+                    "일일 손실 한도를 대조한 뒤 다시 시작하세요. "
+                    f"원인: {shutdown_error}"
+                )
+                log.critical("%s", unsafe)
+                try:
+                    self.state.record_event(
+                        "unsafe_shutdown",
+                        {"error": str(shutdown_error)[:1000],
+                         "manual_verification_required": True},
+                    )
+                except Exception:  # noqa: BLE001 — preserve the original failure
+                    log.exception("could not persist the unsafe shutdown event")
+                try:
+                    await self.notifier.send(unsafe)
+                except Exception:  # noqa: BLE001 — preserve the original failure
+                    log.exception("could not notify the unsafe shutdown")
+
+            for label, close in (
+                ("notifier", self.notifier.close),
+                ("provider", self.provider.close),
+            ):
+                try:
+                    await close()
+                except Exception:  # noqa: BLE001 — best-effort final release
+                    log.exception("could not close %s during shutdown", label)
+            try:
+                self.state.close()
+            except Exception:  # noqa: BLE001 — best-effort final release
+                log.exception("could not close state during shutdown")
+        if shutdown_error is not None:
+            raise shutdown_error
 
     def install_signal_handlers(self) -> None:
         """Ctrl-C and SIGTERM stop *cleanly* — open positions are left alone but
