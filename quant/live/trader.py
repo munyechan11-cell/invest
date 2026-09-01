@@ -16,7 +16,7 @@ from datetime import datetime
 from quant.brokerage.live_base import LiveBrokerage
 from quant.config.schema import StrategyConfig
 from quant.core.clock import RealClock, next_candle_close
-from quant.core.engine import Engine, _insight_dict
+from quant.core.engine import Engine, UnsafeShutdownError, _insight_dict
 from quant.core.events import Event, EventType
 from quant.core.types import UTC, Bar, RunMode
 from quant.data.provider import DataProvider, gather_history
@@ -93,13 +93,22 @@ class LiveTrader:
 
         async def persist(event: Event) -> None:
             payload = event.payload or {}
-            if event.type is EventType.ORDER_FILLED:
-                self.state.record_event("order_filled", payload)
+            if event.type is EventType.ORDER_SUBMITTED:
+                # This is written after the daily ledger. The shared order id
+                # lets restart distinguish a current, fully-accounted fill from
+                # a legacy fill whose order/notional allowance was never saved.
+                self.state.record_accounting_event("order_submitted", payload)
+            elif event.type is EventType.ORDER_FILLED:
+                self.state.record_accounting_event("order_filled", payload)
             elif event.type is EventType.TRADE_CLOSED:
-                self.state.record_event("trade_closed", payload)
+                self.state.record_accounting_event("trade_closed", payload)
                 # 이벤트만 남기면 매매 기록과 기간별 실현손익이 영원히 빕니다 —
                 # 그쪽은 events 가 아니라 trades 테이블을 읽습니다.
-                self.state.record_closed_trade(payload)
+                try:
+                    self.state.record_closed_trade(payload)
+                except Exception:
+                    self.state.mark_accounting_persistence_failed()
+                    raise
             elif event.type is EventType.EQUITY:
                 self.state.record_equity(
                     datetime.now(UTC), payload.get("equity", 0.0),
@@ -178,17 +187,31 @@ class LiveTrader:
         self.last_bar_ts = max(self._seen.values())
 
     async def start(self) -> None:
-        cfg = self.config
-        # This must precede resume_run. Otherwise a different Toss strategy's
-        # old clean run can be resumed without reaching start_run's account-wide
-        # defense, bypassing both an unresolved run and its same-KST-day cooldown.
-        # It performs SQLite reads only: no warm-up, broker connect, or order call.
+        # Pydantic models are mutable after construction. Revalidate at the
+        # money-moving boundary so a caller cannot build a valid live config,
+        # zero/NaN its caps in place, and start an engine that skips the budget.
+        cfg = StrategyConfig.model_validate(self.config.model_dump())
+        self.config = cfg
+        # Toss startup claims the account ledger before warm-up and either
+        # resumes the exact preflighted run/scope or creates a fresh run. This
+        # closes the check-to-warm-up window in which another process could
+        # otherwise spend the account's allowance and stop again unseen.
         if cfg.mode is RunMode.LIVE and cfg.broker.type == "toss":
-            self.state.assert_toss_account_start_allowed()
-        resumed = self.resume and self.state.resume_run(cfg.name, cfg.mode.value)
-        if not resumed:
-            self.state.start_run(cfg.name, cfg.mode.value, cfg.portfolio.starting_cash,
-                                 cfg.model_dump_json())
+            resumed = self.state.prepare_toss_live_run(
+                cfg.name,
+                cfg.portfolio.starting_cash,
+                cfg.model_dump_json(),
+                resume=self.resume,
+            )
+        else:
+            resumed = self.resume and self.state.resume_run(
+                cfg.name, cfg.mode.value,
+            )
+            if not resumed:
+                self.state.start_run(
+                    cfg.name, cfg.mode.value, cfg.portfolio.starting_cash,
+                    cfg.model_dump_json(),
+                )
 
         self._attach_observers()
         await self.warmup()
@@ -685,6 +708,15 @@ class LiveTrader:
                 log.exception("could not persist the final live state")
                 if shutdown_error is None:
                     shutdown_error = exc
+
+            if (
+                shutdown_error is None
+                and self.state.accounting_persistence_failed
+            ):
+                shutdown_error = UnsafeShutdownError(
+                    "일일 한도 또는 주문·체결 회계 기록 저장에 실패한 이력이 "
+                    "있어 정상 종료로 확정할 수 없습니다"
+                )
 
             if shutdown_error is None:
                 self.state.stop_run()

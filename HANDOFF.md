@@ -6,12 +6,19 @@ API 목록)은 안 적고, **코드를 읽어도 모르는 것**만 적습니다
 이 문서의 커밋·테스트 수는 고정값으로 믿지 마세요. 이어받을 때
 `git rev-parse HEAD`와 전체 테스트를 다시 실행해 현재 상태를 확인합니다.
 
+> **구 첨부본 폐기:** 2026-08-24에 전달된 `HANDOFF.md` 사본은 과거
+> `7d59d0b` 상태와 반박 전 브랜치 적용 절차를 담은 구본입니다. 그 사본의
+> 커밋·테스트 수, `git apply`, pending 브랜치 상태를 따르지 마세요. 이 저장소의
+> 최신 `HANDOFF.md`와 `docs/pending_review.md`만 인계 기준으로 사용합니다.
+
 ---
 
-## 0. 이 서비스는 지금 **실거래 중**입니다
+## 0. 이 서비스는 **실거래 기능**을 포함합니다
 
-여섯 전략이 `mode: live` 입니다. 시작 버튼을 누르면 **진짜 주문이 나가고
-진짜 돈이 움직입니다.** 토스에는 모의투자 환경이 없어서 되돌릴 수단이 없습니다.
+여섯 전략이 `mode: live` 입니다. 현재 봇이 켜져 있다는 뜻은 아니므로 운영
+화면과 `/api/health`에서 매번 다시 확인합니다. 다만 시작 버튼을 누르면 **진짜
+주문이 나가고 진짜 돈이 움직입니다.** 토스에는 모의투자 환경이 없어서 되돌릴
+수단이 없습니다.
 
 | 전략 | 하루 한도 |
 |---|---|
@@ -39,38 +46,22 @@ API 목록)은 안 적고, **코드를 읽어도 모르는 것**만 적습니다
 ## 1. 화면은 파일 셋입니다
 
 ```
-quant/api/static/app.css      스타일 전부 (39,577자)  ← 디자인은 여기만
-quant/api/static/index.html   마크업 + 동작 (139,335자)
+quant/api/static/app.css      스타일 전부  ← 디자인은 여기만
+quant/api/static/index.html   마크업 + 동작
 quant/api/static/chart.js     캔들 차트
 ```
 
+파일 크기는 계속 바뀝니다. 문서에 적힌 숫자를 복사하지 말고 필요할 때
+`wc -m quant/api/static/app.css quant/api/static/index.html`로 현재 값을 봅니다.
+
 ### 절대 깨면 안 되는 계약 셋
 
-**(a) 스크립트가 붙잡는 id 145개.** 이름을 바꾸면 그 기능이 조용히 멈춥니다.
-`tests/test_ui_ids.py` 가 검사하니, 바꿔야 하면 스크립트도 같이 고치세요.
+**(a) 스크립트가 붙잡는 id 셋.** 이름을 바꾸면 그 기능이 조용히 멈춥니다.
+고정 목록은 곧 낡으므로 이 문서에 복제하지 않습니다. `tests/test_ui_ids.py`가
+현재 스크립트의 `getElementById(...)`와 `$("#...")` 참조를 마크업과 대조합니다.
+바꿔야 하면 마크업·스크립트를 함께 고치고 이 테스트를 실행하세요.
 
-`acctSetupBtn`, `acctWho`, `analystSeats`, `authCard`, `brandHome`, `brokerAcct`, `cBuy`,
-`cLast`, `cLimit`, `cNotional`, `cPos`, `cQty`, `cSell`, `cStale`, `cSym`, `cTf`, `chart`,
-`conn`, `ctaDemo`, `ctaJoin`, `ctaLogin`, `debateSeats`, `decisionSeats`, `demoBtn`,
-`demoClose`, `demoStage`, `deskSubject`, `equity`, `feed`, `flowBody`, `hudChange`,
-`hudEquity`, `hudKpis`, `hudSym`, `inspectBtn`, `inspectOut`, `lLoss`, `lLossPct`,
-`lNotional`, `lOrders`, `liEmail`, `liPassword`, `liveBarText`, `lkGo`, `lkMsg`, `lkQ`,
-`lkRes`, `loginForm`, `loginSubmit`, `logoutBtn`, `mAsk`, `mAskCost`, `mAskOut`, `mBudget`,
-`mBuy`, `mClose`, `mCloseAll`, `mLimit`, `mNotional`, `mPause`, `mPins`, `mQty`, `mSell`,
-`mSymbol`, `meBack`, `miniAcct`, `miniChange`, `miniEquity`, `mode`, `pApply`, `pAxes`,
-`pDerived`, `pRetake`, `pType`, `pageTabs`, `passwordForm`, `planNow`, `playBar`, `pnlGrid`,
-`pnlMode`, `pnlModeShown`, `positions`, `pwConfirm`, `pwCurrent`, `pwNew`, `pwSubmit`,
-`quiz`, `quizProg`, `quizResult`, `quizSkip`, `refApply`, `refCode`, `registerForm`,
-`registerSubmit`, `replayBtn`, `rgEmail`, `rgName`, `rgPassword`, `riskSeats`, `riskTag`,
-`rooms`, `roomsHome`, `roundTag`, `runStart`, `runStop`, `runSum`, `say-analyst`,
-`serverSince`, `setup`, `setupBtn`, `setupClose`, `setupOperator`, `setupSave`,
-`setupSteps`, `setupVenues`, `setupWho`, `stBrief`, `stDetail`, `stMeta`, `stNeed`,
-`stSignals`, `stepProfile`, `strategy`, `strategyPick`, `tabChart`, `tabDesk`, `tabLogin`,
-`tabRegister`, `tape`, `tourBox`, `tourBtn`, `tourNext`, `tourRing`, `tourSkip`, `tourStep`,
-`tourText`, `tourTitle`, `tradeCount`, `tradeLog`, `tradeModeShown`, `tradeMore`, `tryNow`,
-`tryNowGo`, `venueLinks`, `verdict`
-
-**(b) 상태 class 14개.** 스크립트가 켜고 끕니다. CSS 에서 이름을 바꾸면
+**(b) 상태 class 셋.** 스크립트가 켜고 끕니다. CSS 에서 이름을 바꾸면
 화면이 상태를 표현하지 못합니다.
 
 | class | 뜻 |
@@ -102,6 +93,19 @@ quant/api/static/chart.js     캔들 차트
 새 토큰은 `:root` 에 먼저 정의하세요. **정의 없는 `var()` 는 오류 없이 그
 속성만 사라집니다** — 배경이 통째로 투명해진 적이 있습니다.
 
+### 디자인 근거와 검증 경계
+
+픽셀 트레이딩 플로어의 분위기와 한눈에 보이는 조직 배치는 아래 두 Reel을
+벤치마킹했습니다.
+
+- [Reel 1](https://www.instagram.com/reel/Daw0jd6yP5R/)
+- [Reel 2](https://www.instagram.com/reel/DbZobgLTBUi/)
+- [Figma 릴리스 감사 파일](https://www.figma.com/design/tpl2jkD339wvYkjKMEQWud)
+
+`tests/test_ui_readability.py`와 `tests/test_ui_structure.py`는 본문 가독성과 모바일
+DOM 순서를 자동 검증합니다. 픽셀 감성과 벤치마크 대비 우수성은 사용자가 실제
+브라우저에서 직접 비교하기 전에는 입증됐다고 판정하지 않습니다.
+
 ---
 
 ## 2. 이 코드베이스가 지키는 원칙
@@ -109,9 +113,13 @@ quant/api/static/chart.js     캔들 차트
 고칠 때 이 셋만 지키면 나머지는 코드가 설명합니다.
 
 **없는 숫자를 지어내지 마세요.** 모르면 표시하지 않는 편이 낫습니다. 화면에
-자신 있게 뜬 틀린 값이 빈칸보다 훨씬 나쁩니다. 예: 토스가 예수금을 안 주므로
-`cash: None` 으로 두고 "제공하지 않습니다" 라고 씁니다. 0 으로 채우면
-"돈이 없다" 로 읽힙니다.
+자신 있게 뜬 틀린 값이 빈칸보다 훨씬 나쁩니다. 토스 계좌 응답은 회계상
+예수금과 같은 legacy `cash`를 제공하지 않으므로 `cash: None`을 유지하지만,
+통화별 공식 `cashBuyingPower`는 `cash_buying_power`로 따로 받습니다. 화면의
+운용 가능 자산 `investable_assets`는 **같은 통화의** `cash_buying_power +
+holdings market_value`이며, 통화를 섞거나 설정의 `starting_cash`·80만원 같은
+고정값으로 대체하지 않습니다. 실제 응답이 없거나 잘못되면 0을 발명하지 말고
+조회 실패 이유를 표시합니다.
 
 **조용히 실패하지 마세요.** 안 되면 **왜** 안 되는지 화면에 쓰세요. 이 저장소의
 버그 절반이 "아무 일도 안 일어나는데 이유가 어디에도 없음" 이었습니다.
@@ -127,16 +135,42 @@ quant/api/static/chart.js     캔들 차트
 
 ---
 
-## 3. 아직 안 고친 것 — 실거래에 영향
+## 3. 재시작·복구의 현재 안전 계약
 
-### 하루 손실 한도가 재시작으로 초기화됩니다 ⚠️
+### Toss 실거래의 하루 한도는 계좌 단위로 이어집니다
 
-`resume_run(전략, 모드)` 이 전략 이름으로 run 을 찾습니다. 목록에서 다른
-전략을 고르면 원장이 빈 새 run 이 열리고 `restore_budget` 이 0 부터 셉니다.
-**`install.sh` 를 돌릴 때마다 서비스가 재시작되므로, 장중에 배포하면 그날
-한도가 리셋됩니다.**
+현재 구현은 전략 이름만 보고 새 원장을 여는 과거 경로를 쓰지 않습니다.
 
-수정본은 **원격 브랜치**에 있습니다: `origin/pending/daily-cap-survives-restart`
+- 시작 전 DB owner claim을 잡고, 같은 전략·`live`·통화·한도 시간대의 **정확한
+  run id**만 원자적으로 재개합니다. 재시작 전후 주문 수·거래대금·수수료·실현
+  손익 원장은 같은 run에서 이어집니다.
+- 같은 Toss 계좌에서 한도 reset 시각 전 다른 전략으로 바꾸면 빈 원장을 만들지
+  않고 시작을 거부합니다. 전략을 바꿔 당일 한도를 우회할 수 없습니다.
+- `order_submitted`와 체결·종료 이벤트를 저장 원장과 대조합니다. 저장 실패,
+  누락된 제출 연결, 이벤트 수수료가 원장보다 크거나 이벤트 실현손실이 원장보다
+  나쁜 상태처럼 한도를 정확히 증명할 수 없으면 새 한도를 주지 않고 fail closed
+  합니다.
+- 현재 한도 구간에 걸리는 legacy row, 깨진 JSON·통화·시간대·한도 scope,
+  미래 시각처럼 안전한 이어받기를 증명할 수 없는 값도 임의로 0부터 시작하지
+  않습니다. 이미 보수적 만료 경계를 지난 과거 증거만 새 시작을 막지 않습니다.
+
+정상 종료를 증명하지 못한 Toss 실거래 run은 격리되어 자동 재개되지 않습니다.
+계정/설정 화면의 복구 카드는 봇이 꺼진 상태에서만 다음 절차를 받습니다.
+
+1. 토스 앱에서 미체결·당일 체결·보유 수량·현금·당일 손실 다섯 항목을 각각 대조
+2. 10~500자의 운영 사유 입력
+3. 서버가 내려준 acknowledgement 문구를 정확히 입력
+4. 현재 `config_path`와 정확한 run id가 그대로일 때만 보존 처리
+
+보존 처리는 기존 run과 감사 기록을 **삭제하지 않습니다.** 성공해도 봇을
+자동으로 시작하지 않으며, 당일 한도 초기화 우회를 막기 위해 서버가 안내한
+다음 KST 날짜의 `next_start_allowed_at` 전에는 새 실거래 시작을 거부합니다.
+그 시각 이후 사람이 다시 시작해야 새 run이 열립니다.
+
+이 계약은 현재 코드에서 새로 설계한 것입니다.
+`origin/pending/daily-cap-survives-restart`를 수정본으로 간주하거나 일부라도
+merge·cherry-pick하지 마세요. 그 브랜치는 한도 카운터가 아니라 halt만 옮기고
+scope와 0-cap 우회가 무너져 최종 반박됐습니다.
 
 ### 워크트리에 있던 것을 전부 브랜치로 옮겼습니다
 
@@ -189,16 +223,17 @@ quant/api/static/chart.js     캔들 차트
 
 ## 4. 아직 확인 못 한 것
 
-**실제 토스 API 로 한 번도 안 찍어 봤습니다.** 경로·필드명·페이징은 전부
-로컬 스펙 파일에서 확인했고, 실제 wire 응답으로는 확인하지 않았습니다
-(크레딧·실호출 금지 규칙 때문). `toss_broker.py` 의 `_FIELDS` 가 한때
-추정으로 **전부 틀렸던** 전례가 있습니다. 실거래 전에 한 종목으로 한 번
-찍어 보는 것을 권합니다.
+프로덕션의 **읽기 전용 계좌 조회**에서는 Toss가 내려준
+`cashBuyingPower`를 `cash_buying_power`로 읽고, 보유 평가액과 합쳐
+`investable_assets`를 만드는 경로를 확인했습니다. 그때 관측한 계좌 금액은
+스냅샷일 뿐이므로 문서나 설정에 고정하지 않습니다. 반면 실제 주문·체결
+응답은 호출하지 않았고, `toss_broker.py`의 `_FIELDS`가 한때 추정으로 전부
+틀렸던 전례가 있으므로 주문 wire 계약은 여전히 미검증입니다.
 
 같은 이유로 이것들도 미검증입니다:
 - 수급(`/api/v1/stocks/{symbol}/investor-trading`) 응답의 실제 모양
 - 종목명(`/api/v1/stocks`) 다건 조회
-- 계좌(`/api/v1/holdings`) 응답의 실제 모양
+- 보유 종목이 1개 이상일 때 계좌(`/api/v1/holdings`) 항목의 실제 모양
 - 주문 응답의 `execution.commission`/`execution.tax` (지금은 우리 비용
   모델로 **추정**해서 기록합니다 — 우대 요율 계좌면 어긋납니다)
 
@@ -228,9 +263,10 @@ quant/api/static/chart.js     캔들 차트
 `/api/health.started_at`이 모두 그대로인지 확인합니다.
 
 아래 설치 스크립트는 최초 프로비저닝이나 Python 의존성·서비스 정의 변경 때만
-쓰는 재시작 경로입니다. **평상시 코드 배포 명령이 아닙니다.** 특히
-`pending/daily-cap-survives-restart`의 반박된 수정안을 넣지 않은 현재 상태에서는
-장중 또는 손실 한도를 이어가야 하는 날에 실행하지 마세요.
+쓰는 재시작 경로입니다. **평상시 정적 UI 배포 명령이 아닙니다.** Python 코드를
+배포해 재시작해야 할 때도 먼저 봇이 꺼져 있고 장이 닫혔는지 확인합니다. 새
+일일 한도 계약이 재시작을 fail closed하더라도 장중 배포를 안전하다고 뜻하지는
+않습니다.
 
 ```bash
 sudo bash /home/quant/app/deploy/install.sh
