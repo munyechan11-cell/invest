@@ -284,7 +284,8 @@ SYMBOL_SCREENS = ["renderTape", "renderHud", "pushEvent", "renderFlow",
 
 @pytest.mark.parametrize("fn", SYMBOL_SCREENS)
 def test_no_screen_draws_a_bare_code(fn):
-    assert "symLabel(" in _function_body(fn), \
+    body = _function_body(fn)
+    assert "symLabel(" in body or "orderSymbolLabel(" in body, \
         f"{fn} 이 종목 이름 없이 코드만 그립니다"
 
 

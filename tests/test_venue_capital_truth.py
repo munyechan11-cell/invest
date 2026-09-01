@@ -24,6 +24,7 @@ from quant.core.types import (
     OrderSide,
     OrderStatus,
     OrderType,
+    Quote,
     Symbol,
 )
 from quant.execution.models import ImmediateExecution
@@ -223,6 +224,13 @@ async def test_tick_books_a_cumulative_fill_once_then_reconciles_before_strategy
     trader.errors = 0
     trader.max_errors = 10
     trader.last_bar_ts = None
+    trader.calendar = None
+
+    class Quotes:
+        async def quote(self, symbol):
+            return Quote(symbol, datetime.now(UTC), bid=9.9, ask=10.1)
+
+    trader.provider = Quotes()
 
     async def no_refresh():
         return None

@@ -50,9 +50,11 @@ class KisFlowProvider(FlowProvider):
 
     def __init__(self, app_key: str = "", app_secret: str = "", paper: bool = True,
                  requests_per_second: float = 6.0, include_program: bool = True,
-                 timeout: float = 20.0):
-        self.app_key = app_key or os.environ.get("KIS_APP_KEY", "")
-        self.app_secret = app_secret or os.environ.get("KIS_APP_SECRET", "")
+                 timeout: float = 20.0, allow_env_credentials: bool = True):
+        self.app_key = (app_key or os.environ.get("KIS_APP_KEY", "")
+                        if allow_env_credentials else app_key)
+        self.app_secret = (app_secret or os.environ.get("KIS_APP_SECRET", "")
+                           if allow_env_credentials else app_secret)
         self.paper = paper
         self.include_program = include_program
         self._client = httpx.AsyncClient(timeout=timeout)

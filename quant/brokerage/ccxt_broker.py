@@ -39,6 +39,7 @@ class CcxtBrokerage(LiveBrokerage):
         params = {}
         if order.reduce_only:
             params["reduceOnly"] = True
+        self._enforce_submission_guard(order)
         result = await self.ex.create_order(
             symbol=order.symbol.ticker,
             type="limit" if order.type is OrderType.LIMIT else "market",

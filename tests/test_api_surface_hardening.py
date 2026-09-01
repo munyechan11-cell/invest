@@ -317,6 +317,97 @@ def test_the_redaction_list_comes_from_the_wiring_table(broker, provider, expect
     assert {"telegram_bot_token", "telegram_chat_id"} <= fields
 
 
+def test_runtime_wiring_never_inherits_operator_credentials_from_template():
+    from quant.webapp.registry import _targets, _with_credentials
+
+    cfg = StrategyConfig.model_validate(OPERATOR_TEMPLATE)
+    wired = _with_credentials(cfg, {})
+
+    for params, wiring in _targets(wired):
+        assert not (set(params) & set(wiring.args)), (
+            wiring.venue_id,
+            params,
+        )
+
+
+def test_runtime_wiring_replaces_template_credentials_with_the_users_values():
+    from quant.webapp.registry import _with_credentials
+
+    cfg = StrategyConfig.model_validate(OPERATOR_TEMPLATE)
+    wired = _with_credentials(cfg, {
+        "TOSS_CLIENT_ID": "USER-CLIENT",
+        "TOSS_CLIENT_SECRET": "USER-SECRET",
+        "TOSS_ACCOUNT_NO": "USER-ACCOUNT",
+    })
+
+    assert wired.broker.params == {
+        "client_id": "USER-CLIENT",
+        "client_secret": "USER-SECRET",
+        "account_no": "USER-ACCOUNT",
+        "allow_env_credentials": False,
+    }
+    assert wired.data.params == {
+        "client_id": "USER-CLIENT",
+        "client_secret": "USER-SECRET",
+        "allow_env_credentials": False,
+    }
+
+
+def test_runtime_construction_cannot_fall_back_to_operator_toss_environment(
+    monkeypatch,
+):
+    from quant.brokerage.base import BrokerageError
+    from quant.brokerage.toss_broker import TossBrokerage, TossProvider
+    from quant.core.account import Portfolio
+    from quant.webapp.registry import _with_credentials
+
+    monkeypatch.setenv("TOSS_CLIENT_ID", "ENV-OPERATOR-ID")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "ENV-OPERATOR-SECRET")
+    monkeypatch.setenv("TOSS_ACCOUNT_NO", "99999999999")
+    wired = _with_credentials(StrategyConfig.model_validate(OPERATOR_TEMPLATE), {})
+
+    with pytest.raises(BrokerageError, match="TOSS_CLIENT_ID"):
+        TossProvider(**wired.data.params)
+    with pytest.raises(BrokerageError, match="TOSS_CLIENT_ID"):
+        TossBrokerage(
+            Portfolio(800000, "KRW"), reconcile_on_start=False,
+            **wired.broker.params,
+        )
+
+
+def test_runtime_wiring_scrubs_optional_ccxt_password_but_keeps_settings():
+    from quant.webapp.registry import _with_credentials
+
+    cfg = StrategyConfig.model_validate({
+        **OPERATOR_TEMPLATE,
+        "data": {
+            "provider": "ccxt", "timeframe": "1d", "calendar": "always_open",
+            "warmup_bars": 60,
+            "params": {
+                "exchange": "binance", "api_key": "OPERATOR-KEY",
+                "secret": "OPERATOR-SECRET", "password": "OPERATOR-PASS",
+                "sandbox": True, "region": "ap-northeast-2",
+            },
+        },
+        "broker": {
+            "type": "ccxt",
+            "params": {
+                "exchange": "binance", "api_key": "OPERATOR-KEY",
+                "secret": "OPERATOR-SECRET", "password": "OPERATOR-PASS",
+                "sandbox": True, "region": "ap-northeast-2",
+            },
+        },
+    })
+
+    wired = _with_credentials(cfg, {})
+
+    for params in (wired.broker.params, wired.data.params):
+        assert not ({"api_key", "secret", "password"} & set(params))
+        assert params["exchange"] == "binance"
+        assert params["sandbox"] is True
+        assert params["region"] == "ap-northeast-2"
+
+
 # ── (3) 백테스트는 남의 봇을 세우지 않는다 ──────────────────────────────
 async def _backtest_while_the_loop_watches(app, cookie: str, other: str) -> tuple:
     """백테스트를 돌리는 동안 0.25초 타이머가 제때 깨어나는지.

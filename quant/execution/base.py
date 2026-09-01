@@ -207,6 +207,35 @@ class ExecutionModel(ABC):
     @abstractmethod
     def execute(self, ctx: Context, targets: list[PortfolioTarget]) -> list[Order]: ...
 
+    def emergency_execute(
+        self,
+        ctx: Context,
+        targets: list[PortfolioTarget],
+    ) -> list[Order]:
+        """Cross the touch for risk reductions without bar-count patience.
+
+        Intrabar stops run on wall-clock maintenance, not strategy bars. Feeding
+        them through a patient limit/TWAP model can leave a stop resting for
+        days on a daily strategy. The target quantity is unchanged; only the
+        route is promoted to the model's venue-compatible crossing order.
+        """
+        orders: list[Order] = []
+        for target, delta, _price in self._deltas(ctx, targets):
+            side = OrderSide.BUY if delta > 0 else OrderSide.SELL
+            order_type, limit_price, tif = self._crossing(ctx, target.symbol, side)
+            order = self._order(
+                ctx,
+                target,
+                delta,
+                order_type,
+                limit_price,
+                tif,
+                " | intrabar emergency exit",
+            )
+            order.meta["emergency_exit"] = True
+            orders.append(order)
+        return orders
+
     # -- order ageing ----------------------------------------------------
     @property
     def pending_cancellations(self) -> list[Order]:

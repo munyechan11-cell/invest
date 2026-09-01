@@ -25,7 +25,18 @@ from quant.core.account import Portfolio
 from quant.core.clock import SimClock
 from quant.core.context import Context
 from quant.core.events import EventBus
-from quant.core.types import UTC, Bar, Direction, Insight, RunMode, Symbol
+from quant.core.types import (
+    UTC,
+    Bar,
+    Direction,
+    Insight,
+    Order,
+    OrderSide,
+    OrderType,
+    Quote,
+    RunMode,
+    Symbol,
+)
 
 SYM = Symbol("AAA", venue="SIM", tick_size=Decimal("0.01"), lot_size=Decimal("1"))
 
@@ -70,6 +81,98 @@ def test_sim_clock_refuses_to_run_backwards():
     clock = SimClock(datetime(2024, 1, 5, tzinfo=UTC))
     with pytest.raises(ValueError):
         clock.set(datetime(2024, 1, 4, tzinfo=UTC))
+
+
+def test_backtest_mark_never_uses_a_future_live_quote():
+    from quant.brokerage.paper import PaperBrokerage
+    from quant.core.engine import Engine
+    from quant.execution.models import ImmediateExecution
+    from quant.portfolio.models import EqualWeighting
+
+    class Quiet(AlphaModel):
+        async def update(self, _ctx, _bars):
+            return []
+
+    pf = Portfolio(10_000)
+    clock = SimClock(datetime(2024, 1, 1, tzinfo=UTC))
+    ctx = Context(
+        clock,
+        pf,
+        EventBus(),
+        timeframe="1d",
+        run_mode=RunMode.BACKTEST,
+    )
+    ctx.universe = [SYM]
+    pos = pf.position(SYM)
+    pos.quantity = Decimal("1")
+    pos.avg_price = pos.last_price = 100.0
+    bar = Bar(SYM, datetime(2024, 1, 1, tzinfo=UTC),
+              100, 101, 99, 100, 1e6, "1d")
+    ctx.set_quote(Quote(
+        SYM,
+        bar.end_ts + timedelta(minutes=10),
+        bid=998.0,
+        ask=1000.0,
+    ))
+    engine = Engine(
+        ctx,
+        Quiet(),
+        EqualWeighting(),
+        ImmediateExecution(),
+        PaperBrokerage(pf),
+    )
+
+    asyncio.run(engine.on_bars({SYM.key: bar}))
+
+    assert pos.last_price == pytest.approx(100.0)
+
+
+def test_backtest_fill_never_uses_an_attached_future_quote():
+    """A future L1 snapshot cannot mutate fill price, cash, or PnL."""
+    from quant.brokerage.paper import PaperBrokerage
+    from quant.core.engine import Engine
+    from quant.execution.models import ImmediateExecution
+    from quant.portfolio.models import EqualWeighting
+
+    class Quiet(AlphaModel):
+        async def update(self, _ctx, _bars):
+            return []
+
+    async def settle(with_future_quote: bool) -> tuple[float, float, float]:
+        pf = Portfolio(10_000)
+        clock = SimClock(datetime(2024, 1, 2, tzinfo=UTC))
+        ctx = Context(
+            clock, pf, EventBus(), timeframe="1d", run_mode=RunMode.BACKTEST,
+        )
+        ctx.universe = [SYM]
+        broker = PaperBrokerage(pf)
+        engine = Engine(
+            ctx, Quiet(), EqualWeighting(), ImmediateExecution(), broker,
+        )
+        prior = Bar(
+            SYM, datetime(2024, 1, 1, tzinfo=UTC),
+            100, 101, 99, 100, 1e6, "1d",
+        )
+        fill_bar = Bar(
+            SYM, datetime(2024, 1, 2, tzinfo=UTC),
+            101, 103, 100, 102, 1e6, "1d",
+        )
+        ctx.push_bar(prior)
+        await broker.submit(Order(
+            SYM, OrderSide.BUY, Decimal("10"), OrderType.MARKET,
+        ))
+        if with_future_quote:
+            ctx.set_quote(Quote(
+                SYM, fill_bar.end_ts + timedelta(minutes=1),
+                bid=998.0, ask=1000.0,
+            ))
+        fills = await engine._settle({SYM.key: fill_bar})
+        return fills[0].price, pf.cash, pf.equity
+
+    baseline = asyncio.run(settle(False))
+    mutated = asyncio.run(settle(True))
+
+    assert mutated == pytest.approx(baseline)
 
 
 class _AlwaysLong(AlphaModel):

@@ -9,16 +9,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import signal
 import time
 from datetime import datetime
+from decimal import Decimal
 
 from quant.brokerage.live_base import LiveBrokerage
 from quant.config.schema import StrategyConfig
 from quant.core.clock import RealClock, next_candle_close
+from quant.core.context import QUOTE_FUTURE_TOLERANCE
 from quant.core.engine import Engine, UnsafeShutdownError, _insight_dict
 from quant.core.events import Event, EventType
-from quant.core.types import UTC, Bar, RunMode
+from quant.core.types import UTC, Bar, PortfolioTarget, RunMode
 from quant.data.provider import DataProvider, gather_history
 from quant.live.notifier import TelegramNotifier
 from quant.live.spend import SpendMeter
@@ -33,6 +36,19 @@ class LiveTrader:
     #: instantly, but `/api/trader/stop` only clears the flag, so the poll is
     #: what makes that path prompt too.
     stop_poll_s = 1.0
+
+    #: 사람이 보는 호가와 체결 장부는 전략 봉보다 훨씬 자주 갱신합니다. 세
+    #: 값은 서로 다른 외부 호출입니다. 하나의 짧은 루프로 돌리되 각 채널이
+    #: 자기 한도와 backoff를 갖게 해야 한 채널 장애가 다른 채널을 폭주시키지
+    #: 않습니다.
+    MAINTENANCE_S = 3.0
+    QUOTE_REFRESH_S = 10.0
+    QUOTE_MAX_AGE_S = 30.0
+    QUOTE_REQUESTS_PER_MINUTE = 60.0
+    FILL_POLL_S = 2.0
+    FILL_POLL_MAX_S = 60.0
+    FILL_REQUESTS_PER_MINUTE = 60.0
+    EMERGENCY_EXIT_REPRICE_S = 15.0
 
     def __init__(
         self,
@@ -86,6 +102,50 @@ class LiveTrader:
         self._stop: asyncio.Event | None = None
         self._task: asyncio.Task | None = None
         self._stopped = False
+        self._last_quote_refresh = float("-inf")
+        self._quote_failures: dict[str, str] = {}
+        self._quote_blocked_decision = False
+        self._decision_due_at_next_open = False
+        self._next_fill_poll_at = 0.0
+        self._fill_poll_backoff_s = self.FILL_POLL_S
+        self._bind_submission_guard()
+
+    def _bind_submission_guard(self) -> None:
+        """Put session and durable-accounting truth at the final order gate."""
+        brokerage = getattr(getattr(self, "engine", None), "brokerage", None)
+        if isinstance(brokerage, LiveBrokerage):
+            brokerage.set_submission_guard(self._submission_error)
+
+    def _submission_error(self, order) -> str:
+        if not self._market_is_open():
+            # A long provider/AI call crossed the bell. Do not preserve the
+            # stale order; ask the next open to run a fresh decision instead.
+            self._decision_due_at_next_open = True
+            return "정규장이 닫혀 실제 주문 전송을 중단했습니다"
+        if (getattr(getattr(self, "state", None),
+                    "accounting_persistence_failed", False)
+                and not self.engine.brokerage._reduces_position(order)):
+            return (
+                "회계 기록 저장에 실패해 신규 노출을 격리했습니다 — 기존 포지션 "
+                "감소만 허용하며 재시작 전 수동 대조가 필요합니다"
+            )
+        if not self.engine.brokerage._reduces_position(order):
+            # A forced quote may have been fresh when sizing began, then expire
+            # while AI, broker preflight, token resolution, or a rate-limit gate
+            # awaited. This synchronous guard is called again at each adapter's
+            # actual send boundary. Reductions deliberately remain available
+            # during a quote outage so stale data cannot trap an open position.
+            quote_error = self._quote_error(
+                order.symbol,
+                self.engine.ctx.quote(order.symbol),
+                datetime.now(UTC),
+            )
+            if quote_error:
+                return (
+                    f"{order.symbol.ticker} 신규 주문을 전송 직전에 중단했습니다 "
+                    f"({quote_error}) — 최신 호가를 다시 확인한 뒤 재평가합니다"
+                )
+        return ""
 
     # ── wiring ───────────────────────────────────────────────────────────
     def _attach_observers(self) -> None:
@@ -100,6 +160,15 @@ class LiveTrader:
                 self.state.record_accounting_event("order_submitted", payload)
             elif event.type is EventType.ORDER_FILLED:
                 self.state.record_accounting_event("order_filled", payload)
+                # A maintenance fill can arrive hours before the next candle's
+                # EQUITY event. Persist the changed cash/quantity at the same
+                # boundary so a crash cannot leave the durable book one fill
+                # behind its already-recorded accounting event.
+                try:
+                    self.state.snapshot_positions(self.engine.ctx.portfolio)
+                except Exception:
+                    self.state.mark_accounting_persistence_failed()
+                    raise
             elif event.type is EventType.TRADE_CLOSED:
                 self.state.record_accounting_event("trade_closed", payload)
                 # 이벤트만 남기면 매매 기록과 기간별 실현손익이 영원히 빕니다 —
@@ -192,6 +261,9 @@ class LiveTrader:
         # zero/NaN its caps in place, and start an engine that skips the budget.
         cfg = StrategyConfig.model_validate(self.config.model_dump())
         self.config = cfg
+        # Tests and recovery code can replace the broker after construction.
+        # Rebind at the lifecycle boundary so no real adapter is left unguarded.
+        self._bind_submission_guard()
         # Toss startup claims the account ledger before warm-up and either
         # resumes the exact preflighted run/scope or creates a fresh run. This
         # closes the check-to-warm-up window in which another process could
@@ -434,6 +506,11 @@ class LiveTrader:
         return False
 
     # ── the loop ─────────────────────────────────────────────────────────
+    def _market_is_open(self) -> bool:
+        """One side-effect-free market check at the money-moving boundary."""
+        calendar = getattr(self, "calendar", None)
+        return calendar is None or calendar.is_open(datetime.now(UTC))
+
     async def run(self) -> None:
         self._task = asyncio.current_task()
         try:
@@ -446,6 +523,13 @@ class LiveTrader:
             while self.running:
                 if await self._wait_for_market():
                     continue
+                if getattr(self, "_decision_due_at_next_open", False):
+                    # A candle boundary that landed outside the venue session is
+                    # due now. This is a fresh next-open evaluation, never an
+                    # order prepared while the market was closed.
+                    self._decision_due_at_next_open = False
+                    await self._tick()
+                    continue
                 wake = next_candle_close(datetime.now(UTC), tf, lag=3.0)
                 sleep_for = (wake - datetime.now(UTC)).total_seconds()
                 if sleep_for > 0:
@@ -457,6 +541,13 @@ class LiveTrader:
                         break
                 if not self.running:
                     break
+                # The venue could close, hit a holiday, or change session state
+                # while a daily candle sleep was in progress. The check before
+                # that sleep is not permission that survives until this point.
+                if not self._market_is_open():
+                    log.info("봉 대기 중 장이 닫혀 이번 판단·주문 주기를 건너뜁니다")
+                    self._decision_due_at_next_open = True
+                    continue
                 await self._tick()
         except asyncio.CancelledError:
             # A second signal, or the API shutting the loop down. Swallowed on
@@ -469,31 +560,448 @@ class LiveTrader:
             else:
                 await self.shutdown()
 
-    #: 수동 주문 대기열을 얼마나 자주 비우는가. 사람이 버튼을 누르고 이만큼은
-    #: 기다릴 수 있지만, 그보다 길면 "안 눌렸나" 싶어 다시 누릅니다.
-    MANUAL_FLUSH_S = 5.0
+    #: 이전 공개 이름은 테스트와 외부 운영 코드가 읽을 수 있어 유지합니다.
+    MANUAL_FLUSH_S = MAINTENANCE_S
 
     async def _sleep_serving_manual(self, seconds: float) -> bool:
-        """자되, 그 사이 수동 주문은 제때 내보낸다. 정지 신호가 오면 False."""
-        left = seconds
-        while left > 0:
+        """자되, 체결·호가·수동 주문을 짧은 유지 주기로 돌린다."""
+        deadline = time.monotonic() + max(seconds, 0.0)
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return True
             chunk = min(left, self.MANUAL_FLUSH_S)
             if not await self._sleep(chunk):
                 return False
-            left -= chunk
             if not self.running:
                 return False
-            try:
-                sent = await self.engine.flush_manual()
-                if sent:
-                    log.info("수동 주문 %d건 즉시 제출", sent)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:      # noqa: BLE001 — 루프는 살립니다
-                log.warning("수동 주문 제출 실패: %s", exc)
-                await self.engine.ctx.bus.publish(
-                    EventType.ERROR, {"error": f"수동 주문 제출 실패: {exc}"})
-        return True
+            await self._maintenance_cycle()
+
+    def _watched_symbols(self) -> list:
+        """Universe + holdings + manual ticket symbols, deduplicated by venue key."""
+        ctx = self.engine.ctx
+        watched = list(ctx.universe)
+        watched.extend(pos.symbol for pos in ctx.portfolio.open_positions)
+        watched.extend(
+            request.symbol
+            for request in self.engine.manual.pending
+            if request.symbol is not None
+        )
+        out, seen = [], set()
+        for symbol in watched:
+            if symbol.key in seen:
+                continue
+            seen.add(symbol.key)
+            out.append(symbol)
+        return out
+
+    def _quote_error(self, symbol, quote, now: datetime) -> str:
+        """Return why an L1 snapshot is unsafe, or an empty string when usable."""
+        if quote is None:
+            return "호가 응답 없음"
+        if getattr(getattr(quote, "symbol", None), "key", None) != symbol.key:
+            return "다른 종목의 호가가 돌아옴"
+        ts = getattr(quote, "ts", None)
+        if not isinstance(ts, datetime) or ts.tzinfo is None:
+            return "호가 시각에 timezone이 없음"
+        try:
+            age = (now - ts.astimezone(UTC)).total_seconds()
+            bid, ask = float(quote.bid), float(quote.ask)
+        except (TypeError, ValueError, OverflowError):
+            return "호가 숫자를 읽을 수 없음"
+        if age < -QUOTE_FUTURE_TOLERANCE.total_seconds():
+            return "호가 시각이 현재보다 미래임"
+        if age > self.QUOTE_MAX_AGE_S:
+            return f"호가가 {age:.1f}초 지남"
+        if not (math.isfinite(bid) and math.isfinite(ask)):
+            return "호가가 유한한 숫자가 아님"
+        if not math.isfinite((bid + ask) / 2.0):
+            return "호가 중간값이 유한한 숫자가 아님"
+        if bid <= 0 or ask <= 0 or ask < bid:
+            return "매수·매도 호가 범위가 올바르지 않음"
+        return ""
+
+    async def _refresh_quotes(self, *, force: bool = False) -> tuple[set[str], dict[str, str]]:
+        """Refresh L1 and mark positions without ever turning it into a candle.
+
+        The returned failure map describes *this decision boundary*. An old quote
+        remains in Context so an emergency exit can still use the last known mark,
+        but a failed forced refresh never authorises new exposure.
+        """
+        symbols = self._watched_symbols()
+        if not symbols:
+            self._quote_failures = {}
+            return set(), {}
+
+        now = datetime.now(UTC)
+        monotonic_now = time.monotonic()
+        interval = max(
+            self.QUOTE_REFRESH_S,
+            len(symbols) * 60.0 / max(self.QUOTE_REQUESTS_PER_MINUTE, 1.0),
+        )
+        last = getattr(self, "_last_quote_refresh", float("-inf"))
+        if not force and monotonic_now - last < interval:
+            usable, missing = set(), {}
+            # A still-young cached quote is not proof that the provider channel
+            # recovered from its last failed read. Keep that failure sticky
+            # until a network refresh for the symbol succeeds; otherwise a
+            # manual BUY could slip through between retry intervals.
+            prior_failures = getattr(self, "_quote_failures", {})
+            for symbol in symbols:
+                if symbol.key in prior_failures:
+                    missing[symbol.key] = prior_failures[symbol.key]
+                    continue
+                error = self._quote_error(symbol, self.engine.ctx.quote(symbol), now)
+                if error:
+                    missing[symbol.key] = error
+                else:
+                    usable.add(symbol.key)
+            return usable, missing
+
+        self._last_quote_refresh = monotonic_now
+        results = await asyncio.gather(
+            *(self.provider.quote(symbol) for symbol in symbols),
+            return_exceptions=True,
+        )
+        # Providers stamp snapshots when each rate-limited request completes. If
+        # validation kept the pre-gather time, later successful results in a
+        # multi-symbol batch would look as if they came from the future.
+        now = datetime.now(UTC)
+        usable: set[str] = set()
+        missing: dict[str, str] = {}
+        ctx = self.engine.ctx
+        for symbol, result in zip(symbols, results):
+            if isinstance(result, BaseException):
+                missing[symbol.key] = f"호가 조회 실패: {result}"
+                continue
+            error = self._quote_error(symbol, result, now)
+            if error:
+                missing[symbol.key] = error
+                continue
+            ctx.set_quote(result)
+            # Quote is a mark, not a bar. History/no-lookahead remains untouched.
+            ctx.portfolio.mark(symbol, result.mid)
+            usable.add(symbol.key)
+
+        previous = set(getattr(self, "_quote_failures", {}))
+        current = set(missing)
+        self._quote_failures = missing
+        if current != previous:
+            if current:
+                names = ", ".join(
+                    next((s.ticker for s in symbols if s.key == key), key)
+                    for key in sorted(current)
+                )
+                message = (
+                    f"실시간 호가 확인 실패 ({names}) — 신규 노출은 보류하고 "
+                    "기존 포지션의 청산 경로만 유지합니다"
+                )
+                log.warning(message)
+                await ctx.bus.publish(EventType.ERROR, {
+                    "error": message,
+                    "quote_failures": dict(missing),
+                    "new_exposure_blocked": True,
+                })
+            elif previous:
+                log.info("실시간 호가 채널 복구")
+        return usable, missing
+
+    async def _poll_live_fills(self) -> list:
+        """Poll only while local orders need observation, with bounded backoff."""
+        brokerage = self.engine.brokerage
+        if not isinstance(brokerage, LiveBrokerage):
+            return []
+        now = time.monotonic()
+        if now < getattr(self, "_next_fill_poll_at", 0.0):
+            return []
+        try:
+            open_orders = list(await brokerage.open_orders())
+        except Exception as exc:  # noqa: BLE001 — uncertainty stays fail-closed
+            brokerage.fill_channel_down(f"로컬 미결 주문 확인 실패: {exc}")
+            delay = getattr(self, "_fill_poll_backoff_s", self.FILL_POLL_S)
+            self._next_fill_poll_at = now + delay
+            self._fill_poll_backoff_s = min(delay * 2, self.FILL_POLL_MAX_S)
+            log.warning("로컬 미결 주문 확인 실패: %s", exc)
+            return []
+
+        if not open_orders:
+            # A submit/cancel adapter may already have validated a fill and made
+            # its order terminal. Drain that local evidence without issuing an
+            # otherwise pointless KIS executions request every three seconds.
+            cached = brokerage.drain_pending_fills()
+            self._next_fill_poll_at = 0.0
+            self._fill_poll_backoff_s = self.FILL_POLL_S
+            if not cached:
+                return []
+            booked = await self.engine._book_fills(cached)
+            # A cancel/reap path can make the order terminal before the engine
+            # gets this locally validated fill. The same terminal-batch rule as
+            # the network-poll branch applies: reconcile now so account truth and
+            # capital checkpoints do not wait until the next strategy candle.
+            await brokerage.sync()
+            return booked
+
+        interval = max(
+            self.FILL_POLL_S,
+            len(open_orders) * 60.0 / max(self.FILL_REQUESTS_PER_MINUTE, 1.0),
+        )
+        try:
+            fills = await self.engine.settle_live_fills()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — retry; broker blocks new submits
+            brokerage.fill_channel_down(f"실시간 체결 확인 실패: {exc}")
+            delay = max(interval, getattr(self, "_fill_poll_backoff_s", interval))
+            self._next_fill_poll_at = now + delay
+            self._fill_poll_backoff_s = min(delay * 2, self.FILL_POLL_MAX_S)
+            log.warning("실시간 체결 확인 실패, %.1f초 후 재시도: %s", delay, exc)
+            await self.engine.ctx.bus.publish(EventType.ERROR, {
+                "error": f"실시간 체결 확인 실패: {exc}",
+                "retry_in_seconds": delay,
+            })
+            return []
+
+        if not brokerage.fill_channel_ok:
+            # KIS deliberately returns already-verified cached fills even when
+            # the executions lookup itself failed. Book those fills, but treat
+            # the channel as failed for scheduling and submission permission.
+            delay = max(interval, getattr(self, "_fill_poll_backoff_s", interval))
+            self._next_fill_poll_at = now + delay
+            self._fill_poll_backoff_s = min(delay * 2, self.FILL_POLL_MAX_S)
+            log.warning(
+                "체결 채널이 내려가 %.1f초 후 재시도: %s",
+                delay,
+                brokerage.fill_channel_error,
+            )
+            return fills
+
+        self._next_fill_poll_at = now + interval
+        self._fill_poll_backoff_s = self.FILL_POLL_S
+        if fills and not await brokerage.open_orders():
+            # Only a terminal batch can be reconciled safely. While an order is
+            # open, order-detail and holdings endpoints have no shared snapshot.
+            await brokerage.sync()
+        return fills
+
+    async def _flush_manual_quote_safe(self, missing: dict[str, str]) -> int:
+        """Let exits through a quote outage while keeping new exposure queued."""
+        manual = self.engine.manual
+        if not manual.pending:
+            return 0
+        if not await self.engine._refresh_pending():
+            manual.mark_pending(
+                "미체결 주문을 확인하지 못해 수동 주문을 안전하게 보류했습니다"
+            )
+            return 0
+        if not missing:
+            return await self.engine.flush_manual()
+
+        # ManualControl deliberately drains its whole queue. Split it for this
+        # synchronous section so close/close_all and reducing SELL requests do not
+        # get trapped behind an unrelated BUY whose quote failed. No await occurs
+        # until the original queue has been restored.
+        original = manual._queue
+        safe, blocked = [], []
+        portfolio = self.engine.ctx.portfolio
+        for request in original:
+            failed = request.symbol is not None and request.symbol.key in missing
+            reducing = request.action in ("close", "close_all") or (
+                request.action == "sell"
+                and request.symbol is not None
+                and portfolio.quantity(request.symbol) > 0
+            )
+            if not failed or reducing:
+                request.detail = ""
+                safe.append(request)
+            else:
+                request.detail = (
+                    "실시간 호가를 확인하지 못해 신규 노출을 보류했습니다 — "
+                    "호가가 복구되면 자동으로 다시 처리합니다"
+                )
+                blocked.append(request)
+        manual._queue = safe
+        try:
+            orders = manual.build_orders(self.engine.ctx)
+        finally:
+            # `build_orders` catches request-level errors, but an unexpected
+            # process error must still not make the blocked BUY queue disappear.
+            manual._queue = blocked + manual._queue
+        if orders:
+            await self.engine._submit(orders)
+        return len(orders)
+
+    async def _run_exit_safety(self) -> None:
+        """Evaluate only exposure-reducing risk targets between strategy bars."""
+        ctx = self.engine.ctx
+        if not await self.engine._refresh_pending():
+            return
+        for pos in ctx.portfolio.open_positions:
+            # Use the validated Context quote when present and the last closed bar
+            # otherwise. This path never manufactures a candle from the mark.
+            ctx.portfolio.mark(pos.symbol, ctx.price(pos.symbol))
+        holding_targets = [
+            PortfolioTarget(pos.symbol, pos.quantity, tag="quote outage hold", source="safety")
+            for pos in ctx.portfolio.open_positions
+        ]
+        targets = self.engine.risk.manage(ctx, holding_targets)
+        actionable = []
+        for target in targets:
+            held = ctx.portfolio.quantity(target.symbol)
+            reduces_held = (
+                held > 0 and Decimal("0") <= target.quantity < held
+            ) or (
+                held < 0 and held < target.quantity <= Decimal("0")
+            )
+            if reduces_held:
+                actionable.append(target)
+        if not actionable:
+            return
+
+        # A pending BUY must not disarm a stop, and a passive limit exit must not
+        # wait for another daily bar. Cancel every conflicting order first,
+        # drain fills that beat the cancel, then size from reconciled reality.
+        broker = self.engine.brokerage
+        ready_keys: set[str] = set()
+        canceled_any = False
+        canceled_keys: set[str] = set()
+        open_orders = list(await broker.open_orders())
+        now = datetime.now(UTC)
+        for target in actionable:
+            symbol_orders = [
+                order for order in open_orders
+                if order.symbol.key == target.symbol.key and order.status.is_open
+            ]
+            fresh_emergency = [
+                order for order in symbol_orders
+                if order.meta.get("emergency_exit")
+                and broker._reduces_position(order)
+                and max((now - order.created_at).total_seconds(), 0.0)
+                    < self.EMERGENCY_EXIT_REPRICE_S
+            ]
+            if len(symbol_orders) == 1 and fresh_emergency:
+                # A crossing exit is already live. Let the fill poll settle it;
+                # churning it every three seconds only creates cancel races.
+                continue
+
+            canceled_all = True
+            for order in symbol_orders:
+                canceled_any = True
+                try:
+                    canceled_all = await broker.cancel(order) and canceled_all
+                except Exception as exc:  # noqa: BLE001 - uncertainty blocks replacement
+                    canceled_all = False
+                    log.error("%s 긴급 청산 전 주문 취소 확인 실패: %s",
+                              target.symbol.ticker, exc)
+            if canceled_all:
+                ready_keys.add(target.symbol.key)
+                if symbol_orders:
+                    canceled_keys.add(target.symbol.key)
+            else:
+                await ctx.bus.publish(EventType.ERROR, {
+                    "error": (
+                        f"{target.symbol.ticker} 미체결 주문 취소를 확인하지 못해 "
+                        "중복 청산을 보내지 않았습니다 — 증권사 앱에서 확인하세요"
+                    ),
+                })
+
+        if not ready_keys:
+            return
+        # LiveBrokerage.cancel() puts any cancel-race fill back in the broker
+        # queue. Book it before sync; reversing the order double-applies quantity.
+        # Then require the venue snapshot to equal that exact known quantity.
+        # A lagging KIS-style holdings response must not restore the pre-fill
+        # position and make the replacement oversell it.
+        if isinstance(broker, LiveBrokerage):
+            if canceled_any:
+                await self.engine.settle_live_fills()
+            # Only a symbol whose resting order was actually canceled needs the
+            # exact post-cancel quantity barrier. An unrelated app trade on a
+            # symbol with no bot order is ordinary venue truth and must be
+            # adopted before risk recomputes the exit; pinning every ready symbol
+            # would trap that externally reduced position.
+            expected_positions = {
+                key: ctx.portfolio.positions[key].quantity
+                if key in ctx.portfolio.positions else Decimal("0")
+                for key in canceled_keys
+            }
+            report = await broker.sync(
+                expected_positions=expected_positions or None,
+                independent_position_keys=set(ready_keys),
+            )
+            if isinstance(report, dict) and report.get("ok") is False:
+                log.error("긴급 청산 전 계좌 대조 실패: %s", report.get("error"))
+                ready_keys.intersection_update(report.get("safe_position_keys") or [])
+                if not ready_keys:
+                    return
+        if not await self.engine._refresh_pending():
+            return
+
+        # Fills may have changed both holdings and the appropriate stop target.
+        holding_targets = [
+            PortfolioTarget(pos.symbol, pos.quantity,
+                            tag="quote outage hold", source="safety")
+            for pos in ctx.portfolio.open_positions
+        ]
+        refreshed = self.engine.risk.manage(ctx, holding_targets)
+        refreshed_actionable = []
+        for target in refreshed:
+            if target.symbol.key not in ready_keys:
+                continue
+            held = ctx.portfolio.quantity(target.symbol)
+            if ((held > 0 and Decimal("0") <= target.quantity < held)
+                    or (held < 0 and held < target.quantity <= Decimal("0"))):
+                refreshed_actionable.append(target)
+        emergency = getattr(self.engine.execution_model, "emergency_execute", None)
+        orders = (
+            emergency(ctx, refreshed_actionable)
+            if emergency is not None
+            else self.engine.execution_model.execute(ctx, refreshed_actionable)
+        )
+        reducing = [
+            order for order in orders
+            if broker._reduces_position(order)
+        ]
+        withheld = len(orders) - len(reducing)
+        if withheld:
+            log.error("호가 장애 안전 경로가 신규 노출 주문 %d건을 차단했습니다", withheld)
+        if reducing:
+            await self.engine._submit(reducing)
+
+    async def _maintenance_cycle(self) -> None:
+        """Short, rate-safe work that must not wait for the next strategy bar."""
+        market_open = self._market_is_open()
+        missing: dict[str, str] = {}
+        if market_open and isinstance(self.engine.brokerage, LiveBrokerage):
+            _, missing = await self._refresh_quotes()
+        await self._poll_live_fills()
+
+        # Every provider/poll above can straddle the bell. Permission from the
+        # beginning of the cycle is not permission to submit now.
+        if not self._market_is_open():
+            return
+        if (isinstance(self.engine.brokerage, LiveBrokerage)
+                and self.engine.ctx.portfolio.open_positions):
+            # Stops and drawdown cuts are safety decisions, not alpha decisions.
+            # Re-evaluate them on the current mark instead of waiting up to one
+            # daily candle. _run_exit_safety filters the output to reductions.
+            await self._run_exit_safety()
+        if getattr(self, "_quote_blocked_decision", False) and not missing:
+            # A scheduled decision that failed closed gets another chance within
+            # seconds, not at tomorrow's candle boundary. _seen was not advanced.
+            await self._tick()
+            missing = dict(getattr(self, "_quote_failures", {}))
+        if not self._market_is_open():
+            return
+        try:
+            sent = await self._flush_manual_quote_safe(missing)
+            if sent:
+                log.info("수동 주문 %d건 즉시 제출", sent)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:      # noqa: BLE001 — maintenance loop survives
+            log.warning("수동 주문 제출 실패: %s", exc)
+            await self.engine.ctx.bus.publish(
+                EventType.ERROR, {"error": f"수동 주문 제출 실패: {exc}"})
 
     async def _wait_for_market(self) -> bool:
         """Sleep until the venue opens. Returns True if we slept.
@@ -520,10 +1028,11 @@ class LiveTrader:
         # 장이 닫혀 있어도 판단할 것은 남아 있습니다 — "내일 무엇을 살 것인가"
         # 는 밤에 정하는 것이고, 그 결정이 장부에 있어야 개장하자마자 나갑니다.
         await self._closed_market_deliberation()
-        if not await self._sleep(min(wait_s + 2, 300)):
+        if not await self._sleep_serving_manual(min(wait_s + 2, 300)):
             return True
         if self.calendar.is_open(datetime.now(UTC)):
             self._announced_closed = False
+            self._decision_due_at_next_open = True
             log.info("%s 개장", self.calendar.name)
         return True
 
@@ -563,8 +1072,14 @@ class LiveTrader:
 
     async def _tick(self) -> None:
         try:
+            # `run()` checks this after its long sleep, and `_tick()` checks again
+            # because tests, recovery retries and future callers can invoke it
+            # directly. Session permission is a fact at the boundary, not a flag
+            # that can be cached across network I/O.
+            if not self._market_is_open():
+                log.info("장이 닫혀 자동 판단·주문 주기를 실행하지 않습니다")
+                return
             await self._refresh_universe()
-            bars = await self._fetch_new_bars()
             fills_pre_settled = False
             if isinstance(self.engine.brokerage, LiveBrokerage):
                 # One cumulative fill is visible through both the order and
@@ -583,10 +1098,44 @@ class LiveTrader:
                 # 시세가 안 올 때. 아래 조기 반환 뒤에 두었더니 그런 날에만
                 # 골라서 건너뛰었습니다.
                 await self.engine.brokerage.sync()
+
+                _, quote_failures = await self._refresh_quotes(force=True)
+                if quote_failures:
+                    # Do not fetch/advance `_seen`: maintenance can retry this same
+                    # closed bar as soon as L1 recovers. Risk still gets a chance
+                    # to reduce existing positions using the last safe mark.
+                    self._quote_blocked_decision = True
+                    await self._run_exit_safety()
+                    return
+                self._quote_blocked_decision = False
+
+            # Quote/account requests can straddle the closing bell. Re-check before
+            # fetching a bar, because `_fetch_new_bars` advances the at-most-once
+            # cursor and a closed-session skip after that would lose the bar.
+            if not self._market_is_open():
+                log.info("시세 확인 중 장이 닫혀 자동 판단·주문 주기를 건너뜁니다")
+                return
+            bars = await self._fetch_new_bars()
             if not bars:
                 log.debug("no new closed bars this cycle")
                 return
+            if not self._market_is_open():
+                # `_fetch_new_bars` is intentionally side-effect free. Leaving
+                # `_seen` untouched makes this exact settled bar available for
+                # the fresh next-open evaluation.
+                self._decision_due_at_next_open = True
+                log.info("봉 조회 중 장이 닫혀 판단을 다음 개장으로 미룹니다")
+                return
             await self.engine.on_bars(bars, settle=not fills_pre_settled)
+            if self._decision_due_at_next_open:
+                # The final submission guard can observe a close during alpha,
+                # portfolio or adapter work.  Do not consume this settled bar:
+                # next open must rebuild the decision from current holdings and
+                # pending orders instead of replaying a stale prepared order.
+                log.info("주문 직전 장이 닫혀 이 봉 판단을 다음 개장으로 미룹니다")
+                return
+            for key, bar in bars.items():
+                self._seen[key] = bar.ts
             self.last_bar_ts = max(b.ts for b in bars.values())
             self.errors = 0
         except asyncio.CancelledError:
@@ -605,8 +1154,15 @@ class LiveTrader:
                 self.running = False
 
     async def _fetch_new_bars(self) -> dict[str, Bar]:
-        """Return only bars we have not already processed."""
+        """Return only closed, unprocessed bars without advancing the cursor.
+
+        ``DataProvider.latest_bars`` promises closed candles, but this boundary
+        is where an untrusted venue response becomes strategy history.  Enforce
+        the promise again here: a still-forming daily candle must never reach
+        alpha, risk, fills, or the durable ``_seen`` cursor.
+        """
         tf = self.config.data.timeframe
+        decision_now = self.engine.ctx.now
         out: dict[str, Bar] = {}
         watched = list(self.engine.ctx.universe)
         seen = {s.key for s in watched}
@@ -625,12 +1181,18 @@ class LiveTrader:
             if isinstance(result, BaseException):
                 log.warning("data fetch failed for %s: %s", symbol.ticker, result)
                 continue
-            for bar in result:
-                last = self._seen.get(symbol.key)
-                if last is not None and bar.ts <= last:
-                    continue
-                self._seen[symbol.key] = bar.ts
-                out[symbol.key] = bar        # keep the newest per symbol
+            last = self._seen.get(symbol.key)
+            candidates = [
+                bar for bar in result
+                if (isinstance(bar, Bar)
+                    and bar.symbol.key == symbol.key
+                    and bar.timeframe == tf
+                    and bar.ts.tzinfo is not None
+                    and bar.end_ts <= decision_now
+                    and (last is None or bar.ts > last))
+            ]
+            if candidates:
+                out[symbol.key] = max(candidates, key=lambda bar: bar.ts)
         return out
 
     # ── shutdown ─────────────────────────────────────────────────────────

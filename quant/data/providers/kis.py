@@ -78,9 +78,12 @@ class KisProvider(DataProvider):
         app_secret: str = "",
         paper: bool = True,
         requests_per_second: float = 8.0,
+        allow_env_credentials: bool = True,
     ):
-        self.app_key = app_key or os.environ.get("KIS_APP_KEY", "")
-        self.app_secret = app_secret or os.environ.get("KIS_APP_SECRET", "")
+        self.app_key = (app_key or os.environ.get("KIS_APP_KEY", "")
+                        if allow_env_credentials else app_key)
+        self.app_secret = (app_secret or os.environ.get("KIS_APP_SECRET", "")
+                           if allow_env_credentials else app_secret)
         self.paper = paper
         self._client = httpx.AsyncClient(timeout=20)
         self._gap = 1.0 / requests_per_second
@@ -153,7 +156,10 @@ class KisProvider(DataProvider):
                 except (KeyError, ValueError):
                     continue
             cursor_end = cursor_start - timedelta(days=1)
-        uniq = {b.ts: b for b in bars if start <= b.ts < end}
+        # KIS may include today's still-forming daily row.  The provider
+        # contract is closed bars, so compare the candle *end*, not only its
+        # open date, before exposing it to a live strategy.
+        uniq = {b.ts: b for b in bars if start <= b.ts and b.end_ts <= end}
         return [uniq[k] for k in sorted(uniq)]
 
     async def quote(self, symbol):
