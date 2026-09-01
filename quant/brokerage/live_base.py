@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -111,6 +112,12 @@ class LiveBrokerage(Brokerage):
         #: network timeout from becoming a second real position
         self._dedupe: dict[tuple, float] = {}
         self._pending_fills: list[Fill] = []
+        # LiveTrader installs the venue-session/accounting quarantine here.
+        # The base layer checks it after adapter preflight; every concrete
+        # adapter must also call ``_enforce_submission_guard`` after its own
+        # awaited token/header/rate-limit preparation and directly before the
+        # side-effecting venue method.
+        self._submission_guard: Callable[[Order], str] | None = None
         self._lock = LazyLock()
         # A capital hook may cache one broker response for the immediately
         # following positions/cost hooks.  Serialise the whole reconciliation,
@@ -131,6 +138,31 @@ class LiveBrokerage(Brokerage):
         coupling the generic brokerage layer to that venue.
         """
         return None
+
+    def set_submission_guard(self, guard: Callable[[Order], str] | None) -> None:
+        """Install a synchronous final-boundary guard.
+
+        The callback returns an empty string when submission is allowed and a
+        user-readable rejection reason otherwise. It must not perform I/O: the
+        adapter invokes it while holding the per-broker submission lock.
+        """
+        self._submission_guard = guard
+
+    def _submission_guard_error(self, order: Order) -> str:
+        guard = self._submission_guard
+        if guard is None:
+            return ""
+        try:
+            return str(guard(order) or "")
+        except Exception as exc:  # noqa: BLE001 - uncertainty fails closed
+            log.exception("submission guard failed for %s", order.symbol.ticker)
+            return f"주문 직전 안전 상태를 확인하지 못했습니다: {exc}"
+
+    def _enforce_submission_guard(self, order: Order) -> None:
+        """Raise at a concrete adapter's last synchronous send boundary."""
+        reason = self._submission_guard_error(order)
+        if reason:
+            raise BrokerageError(reason)
 
     async def _venue_cancel(self, order: Order) -> bool:  # pragma: no cover
         raise NotImplementedError
@@ -380,6 +412,13 @@ class LiveBrokerage(Brokerage):
                 return order
 
             if not self.sends_orders:
+                reason = self._submission_guard_error(order)
+                if reason:
+                    order.status = OrderStatus.REJECTED
+                    order.reject_reason = reason
+                    log.warning("blocked dry-run order for %s: %s",
+                                order.symbol.ticker, reason)
+                    return order
                 # Dry run: everything except the network call, so the same code
                 # path, guard rails and logging are exercised.
                 order.status = OrderStatus.SUBMITTED
@@ -393,6 +432,7 @@ class LiveBrokerage(Brokerage):
 
             try:
                 await self._pre_venue_submit(order)
+                self._enforce_submission_guard(order)
                 broker_id = await self._venue_submit(order)
             except Exception as exc:
                 order.status = OrderStatus.REJECTED
@@ -548,12 +588,118 @@ class LiveBrokerage(Brokerage):
                         "portfolio.starting_cash 를 맞추세요.", local, float(cash))
         self._cash_warned = material
 
-    async def sync(self) -> dict:
+    async def _reconcile_independent_positions(
+        self,
+        venue: dict[str, Decimal],
+        requested_keys: set[str] | None,
+        *,
+        unsafe_keys: set[str] | None = None,
+        costs: dict[str, float] | None = None,
+    ) -> tuple[set[str], dict[str, dict]]:
+        """Adopt only symbol-local truth while account-wide truth is quarantined.
+
+        A stale/open order on one symbol must not trap an unrelated stop exit.
+        Conversely, a quantity-only correction must use the same cost-basis
+        cash adjustment as a normal reconciliation on brokers where the local
+        strategy allocation remains the capital source.  Otherwise an external
+        trim silently destroys capital and an external add invents it.
+
+        ``unsafe_keys`` are symbols touched by an open/canceled-but-unsettled
+        order.  They never participate in this escape hatch.  Venue-authoritative
+        cash/holdings also remain untouched: this helper proves only individual
+        quantities, never one internally consistent account snapshot.
+        """
+        if (not requested_keys
+                or self._restored_reconciliation_required
+                or self._restored_venue_truth_guard):
+            return set(), {}
+        candidates = set(requested_keys) - set(unsafe_keys or ())
+        if not candidates:
+            return set(), {}
+        if costs is None:
+            try:
+                costs = await self._venue_costs()
+            except Exception as exc:
+                log.debug("venue average costs unavailable: %s", exc)
+                costs = {}
+
+        symbols = self._known_symbols()
+        safe_keys: set[str] = set()
+        corrected: dict[str, dict] = {}
+        for key in sorted(candidates):
+            observed = venue.get(key, Decimal("0"))
+            local = self.portfolio.positions.get(key)
+            if local is None:
+                if observed == 0:
+                    safe_keys.add(key)
+                    continue
+                symbol = symbols.get(key)
+                if symbol is None:
+                    continue
+                local = self.portfolio.position(symbol)
+
+            local_qty = local.quantity
+            try:
+                venue_avg = float((costs or {}).get(key) or 0.0)
+            except (TypeError, ValueError, OverflowError):
+                venue_avg = 0.0
+            if not math.isfinite(venue_avg) or venue_avg <= 0:
+                venue_avg = 0.0
+            local_avg = float(local.avg_price)
+            if not math.isfinite(local_avg) or local_avg <= 0:
+                local_avg = 0.0
+            basis = venue_avg or local_avg
+
+            # A non-flat quantity without cost cannot drive PnL/stops safely.
+            # A configured-capital broker also needs basis for the matching
+            # cash adjustment when a position vanished outside the engine.
+            if ((observed != 0 and basis <= 0)
+                    or (not self.uses_venue_capital
+                        and local_qty != observed and basis <= 0)):
+                continue
+            if local.avg_price <= 0 and venue_avg > 0:
+                local.avg_price = venue_avg
+
+            if local_qty != observed:
+                corrected[key] = {
+                    "local": float(local_qty),
+                    "venue": float(observed),
+                }
+                adopted = observed - local_qty
+                if not self.uses_venue_capital:
+                    self.portfolio.cash -= (
+                        float(adopted) * basis * float(local.symbol.multiplier)
+                    )
+                local.quantity = observed
+                if observed == 0:
+                    local.avg_price = 0.0
+            safe_keys.add(key)
+
+        if corrected:
+            log.warning(
+                "independent emergency position drift corrected: %s", corrected,
+            )
+        return safe_keys, corrected
+
+    async def sync(
+        self,
+        *,
+        expected_positions: dict[str, Decimal] | None = None,
+        independent_position_keys: set[str] | None = None,
+    ) -> dict:
         """Serialize one account snapshot from capital through positions/costs."""
         async with self._sync_lock:
-            return await self._sync_once()
+            return await self._sync_once(
+                expected_positions=expected_positions,
+                independent_position_keys=independent_position_keys,
+            )
 
-    async def _sync_once(self) -> dict:
+    async def _sync_once(
+        self,
+        *,
+        expected_positions: dict[str, Decimal] | None = None,
+        independent_position_keys: set[str] | None = None,
+    ) -> dict:
         """Reconcile local positions against the venue. The venue wins."""
         capital: dict[str, float] | None = None
         if self.uses_venue_capital:
@@ -571,13 +717,38 @@ class LiveBrokerage(Brokerage):
                     f"미결 주문 {len(open_orders)}건의 체결 정산이 끝나지 않았습니다"
                 )
                 self._capital_failed(reason)
-                return {
+                report = {
                     "ok": False,
                     "error": reason,
                     "capital_ready": False,
                     "transient": "open_orders",
                     "open_orders": [order.id for order in open_orders],
                 }
+                # Account totals are unsafe while any order is live, but the
+                # holdings endpoint can still prove an unrelated symbol.  Do
+                # not let A's unconfirmed cancel trap B's stop-loss.
+                unsafe = {
+                    order.symbol.key for order in open_orders
+                } | {
+                    checkpoint.order.symbol.key
+                    for checkpoint in self._capital_order_checkpoints.values()
+                } | set((expected_positions or {}).keys())
+                candidates = set(independent_position_keys or ()) - unsafe
+                if candidates:
+                    try:
+                        venue = await self._venue_positions()
+                    except Exception as exc:
+                        log.error("position-only sync failed during open order: %s", exc)
+                    else:
+                        safe, corrected = await self._reconcile_independent_positions(
+                            venue, candidates,
+                        )
+                        report["venue_positions"] = {
+                            key: float(value) for key, value in venue.items()
+                        }
+                        report["safe_position_keys"] = sorted(safe)
+                        report["independently_corrected"] = corrected
+                return report
             # Mark unavailable *before* the network call.  Retaining yesterday's
             # True through a failed refresh is exactly how a stale 800k balance
             # becomes permission for today's real order.
@@ -587,7 +758,38 @@ class LiveBrokerage(Brokerage):
             except Exception as exc:  # noqa: BLE001 — adapter failures become a report
                 self._capital_failed(str(exc))
                 log.error("account capital sync failed: %s", exc)
-                return {"ok": False, "error": str(exc), "capital_ready": False}
+                report = {
+                    "ok": False,
+                    "error": str(exc),
+                    "capital_ready": False,
+                    "transient": "capital_unavailable",
+                }
+                # Reducing risk does not consume buying power.  If holdings are
+                # still reachable, allow only symbols with no order settlement
+                # dependency to size their exit from fresh venue quantity.
+                unsafe = {
+                    checkpoint.order.symbol.key
+                    for checkpoint in self._capital_order_checkpoints.values()
+                } | set((expected_positions or {}).keys())
+                candidates = set(independent_position_keys or ()) - unsafe
+                if candidates:
+                    try:
+                        venue = await self._venue_positions()
+                    except Exception as position_exc:
+                        log.error(
+                            "position-only sync failed during capital outage: %s",
+                            position_exc,
+                        )
+                    else:
+                        safe, corrected = await self._reconcile_independent_positions(
+                            venue, candidates,
+                        )
+                        report["venue_positions"] = {
+                            key: float(value) for key, value in venue.items()
+                        }
+                        report["safe_position_keys"] = sorted(safe)
+                        report["independently_corrected"] = corrected
+                return report
         try:
             venue = await self._venue_positions()
         except Exception as exc:
@@ -605,6 +807,54 @@ class LiveBrokerage(Brokerage):
             report.update({"drift": {}, "corrected": {}, "uncorrected": {},
                            "observed_only": "no orders are being sent to this venue"})
             return report
+
+        if expected_positions:
+            unsettled = {}
+            for key, expected in expected_positions.items():
+                observed = venue.get(key, Decimal("0"))
+                if observed != expected:
+                    unsettled[key] = {
+                        "expected": float(expected), "venue": float(observed),
+                    }
+            if unsettled:
+                reason = (
+                    "방금 확인한 체결 수량이 증권사 보유수량에 아직 정확히 "
+                    "반영되지 않았습니다"
+                )
+                if self.uses_venue_capital:
+                    self._capital_failed(reason)
+                report.update({
+                    "ok": False,
+                    "error": reason,
+                    "capital_ready": self._capital_ready,
+                    "transient": "position_settlement",
+                    "unsettled_positions": unsettled,
+                })
+                # Emergency exits are symbol-local. A canceled order on A can
+                # leave A's holdings endpoint stale while an unrelated app
+                # trade on B is already authoritative. Keep aggregate capital
+                # quarantined, but adopt only explicitly requested, independent
+                # position quantities so B's risk-reducing exit is not trapped.
+                open_order_keys = {
+                    order.symbol.key for order in self._orders.values()
+                    if order.status.is_open
+                }
+                checkpoint_keys = {
+                    checkpoint.order.symbol.key
+                    for checkpoint in self._capital_order_checkpoints.values()
+                }
+                safe_keys, partial_corrected = (
+                    await self._reconcile_independent_positions(
+                        venue,
+                        independent_position_keys,
+                        unsafe_keys=(
+                            set(unsettled) | open_order_keys | checkpoint_keys
+                        ),
+                    )
+                )
+                report["safe_position_keys"] = sorted(safe_keys)
+                report["independently_corrected"] = partial_corrected
+                return report
 
         if self.uses_venue_capital and self._restored_reconciliation_required:
             recovery = (
@@ -768,6 +1018,20 @@ class LiveBrokerage(Brokerage):
                     "transient": "terminal_order_settlement",
                     "unsettled_orders": unresolved,
                 })
+                checkpoint_keys = {
+                    checkpoint.order.symbol.key
+                    for checkpoint in self._capital_order_checkpoints.values()
+                }
+                safe_keys, partial_corrected = (
+                    await self._reconcile_independent_positions(
+                        venue,
+                        independent_position_keys,
+                        unsafe_keys=checkpoint_keys,
+                        costs=costs,
+                    )
+                )
+                report["safe_position_keys"] = sorted(safe_keys)
+                report["independently_corrected"] = partial_corrected
                 return report
             for order_id in tuple(self._capital_order_checkpoints):
                 self._capital_order_checkpoints.pop(order_id, None)

@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from datetime import datetime
+from decimal import Decimal
 
 from quant.alpha.attribution import InsightLedger
 from quant.alpha.base import AlphaModel, InsightCollection
@@ -34,6 +35,7 @@ from quant.core.types import (
     Order,
     OrderStatus,
     PortfolioTarget,
+    RunMode,
     Symbol,
 )
 from quant.execution.base import ExecutionModel
@@ -228,7 +230,15 @@ class Engine:
         # up from scratch and its first signals are noise.
         for bar in bars.values():
             ctx.push_bar(bar)
-            ctx.portfolio.mark(bar.symbol, bar.close)
+            # A backtest must never consume an externally injected future quote.
+            # Live/dry-run Context quotes are validated L1 marks; simulation
+            # truth is exactly the settled candle being processed.
+            mark_price = (
+                bar.close
+                if ctx.run_mode is RunMode.BACKTEST
+                else ctx.price(bar.symbol)
+            )
+            ctx.portfolio.mark(bar.symbol, mark_price)
         ctx.portfolio.record_equity(bar_ts)
         await self.bus.publish(EventType.EQUITY, ctx.portfolio.snapshot())
 
@@ -247,10 +257,36 @@ class Engine:
             # Paused means "open nothing new". Risk-driven exits and the
             # operator's own orders keep flowing — a pause that traps the book
             # is a worse tool than no pause at all.
-            await self._refresh_pending()
+            if not await self._refresh_pending():
+                self.manual.mark_pending(
+                    "미체결 주문을 확인하지 못해 수동 주문을 안전하게 보류했습니다"
+                )
+                return
+            manual_symbol_keys = self.manual.pending_symbol_keys(ctx)
             exits = self.risk.manage(ctx, [])
-            await self._submit(self.execution_model.execute(ctx, exits)
-                               + self.manual.build_orders(ctx))
+            priority_risk_keys = {
+                target.symbol.key for target in exits
+                if (target.symbol.key in manual_symbol_keys
+                    and self._is_risk_reduction(target, None))
+            }
+            if manual_symbol_keys:
+                exits = [
+                    target for target in exits
+                    if (target.symbol.key not in manual_symbol_keys
+                        or target.symbol.key in priority_risk_keys)
+                ]
+            risk_orders = self.execution_model.execute(ctx, exits)
+            emitted_risk_keys = {
+                order.symbol.key for order in risk_orders
+                if (order.symbol.key in priority_risk_keys
+                    and self.brokerage._reduces_position(order))
+            }
+            manual_orders = self.manual.build_orders(
+                ctx,
+                reserved_order_keys=emitted_risk_keys,
+                blocked_increase_keys=priority_risk_keys,
+            )
+            await self._submit(risk_orders + manual_orders)
             return
 
         # 4 — alpha, over the active universe only
@@ -272,7 +308,12 @@ class Engine:
 
         # 4.5 — refresh projected holdings so execution diffs against the
         # position we will have, not the one we have now
-        await self._refresh_pending()
+        if not await self._refresh_pending():
+            self.manual.mark_pending(
+                "미체결 주문을 확인하지 못해 수동 주문을 안전하게 보류했습니다"
+            )
+            return
+        manual_symbol_keys = self.manual.pending_symbol_keys(ctx)
 
         # 5 — portfolio construction
         try:
@@ -313,16 +354,69 @@ class Engine:
             await self.bus.publish(EventType.TARGET, _target_dict(t))
 
         # 7/8 — execution
+        # Manual intent suppresses an ordinary strategy rebalance for the same
+        # symbol. It must never suppress a risk-origin exposure reduction: the
+        # stop wins and the conflicting manual request remains queued until the
+        # exit settles.
+        priority_risk_keys = {
+            target.symbol.key for target in targets
+            if (target.symbol.key in manual_symbol_keys
+                and self._is_risk_reduction(
+                    target,
+                    proposed.get(
+                        target.symbol.key,
+                        ctx.portfolio.quantity(target.symbol),
+                    ),
+                ))
+        }
+        if manual_symbol_keys:
+            targets = [
+                target for target in targets
+                if (target.symbol.key not in manual_symbol_keys
+                    or target.symbol.key in priority_risk_keys)
+            ]
         try:
             orders = self.execution_model.execute(ctx, targets)
         except Exception:
             log.exception("execution model failed on %s", bar_ts)
             return
+        emitted_risk_keys = {
+            order.symbol.key for order in orders
+            if (order.symbol.key in priority_risk_keys
+                and self.brokerage._reduces_position(order))
+        }
         # Manual orders bypass alpha, portfolio and universe — that is the point
         # — but not the brokerage guard rails below.
-        await self._submit(orders + self.manual.build_orders(ctx))
+        manual_orders = self.manual.build_orders(
+            ctx,
+            reserved_order_keys=emitted_risk_keys,
+            blocked_increase_keys=priority_risk_keys,
+        )
+        await self._submit(orders + manual_orders)
 
         _ = fills  # already published in _settle
+
+    def _is_risk_reduction(
+        self,
+        target: PortfolioTarget,
+        proposed_quantity: Decimal | None,
+    ) -> bool:
+        """Whether risk changed the pre-risk target into a real exposure cut.
+
+        Several built-in caps deliberately preserve the portfolio model's
+        ``source`` label, so provenance text cannot be the safety boundary.
+        Quantity before/after the risk stack is the invariant that matters.
+        """
+        held = self.ctx.portfolio.quantity(target.symbol)
+        reduces_held = (
+            held > 0 and Decimal("0") <= target.quantity < held
+        ) or (
+            held < 0 and held < target.quantity <= Decimal("0")
+        )
+        if not reduces_held:
+            return False
+        baseline = held if proposed_quantity is None else proposed_quantity
+        return target.quantity != baseline or target.source in {"risk", "lock_gate"}
 
     async def flush_manual(self) -> int:
         """대기 중인 수동 주문만 지금 내보낸다. 돌려주는 값은 낸 건수.
@@ -335,6 +429,11 @@ class Engine:
         브로커의 가드(하루 한도·주문당 상한·중복창)는 그대로 통과합니다 —
         "내가 직접 낸다" 가 "한도를 무시한다" 는 아닙니다.
         """
+        if not await self._refresh_pending():
+            self.manual.mark_pending(
+                "미체결 주문을 확인하지 못해 수동 주문을 안전하게 보류했습니다"
+            )
+            return 0
         orders = self.manual.build_orders(self.ctx)
         if not orders:
             return 0
@@ -345,12 +444,16 @@ class Engine:
         for order in orders:
             submitted = await self.brokerage.submit(order)
             self.orders.append(submitted)
+            self.manual.record_submission(
+                submitted,
+                reducing=self.brokerage._reduces_position(submitted),
+            )
             if submitted.status is OrderStatus.REJECTED:
                 await self.bus.publish(EventType.ORDER_REJECTED, _order_dict(submitted))
             else:
                 await self.bus.publish(EventType.ORDER_SUBMITTED, _order_dict(submitted))
 
-    async def _refresh_pending(self) -> None:
+    async def _refresh_pending(self) -> bool:
         from decimal import Decimal
 
         pending: dict[str, Decimal] = {}
@@ -360,9 +463,10 @@ class Engine:
                 pending[order.symbol.key] = pending.get(order.symbol.key,
                                                         Decimal("0")) + signed
         except Exception:
-            log.exception("could not read resting orders — sizing off filled position")
-            pending = {}
+            log.exception("could not read resting orders — refusing new sizing")
+            return False
         self.ctx.set_pending(pending)
+        return True
 
     def _active(self, bars: dict[str, Bar]) -> dict[str, Bar]:
         """The subset of this batch the models are allowed to act on.
@@ -390,7 +494,11 @@ class Engine:
         if isinstance(self.brokerage, PaperBrokerage):
             seen_rejections = len(self.brokerage.rejections)
             for bar in bars.values():
-                fills.extend(self.brokerage.process_bar(bar, self.ctx.quote(bar.symbol)))
+                # Defense in depth: a backtest fill is determined by this bar,
+                # never by an L1 snapshot a caller happened to attach to Context.
+                quote = (None if self.ctx.run_mode is RunMode.BACKTEST
+                         else self.ctx.quote(bar.symbol))
+                fills.extend(self.brokerage.process_bar(bar, quote))
             # Orders can also be rejected *during* a fill attempt (cash ran out
             # between submission and execution); surface those too.
             for rejection in self.brokerage.rejections[seen_rejections:]:

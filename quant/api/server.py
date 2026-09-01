@@ -40,6 +40,7 @@ import logging
 import math
 import os
 import sqlite3
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -65,6 +66,8 @@ from starlette.concurrency import run_in_threadpool
 from quant.alpha.llm_client import LLMError
 from quant.config.loader import load_config
 from quant.config.schema import StrategyConfig
+from quant.core.aio import LazyLock, LazySemaphore
+from quant.core.context import QUOTE_FUTURE_TOLERANCE
 from quant.core.events import Event
 from quant.core.types import UTC, RunMode, Symbol
 from quant.data.names import NameBook
@@ -132,6 +135,82 @@ class Hub:
         return items[-limit:]
 
 
+class ReadBusy(RuntimeError):
+    """The bounded upstream read queue is full; callers should poll later."""
+
+
+class ReadCoalescer:
+    """Short-lived single-flight cache for browser polling.
+
+    It is deliberately process-local and bounded.  The values are still marked
+    ``no-store`` on HTTP responses; this tiny server-side window only makes two
+    tabs asking the same question share one upstream request.
+    """
+
+    def __init__(self, *, ttl_seconds: float, max_concurrent: int,
+                 max_inflight: int, max_entries: int = 512):
+        self.ttl_seconds = ttl_seconds
+        self.max_inflight = max_inflight
+        self.max_entries = max_entries
+        self._limit = LazySemaphore(max_concurrent)
+        self._lock = LazyLock()
+        self._cache: dict[tuple, tuple[float, Any]] = {}
+        self._inflight: dict[tuple, asyncio.Task] = {}
+
+    async def get(self, key: tuple, loader) -> Any:
+        now = time.monotonic()
+        async with self._lock:
+            # TTL is also the retention boundary for account payloads, not
+            # merely a rule for whether they may be served. Opportunistically
+            # remove every expired key while the cache is already locked.
+            for expired_key, (expires_at, _value) in tuple(self._cache.items()):
+                if expires_at <= now:
+                    self._cache.pop(expired_key, None)
+            cached = self._cache.get(key)
+            if cached is not None:
+                return cached[1]
+            task = self._inflight.get(key)
+            if task is None:
+                if len(self._inflight) >= self.max_inflight:
+                    raise ReadBusy("upstream read queue is full")
+                task = asyncio.create_task(self._load(key, loader))
+                # If every browser waiter disconnects, ``shield`` deliberately
+                # leaves the provider cleanup task running. Consume a possible
+                # terminal exception so asyncio does not emit a misleading
+                # "Task exception was never retrieved" after cleanup finishes.
+                task.add_done_callback(self._consume_background_result)
+                self._inflight[key] = task
+        # A browser can abort its fetch while another tab is waiting for the
+        # same upstream read.  Do not let that one waiter cancel the shared
+        # loader; the loader owns and closes its provider in its own finally.
+        return await asyncio.shield(task)
+
+    @staticmethod
+    def _consume_background_result(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            return
+
+    async def _load(self, key: tuple, loader) -> Any:
+        current = asyncio.current_task()
+        try:
+            async with self._limit:
+                value = await loader()
+            async with self._lock:
+                if len(self._cache) >= self.max_entries:
+                    oldest = min(self._cache, key=lambda item: self._cache[item][0])
+                    self._cache.pop(oldest, None)
+                self._cache[key] = (time.monotonic() + self.ttl_seconds, value)
+            return value
+        finally:
+            async with self._lock:
+                if self._inflight.get(key) is current:
+                    self._inflight.pop(key, None)
+
+
 class AppState:
     def __init__(self, config: StrategyConfig | None, state_path: str):
         self.config = config
@@ -145,6 +224,17 @@ class AppState:
         #: 지금 백테스트를 돌리고 있는 사람들. 한 사람당 하나까지입니다.
         self.backtests_running: set[str] = set()
         self.started_at = datetime.now(UTC)
+        # MARKET_DATA is 15 TPS per Toss client.  Three snapshots at once leave
+        # room for the one extra price request used when an unknown ticker name
+        # is first resolved, while duplicate tabs still share one loader.
+        self.market_reads = ReadCoalescer(
+            ttl_seconds=1.0, max_concurrent=3, max_inflight=32,
+        )
+        # Account reads are costlier and more sensitive; two seconds is still
+        # near-real-time for a cash transfer while collapsing tab/reload bursts.
+        self.account_reads = ReadCoalescer(
+            ttl_seconds=2.0, max_concurrent=2, max_inflight=16,
+        )
 
     def hub_for(self, user_id: int) -> Hub:
         """사용자별 이벤트 링. 봇을 한 번이라도 띄운 사람 수만큼만 생깁니다."""
@@ -707,15 +797,20 @@ async def _verify_toss(values: dict[str, str]) -> dict:
                             account_no=account_no)
     sample = Symbol("005930", venue="toss", quote_currency="KRW")
     try:
-        quote = await provider.quote(sample)
-        if quote is None:
+        snapshot = await provider.market_snapshot(sample, depth=1, trade_count=0)
+        price = (snapshot.get("quote") or {}).get("price")
+        if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
             steps.append({"step": "현재가 조회 (삼성전자)", "ok": False})
             return {"ok": False, "steps": steps,
                     "error": "토큰은 받았는데 시세가 오지 않습니다. 해당 앱에 "
                              "시세 조회 권한이 있는지 확인하세요 — 봇은 이 "
                              "단계에서 멈춥니다."}
+        top = bool((snapshot.get("capabilities") or {}).get("top_of_book"))
+        detail = f"{price:,.0f}원"
+        if not top:
+            detail += " · 현재 호가 없음 (신규 진입은 호가가 생길 때까지 보류)"
         steps.append({"step": "현재가 조회 (삼성전자)", "ok": True,
-                      "detail": f"{quote.mid:,.0f}원"})
+                      "detail": detail})
     finally:
         with contextlib.suppress(Exception):
             await provider.close()
@@ -818,6 +913,68 @@ def _config_symbols(config: StrategyConfig) -> list[Symbol]:
     return [build_symbol(spec) for spec in config.universe.symbols]
 
 
+def _validated_l1_quote(quote: object, symbol: Symbol,
+                        received_at: datetime) -> tuple[dict | None, str]:
+    """Validate one provider quote before any API path can display it."""
+    if quote is None:
+        return None, ""
+    try:
+        quote_key = quote.symbol.key
+        quote_ts = quote.ts
+        bid = float(quote.bid)
+        ask = float(quote.ask)
+        bid_size = float(quote.bid_size)
+        ask_size = float(quote.ask_size)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None, "호가 응답 형식이 올바르지 않습니다"
+    if quote_key != symbol.key:
+        return None, "다른 종목의 호가가 돌아왔습니다"
+    if not isinstance(quote_ts, datetime) or quote_ts.tzinfo is None:
+        return None, "거래소 시각에 timezone이 없습니다"
+    values = (bid, ask, bid_size, ask_size, (bid + ask) / 2.0)
+    if not all(math.isfinite(value) for value in values):
+        return None, "호가가 유한한 숫자가 아닙니다"
+    if bid <= 0 or ask <= 0 or ask < bid:
+        return None, "매수·매도 호가 범위가 올바르지 않습니다"
+    if bid_size < 0 or ask_size < 0:
+        return None, "호가 수량이 0보다 작습니다"
+    signed_age = (
+        received_at - quote_ts.astimezone(UTC)
+    ).total_seconds() * 1000
+    if signed_age < -QUOTE_FUTURE_TOLERANCE.total_seconds() * 1000:
+        return None, "호가 시각이 서버 시각보다 미래입니다"
+    return {
+        "quote": quote,
+        "ts": quote_ts,
+        "bid": bid,
+        "ask": ask,
+        "bid_size": bid_size,
+        "ask_size": ask_size,
+        "price": (bid + ask) / 2.0,
+        "age_ms": max(0, round(signed_age)),
+    }, ""
+
+
+def _select_run_readonly(store: StateStore, strategy: str, mode: str) -> int | None:
+    """Attach read methods to the latest lifecycle head without reopening it.
+
+    ``StateStore.resume_run`` also clears ``runs.stopped_at``.  That is correct
+    when a trader truly resumes, but a chart refresh must not make a stopped or
+    quarantined run look live.  Archived heads remain terminal, matching the
+    selection semantics of ``resume_run`` without any UPDATE/COMMIT.
+    """
+    row = store.conn.execute(
+        "SELECT id, archived_at FROM runs WHERE strategy=? AND mode=? "
+        "ORDER BY id DESC LIMIT 1",
+        (strategy, mode),
+    ).fetchone()
+    store.run_id = (
+        int(row["id"])
+        if row is not None and row["archived_at"] is None else None
+    )
+    return store.run_id
+
+
 def _name_feed(seat: Desk, config: StrategyConfig | None):
     """이름 조회에 쓸 프로바이더. 못 세우면 None.
 
@@ -863,6 +1020,25 @@ def _template_config(name: str | None):
         return load_config(str(resolve_template(name)))
     except Exception:
         return None
+
+
+def _selected_read_config(seat: Desk, strategy: str | None) -> StrategyConfig | None:
+    """Resolve one read-only screen without hiding an explicit bad selection."""
+    if seat.running():
+        return seat.run_config()
+    if strategy is not None:
+        # `resolve_template` preserves the useful 400 response. Falling through
+        # to the process default here can show another strategy/account while
+        # the URL still names the missing one.
+        path = resolve_template(strategy)
+        try:
+            return load_config(str(path))
+        except Exception as exc:
+            log.warning("조회용 전략 템플릿을 읽지 못했습니다 (%s): %s", path.name, exc)
+            raise HTTPException(
+                400, "선택한 전략 템플릿의 설정이 올바르지 않습니다",
+            ) from None
+    return seat.run_config()
 
 
 def _standalone_context(cfg, symbol, bars):
@@ -1461,7 +1637,19 @@ def create_app(config: StrategyConfig | None = None,
                 status_code=413,
                 content={"detail": f"요청 본문이 너무 큽니다 "
                                    f"({MAX_BODY_BYTES // 1024} KiB 이하로 보내세요)"})
-        return await call_next(request)
+        response = await call_next(request)
+        # Every API response can contain identity-, strategy-, or account-bound
+        # state. Never let a browser, CDN, or shared proxy replay it after logout
+        # or account switching. The bounded process-local coalescers are the only
+        # caches and are partitioned by user.
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "private, no-store, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            vary = {part.strip() for part in response.headers.get("Vary", "").split(",")
+                    if part.strip()}
+            vary.add("Cookie")
+            response.headers["Vary"] = ", ".join(sorted(vary))
+        return response
 
     app.state.quant = state
     app.state.accounts = accounts
@@ -1530,13 +1718,26 @@ def create_app(config: StrategyConfig | None = None,
     # 크래시 경로였습니다. FastAPI 가 요청을 받기 전에 422 로 끝냅니다.
     @app.get("/api/equity")
     async def equity(limit: int = Query(2000, ge=1, le=10_000),
+                     strategy: str | None = Query(None, max_length=64),
+                     mode: str | None = Query(
+                         None, pattern="^(backtest|dry_run|live)$",
+                     ),
                      seat: Desk = Depends(desk)):
         store = StateStore(seat.state_path)
         try:
-            cfg = seat.run_config()
-            if cfg:
-                store.resume_run(cfg.name, cfg.mode.value)
-            return {"points": store.equity_curve(limit)}
+            # A stopped desk falls back to the process template from
+            # ``run_config()``.  The chart must instead follow the strategy the
+            # person selected, or a live Toss screen can quietly draw the demo
+            # backtest curve underneath it.
+            cfg = _selected_read_config(seat, strategy)
+            selected_mode = mode or (cfg.mode.value if cfg else None)
+            if cfg and selected_mode:
+                _select_run_readonly(store, cfg.name, selected_mode)
+            return {
+                "points": store.equity_curve(limit),
+                "strategy": cfg.name if cfg else None,
+                "mode": selected_mode,
+            }
         finally:
             store.close()
 
@@ -1590,8 +1791,7 @@ def create_app(config: StrategyConfig | None = None,
         # 그래서 `if cfg is None:` 안에 둔 strategy 처리는 **한 번도 실행되지
         # 않았고**, 차트는 언제나 그 템플릿의 종목만 알았습니다 — 다른 전략을
         # 고르면 그 전략의 종목이 "이 전략의 종목이 아닙니다" 로 404 였습니다.
-        cfg = (seat.run_config() if seat.running()
-               else (_template_config(strategy) or seat.run_config()))
+        cfg = _selected_read_config(seat, strategy)
         if cfg is None:
             raise HTTPException(
                 400, "전략을 고르세요 — 어느 거래소에서 조회할지 알 수 없습니다.")
@@ -1607,13 +1807,21 @@ def create_app(config: StrategyConfig | None = None,
             provider = seat.data_provider(cfg)
             bars = await provider.latest_bars(symbol, timeframe, count)
             quote = await provider.quote(symbol)
+            validated_quote, quote_problem = _validated_l1_quote(
+                quote, symbol, datetime.now(UTC),
+            )
+            if validated_quote is None:
+                if quote_problem:
+                    log.warning("시세 호가 검증 실패 %s: %s", symbol.key, quote_problem)
+                quote = None
             stale = False
         except Exception as exc:  # 시세가 없다고 화면 전체가 죽으면 안 됩니다.
             log.warning("시세 조회 실패 %s: %s", symbol.key, exc)
 
-        store = StateStore(seat.state_path)
+        store = None
         try:
-            store.resume_run(cfg.name, cfg.mode.value)
+            store = StateStore(seat.state_path)
+            _select_run_readonly(store, cfg.name, cfg.mode.value)
             since = bars[0].end_ts.isoformat() if bars else ""
             fills = store.fills_for(symbol.key, since=since)
             position = store.position_for(symbol.key)
@@ -1622,7 +1830,11 @@ def create_app(config: StrategyConfig | None = None,
             book = NameBook(seat.state_path, store=store)
             ticker_name = await book.resolve(symbol.ticker, provider)
         finally:
-            store.close()
+            if store is not None:
+                store.close()
+            if provider is not None:
+                with contextlib.suppress(Exception):
+                    await provider.close()
 
         last = quote.mid if quote and quote.mid else (bars[-1].close if bars else 0.0)
         if position and position["avg_price"] > 0 and last > 0:
@@ -1647,8 +1859,10 @@ def create_app(config: StrategyConfig | None = None,
             "tick_size": float(symbol.tick_size or 0),
             "bars": [{"t": b.end_ts.isoformat(), "o": b.open, "h": b.high,
                       "l": b.low, "c": b.close, "v": b.volume} for b in bars],
-            "quote": ({"price": last, "ts": quote.ts.isoformat()} if quote
-                      else ({"price": last, "ts": bars[-1].end_ts.isoformat()}
+            "quote": ({"price": last, "ts": quote.ts.isoformat(),
+                       "price_kind": "midpoint"} if quote
+                      else ({"price": last, "ts": bars[-1].end_ts.isoformat(),
+                             "price_kind": "bar_close"}
                             if bars else None)),
             "position": position,
             "orders": orders,
@@ -1656,16 +1870,268 @@ def create_app(config: StrategyConfig | None = None,
             "stale": stale,
         }
 
+    @app.get("/api/market/snapshot")
+    async def market_snapshot(
+        ticker: str = Query(..., min_length=1, max_length=32),
+        strategy: str | None = Query(None, max_length=64),
+        depth: int = Query(10, ge=1, le=20),
+        trade_count: int = Query(20, ge=0, le=50),
+        seat: Desk = Depends(desk),
+    ):
+        """Near-real-time read-only quote, depth, and recent venue trades.
+
+        This endpoint never constructs a brokerage and cannot place, modify, or
+        cancel an order.  Unsupported fields remain null with capability flags;
+        a previous-close change or market session is never inferred from price.
+        """
+        cfg = _selected_read_config(seat, strategy)
+        if cfg is None:
+            raise HTTPException(
+                400, "전략을 고르세요 — 어느 거래소에서 조회할지 알 수 없습니다.")
+        symbol = next((s for s in _config_symbols(cfg)
+                       if s.ticker.upper() == ticker.strip().upper()), None)
+        if symbol is None:
+            raise HTTPException(404, f"{ticker} 는 이 전략의 종목이 아닙니다.")
+
+        user_scope = seat.user.id if seat.user is not None else 0
+        cache_key = (
+            "market", user_scope, cfg.name, symbol.key, depth, trade_count,
+        )
+
+        async def load_market() -> dict:
+            provider = None
+            try:
+                provider = seat.data_provider(cfg)
+                reader = provider
+                # CachingProvider intentionally exposes only the generic data
+                # contract.  Its inner Toss provider owns the richer, still
+                # read-only snapshot contract.
+                seen: set[int] = set()
+                while getattr(reader, "inner", None) is not None:
+                    if id(reader) in seen:
+                        break
+                    seen.add(id(reader))
+                    reader = reader.inner
+                richer = getattr(reader, "market_snapshot", None)
+                if richer is not None:
+                    body = await richer(
+                        symbol, depth=depth, trade_count=trade_count,
+                    )
+                else:
+                    quote = await provider.quote(symbol)
+                    received_at = datetime.now(UTC)
+                    validated_quote, invalid_reason = _validated_l1_quote(
+                        quote, symbol, received_at,
+                    )
+                    age_ms = None
+                    price = bid = ask = bid_size = ask_size = None
+                    quote_ts = None
+                    if validated_quote is not None:
+                        price = validated_quote["price"]
+                        bid = validated_quote["bid"]
+                        ask = validated_quote["ask"]
+                        bid_size = validated_quote["bid_size"]
+                        ask_size = validated_quote["ask_size"]
+                        quote_ts = validated_quote["ts"]
+                        age_ms = validated_quote["age_ms"]
+                    if quote is None:
+                        freshness_status = "unavailable"
+                        freshness_message = "현재 시세를 불러오지 못했습니다"
+                        poll_after_ms = 10_000
+                    elif invalid_reason:
+                        freshness_status = "unknown"
+                        freshness_message = invalid_reason
+                        poll_after_ms = 5_000
+                    elif age_ms is not None and age_ms <= 5_000:
+                        freshness_status = "fresh"
+                        freshness_message = "현재 호가를 표시합니다"
+                        poll_after_ms = 2_500
+                    elif age_ms is not None and age_ms <= 60_000:
+                        freshness_status = "delayed"
+                        freshness_message = "호가가 잠시 늦게 도착하고 있습니다"
+                        poll_after_ms = 5_000
+                    else:
+                        freshness_status = "stale"
+                        freshness_message = "마지막 호가가 오래되었습니다"
+                        poll_after_ms = 10_000
+                    body = {
+                        "ticker": symbol.ticker,
+                        "currency": symbol.quote_currency,
+                        "quote": {
+                            "price": price,
+                            "price_kind": "midpoint" if price is not None else None,
+                            "bid": bid,
+                            "ask": ask,
+                            "bid_quantity": bid_size,
+                            "ask_quantity": ask_size,
+                            "change": None,
+                            "change_pct": None,
+                            "ts": quote_ts.isoformat() if quote_ts is not None else None,
+                            "source": (getattr(provider, "name", None)
+                                       if price is not None else None),
+                        },
+                        "market": {
+                            "state": None,
+                            "session_label": "시장 상태 미조회",
+                        },
+                        "freshness": {
+                            "status": freshness_status,
+                            "age_ms": age_ms,
+                            "poll_after_ms": poll_after_ms,
+                            "message": freshness_message,
+                            "components": {
+                                "quote": {
+                                    "status": freshness_status,
+                                    "age_ms": age_ms,
+                                    "ts": (quote_ts.isoformat()
+                                           if quote_ts is not None else None),
+                                    "affects_overall": True,
+                                },
+                                "depth": {"status": "unavailable",
+                                          "age_ms": None, "ts": None,
+                                          "affects_overall": False},
+                                "trades": {"status": "unavailable",
+                                           "age_ms": None, "ts": None,
+                                           "affects_overall": False},
+                            },
+                        },
+                        "capabilities": {
+                            "rest_polling": True,
+                            "top_of_book": bid is not None and ask is not None,
+                            "depth": False,
+                            "depth_available": False,
+                            "recent_trades": False,
+                            "recent_trades_available": False,
+                            "websocket_available": False,
+                            "websocket_active": False,
+                            "market_session": False,
+                        },
+                        "depth": None,
+                        "recent_trades": [],
+                    }
+                body = dict(body)
+                body["ticker_name"] = await NameBook(seat.state_path).resolve(
+                    symbol.ticker, provider,
+                )
+                return body
+            except Exception as exc:  # noqa: BLE001 — keep the account panel up
+                log.warning("시장 스냅샷 조회 실패 %s: %s", symbol.key, exc)
+                return {
+                    "ticker": symbol.ticker,
+                    "ticker_name": NameBook(seat.state_path).name(symbol.ticker),
+                    "currency": symbol.quote_currency,
+                    "quote": {
+                        "price": None, "bid": None, "ask": None,
+                        "bid_quantity": None, "ask_quantity": None,
+                        "change": None, "change_pct": None,
+                        "ts": None, "source": None, "price_kind": None,
+                    },
+                    "market": {
+                        "state": None,
+                        "session_label": "시장 상태 미조회",
+                    },
+                    "freshness": {
+                        "status": "unavailable", "age_ms": None,
+                        "poll_after_ms": 10_000,
+                        "message": "현재 시세를 불러오지 못했습니다",
+                        "components": {
+                            "quote": {"status": "unavailable",
+                                      "age_ms": None, "ts": None,
+                                      "affects_overall": False},
+                            "depth": {"status": "unavailable",
+                                      "age_ms": None, "ts": None,
+                                      "affects_overall": False},
+                            "trades": {"status": "unavailable",
+                                       "age_ms": None, "ts": None,
+                                       "affects_overall": False},
+                        },
+                    },
+                    "capabilities": {
+                        "rest_polling": True, "top_of_book": False,
+                        "depth": False, "depth_available": False,
+                        "recent_trades": False,
+                        "recent_trades_available": False,
+                        "websocket_available": False,
+                        "websocket_active": False,
+                        "market_session": False,
+                    },
+                    "depth": None,
+                    "recent_trades": [],
+                }
+            finally:
+                if provider is not None:
+                    with contextlib.suppress(Exception):
+                        await provider.close()
+
+        try:
+            market = await state.market_reads.get(cache_key, load_market)
+        except ReadBusy:
+            raise HTTPException(
+                503, "시세 조회가 잠시 밀려 있습니다 — 곧 다시 시도하세요",
+                headers={"Retry-After": "1"},
+            ) from None
+
+        store = StateStore(seat.state_path)
+        try:
+            _select_run_readonly(store, cfg.name, cfg.mode.value)
+            position = store.position_for(symbol.key)
+        finally:
+            store.close()
+        quote_price = (market.get("quote") or {}).get("price")
+        if (position and position["avg_price"] > 0
+                and isinstance(quote_price, (int, float)) and quote_price > 0):
+            direction = 1.0 if position["quantity"] > 0 else -1.0
+            position["unrealized_pct"] = direction * (
+                quote_price / position["avg_price"] - 1.0)
+
+        trader = seat.trader()
+        orders = []
+        if trader is not None:
+            for order in getattr(trader.engine, "orders", []) or []:
+                if order.symbol.key == symbol.key and order.status.is_open:
+                    orders.append({
+                        "side": order.side.value,
+                        "price": order.limit_price or 0.0,
+                        "quantity": float(order.quantity),
+                        "status": order.status.value,
+                    })
+        capabilities = dict(market.get("capabilities") or {})
+        capabilities.update({
+            # These two blocks describe this bot's local ledger, not every
+            # order/holding visible in the Toss app. Keep the boundary machine-
+            # readable so the UI cannot accidentally relabel it as account truth.
+            "orders_source": "running_engine" if trader is not None else "unavailable",
+            "orders_complete": False,
+            "position_source": "latest_bot_ledger",
+            "position_authoritative": False,
+        })
+        return {
+            **market,
+            "capabilities": capabilities,
+            "tick_size": float(symbol.tick_size or 0),
+            "orders": orders,
+            "position": position,
+        }
+
     @app.get("/api/trades")
     async def trades(limit: int = Query(100, ge=1, le=2_000),
+                     strategy: str | None = Query(None, max_length=64),
+                     mode: str | None = Query(
+                         None, pattern="^(backtest|dry_run|live)$",
+                     ),
                      seat: Desk = Depends(desk)):
         store = StateStore(seat.state_path)
         try:
-            cfg = seat.run_config()
-            if cfg:
-                store.resume_run(cfg.name, cfg.mode.value)
+            cfg = _selected_read_config(seat, strategy)
+            selected_mode = mode or (cfg.mode.value if cfg else None)
+            if cfg and selected_mode:
+                _select_run_readonly(store, cfg.name, selected_mode)
             book = NameBook(seat.state_path, store=store)
-            return {"trades": book.tag(store.recent_trades(limit), "symbol")}
+            return {
+                "trades": book.tag(store.recent_trades(limit), "symbol"),
+                "strategy": cfg.name if cfg else None,
+                "mode": selected_mode,
+            }
         finally:
             store.close()
 
@@ -1729,8 +2195,7 @@ def create_app(config: StrategyConfig | None = None,
         if not text:
             return {"results": [], "message": ""}
 
-        cfg = (seat.run_config() if seat.running()
-               else (_template_config(strategy) or seat.run_config()))
+        cfg = _selected_read_config(seat, strategy)
         book = NameBook(seat.state_path)
         known: dict[str, dict] = {}
         if cfg is not None:
@@ -1756,12 +2221,17 @@ def create_app(config: StrategyConfig | None = None,
         digits = "".join(ch for ch in text if ch.isdigit())
         # 6자리 숫자는 국내 종목코드입니다. 증권사에 직접 물어봅니다.
         if len(digits) == 6 and cfg is not None:
+            provider = None
             try:
                 provider = seat.data_provider(cfg)
                 found = await provider.describe(digits)
             except Exception as exc:
                 log.warning("종목 조회 실패 %s: %s", digits, exc)
                 found = None
+            finally:
+                if provider is not None:
+                    with contextlib.suppress(Exception):
+                        await provider.close()
             if found:
                 # 다음부터는 이름으로도 찾히게 기억합니다.
                 store = StateStore(seat.state_path)
@@ -2016,13 +2486,20 @@ def create_app(config: StrategyConfig | None = None,
             # 이 목록의 이름은 **한 번에** 물어봅니다. 종목마다 한 번씩 부르면
             # 유니버스가 넓을수록 느려지고, 레이트 리밋에 걸리면 이름이 하나도
             # 안 뜹니다.
-            names = await book.resolve_many([s.ticker for s in symbols],
-                                            _name_feed(seat, cfg))
+            provider = _name_feed(seat, cfg)
+            try:
+                names = await book.resolve_many(
+                    [s.ticker for s in symbols], provider,
+                )
+            finally:
+                if provider is not None:
+                    with contextlib.suppress(Exception):
+                        await provider.close()
             return {"symbols": [
                 {"ticker": sym.ticker, "name": names.get(sym.ticker, sym.ticker),
                  "venue": sym.venue,
                  "currency": sym.quote_currency, "price": None,
-                 "change_pct": 0.0, "invested": False}
+                 "change_pct": None, "invested": False}
                 for sym in symbols]}
         ctx = trader.engine.ctx
         names = await book.resolve_many([s.ticker for s in ctx.universe],
@@ -2033,13 +2510,13 @@ def create_app(config: StrategyConfig | None = None,
             last = bars[-1] if bars else None
             prev = bars[0] if len(bars) > 1 else None
             change = ((last.close / prev.close - 1) * 100
-                      if last and prev and prev.close > 0 else 0.0)
+                      if last and prev and prev.close > 0 else None)
             out.append({
                 "ticker": sym.ticker, "name": names.get(sym.ticker, sym.ticker),
                 "venue": sym.venue,
                 "currency": sym.quote_currency,
                 "price": round(last.close, 4) if last else None,
-                "change_pct": round(change, 2),
+                "change_pct": round(change, 2) if change is not None else None,
                 "invested": ctx.is_invested(sym),
             })
         return {"symbols": out}
@@ -2332,12 +2809,24 @@ def create_app(config: StrategyConfig | None = None,
 
         조회 전용입니다 — 이 경로로는 주문이 나가지 않습니다.
         """
-        cfg = (seat.run_config() if seat.running()
-               else (_template_config(strategy) or seat.run_config()))
+        cfg = _selected_read_config(seat, strategy)
         if cfg is None:
             return {"supported": False, "message": "전략을 먼저 고르세요"}
+        user_scope = seat.user.id if seat.user is not None else 0
+        # Two configs can route the same adapter type to different accounts or
+        # exchanges. A two-second duplicate read is cheaper than showing account
+        # A's cash under strategy B, so strategy identity stays in the partition.
+        cache_key = ("broker-account", user_scope, cfg.name, cfg.broker.type)
         try:
-            return await seat.registry.broker_account(seat.user.id, cfg)
+            return await state.account_reads.get(
+                cache_key,
+                lambda: seat.registry.broker_account(seat.user.id, cfg),
+            )
+        except ReadBusy:
+            raise HTTPException(
+                503, "계좌 조회가 잠시 밀려 있습니다 — 곧 다시 시도하세요",
+                headers={"Retry-After": "1"},
+            ) from None
         except RuntimeProblem as exc:
             # 자격증명이 없거나 설정이 거부된 경우 — 사용자가 무엇을 해야
             # 하는지 그 문장이 이미 말해 줍니다.
@@ -2346,7 +2835,23 @@ def create_app(config: StrategyConfig | None = None,
             log.warning("계좌 조회 실패: %s", exc)
             # 증권사가 답을 안 준 것과 연동이 안 된 것은 다릅니다. 사용자가
             # 무엇을 해야 하는지 갈리므로 문장을 그대로 넘깁니다.
-            return {"supported": True, "error": f"계좌를 불러오지 못했습니다: {exc}"}
+            out: dict[str, Any] = {
+                "supported": True,
+                "error": f"계좌를 불러오지 못했습니다: {exc}",
+            }
+            retry_after = getattr(exc, "retry_after", None)
+            try:
+                retry_seconds = float(retry_after)
+            except (TypeError, ValueError, OverflowError):
+                retry_seconds = 0.0
+            status_code = getattr(exc, "status_code", None)
+            if ((status_code == 429 or status_code in range(500, 505))
+                    and math.isfinite(retry_seconds) and retry_seconds > 0):
+                out["retry_after_ms"] = min(
+                    15 * 60 * 1000,
+                    max(1000, int(retry_seconds * 1000)),
+                )
+            return out
 
     @app.get("/api/glossary")
     async def glossary_all(_: Desk = Depends(desk)):

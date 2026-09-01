@@ -322,16 +322,35 @@ def required_secrets(config: StrategyConfig) -> list[str]:
 def _with_credentials(config: StrategyConfig, secrets: dict[str, str]) -> StrategyConfig:
     """이 사용자의 키를 담은 **일회용 사본**.
 
-    설정 파일에 이미 키가 적혀 있어도 사용자의 것이 이깁니다. 여러 사람이 쓰는
-    서비스에서 템플릿 YAML 에 남아 있는 키는 운영자의 것이고, 그것으로 남의
-    봇이 주문을 내면 그 주문은 운영자 계좌로 갑니다.
+    설정 파일의 배선값은 먼저 전부 지운 뒤 이 사용자의 값만 넣습니다. 여러
+    사람이 쓰는 서비스에서 템플릿 YAML 에 남아 있는 키는 운영자의 것이고,
+    사용자의 값이 비었다고 그것을 상속하면 읽기 API조차 운영자 계좌에 닿습니다.
 
     반환값은 엔진을 세우는 동안만 살아 있어야 합니다. 응답으로 내보내거나
     저장하지 마세요 — 그러라고 `UserRegistry.prepare()` 가 따로 있습니다.
     """
     wired = config.model_copy(deep=True)
     for params, wiring in _targets(wired):
+        # Optional adapter secrets are not all part of the required wiring
+        # table (CCXT exchange passphrases are one example).  A template value
+        # in any secret-shaped slot still belongs to the operator, so scrub it
+        # before adding only this user's explicitly wired credentials.
+        for arg in tuple(params):
+            normalized = str(arg).lower().replace("-", "_")
+            if any(hint in normalized for hint in (
+                "key", "secret", "token", "password", "passphrase", "appkey",
+            )):
+                params.pop(arg, None)
+        if wiring.venue in {"toss", "kis", "alpaca"}:
+            # This copy runs inside a multi-user server.  Missing user secrets
+            # must fail closed, never fall back to the process-wide operator
+            # environment accepted by CLI/single-user constructors.
+            params["allow_env_credentials"] = False
         for arg, name in wiring.args.items():
+            # Absence is a credential decision, not permission to fall back to
+            # template wiring. Keep unrelated provider settings (exchange,
+            # sandbox flags, etc.) while removing every declared secret slot.
+            params.pop(arg, None)
             value = secrets.get(name, "")
             if value:
                 params[arg] = value
@@ -894,11 +913,20 @@ class UserRegistry:
         portfolio = Portfolio(wired.portfolio.starting_cash,
                               wired.portfolio.base_currency)
         broker = build_brokerage(wired, portfolio, fee, slip, fill)
-        overview = getattr(broker, "account_overview", None)
-        if overview is None:
-            return {"supported": False,
-                    "message": f"{wired.broker.type} 은 계좌 조회를 지원하지 않습니다"}
+        # This object exists only to call ``account_overview``.  Startup
+        # reconciliation performs an extra venue holdings/cash sync intended
+        # for a trading engine, then the overview immediately fetches the same
+        # account again.  Besides wasting quota, the stricter position parser in
+        # that unrelated sync could prevent a valid aggregate account response.
+        if hasattr(broker, "reconcile_on_start"):
+            broker.reconcile_on_start = False
         try:
+            overview = getattr(broker, "account_overview", None)
+            if overview is None:
+                return {
+                    "supported": False,
+                    "message": f"{wired.broker.type} 은 계좌 조회를 지원하지 않습니다",
+                }
             await broker.connect()
             out = await overview()
             out["supported"] = True

@@ -27,8 +27,8 @@ changing the config.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 
@@ -36,6 +36,7 @@ from quant.core.context import Context
 from quant.core.types import (
     Order,
     OrderSide,
+    OrderStatus,
     OrderType,
     Symbol,
     TimeInForce,
@@ -46,6 +47,15 @@ from quant.core.types import (
 log = logging.getLogger("quant.manual")
 
 ManualAction = Literal["buy", "sell", "close", "close_all"]
+
+# A market buy is approved against the quote visible at that moment, not as a
+# standing reservation to buy at any future price. Exits remain durable; only
+# exposure-increasing, unpriced intent expires.
+MARKET_BUY_MAX_QUEUE_AGE = timedelta(seconds=30)
+
+
+class _ManualOrderDeferred(RuntimeError):
+    """The request remains queued until venue order state becomes unambiguous."""
 
 
 @dataclass
@@ -140,20 +150,110 @@ class ManualControl:
     def pending(self) -> list[ManualRequest]:
         return list(self._queue)
 
+    def mark_pending(self, detail: str) -> None:
+        for request in self._queue:
+            request.detail = detail
+
+    def pending_close_keys(self, ctx: Context) -> set[str]:
+        keys = {
+            request.symbol.key
+            for request in self._queue
+            if request.action == "close" and request.symbol is not None
+        }
+        if any(request.action == "close_all" for request in self._queue):
+            keys.update(pos.symbol.key for pos in ctx.portfolio.open_positions)
+        return keys
+
+    def pending_symbol_keys(self, ctx: Context) -> set[str]:
+        keys = {
+            request.symbol.key
+            for request in self._queue
+            if request.symbol is not None
+        }
+        if any(request.action == "close_all" for request in self._queue):
+            keys.update(symbol.key for symbol in ctx.universe)
+            keys.update(pos.symbol.key for pos in ctx.portfolio.open_positions)
+        return keys
+
     def _archive(self, request: ManualRequest) -> None:
         self.history.append(request)
         if len(self.history) > self.max_history:
             del self.history[: self.max_history // 2]
 
+    def record_submission(self, order: Order, *, reducing: bool) -> None:
+        """Reconcile a broker result back to its operator request.
+
+        Building an order is not submission. In particular, a definitive
+        closed-session rejection of an exit must stay queued for the next open
+        instead of disappearing behind a misleading ``submitted`` label.
+        Transport uncertainty is deliberately not auto-retried here: without a
+        venue-wide idempotency contract that could duplicate a real order.
+        """
+        request_id = str(order.meta.get("manual_request") or "")
+        if not request_id or order.status is not OrderStatus.REJECTED:
+            return
+        request = next(
+            (item for item in reversed(self.history) if item.id == request_id),
+            None,
+        )
+        if request is None:
+            return
+        reason = str(order.reject_reason or "증권사가 주문을 거부했습니다")
+        request.status = "rejected"
+        request.detail = reason
+        retryable_exit = reducing and request.action in {
+            "sell", "close", "close_all",
+        } and self._closed_session_rejection(reason)
+        if not retryable_exit or any(item.id == request_id for item in self._queue):
+            return
+        retry = replace(
+            request,
+            status="pending",
+            detail=(
+                "장이 열리면 보유·미체결을 다시 확인한 뒤 자동으로 재시도합니다: "
+                + reason
+            ),
+        )
+        self._queue.append(retry)
+
+    @staticmethod
+    def _closed_session_rejection(reason: str) -> bool:
+        normalized = reason.casefold()
+        return any(marker in normalized for marker in (
+            "정규장이 닫", "장이 닫", "장 마감", "거래시간이 아닙니다",
+            "market closed", "market is closed", "outside market hours",
+            "session closed",
+        ))
+
     # ── execution ────────────────────────────────────────────────────────
-    def build_orders(self, ctx: Context) -> list[Order]:
+    def build_orders(
+        self,
+        ctx: Context,
+        reserved_order_keys: set[str] | None = None,
+        blocked_increase_keys: set[str] | None = None,
+    ) -> list[Order]:
         """Turn queued requests into orders. Drains the queue."""
         queued, self._queue = self._queue, []
         orders: list[Order] = []
+        # Venue pending state is sampled before this synchronous drain. Orders
+        # built earlier in the same drain are not in that sample yet, so track
+        # them locally. Otherwise `sell(6)` followed by `close()` can submit
+        # SELL 6 + SELL 10 against a long 10 position.
+        batch_order_keys: set[str] = set(reserved_order_keys or ())
 
         for request in queued:
             try:
-                built = self._build_one(ctx, request)
+                built = self._build_one(
+                    ctx,
+                    request,
+                    batch_order_keys,
+                    blocked_increase_keys or set(),
+                )
+            except _ManualOrderDeferred as exc:
+                request.status = "pending"
+                request.detail = str(exc)
+                self._queue.append(request)
+                continue
             except Exception as exc:
                 request.status = "error"
                 request.detail = str(exc)
@@ -167,17 +267,58 @@ class ManualControl:
                 continue
             request.status = "submitted"
             orders.extend(built)
+            batch_order_keys.update(order.symbol.key for order in built)
             self._archive(request)
         return orders
 
-    def _build_one(self, ctx: Context, request: ManualRequest) -> list[Order]:
+    def _build_one(
+        self,
+        ctx: Context,
+        request: ManualRequest,
+        batch_order_keys: set[str] | None = None,
+        blocked_increase_keys: set[str] | None = None,
+    ) -> list[Order]:
+        busy_keys = batch_order_keys if batch_order_keys is not None else set()
+        blocked_keys = (
+            blocked_increase_keys if blocked_increase_keys is not None else set()
+        )
+
         if request.action == "close_all":
+            busy = [
+                pos.symbol.ticker for pos in ctx.portfolio.open_positions
+                if (ctx.has_pending_order(pos.symbol)
+                    or pos.symbol.key in busy_keys)
+            ]
+            if busy:
+                raise _ManualOrderDeferred(
+                    "기존 미체결 주문 정산 후 전체 청산을 자동으로 다시 시도합니다: "
+                    + ", ".join(sorted(busy))
+                )
             return [self._exit_order(ctx, pos.symbol, request)
                     for pos in ctx.portfolio.open_positions]
 
         if request.symbol is None:
             raise ValueError("종목이 지정되지 않았습니다")
         symbol = request.symbol
+        if request.action == "buy" and request.limit_price is None:
+            try:
+                age = ctx.now - request.requested_at
+            except (TypeError, ValueError):
+                age = MARKET_BUY_MAX_QUEUE_AGE + timedelta(seconds=1)
+            if age > MARKET_BUY_MAX_QUEUE_AGE:
+                request.detail = (
+                    "시장가 매수 검토 시세가 30초 지나 만료되었습니다 — "
+                    "최신 시세를 확인하고 다시 검토하세요"
+                )
+                return []
+        if ctx.has_pending_order(symbol) or symbol.key in busy_keys:
+            raise _ManualOrderDeferred(
+                f"{symbol.ticker} 기존 미체결 주문 정산 후 자동으로 다시 시도합니다"
+            )
+        if request.action == "buy" and symbol.key in blocked_keys:
+            raise _ManualOrderDeferred(
+                f"{symbol.ticker} 리스크 축소가 완료될 때까지 신규 매수를 보류합니다"
+            )
 
         if request.action == "close":
             held = ctx.portfolio.quantity(symbol)

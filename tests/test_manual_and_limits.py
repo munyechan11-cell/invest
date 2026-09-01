@@ -29,6 +29,7 @@ from quant.core.types import (
     Insight,
     Order,
     OrderSide,
+    OrderStatus,
     OrderType,
     Symbol,
 )
@@ -252,6 +253,123 @@ def test_closing_a_flat_symbol_is_a_no_op_not_an_error():
     assert request.status == "skipped"
 
 
+def test_manual_close_stays_queued_while_a_same_symbol_order_is_open():
+    ctx = ctx_with(qty=10)
+    ctx.set_pending({SYM.key: Decimal("-10")})
+    manual = ManualControl()
+    request = manual.close(SYM)
+
+    assert manual.build_orders(ctx) == []
+    assert request.status == "pending"
+    assert [item.id for item in manual.pending] == [request.id]
+    assert "미체결 주문 정산 후" in request.detail
+
+
+def test_unpriced_market_buy_expires_instead_of_waiting_for_a_future_quote():
+    ctx = ctx_with()
+    manual = ManualControl()
+    request = manual.buy(SYM, quantity=Decimal("1"))
+    request.requested_at = ctx.now - timedelta(seconds=31)
+
+    assert manual.build_orders(ctx) == []
+    assert manual.pending == []
+    assert request.status == "skipped"
+    assert "만료" in request.detail
+
+
+def test_aged_limit_buy_remains_price_bounded_and_can_be_built():
+    ctx = ctx_with()
+    manual = ManualControl()
+    request = manual.buy(
+        SYM, quantity=Decimal("1"), limit_price=99.0,
+    )
+    request.requested_at = ctx.now - timedelta(hours=1)
+
+    built = manual.build_orders(ctx)
+
+    assert len(built) == 1
+    assert built[0].type is OrderType.LIMIT
+    assert built[0].limit_price == 99.0
+
+
+def test_close_all_is_atomic_while_any_position_has_an_open_order():
+    ctx = ctx_with(qty=10)
+    other = ctx.portfolio.position(OTHER)
+    other.quantity = Decimal("7")
+    other.avg_price = 100.0
+    ctx.set_pending({SYM.key: Decimal("-10")})
+    manual = ManualControl()
+    request = manual.close_all()
+
+    assert manual.build_orders(ctx) == []
+    assert request.status == "pending"
+    assert [item.id for item in manual.pending] == [request.id]
+
+
+def test_same_flush_sell_then_close_never_oversells_the_position():
+    ctx = ctx_with(qty=10)
+    manual = ManualControl()
+    first = manual.sell(SYM, quantity=Decimal("6"))
+    deferred = manual.close(SYM)
+
+    orders = manual.build_orders(ctx)
+
+    assert [(order.side, order.quantity) for order in orders] == [
+        (OrderSide.SELL, Decimal("6")),
+    ]
+    assert first.status == "submitted"
+    assert deferred.status == "pending"
+    assert [item.id for item in manual.pending] == [deferred.id]
+
+
+def test_same_flush_close_all_then_close_defers_the_duplicate_symbol():
+    ctx = ctx_with(qty=10)
+    other = ctx.portfolio.position(OTHER)
+    other.quantity = Decimal("7")
+    other.avg_price = 100.0
+    manual = ManualControl()
+    first = manual.close_all()
+    deferred = manual.close(SYM)
+
+    orders = manual.build_orders(ctx)
+
+    assert {order.symbol.key for order in orders} == {SYM.key, OTHER.key}
+    assert first.status == "submitted"
+    assert deferred.status == "pending"
+    assert [item.id for item in manual.pending] == [deferred.id]
+
+
+def test_closed_session_rejection_keeps_a_manual_exit_for_next_open():
+    ctx = ctx_with(qty=10)
+    manual = ManualControl()
+    request = manual.close(SYM)
+    order = manual.build_orders(ctx)[0]
+    order.status = OrderStatus.REJECTED
+    order.reject_reason = "venue rejected: market closed"
+
+    manual.record_submission(order, reducing=True)
+
+    assert manual.history[-1].status == "rejected"
+    assert manual.history[-1].detail == order.reject_reason
+    assert [item.id for item in manual.pending] == [request.id]
+    assert manual.pending[0].status == "pending"
+    assert "장이 열리면" in manual.pending[0].detail
+
+
+def test_uncertain_rejection_is_not_automatically_retried():
+    ctx = ctx_with(qty=10)
+    manual = ManualControl()
+    manual.close(SYM)
+    order = manual.build_orders(ctx)[0]
+    order.status = OrderStatus.REJECTED
+    order.reject_reason = "venue rejected: connection reset"
+
+    manual.record_submission(order, reducing=True)
+
+    assert manual.history[-1].status == "rejected"
+    assert manual.pending == []
+
+
 def test_a_request_without_quantity_or_notional_is_rejected_cleanly():
     ctx = ctx_with()
     manual = ManualControl()
@@ -325,6 +443,139 @@ def test_a_stop_still_fires_while_paused():
         SYM, T0, 80, 81, 79, 80, 1e6, "1d")}))
     assert any(o.side is OrderSide.SELL for o in engine.orders), \
         "일시정지가 손절을 막았습니다"
+
+
+def test_paused_risk_exit_wins_and_conflicting_manual_sell_stays_queued():
+    from quant.risk.models import MaximumDrawdownPerSecurity
+
+    pf = Portfolio(100_000.0)
+    ctx = Context(SimClock(T0), pf, EventBus(), timeframe="1d")
+    ctx.universe = [SYM]
+    pos = pf.position(SYM)
+    pos.quantity = Decimal("10")
+    pos.avg_price = 100.0
+    pos.mark(80.0)
+    engine = _engine(
+        pf,
+        ctx,
+        risk_models=[MaximumDrawdownPerSecurity(max_drawdown_pct=0.05)],
+    )
+    asyncio.run(engine.start())
+    engine.manual.pause("test")
+    request = engine.manual.sell(SYM, quantity=Decimal("6"))
+
+    asyncio.run(engine.on_bars({SYM.key: Bar(
+        SYM, T0, 80, 81, 79, 80, 1e6, "1d",
+    )}, settle=False))
+
+    assert [(item.side, item.quantity, item.meta.get("model"))
+            for item in engine.orders] == [
+        (OrderSide.SELL, Decimal("10"), "risk"),
+    ]
+    assert request.status == "pending"
+
+
+def test_unpaused_risk_exit_wins_and_conflicting_manual_buy_stays_queued():
+    from quant.risk.models import MaximumDrawdownPerSecurity
+
+    pf = Portfolio(100_000.0)
+    ctx = Context(SimClock(T0), pf, EventBus(), timeframe="1d")
+    ctx.universe = [SYM]
+    pos = pf.position(SYM)
+    pos.quantity = Decimal("10")
+    pos.avg_price = 100.0
+    pos.mark(80.0)
+    engine = _engine(
+        pf,
+        ctx,
+        risk_models=[MaximumDrawdownPerSecurity(max_drawdown_pct=0.05)],
+    )
+    asyncio.run(engine.start())
+    request = engine.manual.buy(SYM, quantity=Decimal("1"))
+
+    asyncio.run(engine.on_bars({SYM.key: Bar(
+        SYM, T0, 80, 81, 79, 80, 1e6, "1d",
+    )}, settle=False))
+
+    assert [(item.side, item.quantity, item.meta.get("model"))
+            for item in engine.orders] == [
+        (OrderSide.SELL, Decimal("10"), "risk"),
+    ]
+    assert request.status == "pending"
+
+
+def test_risk_cap_that_preserves_strategy_source_still_wins_manual_buy():
+    from quant.risk.models import SectorExposureCap
+
+    pf = Portfolio(1_000.0)
+    ctx = Context(SimClock(T0), pf, EventBus(), timeframe="1d")
+    ctx.universe = [SYM]
+    pos = pf.position(SYM)
+    pos.quantity = Decimal("10")
+    pos.avg_price = pos.last_price = 100.0
+    engine = _engine(
+        pf,
+        ctx,
+        risk_models=[SectorExposureCap({SYM.ticker: "tech"}, max_group_weight=0.2)],
+    )
+    asyncio.run(engine.start())
+    request = engine.manual.buy(SYM, quantity=Decimal("1"))
+
+    asyncio.run(engine.on_bars({SYM.key: Bar(
+        SYM, T0, 100, 101, 99, 100, 1e6, "1d",
+    )}, settle=False))
+
+    assert [(item.side, item.quantity, item.meta.get("model"))
+            for item in engine.orders] == [
+        (OrderSide.SELL, Decimal("6"), "equal_weight"),
+    ]
+    assert request.status == "pending"
+
+
+@pytest.mark.parametrize("action", ["close", "buy"])
+def test_missing_risk_order_allows_exit_but_blocks_new_manual_exposure(action):
+    from quant.risk.models import MaximumDrawdownPerSecurity
+
+    class NoOrdersExecution(ImmediateExecution):
+        def execute(self, ctx, targets):
+            return []
+
+    pf = Portfolio(100_000.0)
+    ctx = Context(SimClock(T0), pf, EventBus(), timeframe="1d")
+    ctx.universe = [SYM]
+    pos = pf.position(SYM)
+    pos.quantity = Decimal("10")
+    pos.avg_price = pos.last_price = 100.0
+    broker = PaperBrokerage(pf)
+    engine = Engine(
+        ctx,
+        _AlwaysLong(),
+        EqualWeighting(cash_reserve_pct=0.0, max_position_weight=1.0),
+        NoOrdersExecution(min_order_notional=1),
+        broker,
+        risk_models=[MaximumDrawdownPerSecurity(max_drawdown_pct=0.05)],
+    )
+    asyncio.run(engine.start())
+    request = (
+        engine.manual.close(SYM)
+        if action == "close"
+        else engine.manual.buy(SYM, quantity=Decimal("1"))
+    )
+
+    asyncio.run(engine.on_bars({SYM.key: Bar(
+        SYM, T0, 80, 81, 79, 80, 1e6, "1d",
+    )}, settle=False))
+
+    if action == "close":
+        assert [(item.source, item.side, item.quantity)
+                for item in engine.orders] == [
+            ("manual", OrderSide.SELL, Decimal("10")),
+        ]
+        assert request.status == "submitted"
+    else:
+        assert engine.orders == []
+        assert request.status == "pending"
+        assert "리스크 축소" in request.detail
 
 
 def test_resume_restores_normal_trading():

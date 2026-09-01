@@ -20,10 +20,13 @@ LIVE_HOST = "https://api.alpaca.markets"
 class AlpacaBrokerage(LiveBrokerage):
     name = "alpaca"
 
-    def __init__(self, portfolio, api_key: str = "", secret_key: str = "", **kwargs):
+    def __init__(self, portfolio, api_key: str = "", secret_key: str = "",
+                 allow_env_credentials: bool = True, **kwargs):
         super().__init__(portfolio, **kwargs)
-        self.api_key = api_key or os.environ.get("ALPACA_API_KEY", "")
-        self.secret_key = secret_key or os.environ.get("ALPACA_SECRET_KEY", "")
+        self.api_key = (api_key or os.environ.get("ALPACA_API_KEY", "")
+                        if allow_env_credentials else api_key)
+        self.secret_key = (secret_key or os.environ.get("ALPACA_SECRET_KEY", "")
+                           if allow_env_credentials else secret_key)
         if not (self.api_key and self.secret_key):
             raise BrokerageError("ALPACA_API_KEY / ALPACA_SECRET_KEY are required")
         self.host = LIVE_HOST if self.live else PAPER_HOST
@@ -46,6 +49,7 @@ class AlpacaBrokerage(LiveBrokerage):
             body["limit_price"] = f"{order.limit_price:.2f}"
         if order.stop_price is not None:
             body["stop_price"] = f"{order.stop_price:.2f}"
+        self._enforce_submission_guard(order)
         r = await self._client.post(f"{self.host}/v2/orders", json=body)
         if r.status_code >= 400:
             raise BrokerageError(f"alpaca {r.status_code}: {r.text[:300]}")

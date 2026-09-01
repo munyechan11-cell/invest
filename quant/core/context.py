@@ -23,6 +23,11 @@ from quant.core.types import Bar, ClosedTrade, Quote, RunMode, Symbol, timeframe
 
 log = logging.getLogger("quant.context")
 
+# Venue clocks can lead the application clock slightly. The same tolerance is
+# used by mark selection and LiveTrader validation so an accepted quote cannot
+# be discarded silently during sizing.
+QUOTE_FUTURE_TOLERANCE = timedelta(seconds=5)
+
 
 class Context:
     def __init__(
@@ -48,6 +53,7 @@ class Context:
         self._state: dict[str, dict[str, Any]] = defaultdict(dict)
         self._locks: dict[str, tuple[datetime, str]] = {}
         self._pending: dict[str, Any] = {}
+        self._pending_order_keys: set[str] = set()
         self._pinned: dict[str, str] = {}
         self.benchmark: Symbol | None = None
         # Engine wires the active brokerage here so the execution layer can
@@ -90,10 +96,16 @@ class Context:
         return [b.close for b in self.history(symbol, count)]
 
     def price(self, symbol: Symbol) -> float:
-        """Best available mark: live quote mid, else last closed bar."""
-        q = self._quotes.get(symbol.key)
-        if q is not None and (self.now - q.ts) < self.bar_delta:
-            return q.mid
+        """Best available mark without letting future/live data into backtests."""
+        q = self.quote(symbol)
+        if q is not None:
+            try:
+                age = self.now - q.ts
+            except (TypeError, ValueError):
+                age = None
+            if (age is not None
+                    and -QUOTE_FUTURE_TOLERANCE <= age < self.bar_delta):
+                return q.mid
         bar = self.latest(symbol)
         return bar.close if bar else 0.0
 
@@ -101,6 +113,13 @@ class Context:
         self._quotes[quote.symbol.key] = quote
 
     def quote(self, symbol: Symbol) -> Quote | None:
+        # Backtests are a closed-bar simulation. A quote can be left on a reused
+        # Context by a caller, but it is neither historical evidence nor safe
+        # fill input there. LiveTrader validates wall-clock freshness at each
+        # decision/send boundary; keeping the raw live quote available lets that
+        # validator explain whether it is missing, future, or stale.
+        if self.run_mode is RunMode.BACKTEST:
+            return None
         return self._quotes.get(symbol.key)
 
     def has_data(self, symbol: Symbol, minimum: int) -> bool:
@@ -118,6 +137,12 @@ class Context:
     def set_pending(self, pending: dict[str, Decimal]) -> None:
         """Signed quantity currently resting in unfilled orders, per symbol."""
         self._pending = dict(pending)
+        # Preserve keys even when opposite open orders net to zero. Quantity
+        # alone cannot prove that a symbol has no live venue order.
+        self._pending_order_keys = set(pending)
+
+    def has_pending_order(self, symbol: Symbol) -> bool:
+        return symbol.key in self._pending_order_keys
 
     def pending_quantity(self, symbol: Symbol) -> Decimal:
 

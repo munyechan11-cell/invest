@@ -22,11 +22,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import os
+import random
 import time
+from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from urllib.parse import quote, quote_plus
 
 import httpx
 
@@ -66,6 +71,7 @@ _FIELDS = {
     "stocks_path": "/api/v1/stocks",
     "candles_path": "/api/v1/candles",
     "orderbook_path": "/api/v1/orderbook",
+    "trades_path": "/api/v1/trades",
     "accounts_path": "/api/v1/accounts",
     "holdings_path": "/api/v1/holdings",
     "buying_power_path": "/api/v1/buying-power",
@@ -99,14 +105,35 @@ _TOSS_CUM_COMMISSION = "_toss_cumulative_commission"
 _TOSS_CUM_TAX = "_toss_cumulative_tax"
 _TOSS_CANCEL_CONFIRM_ATTEMPTS = 5
 _TOSS_CANCEL_CONFIRM_SECONDS = 6.0
+_TOSS_READ_ATTEMPTS = 3
+_TOSS_CANDLE_MAX_PAGES = 100
+_TOSS_READ_BACKOFF_CAP_SECONDS = 2.0
+# A venue-directed cooldown is not an ordinary refresh interval.  Preserve it
+# through the API/UI up to a conservative 15-minute timer ceiling so a valid
+# Retry-After=120 is not turned into a fresh quota violation after 30 seconds.
+_TOSS_POLL_BACKOFF_CAP_SECONDS = 15 * 60.0
+_TOSS_CREDENTIAL_CACHE_MAX = 128
+_TOSS_RATE_GATE_IDLE_TTL_SECONDS = 15 * 60.0
 
 
 class _TossHTTPError(BrokerageError):
     """One non-2xx Toss response with its status preserved for side-effect safety."""
 
-    def __init__(self, status_code: int, message: str):
+    def __init__(self, status_code: int, message: str,
+                 *, retry_after: float | None = None):
         super().__init__(message)
         self.status_code = status_code
+        try:
+            parsed_retry = float(retry_after) if retry_after is not None else None
+        except (TypeError, ValueError, OverflowError):
+            parsed_retry = None
+        self.retry_after = (
+            parsed_retry
+            if parsed_retry is not None
+            and math.isfinite(parsed_retry)
+            and parsed_retry >= 0
+            else None
+        )
 
 
 class _TossResponseDecodeError(BrokerageError):
@@ -202,8 +229,198 @@ def _explain(response, what: str) -> str:
     return f"{what} 실패 ({response.status_code}) — {body}"
 
 
-_TOKENS: dict[bytes, tuple[str, float]] = {}
+def _redact_credentials(message: object, *credentials: str) -> str:
+    """Remove caller-owned OAuth values before an error reaches logs or UI."""
+    redacted = str(message)
+    variants = {
+        variant
+        for credential in credentials if credential
+        for variant in (
+            credential,
+            quote(credential, safe=""),
+            quote_plus(credential, safe=""),
+        )
+        if variant
+    }
+    for variant in sorted(variants, key=len, reverse=True):
+        redacted = redacted.replace(variant, "[REDACTED]")
+    return redacted
+
+
+def _retry_after_seconds(response: httpx.Response, attempt: int) -> float | None:
+    """Return a short safe retry delay, or ``None`` to surface the response.
+
+    Toss returns ``Retry-After`` on 429 and recommends exponential backoff with
+    jitter.  Waiting a long time inside one browser request makes the UI look
+    hung; retrying *before* the venue's longer delay expires just burns the same
+    quota again.  Short delays are retried here. Longer ones are surfaced as
+    429 so the caller can schedule its next poll from the preserved header.
+    """
+    raw = (response.headers.get("Retry-After")
+           or response.headers.get("X-RateLimit-Reset"))
+    try:
+        advised = max(0.0, float(raw)) if raw is not None else 0.0
+    except (TypeError, ValueError):
+        advised = 0.0
+    if not math.isfinite(advised):
+        return None
+    if advised > _TOSS_READ_BACKOFF_CAP_SECONDS:
+        return None
+    exponential = 0.25 * (2 ** attempt)
+    base = min(_TOSS_READ_BACKOFF_CAP_SECONDS, max(advised, exponential))
+    # A small jitter stops several open browser tabs from retrying in lockstep.
+    return base + random.uniform(0.0, min(0.1, base * 0.2))
+
+
+def _venue_retry_after_seconds(response: httpx.Response) -> float | None:
+    """Parse a finite non-negative venue cooldown without inventing zero."""
+    raw = (response.headers.get("Retry-After")
+           or response.headers.get("X-RateLimit-Reset"))
+    try:
+        value = float(raw) if raw is not None else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if value is None or not math.isfinite(value) or value < 0:
+        return None
+    return value
+
+
+_TOKENS: OrderedDict[bytes, tuple[str, float]] = OrderedDict()
+# OAuth has its own quota surface.  Keep venue-directed cooldowns even when a
+# token POST failed, otherwise every account/market client immediately retries
+# the same credential under the global token lock.  This cache contains only
+# opaque digests and monotonic deadlines and is deliberately bounded.
+_AUTH_COOLDOWNS: OrderedDict[bytes, tuple[float, int, str]] = OrderedDict()
 _TOKEN_LOCK = LazyLock()
+
+
+def _trim_token_cache(now: float) -> None:
+    """Drop unusable/old credential entries without retaining plaintext keys."""
+    for key, (_token, expires_at) in tuple(_TOKENS.items()):
+        if expires_at <= now + 60:
+            _TOKENS.pop(key, None)
+    while len(_TOKENS) >= _TOSS_CREDENTIAL_CACHE_MAX:
+        _TOKENS.popitem(last=False)
+
+
+def _auth_failure(cache_key: bytes) -> tuple[float, int, str] | None:
+    now = time.monotonic()
+    for key, (until, _status, _message) in tuple(_AUTH_COOLDOWNS.items()):
+        if until <= now:
+            _AUTH_COOLDOWNS.pop(key, None)
+    failure = _AUTH_COOLDOWNS.get(cache_key)
+    if failure is None or failure[0] <= now:
+        return None
+    _AUTH_COOLDOWNS.move_to_end(cache_key)
+    return failure[0] - now, failure[1], failure[2]
+
+
+def _defer_auth(cache_key: bytes, seconds: float, *, status_code: int,
+                message: str) -> float:
+    bounded = min(
+        _TOSS_POLL_BACKOFF_CAP_SECONDS,
+        seconds if math.isfinite(seconds) and seconds > 0 else 0.25,
+    )
+    existing = _AUTH_COOLDOWNS.get(cache_key)
+    until = max(existing[0] if existing else 0.0, time.monotonic() + bounded)
+    _AUTH_COOLDOWNS[cache_key] = (until, status_code, message)
+    _AUTH_COOLDOWNS.move_to_end(cache_key)
+    while len(_AUTH_COOLDOWNS) > _TOSS_CREDENTIAL_CACHE_MAX:
+        _AUTH_COOLDOWNS.popitem(last=False)
+    return bounded
+
+
+class _TossRateGate:
+    """One process-local request cadence shared by one credential pair."""
+
+    def __init__(self, gap: float):
+        self.gap = gap
+        self.next_at = 0.0
+        self.cooldown_until = 0.0
+        self.clients = 0
+        self.last_released_at = time.monotonic()
+        self.lock = LazyLock()
+
+    async def wait(self) -> float:
+        """Take one cadence slot, or return a shared cooldown to fail fast."""
+        while True:
+            async with self.lock:
+                now = time.monotonic()
+                cooldown = self.cooldown_until - now
+                if cooldown > 0:
+                    return cooldown
+                delay = self.next_at - now
+                if delay <= 0:
+                    self.next_at = now + self.gap
+                    return 0.0
+            # Never hold the lock while sleeping. A 429 from a request already
+            # in flight must be able to publish its cooldown before this waiter
+            # wakes. The loop rechecks that cooldown before reserving a slot.
+            await asyncio.sleep(delay)
+
+    async def defer(self, seconds: float) -> None:
+        """Share one venue-directed cooldown across the credential pair."""
+        if not math.isfinite(seconds) or seconds <= 0:
+            return
+        bounded = min(_TOSS_POLL_BACKOFF_CAP_SECONDS, seconds)
+        async with self.lock:
+            self.cooldown_until = max(
+                self.cooldown_until,
+                time.monotonic() + bounded,
+            )
+
+
+# Keep inactive gates long enough to carry a Retry-After across short-lived API
+# providers.  Active gates are never evicted: splitting a live credential into
+# two cadence clocks would exceed venue quota.  Inactive, cooldown-free entries
+# are LRU/TTL-pruned so credential rotation cannot grow this for process life.
+_RATE_GATES: OrderedDict[bytes, _TossRateGate] = OrderedDict()
+
+
+def _prune_rate_gates() -> None:
+    now = time.monotonic()
+    for key, gate in tuple(_RATE_GATES.items()):
+        idle = now - gate.last_released_at
+        if (gate.clients <= 0 and gate.cooldown_until <= now
+                and idle >= _TOSS_RATE_GATE_IDLE_TTL_SECONDS):
+            _RATE_GATES.pop(key, None)
+    if len(_RATE_GATES) <= _TOSS_CREDENTIAL_CACHE_MAX:
+        return
+    for key, gate in tuple(_RATE_GATES.items()):
+        if len(_RATE_GATES) <= _TOSS_CREDENTIAL_CACHE_MAX:
+            break
+        if gate.clients <= 0 and gate.cooldown_until <= now:
+            _RATE_GATES.pop(key, None)
+
+
+def _release_rate_gate(cache_key: bytes, gate: _TossRateGate) -> None:
+    current = _RATE_GATES.get(cache_key)
+    if current is not gate:
+        return
+    gate.clients = max(0, gate.clients - 1)
+    gate.last_released_at = time.monotonic()
+    _RATE_GATES.move_to_end(cache_key)
+    _prune_rate_gates()
+
+
+def _shared_rate_gate(client_id: str, client_secret: str,
+                      requests_per_second: float) -> _TossRateGate:
+    if (not math.isfinite(requests_per_second)
+            or requests_per_second <= 0):
+        raise ValueError("requests_per_second must be a finite positive number")
+    key = _token_cache_key(client_id, client_secret)
+    gap = 1.0 / requests_per_second
+    gate = _RATE_GATES.get(key)
+    if gate is None:
+        gate = _TossRateGate(gap)
+        _RATE_GATES[key] = gate
+    else:
+        # If two call sites disagree, the slower cadence is the safe contract.
+        gate.gap = max(gate.gap, gap)
+    gate.clients += 1
+    _RATE_GATES.move_to_end(key)
+    _prune_rate_gates()
+    return gate
 
 
 def _token_cache_key(client_id: str, client_secret: str) -> bytes:
@@ -228,11 +445,21 @@ async def toss_token(client_id: str, client_secret: str,
     cache_key = _token_cache_key(client_id, client_secret)
     cached = _TOKENS.get(cache_key)
     if cached and cached[1] > time.time() + 60:
+        _TOKENS.move_to_end(cache_key)
         return cached[0]
     async with _TOKEN_LOCK:
         cached = _TOKENS.get(cache_key)
         if cached and cached[1] > time.time() + 60:
+            _TOKENS.move_to_end(cache_key)
             return cached[0]
+        failure = _auth_failure(cache_key)
+        if failure is not None:
+            retry_after, status_code, message = failure
+            raise _TossHTTPError(
+                status_code,
+                message,
+                retry_after=retry_after,
+            )
         # 토스는 자격증명을 **본문**으로 받습니다. Basic 헤더로 보내고 본문에
         # grant_type 만 넣으면 client_id 가 없다고 403 이 옵니다 — 키가 맞아도.
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -245,29 +472,84 @@ async def toss_token(client_id: str, client_secret: str,
             if r.status_code >= 400:
                 # 응답 본문을 버리면 "403 Forbidden" 만 남고, 그것으로는 키가
                 # 틀린 것인지 IP 가 막힌 것인지 알 수 없습니다.
-                raise BrokerageError(_explain(r, "토스 토큰 발급"))
-            data = r.json()
-        token = data.get("access_token")
-        if not token:
-            raise BrokerageError(f"토스 토큰 응답에 access_token 없음: {str(data)[:200]}")
-        _TOKENS[cache_key] = (token, time.time() + int(data.get("expires_in", 3600)))
-        return token
+                message = _redact_credentials(
+                    _explain(r, "토스 토큰 발급"), client_id, client_secret,
+                )
+                advised = _venue_retry_after_seconds(r)
+                retry_after = _defer_auth(
+                    cache_key,
+                    advised if advised is not None else 0.25,
+                    status_code=r.status_code,
+                    message=message,
+                )
+                raise _TossHTTPError(
+                    r.status_code,
+                    message,
+                    retry_after=retry_after,
+                )
+            try:
+                data = r.json()
+            except Exception as exc:  # noqa: BLE001 - normalize venue body errors
+                message = "토스 토큰 응답 JSON을 읽을 수 없습니다"
+                retry_after = _defer_auth(
+                    cache_key, 0.25, status_code=502, message=message,
+                )
+                raise _TossHTTPError(
+                    502, message, retry_after=retry_after,
+                ) from exc
+        token = data.get("access_token") if isinstance(data, dict) else None
+        if not isinstance(token, str) or not token.strip():
+            # Do not echo the malformed body: venues and proxies occasionally
+            # include submitted credentials or bearer material in it.
+            message = "토스 토큰 응답에 access_token이 없습니다"
+            retry_after = _defer_auth(
+                cache_key, 0.25, status_code=502, message=message,
+            )
+            raise _TossHTTPError(502, message, retry_after=retry_after)
+        try:
+            expires_in = float(data.get("expires_in", 3600))
+        except (TypeError, ValueError, OverflowError):
+            expires_in = 3600.0
+        if not math.isfinite(expires_in) or expires_in <= 0:
+            expires_in = 3600.0
+        # A malformed venue TTL must not pin a token indefinitely.
+        expires_in = min(expires_in, 24 * 60 * 60)
+        now = time.time()
+        _trim_token_cache(now)
+        _TOKENS[cache_key] = (token.strip(), now + expires_in)
+        _TOKENS.move_to_end(cache_key)
+        _AUTH_COOLDOWNS.pop(cache_key, None)
+        return token.strip()
 
 
 class _TossClient:
     """Shared HTTP surface for the data provider and the brokerage."""
 
     def __init__(self, client_id: str, client_secret: str, account_no: str = "",
-                 timeout: float = 20.0, requests_per_second: float = 8.0):
-        self.client_id = client_id or os.environ.get("TOSS_CLIENT_ID", "")
-        self.client_secret = client_secret or os.environ.get("TOSS_CLIENT_SECRET", "")
-        self.account_no = account_no or os.environ.get("TOSS_ACCOUNT_NO", "")
+                 timeout: float = 20.0, requests_per_second: float = 8.0,
+                 allow_env_credentials: bool = True):
+        self.client_id = (
+            client_id or os.environ.get("TOSS_CLIENT_ID", "")
+            if allow_env_credentials else client_id
+        )
+        self.client_secret = (
+            client_secret or os.environ.get("TOSS_CLIENT_SECRET", "")
+            if allow_env_credentials else client_secret
+        )
+        self.account_no = (
+            account_no or os.environ.get("TOSS_ACCOUNT_NO", "")
+            if allow_env_credentials else account_no
+        )
         if not (self.client_id and self.client_secret):
             raise BrokerageError("TOSS_CLIENT_ID / TOSS_CLIENT_SECRET 가 필요합니다")
         self._http = httpx.AsyncClient(timeout=timeout)
-        self._gap = 1.0 / requests_per_second
-        self._next_at = 0.0
-        self._lock = LazyLock()
+        self._rate_gate = _shared_rate_gate(
+            self.client_id, self.client_secret, requests_per_second,
+        )
+        self._rate_gate_key = _token_cache_key(
+            self.client_id, self.client_secret,
+        )
+        self._rate_gate_released = False
         # The settings screen asks for the human-readable account number, while
         # every account-scoped Toss endpoint requires the opaque ``accountSeq``
         # returned by GET /api/v1/accounts.  Cache only that derived identifier
@@ -353,24 +635,87 @@ class _TossClient:
 
     async def request(self, method: str, path: str, *, params: dict | None = None,
                       json: dict | None = None,
-                      account: bool = False) -> dict | list:
+                      account: bool = False,
+                      pre_send: Callable[[], None] | None = None) -> dict | list:
         # Resolve accountSeq before taking this request's rate-limit slot.  The
         # resolver itself calls the unscoped /accounts endpoint; doing that from
         # inside the slot would let the outer request run immediately afterward
         # and violate the configured gap.
         headers = await self._headers(account)
-        async with self._lock:
-            wait = self._next_at - time.monotonic()
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._next_at = time.monotonic() + self._gap
-        r = await self._http.request(
-            method, f"{HOST}{path}", params=params, json=json,
-            headers=headers,
-        )
+        verb = method.upper()
+        # GET is side-effect free and the official guide explicitly recommends
+        # Retry-After + exponential backoff for 429.  Orders are never retried
+        # here: a timed-out POST may already have reached the venue.
+        attempts = _TOSS_READ_ATTEMPTS if verb == "GET" else 1
+        r: httpx.Response | None = None
+        retry_after_for_error: float | None = None
+        for attempt in range(attempts):
+            shared_cooldown = await self._rate_gate.wait()
+            if shared_cooldown > 0:
+                raise _TossHTTPError(
+                    429,
+                    f"토스 {verb} {path} 대기 중 — 같은 계정의 호출 제한이 "
+                    "풀린 뒤 다시 시도하세요",
+                    retry_after=shared_cooldown,
+                )
+            # For order POSTs this is the last synchronous boundary after token,
+            # account resolution and any explicit rate-limit sleep.  Re-run it
+            # on every idempotent venue-submit attempt.
+            if pre_send is not None:
+                pre_send()
+            r = await self._http.request(
+                verb, f"{HOST}{path}", params=params, json=json,
+                headers=headers,
+            )
+            if r.status_code == 401:
+                # A bearer can be revoked before its advertised expiry. Never
+                # replay this request automatically (especially not an order),
+                # but force the next caller through OAuth again. A delayed 401
+                # from an old bearer must not evict a newer bearer another
+                # request already refreshed in the meantime.
+                cache_key = _token_cache_key(
+                    self.client_id, self.client_secret,
+                )
+                cached = _TOKENS.get(cache_key)
+                if (cached is not None
+                        and headers.get("Authorization") == f"Bearer {cached[0]}"):
+                    _TOKENS.pop(cache_key, None)
+            if r.status_code == 429:
+                advised = _venue_retry_after_seconds(r)
+                if advised is None:
+                    advised = min(
+                        _TOSS_READ_BACKOFF_CAP_SECONDS,
+                        0.25 * (2 ** attempt) + random.uniform(0.0, 0.05),
+                    )
+                retry_after_for_error = min(
+                    _TOSS_POLL_BACKOFF_CAP_SECONDS, advised,
+                )
+                await self._rate_gate.defer(retry_after_for_error)
+                # Surface every quota response. Retrying inside this request
+                # lets parallel tabs keep consuming quota while one call sleeps;
+                # the poller can schedule from the preserved Retry-After.
+                break
+            retryable = 500 <= r.status_code <= 504
+            advised = _venue_retry_after_seconds(r) if retryable else None
+            if advised is not None:
+                retry_after_for_error = min(
+                    _TOSS_POLL_BACKOFF_CAP_SECONDS, advised,
+                )
+                await self._rate_gate.defer(retry_after_for_error)
+                # Retry-After is the venue's scheduling decision. Surface it
+                # instead of hiding a long sleep inside this HTTP request.
+                break
+            if not retryable or attempt + 1 >= attempts:
+                break
+            delay = _retry_after_seconds(r, attempt)
+            if delay is None:
+                break
+            await asyncio.sleep(delay)
+        assert r is not None
         if r.status_code >= 400:
             raise _TossHTTPError(
-                r.status_code, _explain(r, f"토스 {method} {path}")
+                r.status_code, _explain(r, f"토스 {verb} {path}"),
+                retry_after=retry_after_for_error,
             )
         if not r.content:
             return {}
@@ -385,7 +730,12 @@ class _TossClient:
         return body.get("result", body) if isinstance(body, dict) else body
 
     async def close(self) -> None:
-        await self._http.aclose()
+        try:
+            await self._http.aclose()
+        finally:
+            if not self._rate_gate_released:
+                self._rate_gate_released = True
+                _release_rate_gate(self._rate_gate_key, self._rate_gate)
 
 
 @register_provider("toss")
@@ -423,84 +773,416 @@ class TossProvider(DataProvider):
         want = max(1, int((end - start).total_seconds() // step) + 2)
         now = datetime.now(UTC)
         seen: set[datetime] = set()
+        seen_cursors: set[str] = set()
         bars: list[Bar] = []
         before: str | None = None
 
-        while len(bars) < want:
+        for _page in range(_TOSS_CANDLE_MAX_PAGES):
+            if len(bars) >= want:
+                break
             params = {"symbol": symbol.ticker, "interval": interval,
                       "count": min(200, want - len(bars) + 5), "adjusted": True}
             if before:
                 params["before"] = before
             data = await self.client.request("GET", _FIELDS["candles_path"],
                                              params=params)
-            rows = data.get("candles") or []
+            rows = (data.get("candles") or []) if isinstance(data, dict) else []
+            if not isinstance(rows, list):
+                break
             if not rows:
                 break
             for row in rows:
+                if not isinstance(row, dict):
+                    continue
                 ts = _parse_ts(row.get("timestamp"))
                 if ts is None or ts in seen:
                     continue
                 seen.add(ts)
                 if not (start <= ts < end):
                     continue
-                try:
-                    bar = Bar(symbol, ts,
-                              float(row["openPrice"]), float(row["highPrice"]),
-                              float(row["lowPrice"]), float(row["closePrice"]),
-                              float(row.get("volume") or 0), timeframe)
-                except (KeyError, TypeError, ValueError):
+                open_price = _market_number(row.get("openPrice"), allow_zero=False)
+                high_price = _market_number(row.get("highPrice"), allow_zero=False)
+                low_price = _market_number(row.get("lowPrice"), allow_zero=False)
+                close_price = _market_number(row.get("closePrice"), allow_zero=False)
+                volume = _market_number(row.get("volume"), allow_zero=True)
+                if (
+                    None in (open_price, high_price, low_price, close_price, volume)
+                    or high_price < max(open_price, close_price)
+                    or low_price > min(open_price, close_price)
+                    or high_price < low_price
+                ):
                     continue
+                bar = Bar(
+                    symbol, ts, open_price, high_price, low_price, close_price,
+                    volume, timeframe,
+                )
                 # 아직 닫히지 않은 봉은 돌려주지 않습니다 — 그걸로 계산한
                 # 지표는 다음 틱마다 값이 바뀝니다.
                 if bar.end_ts > now:
                     continue
                 bars.append(bar)
             nxt = data.get("nextBefore")
-            oldest = _parse_ts(rows[-1].get("timestamp"))
+            oldest = next((
+                parsed for row in reversed(rows) if isinstance(row, dict)
+                and (parsed := _parse_ts(row.get("timestamp"))) is not None
+            ), None)
             if not nxt or (oldest is not None and oldest < start):
                 break
-            before = nxt
+            next_cursor = str(nxt)
+            if next_cursor == before or next_cursor in seen_cursors:
+                log.warning(
+                    "토스 캔들 커서가 진행하지 않습니다 (%s → %s)",
+                    before, next_cursor,
+                )
+                break
+            seen_cursors.add(next_cursor)
+            before = next_cursor
         bars.sort(key=lambda b: b.ts)
         return bars
 
     async def quote(self, symbol):
-        """호가 최우선 한 단. 호가가 없으면 현재가로 물러섭니다.
+        """Return a timestamped, paired venue L1 or ``None``.
 
-        장이 닫혀 있으면 호가가 비어 옵니다. 그때 None 을 돌려주면 봇이
-        "시세를 못 받았다" 로 읽고 멈추는데, 실제로는 마지막 체결가가 있고
-        그것으로 평가는 됩니다.
+        This contract authorises live sizing and entry. A last-trade row without
+        a real bid/ask is valid display evidence but not an executable spread;
+        ``market_snapshot`` owns that read-only fallback.
         """
         try:
             data = await self.client.request(
                 "GET", _FIELDS["orderbook_path"], params={"symbol": symbol.ticker})
-            bids, asks = data.get("bids") or [], data.get("asks") or []
-            if bids and asks:
-                return Quote(symbol, utcnow(),
-                             float(bids[0]["price"]), float(asks[0]["price"]),
-                             float(bids[0].get("volume") or 0),
-                             float(asks[0].get("volume") or 0))
-        except Exception as exc:            # noqa: BLE001 — 아래 현재가로 갑니다
+        except Exception as exc:            # noqa: BLE001 - fail closed for trading
             log.debug("토스 호가 조회 실패 %s: %s", symbol.ticker, exc)
+            return None
+        if not isinstance(data, dict):
+            return None
+        expected_currency = str(symbol.quote_currency or "").strip().upper()
+        currency = str(data.get("currency") or "").strip().upper()
+        if not currency or (expected_currency and currency != expected_currency):
+            return None
+        ts = _parse_ts(data.get("timestamp"))
+        bids = _market_levels(data.get("bids"), ascending=False)
+        asks = _market_levels(data.get("asks"), ascending=True)
+        if ts is None or not bids or not asks:
+            return None
+        best_bid, best_ask = bids[0], asks[0]
+        if best_bid["price"] >= best_ask["price"]:
+            return None
+        return Quote(
+            symbol,
+            ts,
+            best_bid["price"],
+            best_ask["price"],
+            best_bid["quantity"],
+            best_ask["quantity"],
+        )
 
-        try:
-            data = await self.client.request(
-                "GET", _FIELDS["price_path"], params={"symbols": symbol.ticker})
-        except Exception as exc:            # noqa: BLE001
-            log.debug("토스 현재가 조회 실패 %s: %s", symbol.ticker, exc)
-            return None
-        rows = data if isinstance(data, list) else (data.get("prices") or [])
-        if not rows:
-            return None
-        try:
-            last = float(rows[0]["lastPrice"])
-        except (KeyError, TypeError, ValueError, IndexError):
-            return None
-        if last <= 0:
-            return None
-        # 호가가 없으니 한 틱을 스프레드로 가정합니다. 실제 호가보다 넓거나
-        # 좁을 수 있지만, 가격이 아예 없는 것보다는 훨씬 낫습니다.
-        tick = float(symbol.tick_size) or last * 0.0005
-        return Quote(symbol, utcnow(), last - tick, last + tick)
+    async def market_snapshot(self, symbol: Symbol, *, depth: int = 10,
+                              trade_count: int = 20) -> dict:
+        """One read-only REST snapshot with no invented market fields.
+
+        The official orderbook is a multi-level array and the trade endpoint
+        does not provide aggressor side or change from previous close.  Keep
+        those absences explicit: fabricating a spread or a BUY/SELL label makes
+        a polished screen less trustworthy than an honest empty cell.
+        """
+        if not 1 <= depth <= 20:
+            raise ValueError("depth must be between 1 and 20")
+        if not 0 <= trade_count <= 50:
+            raise ValueError("trade_count must be between 0 and 50")
+
+        async def no_trades() -> list:
+            return []
+
+        orderbook_raw, prices_raw, trades_raw = await asyncio.gather(
+            self.client.request(
+                "GET", _FIELDS["orderbook_path"],
+                params={"symbol": symbol.ticker},
+            ),
+            self.client.request(
+                "GET", _FIELDS["price_path"],
+                params={"symbols": symbol.ticker},
+            ),
+            (self.client.request(
+                "GET", _FIELDS["trades_path"],
+                params={"symbol": symbol.ticker, "count": trade_count},
+            ) if trade_count else no_trades()),
+            return_exceptions=True,
+        )
+
+        received_at = utcnow()
+        issues: list[str] = []
+        retry_after = 0.0
+
+        def failed(source: str, value: object) -> bool:
+            nonlocal retry_after
+            if not isinstance(value, BaseException):
+                return False
+            if isinstance(value, _TossHTTPError):
+                retry_after = max(retry_after, value.retry_after or 0.0)
+                if value.status_code == 401:
+                    issues.append(f"{source}: 인증이 만료되었습니다")
+                elif value.status_code == 429:
+                    issues.append(f"{source}: 조회 한도를 초과했습니다")
+                else:
+                    issues.append(f"{source}: HTTP {value.status_code}")
+            else:
+                issues.append(f"{source}: 일시적으로 조회할 수 없습니다")
+            return True
+
+        orderbook = None if failed("호가", orderbook_raw) else orderbook_raw
+        prices = None if failed("현재가", prices_raw) else prices_raw
+        trades = None if failed("최근 체결", trades_raw) else trades_raw
+
+        depth_block: dict | None = None
+        bid = ask = bid_quantity = ask_quantity = None
+        book_ts: datetime | None = None
+        expected_currency = str(symbol.quote_currency or "").strip().upper()
+        currency = expected_currency
+        if isinstance(orderbook, dict):
+            book_currency = str(orderbook.get("currency") or "").strip().upper()
+            book_ts = _parse_ts(orderbook.get("timestamp"))
+            asks = _market_levels(orderbook.get("asks"), ascending=True)
+            bids = _market_levels(orderbook.get("bids"), ascending=False)
+            currency_ok = bool(
+                book_currency
+                and (not expected_currency or book_currency == expected_currency)
+            )
+            if currency_ok and asks is not None and bids is not None:
+                if not currency:
+                    currency = book_currency
+                depth_block = {
+                    "asks": asks[:depth],
+                    "bids": bids[:depth],
+                    "ts": book_ts.isoformat() if book_ts else None,
+                }
+                if asks:
+                    ask, ask_quantity = asks[0]["price"], asks[0]["quantity"]
+                if bids:
+                    bid, bid_quantity = bids[0]["price"], bids[0]["quantity"]
+                if bid is not None and ask is not None and bid >= ask:
+                    # A locked/crossed book cannot safely price an order. Do not
+                    # keep either side: choosing one would turn corrupt paired
+                    # evidence into a confident-looking spread.
+                    issues.append("호가: 최우선 매수호가가 매도호가보다 낮지 않습니다")
+                    depth_block = None
+                    bid = ask = bid_quantity = ask_quantity = None
+                    book_ts = None
+            else:
+                if book_currency and not currency_ok:
+                    issues.append(
+                        f"호가: 통화 {book_currency}가 종목 통화 "
+                        f"{expected_currency or '미상'}와 다릅니다"
+                    )
+                else:
+                    issues.append("호가: 응답 형식이 올바르지 않습니다")
+        elif orderbook is not None:
+            issues.append("호가: result 객체가 없습니다")
+
+        last = None
+        price_ts: datetime | None = None
+        if isinstance(prices, list):
+            matching_rows = [
+                item for item in prices
+                if isinstance(item, dict)
+                and _api_symbol(item.get("symbol")) == symbol.ticker.upper()
+            ]
+            row = matching_rows[0] if len(matching_rows) == 1 else None
+            # One-symbol responses should still carry symbol.  Picking row 0
+            # when it does not match can put another company's price on screen.
+            if row is not None:
+                row_currency = str(row.get("currency") or "").strip().upper()
+                currency_ok = bool(
+                    row_currency
+                    and (not expected_currency or row_currency == expected_currency)
+                )
+                if not currency_ok:
+                    issues.append(
+                        f"현재가: 통화 {row_currency or '없음'}가 종목 통화 "
+                        f"{expected_currency or '미상'}와 다릅니다"
+                    )
+                else:
+                    if not currency:
+                        currency = row_currency
+                    last = _market_number(row.get("lastPrice"), allow_zero=False)
+                    price_ts = _parse_ts(row.get("timestamp"))
+                if currency_ok and last is None:
+                    issues.append("현재가: lastPrice가 올바르지 않습니다")
+            elif len(matching_rows) > 1:
+                issues.append("현재가: 요청한 종목의 행이 중복되었습니다")
+            elif prices:
+                issues.append("현재가: 요청한 종목의 행이 없습니다")
+        elif prices is not None:
+            issues.append("현재가: result 배열이 없습니다")
+
+        recent, trade_shape_ok, newest_trade_ts = _market_trades(trades)
+        trade_currency_ok = not expected_currency or all(
+            row.get("currency") == expected_currency for row in recent
+        )
+        if not trade_currency_ok:
+            issues.append("최근 체결: 종목 통화와 다른 체결 통화가 섞였습니다")
+            recent, newest_trade_ts, trade_shape_ok = [], None, False
+        elif trades is not None and not trade_shape_ok:
+            issues.append("최근 체결: 응답 형식이 올바르지 않습니다")
+        recent = recent[:trade_count]
+
+        midpoint = ((bid + ask) / 2.0
+                    if bid is not None and ask is not None else None)
+        price = last if last is not None else midpoint
+        price_kind = ("last" if last is not None
+                      else "midpoint" if midpoint is not None else None)
+        quote_ts = (price_ts if last is not None else book_ts)
+        # Freshness must describe the price we actually put in `quote.price`.
+        # A fresh orderbook timestamp cannot make a three-hour-old lastPrice
+        # fresh merely because both arrived in the same REST fan-out.  Only when
+        # there is no quote at all may the recent-trade timestamp describe the
+        # remaining tape-only snapshot.
+        source_parts = []
+        if last is not None:
+            source_parts.append("price")
+        if depth_block is not None:
+            source_parts.append("orderbook")
+        source = "toss_rest_" + "+".join(source_parts) if source_parts else None
+
+        def component_freshness(available: bool, ts: datetime | None) -> dict:
+            if not available:
+                return {"status": "unavailable", "age_ms": None, "ts": None}
+            if ts is None:
+                return {"status": "unknown", "age_ms": None, "ts": None}
+            signed_age = (
+                received_at - ts.astimezone(UTC)
+            ).total_seconds() * 1000
+            if signed_age < -5_000:
+                return {
+                    "status": "unknown", "age_ms": None, "ts": ts.isoformat(),
+                }
+            component_age = max(0, round(signed_age))
+            if component_age <= 5_000:
+                status = "fresh"
+            elif component_age <= 60_000:
+                status = "delayed"
+            else:
+                status = "stale"
+            return {
+                "status": status,
+                "age_ms": component_age,
+                "ts": ts.isoformat(),
+            }
+
+        components = {
+            "quote": component_freshness(price is not None, quote_ts),
+            "depth": component_freshness(
+                bool(depth_block and (depth_block["asks"] or depth_block["bids"])),
+                book_ts,
+            ),
+            "trades": component_freshness(bool(recent), newest_trade_ts),
+        }
+        overall_keys = {
+            key for key in ("quote", "depth")
+            if components[key]["status"] != "unavailable"
+        }
+        if not overall_keys and components["trades"]["status"] != "unavailable":
+            # A tape-only response is the only evidence available. When quote
+            # or depth exists, however, the last trade's event age does not say
+            # whether the REST feed is stale; an illiquid name can simply have
+            # no newer trade.
+            overall_keys.add("trades")
+        for key, component in components.items():
+            component["affects_overall"] = key in overall_keys
+        displayed = [
+            components[key] for key in overall_keys
+        ]
+        unknown_component = any(
+            component["status"] == "unknown" for component in displayed
+        )
+        component_ages = [
+            component["age_ms"] for component in displayed
+            if component["age_ms"] is not None
+        ]
+        age_ms = None if unknown_component else (
+            max(component_ages) if component_ages else None
+        )
+        if price is None and depth_block is None and not recent:
+            freshness_status = "unavailable"
+            message = "현재 시세를 불러오지 못했습니다"
+            if issues:
+                message += ": " + issues[0]
+        elif unknown_component:
+            freshness_status = "unknown"
+            message = "표시 중인 시세 일부의 거래소 시각을 확인할 수 없습니다"
+        elif age_ms is not None and age_ms <= 5_000:
+            freshness_status = "fresh"
+            message = "거래소 REST 시세가 최신에 가깝습니다"
+        elif age_ms is not None and age_ms <= 60_000:
+            freshness_status = "delayed"
+            message = "거래소 시세가 잠시 늦게 도착하고 있습니다"
+        else:
+            freshness_status = "stale"
+            message = "마지막 시세가 오래되었습니다 — 장 상태와 연결을 확인하세요"
+        if issues and freshness_status in {"fresh", "delayed"}:
+            freshness_status = "degraded"
+            message = "일부 시세만 표시합니다: " + "; ".join(issues[:2])
+
+        poll_after_ms = 2_500
+        if freshness_status in {"unknown", "degraded"}:
+            poll_after_ms = 5_000
+        elif freshness_status in {"stale", "unavailable"}:
+            poll_after_ms = 10_000
+        if retry_after:
+            poll_after_ms = max(
+                poll_after_ms,
+                min(int(_TOSS_POLL_BACKOFF_CAP_SECONDS * 1000),
+                    int(retry_after * 1000)),
+            )
+
+        return {
+            "ticker": symbol.ticker,
+            "currency": currency or None,
+            # Machine-readable diagnostics let the UI/tests explain why a
+            # component was downgraded instead of reducing the problem to one
+            # generic freshness sentence.
+            "issues": issues,
+            "quote": {
+                "price": price,
+                "price_kind": price_kind,
+                "bid": bid,
+                "ask": ask,
+                "bid_quantity": bid_quantity,
+                "ask_quantity": ask_quantity,
+                # The REST price schema does not contain previous-close change.
+                "change": None,
+                "change_pct": None,
+                "ts": quote_ts.isoformat() if quote_ts else None,
+                "source": source,
+            },
+            "market": {
+                # Market calendar is a separate endpoint.  Price age is not a
+                # safe proxy for OPEN/CLOSED (halts and illiquid names exist).
+                "state": None,
+                "session_label": "시장 상태 미조회",
+            },
+            "freshness": {
+                "status": freshness_status,
+                "age_ms": age_ms,
+                "poll_after_ms": poll_after_ms,
+                "message": message,
+                "components": components,
+            },
+            "capabilities": {
+                "rest_polling": True,
+                "top_of_book": bid is not None or ask is not None,
+                "depth": True,
+                "depth_available": depth_block is not None,
+                "recent_trades": True,
+                "recent_trades_available": trade_shape_ok,
+                # Official AsyncAPI v1.2.2 documents it, but this REST path has
+                # no collector attached yet.  Never label polling as streaming.
+                "websocket_available": True,
+                "websocket_active": False,
+                "market_session": False,
+            },
+            "depth": depth_block,
+            "recent_trades": recent,
+        }
 
     async def resolve(self, ticker: str):
         code = ticker.strip().upper()
@@ -612,12 +1294,16 @@ def _num(raw: object) -> float | None:
     토스는 금액을 문자열로 줍니다. 못 읽은 값을 0 으로 두면 화면이 "0원" 을
     자신 있게 그리는데, 그건 "공짜" 도 "없음" 도 아니고 "모름" 입니다.
     """
-    if raw in (None, ""):
+    if raw in (None, "") or isinstance(raw, bool):
         return None
     try:
-        return float(raw)
-    except (TypeError, ValueError):
+        value = Decimal(str(raw))
+    except (InvalidOperation, TypeError, ValueError):
         return None
+    if not value.is_finite():
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 def _named(block: object, currency: object) -> dict:
@@ -651,7 +1337,10 @@ def _required_nonnegative_amount(raw: object, what: str) -> float:
         raise BrokerageError(f"토스 {what} 응답 금액을 읽을 수 없습니다") from exc
     if not value.is_finite() or value < 0:
         raise BrokerageError(f"토스 {what} 응답 금액이 유효한 0 이상 숫자가 아닙니다")
-    return float(value)
+    number = float(value)
+    if not math.isfinite(number):
+        raise BrokerageError(f"토스 {what} 응답 금액이 너무 커서 표시할 수 없습니다")
+    return number
 
 
 def _market_values(data: dict) -> dict[str, float]:
@@ -677,6 +1366,77 @@ def _market_values(data: dict) -> dict[str, float]:
     return out
 
 
+def _market_value_mismatches(
+    aggregates: dict[str, float],
+    detail_totals: dict[str, float],
+    detail_counts: dict[str, int],
+) -> set[str]:
+    """Currencies whose item totals cannot explain the broker aggregate."""
+    mismatches: set[str] = set()
+    for currency in set(aggregates) | set(detail_totals):
+        aggregate = aggregates.get(currency)
+        detail_total = detail_totals.get(currency, 0.0)
+        if aggregate is None:
+            if detail_counts.get(currency, 0):
+                mismatches.add(currency)
+            continue
+        unit = 1.0 if currency == "KRW" else 0.01
+        tolerance = max(
+            unit * max(1, detail_counts.get(currency, 0)),
+            abs(aggregate) * 1e-6,
+        )
+        if abs(detail_total - aggregate) > tolerance:
+            mismatches.add(currency)
+    return mismatches
+
+
+def _strict_item_market_summary(data: dict, currency: str) -> tuple[float, int]:
+    """Validate nonzero base-currency rows before adopting live capital."""
+    raw_items = data.get("items")
+    if not isinstance(raw_items, list):
+        raise BrokerageError("토스 보유 주식 응답에 items 배열이 없습니다")
+    total = Decimal("0")
+    count = 0
+    for index, row in enumerate(raw_items):
+        if not isinstance(row, dict):
+            raise BrokerageError(
+                f"토스 보유 주식 items[{index}]가 객체가 아닙니다"
+            )
+        code = str(row.get("symbol") or f"items[{index}]").strip().upper()
+        row_currency = str(row.get("currency") or "").strip().upper()
+        if row_currency not in {"KRW", "USD"}:
+            raise BrokerageError(
+                f"토스 보유 주식 {code}의 currency를 읽을 수 없습니다"
+            )
+        if row_currency != currency:
+            continue
+        try:
+            quantity = Decimal(str(row.get("quantity")))
+        except (InvalidOperation, ValueError) as exc:
+            raise BrokerageError(
+                f"토스 보유 주식 {code}의 quantity를 읽을 수 없습니다"
+            ) from exc
+        if not quantity.is_finite() or quantity < 0:
+            raise BrokerageError(
+                f"토스 보유 주식 {code}의 quantity가 유효한 0 이상 숫자가 아닙니다"
+            )
+        if quantity == 0:
+            continue
+        market_amount = _named(row.get("marketValue"), row_currency)
+        if set(market_amount) != {currency} or market_amount[currency] < 0:
+            raise BrokerageError(
+                f"토스 보유 주식 {code}의 {currency} 평가금액을 읽을 수 없습니다"
+            )
+        total += Decimal(str(market_amount[currency]))
+        count += 1
+    number = float(total)
+    if not math.isfinite(number):
+        raise BrokerageError(
+            f"토스 {currency} 보유 상세 합계가 너무 커서 읽을 수 없습니다"
+        )
+    return number, count
+
+
 class TossBrokerage(LiveBrokerage):
     """토스증권 주문.
 
@@ -692,9 +1452,13 @@ class TossBrokerage(LiveBrokerage):
     venue_capital_truth = True
 
     def __init__(self, portfolio, client_id: str = "", client_secret: str = "",
-                 account_no: str = "", fee_model: FeeModel | None = None, **kwargs):
+                 account_no: str = "", fee_model: FeeModel | None = None,
+                 allow_env_credentials: bool = True, **kwargs):
         super().__init__(portfolio, **kwargs)
-        self.client = _TossClient(client_id, client_secret, account_no)
+        self.client = _TossClient(
+            client_id, client_secret, account_no,
+            allow_env_credentials=allow_env_credentials,
+        )
         self._capital_holdings: dict | None = None
         self._capital_cash: float | None = None
         self._venue_avg_cost: dict[str, float] = {}
@@ -857,9 +1621,18 @@ class TossBrokerage(LiveBrokerage):
         broker_id = ""
         for attempt in range(2):
             try:
-                data = await self.client.request(
-                    "POST", _FIELDS["orders_path"], json=body, account=True,
-                )
+                if isinstance(self.client, _TossClient):
+                    data = await self.client.request(
+                        "POST", _FIELDS["orders_path"], json=body, account=True,
+                        pre_send=lambda: self._enforce_submission_guard(order),
+                    )
+                else:
+                    # Test doubles and compatible custom clients do not expose
+                    # the transport callback. Keep their boundary fail-closed.
+                    self._enforce_submission_guard(order)
+                    data = await self.client.request(
+                        "POST", _FIELDS["orders_path"], json=body, account=True,
+                    )
                 if not isinstance(data, dict):
                     raise _TossSubmitResponseError(
                         "토스 주문 생성 응답이 객체가 아닙니다"
@@ -1107,6 +1880,20 @@ class TossBrokerage(LiveBrokerage):
         data, cash_by_currency = await self._account_snapshot((currency,))
         values = _market_values(data)
         cash = cash_by_currency[currency]
+        detail_total, detail_count = _strict_item_market_summary(data, currency)
+        mismatches = _market_value_mismatches(
+            values,
+            {currency: detail_total} if detail_count else {},
+            {currency: detail_count},
+        )
+        if currency in mismatches:
+            if currency not in values:
+                raise BrokerageError(
+                    f"토스 {currency} 보유 종목은 있지만 통화별 평가금액 합계가 없습니다"
+                )
+            raise BrokerageError(
+                f"토스 {currency} 보유 상세 합계가 증권사 집계금액과 다릅니다"
+            )
         holdings_value = values.get(currency, 0.0)
         self._capital_holdings = data
         self._capital_cash = cash
@@ -1143,68 +1930,198 @@ class TossBrokerage(LiveBrokerage):
         """
         data, cash_buying_power = await self._account_snapshot(("KRW", "USD"))
 
-        def money(block: object) -> dict:
+        summary_issues: list[str] = []
+
+        def money(block: object, *, nonnegative: bool = False,
+                  label: str = "금액") -> dict:
             """통화별 금액 블록 → {"KRW": 숫자, "USD": 숫자}. 없는 통화는 뺍니다."""
+            if block in (None, ""):
+                return {}
             if not isinstance(block, dict):
+                summary_issues.append(f"{label} 응답 형식을 읽을 수 없습니다")
                 return {}
             out = {}
             for key, code in (("krw", "KRW"), ("usd", "USD")):
                 raw = block.get(key)
                 if raw in (None, ""):
                     continue
-                try:
-                    out[code] = float(raw)
-                except (TypeError, ValueError):
-                    continue
+                value = _num(raw)
+                if value is None:
+                    summary_issues.append(
+                        f"{label} {code} 값을 숫자로 읽을 수 없습니다"
+                    )
+                elif not nonnegative or value >= 0:
+                    out[code] = value
+                else:
+                    summary_issues.append(
+                        f"{label} {code} 값이 음수라 표시에서 제외했습니다"
+                    )
             return out
 
-        def rate(block: object, key: str = "rate") -> float | None:
+        def rate(block: object, key: str = "rate",
+                 label: str = "수익률") -> float | None:
+            if block in (None, ""):
+                return None
             if not isinstance(block, dict):
+                summary_issues.append(f"{label} 응답 형식을 읽을 수 없습니다")
                 return None
-            try:
-                return float(block[key])
-            except (KeyError, TypeError, ValueError):
+            raw = block.get(key)
+            if raw in (None, ""):
                 return None
+            value = _num(raw)
+            if value is None:
+                summary_issues.append(f"{label} 값을 숫자로 읽을 수 없습니다")
+            return value
 
         market_value = _market_values(data)
-        pnl = data.get("profitLoss") or {}
-        daily = data.get("dailyProfitLoss") or {}
+        pnl_raw = data.get("profitLoss")
+        daily_raw = data.get("dailyProfitLoss")
+        pnl = pnl_raw if isinstance(pnl_raw, dict) else {}
+        daily = daily_raw if isinstance(daily_raw, dict) else {}
+        if pnl_raw not in (None, "") and not isinstance(pnl_raw, dict):
+            summary_issues.append("누적 손익 응답 형식을 읽을 수 없습니다")
+        if daily_raw not in (None, "") and not isinstance(daily_raw, dict):
+            summary_issues.append("일간 손익 응답 형식을 읽을 수 없습니다")
         items = []
-        for row in (data.get("items") or []):
-            try:
-                qty = float(row.get("quantity") or 0)
-            except (TypeError, ValueError):
+        rejected_items = 0
+        incomplete_item_details = 0
+        observed_item_currencies: set[str] = set()
+        item_market_totals: dict[str, float] = {}
+        item_market_counts: dict[str, int] = {}
+        raw_items = data.get("items")
+        if raw_items is None:
+            raw_items = []
+        elif not isinstance(raw_items, list):
+            rejected_items += 1
+            raw_items = []
+        for row in raw_items:
+            if not isinstance(row, dict):
+                rejected_items += 1
                 continue
-            if not qty:
+            ticker = _api_symbol(row.get("symbol"))
+            currency = str(row.get("currency") or "").strip().upper()
+            qty = _market_number(row.get("quantity"), allow_zero=True)
+            last_price = _market_number(row.get("lastPrice"), allow_zero=True)
+            avg_price = _market_number(
+                row.get("averagePurchasePrice"), allow_zero=True,
+            )
+            market_amount = _named(row.get("marketValue"), currency)
+            raw_item_pnl = row.get("profitLoss")
+            item_pnl = _named(raw_item_pnl, currency)
+            # A malformed item percentage only makes that detail row
+            # incomplete; the account summary warning is reserved for the
+            # broker's aggregate fields below.
+            item_pnl_pct = _num(
+                (raw_item_pnl or {}).get("rate")
+                if isinstance(raw_item_pnl, dict) else None
+            )
+            raw_item_pnl_amount = (
+                raw_item_pnl.get("amount")
+                if isinstance(raw_item_pnl, dict) else raw_item_pnl
+            )
+            raw_item_pnl_rate = (
+                raw_item_pnl.get("rate")
+                if isinstance(raw_item_pnl, dict) else None
+            )
+            if (
+                raw_item_pnl not in (None, "")
+                and (
+                    not isinstance(raw_item_pnl, dict)
+                    or (raw_item_pnl_amount not in (None, "") and not item_pnl)
+                    or (raw_item_pnl_rate not in (None, "")
+                        and item_pnl_pct is None)
+                )
+            ):
+                incomplete_item_details += 1
+            # Only a definitely zero row proves there is no holding.  A
+            # malformed positive/unknown row still means this currency may
+            # contain a position, even if the detail itself must be hidden.
+            if currency in {"KRW", "USD"} and qty != 0:
+                observed_item_currencies.add(currency)
+            valid_money = (
+                set(market_amount) == {currency}
+                and market_amount[currency] >= 0
+                and (not item_pnl or set(item_pnl) == {currency})
+            )
+            if (not ticker or currency not in {"KRW", "USD"}
+                    or qty is None or qty < 0
+                    or last_price is None or avg_price is None
+                    or not valid_money):
+                rejected_items += 1
                 continue
+            if qty == 0:
+                continue
+            item_market_totals[currency] = (
+                item_market_totals.get(currency, 0.0) + market_amount[currency]
+            )
+            item_market_counts[currency] = item_market_counts.get(currency, 0) + 1
+            raw_name = row.get("name")
+            name = (str(raw_name).strip()
+                    if isinstance(raw_name, (str, int, float))
+                    and not isinstance(raw_name, bool) else "")
             items.append({
-                "ticker": str(row.get("symbol") or ""),
+                "ticker": ticker,
                 # 토스가 종목명을 실어 줍니다 — 우리가 따로 찾을 필요가 없습니다.
-                "name": str(row.get("name") or "") or str(row.get("symbol") or ""),
-                "currency": str(row.get("currency") or ""),
+                "name": name or ticker,
+                "currency": currency,
                 "quantity": qty,
-                "last_price": _num(row.get("lastPrice")),
-                "avg_price": _num(row.get("averagePurchasePrice")),
+                "last_price": last_price,
+                "avg_price": avg_price,
                 # 종목 금액은 그 종목의 통화 하나뿐입니다. 통화 코드를 함께
                 # 넣어 두지 않으면 화면이 원화인지 달러인지 모른 채 찍습니다.
-                "market_value": _named(row.get("marketValue"), row.get("currency")),
-                "pnl": _named(row.get("profitLoss"), row.get("currency")),
-                "pnl_pct": rate(row.get("profitLoss")),
+                "market_value": market_amount,
+                "pnl": item_pnl,
+                "pnl_pct": item_pnl_pct,
             })
         # Never add KRW to USD.  Each value is useful only inside its own
         # currency; FX conversion belongs to a separate, explicitly priced step.
-        investable_assets = {
-            currency: buying_power + market_value.get(currency, 0.0)
-            for currency, buying_power in cash_buying_power.items()
-        }
+        missing_aggregate_currencies = (
+            observed_item_currencies - set(market_value)
+        )
+        for currency in sorted(missing_aggregate_currencies):
+            summary_issues.append(
+                f"{currency} 보유 종목은 있지만 통화별 평가금액 합계가 없습니다"
+            )
+        item_issues: list[str] = []
+        if incomplete_item_details:
+            item_issues.append(
+                f"보유내역 {incomplete_item_details}건의 손익 상세를 읽을 수 없습니다"
+            )
+        if rejected_items == 0:
+            for currency in sorted(_market_value_mismatches(
+                market_value, item_market_totals, item_market_counts,
+            )):
+                if currency in market_value:
+                    item_issues.append(
+                        f"{currency} 보유 상세 합계가 증권사 집계금액과 다릅니다"
+                    )
+        investable_assets: dict[str, float] = {}
+        for currency, buying_power in cash_buying_power.items():
+            # A nullable aggregate normally means there are no holdings in that
+            # currency. If detailed rows contradict it, cash alone must not be
+            # relabelled as the complete investable total.
+            if currency in missing_aggregate_currencies:
+                continue
+            total = buying_power + market_value.get(currency, 0.0)
+            if not math.isfinite(total):
+                summary_issues.append(
+                    f"{currency} 운용 가능 자산 합계가 너무 커서 표시할 수 없습니다"
+                )
+                continue
+            investable_assets[currency] = total
+        summary_issues = list(dict.fromkeys(summary_issues))
         return {
             "source": "toss",
-            "invested": money(data.get("totalPurchaseAmount")),
+            "invested": money(
+                data.get("totalPurchaseAmount"),
+                nonnegative=True,
+                label="주식 매수원금",
+            ),
             "market_value": market_value,
             "pnl": money(pnl.get("amount")),
-            "pnl_pct": rate(pnl),
+            "pnl_pct": rate(pnl, label="누적 손익률"),
             "daily_pnl": money(daily.get("amount")),
-            "daily_pnl_pct": rate(daily),
+            "daily_pnl_pct": rate(daily, label="일간 손익률"),
             # 예수금 자체는 제공되지 않습니다. 매수 가능 금액을 그 이름으로
             # 둔갑시키지 않고 별도 필드로 내보냅니다.
             "cash": None,
@@ -1212,6 +2129,23 @@ class TossBrokerage(LiveBrokerage):
             "investable_assets": investable_assets,
             "value_kind": "cash_buying_power_plus_holdings",
             "items": items,
+            "items_complete": (
+                rejected_items == 0
+                and incomplete_item_details == 0
+                and not item_issues
+            ),
+            "items_message": (
+                " ".join([
+                    (f"증권사 보유내역 {rejected_items}건의 값이 올바르지 않아 "
+                     "상세 표에서 제외했습니다. 위 평가금액 합계는 증권사 집계값입니다.")
+                    if rejected_items else "",
+                    *item_issues,
+                ]).strip() or None
+            ),
+            "summary_complete": not summary_issues,
+            "summary_message": (
+                "; ".join(summary_issues) if summary_issues else None
+            ),
         }
 
     async def _venue_positions(self) -> dict[str, Decimal]:
@@ -1534,10 +2468,90 @@ def _parse_ts(raw) -> datetime | None:
             if len(text) == 8:                       # YYYYMMDD
                 return datetime.strptime(text, "%Y%m%d").replace(tzinfo=UTC)
             value = float(text)
+            if not math.isfinite(value):
+                return None
             if value > 1e11:                         # milliseconds
                 value /= 1000.0
             return datetime.fromtimestamp(value, tz=UTC)
         dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
-    except (ValueError, OSError):
+        # ISO market/order timestamps are instants, not calendar labels. If the
+        # venue omits the required offset, guessing UTC can turn malformed data
+        # into a fresh quote or a confirmed fill. YYYYMMDD history is the one
+        # explicit calendar-date case handled above.
+        return dt if dt.tzinfo else None
+    except (ValueError, OSError, OverflowError):
         return None
+
+
+def _market_number(raw: object, *, allow_zero: bool) -> float | None:
+    """Strict finite decimal for public market-data responses."""
+    if raw in (None, "") or isinstance(raw, bool):
+        return None
+    try:
+        value = Decimal(str(raw))
+    except (InvalidOperation, ValueError):
+        return None
+    if not value.is_finite() or value < 0 or (not allow_zero and value == 0):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _market_levels(raw: object, *, ascending: bool) -> list[dict] | None:
+    """Validate and normalize one orderbook side by economic price priority.
+
+    OpenAPI describes asks as low-to-high and bids as high-to-low, while its
+    own KR example lists asks in the opposite order.  Choosing array index zero
+    would therefore be ambiguous.  Minimum ask and maximum bid are objective,
+    so normalize by price after validating every level.
+    """
+    if not isinstance(raw, list):
+        return None
+    levels: list[dict] = []
+    for row in raw:
+        if not isinstance(row, dict):
+            return None
+        price = _market_number(row.get("price"), allow_zero=False)
+        quantity = _market_number(row.get("volume"), allow_zero=True)
+        if price is None or quantity is None:
+            return None
+        levels.append({"price": price, "quantity": quantity})
+    levels.sort(key=lambda row: row["price"], reverse=not ascending)
+    return levels
+
+
+def _market_trades(raw: object) -> tuple[list[dict], bool, datetime | None]:
+    """Parse recent trades; aggressor side is intentionally always unknown."""
+    if not isinstance(raw, list):
+        return [], False, None
+    out: list[dict] = []
+    newest: datetime | None = None
+    valid = True
+    for row in raw:
+        if not isinstance(row, dict):
+            valid = False
+            continue
+        price = _market_number(row.get("price"), allow_zero=False)
+        quantity = _market_number(row.get("volume"), allow_zero=False)
+        ts = _parse_ts(row.get("timestamp"))
+        currency = str(row.get("currency") or "").strip().upper()
+        if price is None or quantity is None or ts is None or not currency:
+            valid = False
+            continue
+        out.append({
+            "ts": ts.isoformat(),
+            "_parsed_ts": ts.astimezone(UTC),
+            "price": price,
+            "quantity": quantity,
+            "side": None,
+            "currency": currency,
+        })
+        if newest is None or ts > newest:
+            newest = ts
+    # The venue does not document array order as a freshness contract.  Put
+    # newest first so the timestamp used for freshness is always included in
+    # the rows that survive the caller's trade_count slice.
+    out.sort(key=lambda row: row["_parsed_ts"], reverse=True)
+    for row in out:
+        row.pop("_parsed_ts", None)
+    return out, valid, newest

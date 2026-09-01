@@ -79,9 +79,9 @@ def test_the_result_envelope_is_unwrapped_once_and_centrally():
     assert 'body.get("result", body)' in src
 
 
-def test_a_closed_market_still_gives_a_price():
-    """장이 닫히면 호가가 비어 옵니다 — 그때 None 이면 봇이 시작하지 못합니다."""
+def test_trading_quote_never_fabricates_a_spread_from_last_price():
+    """현재가는 화면 근거이지, 주문을 허가하는 bid/ask 근거가 아닙니다."""
     src = inspect.getsource(T.TossProvider.quote)
-    assert "lastPrice" in src
-    assert src.index("orderbook_path") < src.index("price_path"), \
-        "호가를 먼저 보고, 없을 때 현재가로 물러서야 합니다"
+    assert "lastPrice" not in src
+    assert "orderbook_path" in src
+    assert "timestamp" in src

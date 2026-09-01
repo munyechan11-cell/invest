@@ -271,6 +271,223 @@ async def test_token_cache_is_isolated_when_two_clients_share_a_prefix(monkeypat
     assert all(isinstance(key, bytes) and b"tsck" not in key for key in T._TOKENS)
 
 
+async def test_token_429_cooldown_is_shared_without_a_second_oauth_post(monkeypatch):
+    T._TOKENS.clear()
+    T._AUTH_COOLDOWNS.clear()
+    posts = 0
+    real_async_client = httpx.AsyncClient
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        posts += 1
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "120"},
+            json={"error": "rate_limit_exceeded"},
+        )
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            self._client = real_async_client(transport=httpx.MockTransport(handler))
+
+        async def __aenter__(self):
+            return self._client
+
+        async def __aexit__(self, *_args):
+            await self._client.aclose()
+
+    monkeypatch.setattr(T.httpx, "AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(T._TossHTTPError) as first:
+        await T.toss_token("shared-auth-client", "shared-auth-secret")
+    with pytest.raises(T._TossHTTPError) as second:
+        await T.toss_token("shared-auth-client", "shared-auth-secret")
+
+    assert posts == 1
+    assert first.value.retry_after == 120.0
+    assert 119.0 <= second.value.retry_after <= 120.0
+
+
+async def test_token_503_retry_after_is_shared_without_a_second_oauth_post(
+    monkeypatch,
+):
+    posts = 0
+    real_async_client = httpx.AsyncClient
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        posts += 1
+        return httpx.Response(503, headers={"Retry-After": "120"})
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            self._client = real_async_client(transport=httpx.MockTransport(handler))
+
+        async def __aenter__(self):
+            return self._client
+
+        async def __aexit__(self, *_args):
+            await self._client.aclose()
+
+    monkeypatch.setattr(T.httpx, "AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(T._TossHTTPError) as first:
+        await T.toss_token("shared-auth-503", "shared-auth-secret")
+    with pytest.raises(T._TossHTTPError) as second:
+        await T.toss_token("shared-auth-503", "shared-auth-secret")
+
+    assert posts == 1
+    assert first.value.status_code == 503
+    assert first.value.retry_after == 120.0
+    assert 119.0 <= second.value.retry_after <= 120.0
+
+
+async def test_oauth_error_never_echoes_credentials_and_is_negative_cached(monkeypatch):
+    T._TOKENS.clear()
+    T._AUTH_COOLDOWNS.clear()
+    posts = 0
+    client_id = "CANARY-CLIENT-ID"
+    client_secret = "CANARY-CLIENT-SECRET"
+    real_async_client = httpx.AsyncClient
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        posts += 1
+        return httpx.Response(401, json={
+            "error": "invalid_client",
+            "error_description": f"bad {client_id} / {client_secret}",
+        })
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            self._client = real_async_client(transport=httpx.MockTransport(handler))
+
+        async def __aenter__(self):
+            return self._client
+
+        async def __aexit__(self, *_args):
+            await self._client.aclose()
+
+    monkeypatch.setattr(T.httpx, "AsyncClient", FakeAsyncClient)
+    for _ in range(2):
+        with pytest.raises(T._TossHTTPError) as caught:
+            await T.toss_token(client_id, client_secret)
+        message = str(caught.value)
+        assert client_id not in message and client_secret not in message
+        assert "[REDACTED]" in message
+    assert posts == 1
+
+
+def test_oauth_redaction_also_removes_form_encoded_credentials():
+    client_id = "CANARY+CLIENT/ID"
+    client_secret = "CANARY+SECRET/="
+    message = (
+        "echo client_id=CANARY%2BCLIENT%2FID&"
+        "client_secret=CANARY%2BSECRET%2F%3D"
+    )
+
+    redacted = T._redact_credentials(message, client_id, client_secret)
+
+    assert "CANARY" not in redacted
+    assert redacted.count("[REDACTED]") == 2
+
+
+@pytest.mark.parametrize("response", [
+    lambda: httpx.Response(200, content=b"not-json CANARY-BODY-SECRET"),
+    lambda: httpx.Response(200, json={"detail": "CANARY-BODY-SECRET"}),
+])
+async def test_malformed_oauth_200_is_briefly_cached_without_echoing_body(
+    monkeypatch, response,
+):
+    T._TOKENS.clear()
+    T._AUTH_COOLDOWNS.clear()
+    posts = 0
+    real_async_client = httpx.AsyncClient
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        posts += 1
+        return response()
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            self._client = real_async_client(transport=httpx.MockTransport(handler))
+
+        async def __aenter__(self):
+            return self._client
+
+        async def __aexit__(self, *_args):
+            await self._client.aclose()
+
+    monkeypatch.setattr(T.httpx, "AsyncClient", FakeAsyncClient)
+    for _ in range(2):
+        with pytest.raises(T._TossHTTPError) as caught:
+            await T.toss_token("malformed-client", "malformed-secret")
+        assert caught.value.status_code == 502
+        assert "CANARY-BODY-SECRET" not in str(caught.value)
+    assert posts == 1
+
+
+async def test_token_503_without_header_is_briefly_negative_cached(monkeypatch):
+    posts = 0
+    real_async_client = httpx.AsyncClient
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        posts += 1
+        return httpx.Response(503)
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            self._client = real_async_client(transport=httpx.MockTransport(handler))
+
+        async def __aenter__(self):
+            return self._client
+
+        async def __aexit__(self, *_args):
+            await self._client.aclose()
+
+    monkeypatch.setattr(T.httpx, "AsyncClient", FakeAsyncClient)
+
+    for _ in range(2):
+        with pytest.raises(T._TossHTTPError) as caught:
+            await T.toss_token("shared-auth-503-no-header", "same-secret")
+        assert caught.value.status_code == 503
+
+    assert posts == 1
+    assert len(T._AUTH_COOLDOWNS) == 1
+
+
+async def test_token_cache_is_bounded_across_credential_rotation(monkeypatch):
+    T._TOKENS.clear()
+    real_async_client = httpx.AsyncClient
+    issued = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal issued
+        issued += 1
+        return httpx.Response(200, json={
+            "access_token": f"token-{issued}", "expires_in": 3600,
+        })
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            self._client = real_async_client(transport=httpx.MockTransport(handler))
+
+        async def __aenter__(self):
+            return self._client
+
+        async def __aexit__(self, *_args):
+            await self._client.aclose()
+
+    monkeypatch.setattr(T.httpx, "AsyncClient", FakeAsyncClient)
+    for index in range(T._TOSS_CREDENTIAL_CACHE_MAX + 3):
+        await T.toss_token(f"rotated-{index}", f"secret-{index}")
+
+    assert issued == T._TOSS_CREDENTIAL_CACHE_MAX + 3
+    assert len(T._TOKENS) <= T._TOSS_CREDENTIAL_CACHE_MAX
+
+
 async def test_account_number_resolves_to_account_seq_and_is_cached(monkeypatch):
     seen: list[httpx.Request] = []
 
@@ -404,6 +621,35 @@ async def test_venue_capital_never_converts_or_adds_the_other_currency():
     ]
 
 
+@pytest.mark.parametrize("aggregate", [None, "0"])
+async def test_live_us_capital_rejects_nonzero_holding_missing_from_aggregate(
+    aggregate,
+):
+    holdings = _holdings(usd=aggregate, items=[{
+        "symbol": "AAPL", "name": "Apple", "currency": "USD",
+        "quantity": "1", "lastPrice": "100",
+        "averagePurchasePrice": "90",
+        "marketValue": {"amount": "100"},
+        "profitLoss": {"amount": "10", "rate": "0.111"},
+    }])
+    broker = await _broker(FakeToss(holdings), "USD")
+
+    with pytest.raises(BrokerageError, match="USD 보유"):
+        await broker._venue_capital()
+
+    assert broker._capital_holdings is None
+    assert broker._capital_cash is None
+
+
+async def test_live_capital_rejects_aggregate_without_matching_detail_rows():
+    broker = await _broker(
+        FakeToss(_holdings(usd="100", items=[])), "USD",
+    )
+
+    with pytest.raises(BrokerageError, match="상세 합계"):
+        await broker._venue_capital()
+
+
 async def test_positions_require_the_official_items_shape_instead_of_flattening():
     fake = FakeToss({
         "marketValue": {"amount": {"krw": "300000", "usd": None}},
@@ -425,7 +671,24 @@ async def test_malformed_position_quantity_fails_loudly():
 
 
 async def test_account_overview_exposes_per_currency_investable_assets():
-    broker = await _broker(FakeToss(_holdings(krw="300000", usd="25")))
+    broker = await _broker(FakeToss(_holdings(
+        krw="300000", usd="25", items=[
+            {
+                "symbol": "005930", "name": "삼성전자", "currency": "KRW",
+                "quantity": "2", "lastPrice": "150000",
+                "averagePurchasePrice": "125000",
+                "marketValue": {"amount": "300000"},
+                "profitLoss": {"amount": "50000", "rate": "0.2"},
+            },
+            {
+                "symbol": "AAPL", "name": "Apple", "currency": "USD",
+                "quantity": "0.25", "lastPrice": "100",
+                "averagePurchasePrice": "80",
+                "marketValue": {"amount": "25"},
+                "profitLoss": {"amount": "5", "rate": "0.25"},
+            },
+        ],
+    )))
     overview = await broker.account_overview()
 
     assert overview["cash"] is None
@@ -433,6 +696,174 @@ async def test_account_overview_exposes_per_currency_investable_assets():
     assert overview["market_value"] == {"KRW": 300000.0, "USD": 25.0}
     assert overview["investable_assets"] == {"KRW": 720000.0, "USD": 37.5}
     assert overview["value_kind"] == "cash_buying_power_plus_holdings"
+    assert overview["items_complete"] is True
+    assert overview["summary_complete"] is True
+
+
+async def test_positive_aggregate_without_items_never_claims_holdings_are_complete():
+    overview = await (await _broker(FakeToss(
+        _holdings(krw="300000", usd="25", items=[]),
+    ))).account_overview()
+
+    assert overview["market_value"] == {"KRW": 300000.0, "USD": 25.0}
+    assert overview["items"] == []
+    assert overview["items_complete"] is False
+    assert "보유 상세 합계" in overview["items_message"]
+
+
+async def test_negative_purchase_total_is_never_presented_as_invested_capital():
+    holdings = _holdings()
+    holdings["totalPurchaseAmount"] = {"krw": "-420000", "usd": "20"}
+    broker = await _broker(FakeToss(holdings))
+
+    overview = await broker.account_overview()
+
+    assert overview["invested"] == {"USD": 20.0}
+    assert overview["summary_complete"] is False
+    assert "음수" in overview["summary_message"]
+
+
+async def test_detail_currency_without_aggregate_never_becomes_cash_only_total():
+    holdings = _holdings(usd=None, items=[{
+        "symbol": "AAPL", "name": "Apple", "currency": "USD",
+        "quantity": "1", "lastPrice": "100",
+        "averagePurchasePrice": "90",
+        "marketValue": {"amount": "100"},
+        "profitLoss": {"amount": "10", "rate": "0.111"},
+    }])
+    broker = await _broker(FakeToss(holdings))
+
+    overview = await broker.account_overview()
+
+    assert overview["items"][0]["market_value"] == {"USD": 100.0}
+    assert overview["cash_buying_power"]["USD"] == 12.5
+    assert "USD" not in overview["investable_assets"]
+    assert overview["summary_complete"] is False
+    assert "USD" in overview["summary_message"]
+
+
+async def test_malformed_nonzero_detail_still_suppresses_missing_currency_total():
+    holdings = _holdings(usd=None, items=[{
+        "symbol": "AAPL", "name": "Apple", "currency": "USD",
+        "quantity": "NaN", "lastPrice": "100",
+        "averagePurchasePrice": "90",
+        "marketValue": {"amount": "100"},
+        "profitLoss": {"amount": "10", "rate": "0.111"},
+    }])
+    overview = await (await _broker(FakeToss(holdings))).account_overview()
+
+    assert overview["items"] == []
+    assert overview["items_complete"] is False
+    assert "USD" not in overview["investable_assets"]
+    assert overview["summary_complete"] is False
+
+
+async def test_detail_sum_mismatch_warns_but_keeps_broker_aggregate_authoritative():
+    holdings = _holdings(items=[{
+        "symbol": "005930", "name": "삼성전자", "currency": "KRW",
+        "quantity": "2", "lastPrice": "150000",
+        "averagePurchasePrice": "125000",
+        "marketValue": {"amount": "999999"},
+        "profitLoss": {"amount": "50000", "rate": "0.2"},
+    }])
+    overview = await (await _broker(FakeToss(holdings))).account_overview()
+
+    assert overview["market_value"]["KRW"] == 300000.0
+    assert overview["items"][0]["market_value"]["KRW"] == 999999.0
+    assert overview["items_complete"] is False
+    assert "상세 합계" in overview["items_message"]
+
+
+async def test_malformed_item_profit_rate_marks_detail_incomplete():
+    holdings = _holdings()
+    holdings["items"][0]["profitLoss"]["rate"] = "oops"
+    overview = await (await _broker(FakeToss(holdings))).account_overview()
+
+    assert overview["items"][0]["pnl_pct"] is None
+    assert overview["items_complete"] is False
+    assert "손익 상세" in overview["items_message"]
+
+
+async def test_detail_tolerance_counts_only_items_in_the_same_currency():
+    krw_rows = [{
+        "symbol": f"{index:06d}", "name": f"KR {index}", "currency": "KRW",
+        "quantity": "1", "lastPrice": "500",
+        "averagePurchasePrice": "500", "marketValue": {"amount": "500"},
+        "profitLoss": {"amount": "0", "rate": "0"},
+    } for index in range(600)]
+    usd_row = {
+        "symbol": "AAPL", "name": "Apple", "currency": "USD",
+        "quantity": "1", "lastPrice": "104",
+        "averagePurchasePrice": "100", "marketValue": {"amount": "104"},
+        "profitLoss": {"amount": "4", "rate": "0.04"},
+    }
+    holdings = _holdings(krw="300000", usd="100", items=[*krw_rows, usd_row])
+    overview = await (await _broker(FakeToss(holdings))).account_overview()
+
+    assert overview["items_complete"] is False
+    assert "USD 보유 상세 합계" in overview["items_message"]
+
+
+def test_absurd_numeric_timestamp_is_rejected_without_overflowing():
+    assert T._parse_ts("9" * 400) is None
+
+
+async def test_zero_quantity_detail_does_not_invent_an_aggregate_contradiction():
+    holdings = _holdings(usd=None, items=[{
+        "symbol": "AAPL", "name": "Apple", "currency": "USD",
+        "quantity": "0", "lastPrice": "100",
+        "averagePurchasePrice": "90",
+        "marketValue": {"amount": "0"},
+        "profitLoss": {"amount": "0", "rate": "0"},
+    }])
+    broker = await _broker(FakeToss(holdings))
+
+    overview = await broker.account_overview()
+
+    assert overview["items"] == []
+    assert overview["investable_assets"]["USD"] == 12.5
+    assert overview["summary_complete"] is True
+
+
+async def test_nonempty_malformed_aggregate_values_mark_summary_incomplete():
+    holdings = _holdings()
+    holdings["totalPurchaseAmount"] = {"krw": "NaN", "usd": "20"}
+    holdings["profitLoss"]["rate"] = "oops"
+    broker = await _broker(FakeToss(holdings))
+
+    overview = await broker.account_overview()
+
+    assert overview["invested"] == {"USD": 20.0}
+    assert overview["pnl_pct"] is None
+    assert overview["summary_complete"] is False
+    assert "숫자로 읽을 수 없습니다" in overview["summary_message"]
+
+
+@pytest.mark.parametrize("broken", [
+    {"symbol": "005930", "currency": "KRW", "quantity": "NaN",
+     "lastPrice": "1", "averagePurchasePrice": "1",
+     "marketValue": {"amount": "1"}},
+    {"symbol": "005930", "currency": "JPY", "quantity": "1",
+     "lastPrice": "1", "averagePurchasePrice": "1",
+     "marketValue": {"amount": "1"}},
+    {"symbol": "005930", "currency": "KRW", "quantity": "1",
+     "lastPrice": "Infinity", "averagePurchasePrice": "1",
+     "marketValue": {"amount": "1"}},
+    {"symbol": "005930", "currency": "KRW", "quantity": "-1",
+     "lastPrice": "1", "averagePurchasePrice": "1",
+     "marketValue": {"amount": "1"}},
+])
+async def test_account_overview_rejects_malformed_holding_rows_without_hiding_total(
+    broken,
+):
+    broker = await _broker(FakeToss(_holdings(items=[broken])))
+
+    overview = await broker.account_overview()
+
+    assert overview["market_value"]["KRW"] == 300000.0
+    assert overview["items"] == []
+    assert overview["items_complete"] is False
+    assert "상세 표에서 제외" in overview["items_message"]
 
 
 async def test_zero_buying_power_is_a_real_zero_not_local_starting_cash():
@@ -461,10 +892,40 @@ async def test_broken_buying_power_never_falls_back_to_local_cash(reply, message
     assert broker._capital_cash is None
 
 
+async def test_float_overflow_buying_power_fails_instead_of_returning_infinity():
+    fake = FakeToss(_holdings(), {
+        "KRW": {"currency": "KRW", "cashBuyingPower": "1e309"},
+    })
+    broker = await _broker(fake)
+
+    with pytest.raises(BrokerageError, match="너무 커서"):
+        await broker._venue_capital()
+
+
+async def test_finite_parts_whose_sum_overflows_are_omitted_with_warning():
+    powers = {
+        "KRW": {"currency": "KRW", "cashBuyingPower": "1e308"},
+        "USD": {"currency": "USD", "cashBuyingPower": "0"},
+    }
+    broker = await _broker(FakeToss(
+        _holdings(krw="1e308", usd=None, items=[]), powers,
+    ))
+
+    overview = await broker.account_overview()
+
+    assert "KRW" not in overview["investable_assets"]
+    assert overview["summary_complete"] is False
+    assert "너무 커서" in overview["summary_message"]
+
+
 async def test_capital_snapshot_brackets_holdings_and_keeps_the_smaller_cash():
     class RacingCapital(FakeToss):
         def __init__(self):
-            super().__init__(_holdings(krw="900", usd=None, items=[]))
+            super().__init__(_holdings(krw="900", usd=None, items=[{
+                "symbol": "005930", "currency": "KRW", "quantity": "1",
+                "lastPrice": "900", "averagePurchasePrice": "800",
+                "marketValue": {"amount": "900"},
+            }]))
             self.cash = iter(("100", "500"))  # a sell credits cash between reads
 
         async def request(self, method, path, *, params=None, json=None, account=False):
@@ -491,7 +952,11 @@ async def test_capital_snapshot_brackets_holdings_and_keeps_the_smaller_cash():
 async def test_capital_snapshot_does_not_overstate_a_buy_between_reads():
     class RacingCapital(FakeToss):
         def __init__(self):
-            super().__init__(_holdings(krw="500", usd=None, items=[]))
+            super().__init__(_holdings(krw="500", usd=None, items=[{
+                "symbol": "005930", "currency": "KRW", "quantity": "1",
+                "lastPrice": "500", "averagePurchasePrice": "450",
+                "marketValue": {"amount": "500"},
+            }]))
             self.cash = iter(("1000", "400"))
 
         async def request(self, method, path, *, params=None, json=None, account=False):
@@ -1588,8 +2053,11 @@ async def test_setup_verification_checks_account_truth_before_reporting_success(
             "market_value": {"KRW": 0.0},
         }
 
-    async def quote(_self, symbol):
-        return Quote(symbol, utcnow(), 70_000.0, 70_100.0)
+    async def market_snapshot(_self, symbol, **_kwargs):
+        return {
+            "quote": {"price": 70_050.0},
+            "capabilities": {"top_of_book": True},
+        }
 
     async def close(_self):
         return None
@@ -1597,7 +2065,7 @@ async def test_setup_verification_checks_account_truth_before_reporting_success(
     monkeypatch.setattr(T, "toss_token", token)
     monkeypatch.setattr(T.TossBrokerage, "account_overview", overview)
     monkeypatch.setattr(T.TossBrokerage, "close", close)
-    monkeypatch.setattr(T.TossProvider, "quote", quote)
+    monkeypatch.setattr(T.TossProvider, "market_snapshot", market_snapshot)
     monkeypatch.setattr(T.TossProvider, "close", close)
 
     result = await api_server._verify_toss({
@@ -1615,7 +2083,7 @@ async def test_setup_verification_checks_account_truth_before_reporting_success(
 async def test_setup_verification_rejects_a_token_that_cannot_read_the_account(
     monkeypatch,
 ):
-    quote_called = False
+    market_called = False
 
     async def token(*_args, **_kwargs):
         return "token"
@@ -1623,10 +2091,13 @@ async def test_setup_verification_rejects_a_token_that_cannot_read_the_account(
     async def overview(_self):
         raise BrokerageError("account unavailable")
 
-    async def quote(_self, symbol):
-        nonlocal quote_called
-        quote_called = True
-        return Quote(symbol, utcnow(), 70_000.0, 70_100.0)
+    async def market_snapshot(_self, symbol, **_kwargs):
+        nonlocal market_called
+        market_called = True
+        return {
+            "quote": {"price": 70_050.0},
+            "capabilities": {"top_of_book": True},
+        }
 
     async def close(_self):
         return None
@@ -1634,7 +2105,7 @@ async def test_setup_verification_rejects_a_token_that_cannot_read_the_account(
     monkeypatch.setattr(T, "toss_token", token)
     monkeypatch.setattr(T.TossBrokerage, "account_overview", overview)
     monkeypatch.setattr(T.TossBrokerage, "close", close)
-    monkeypatch.setattr(T.TossProvider, "quote", quote)
+    monkeypatch.setattr(T.TossProvider, "market_snapshot", market_snapshot)
     monkeypatch.setattr(T.TossProvider, "close", close)
 
     result = await api_server._verify_toss({
@@ -1645,4 +2116,4 @@ async def test_setup_verification_rejects_a_token_that_cannot_read_the_account(
 
     assert result["ok"] is False
     assert result["steps"][-1]["step"] == "실계좌 식별·잔고 조회"
-    assert quote_called is False, "계좌 truth 실패 뒤 검증 성공 경로를 계속 탑니다"
+    assert market_called is False, "계좌 truth 실패 뒤 검증 성공 경로를 계속 탑니다"

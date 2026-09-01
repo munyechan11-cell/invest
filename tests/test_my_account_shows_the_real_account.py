@@ -65,6 +65,7 @@ def _run_account_js(driver: str) -> dict:
 var BOX = {innerHTML: ""};
 var picked = "strategy-a";
 var brokerAccountGeneration = 0;
+var brokerAccountRetryUntil = 0;
 function invalidateBrokerAccount() { brokerAccountGeneration += 1; }
 function $(selector) { return BOX; }
 function chartStrategy() { return picked; }
@@ -283,6 +284,7 @@ function modeKo(value) { return value || ""; }
 function renderHud(value) { hud.push(value.equity); }
 function clearBotBook(value) { cleared.push(value); }
 function drawEquity() {}
+async function loadEquity() {}
 function renderTape() {}
 function renderFlow() {}
 function renderDeskAvailability() {}
@@ -294,7 +296,7 @@ function api(path) {
   if (path === "/api/health") return Promise.resolve({trader_running: false});
   if (path === "/api/status") return Promise.reject(new Error("status down"));
   if (path.indexOf("/api/equity") === 0) return Promise.resolve({points: []});
-  if (path === "/api/universe") return Promise.resolve({symbols: []});
+  if (path.indexOf("/api/universe") === 0) return Promise.resolve({symbols: []});
   if (path === "/api/flow") return Promise.resolve({available: false});
   if (path.indexOf("/api/desk") === 0) return Promise.resolve({deliberations: []});
   throw new Error("unexpected " + path);
@@ -361,11 +363,13 @@ function setConn() {}
 function setRunning() {}
 function note() {}
 function adoptRunMode() {}
+function alignRunningStrategySelection() { return false; }
 function runningLabel(value) { return value || "—"; }
 function modeKo(value) { return value || ""; }
 function renderHud(value) { hud.push(value.equity); }
 function clearBotBook() {}
 function drawEquity() {}
+async function loadEquity() {}
 function renderTape() {}
 function renderFlow() {}
 function renderDeskAvailability() {}
@@ -381,7 +385,7 @@ function api(path) {
     strategy: "strategy-b", mode: "live",
     portfolio: {equity: 426319, capital_source: "venue"}});
   if (path.indexOf("/api/equity") === 0) return Promise.resolve({points: []});
-  if (path === "/api/universe") return Promise.resolve({symbols: []});
+  if (path.indexOf("/api/universe") === 0) return Promise.resolve({symbols: []});
   if (path === "/api/flow") return Promise.resolve({available: false});
   if (path.indexOf("/api/desk") === 0) return Promise.resolve({
     marker: "strategy-b", deliberations: [{decided_at: "B-current"}]});
@@ -491,11 +495,13 @@ function setConn() {}
 function setRunning() {}
 function note() {}
 function adoptRunMode() {}
+function alignRunningStrategySelection() { return false; }
 function runningLabel(value) { return value || "—"; }
 function modeKo(value) { return value || ""; }
 function renderHud(value) { hud.push(value.equity); }
 function clearBotBook(value) { cleared.push(value); }
 function drawEquity() {}
+async function loadEquity() {}
 function renderTape() {}
 function renderFlow() {}
 function renderDeskAvailability() {}
@@ -508,7 +514,7 @@ function api(path) {
     pendingStatus.push(resolve);
   });
   if (path.indexOf("/api/equity") === 0) return Promise.resolve({points: []});
-  if (path === "/api/universe") return Promise.resolve({symbols: []});
+  if (path.indexOf("/api/universe") === 0) return Promise.resolve({symbols: []});
   if (path === "/api/flow") return Promise.resolve({available: false});
   if (path.indexOf("/api/desk") === 0) return Promise.resolve({deliberations: []});
   throw new Error("unexpected " + path);
@@ -573,6 +579,7 @@ function modeKo(value) { return value || ""; }
 function renderHud() {}
 function clearBotBook() {}
 function drawEquity() {}
+async function loadEquity() {}
 function renderTape() {}
 function renderFlow() {}
 function renderDeskAvailability() {}
@@ -585,7 +592,7 @@ function api(path) {
   if (path === "/api/health") return Promise.resolve({trader_running: false});
   if (path === "/api/status") return Promise.resolve({running: false});
   if (path.indexOf("/api/equity") === 0) return Promise.resolve({points: []});
-  if (path === "/api/universe") return Promise.resolve({symbols: []});
+  if (path.indexOf("/api/universe") === 0) return Promise.resolve({symbols: []});
   if (path === "/api/flow") return Promise.resolve({available: false});
   if (path.indexOf("/api/desk") === 0) return new Promise(function (resolve) {
     pendingDesk.push(resolve);

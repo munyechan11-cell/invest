@@ -352,6 +352,7 @@ def test_the_ticker_tape_carries_names(client):
     rows = client.get("/api/universe", params={"strategy": "named"}).json()["symbols"]
     assert {r["ticker"]: r["name"] for r in rows} == {"005930": "삼성전자",
                                                      "AAPL": "애플"}
+    assert all(r["change_pct"] is None for r in rows)
 
 
 def test_the_chart_says_which_company_it_is_showing(client):
@@ -370,6 +371,63 @@ def test_a_strategy_symbol_is_searchable_by_name_from_the_first_screen(client):
     hits = client.get("/api/lookup", params={"q": "삼성",
                                              "strategy": "named"}).json()["results"]
     assert [(r["ticker"], r["name"]) for r in hits] == [("005930", "삼성전자")]
+
+
+def test_stopped_universe_closes_its_temporary_name_provider(
+    client, monkeypatch,
+):
+    import quant.webapp.registry as registry_module
+
+    closed = 0
+
+    class Provider:
+        async def describe_many(self, _tickers):
+            return {}
+
+        async def close(self):
+            nonlocal closed
+            closed += 1
+
+    monkeypatch.setattr(
+        registry_module.UserRegistry,
+        "data_provider",
+        lambda _self, _user_id, _config: Provider(),
+    )
+
+    response = client.get("/api/universe", params={"strategy": "named"})
+
+    assert response.status_code == 200
+    assert closed == 1
+
+
+def test_six_digit_lookup_closes_provider_after_describe_failure(
+    client, monkeypatch,
+):
+    import quant.webapp.registry as registry_module
+
+    closed = 0
+
+    class Provider:
+        async def describe(self, _ticker):
+            raise RuntimeError("lookup failed")
+
+        async def close(self):
+            nonlocal closed
+            closed += 1
+
+    monkeypatch.setattr(
+        registry_module.UserRegistry,
+        "data_provider",
+        lambda _self, _user_id, _config: Provider(),
+    )
+
+    response = client.get("/api/lookup", params={
+        "q": "123456", "strategy": "named",
+    })
+
+    assert response.status_code == 200
+    assert response.json()["results"] == []
+    assert closed == 1
 
 
 def test_the_trade_log_says_what_was_traded(client, tmp_path):

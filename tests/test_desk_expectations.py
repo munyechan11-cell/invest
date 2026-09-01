@@ -146,9 +146,9 @@ def test_the_demo_does_the_same():
 
 
 def test_the_desk_is_revealed_before_its_geometry_is_checked():
-    """1001–1120px chart view에서도 데모가 숨은 방에서 재생되면 안 됩니다."""
+    """1001–1240px chart view에서도 데모가 숨은 방에서 재생되면 안 됩니다."""
     body = re.search(r"function scrollToDesk\(\) \{(.*?)\n\}", SCRIPT, re.S).group(1)
-    assert "viewportWidth <= 1120" in body
+    assert "viewportWidth <= 1240" in body
     assert body.index('showView("desk")') < body.index("getClientRects().length")
 
 

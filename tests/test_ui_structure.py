@@ -487,6 +487,13 @@ def test_the_strategy_list_waits_for_the_credentials(script):
         "연동 정보보다 먼저 전략 목록을 그립니다"
 
 
+def test_initial_strategy_selection_refreshes_its_own_universe(script):
+    import re
+    body = re.search(r"async function loadStrategies\(\) \{(.*?)\n\}",
+                     script, re.S).group(1)
+    assert "await refreshSymbols(true)" in body
+
+
 def test_saving_credentials_refreshes_the_strategy_list(script):
     """방금 넣은 키로 쓸 수 있게 된 전략이 계속 "연동 필요" 면 같은 고장입니다."""
     import re

@@ -70,16 +70,20 @@ class KisBrokerage(LiveBrokerage):
                  account_no: str = "", product_code: str = "01",
                  overseas_exchange: str = "NASD", paper_trading: bool = False,
                  commission_bps: float = 1.5, sell_tax_bps: float | None = None,
-                 overseas_commission_bps: float = 25.0, **kwargs):
+                 overseas_commission_bps: float = 25.0,
+                 allow_env_credentials: bool = True, **kwargs):
         if paper_trading and kwargs.get("live"):
             raise BrokerageError(
                 "broker.params.paper_trading: true 와 mode: live 는 함께 쓸 수 "
                 "없습니다 — 모의투자와 실계좌 중 하나만 고르세요"
             )
         super().__init__(portfolio, paper_venue=paper_trading, **kwargs)
-        self.app_key = app_key or os.environ.get("KIS_APP_KEY", "")
-        self.app_secret = app_secret or os.environ.get("KIS_APP_SECRET", "")
-        self.account_no = account_no or os.environ.get("KIS_ACCOUNT_NO", "")
+        self.app_key = (app_key or os.environ.get("KIS_APP_KEY", "")
+                        if allow_env_credentials else app_key)
+        self.app_secret = (app_secret or os.environ.get("KIS_APP_SECRET", "")
+                           if allow_env_credentials else app_secret)
+        self.account_no = (account_no or os.environ.get("KIS_ACCOUNT_NO", "")
+                           if allow_env_credentials else account_no)
         self.product_code = product_code
         self.overseas_exchange = overseas_exchange
         #: which KIS environment this session talks to — hosts and tr_ids.
@@ -165,8 +169,11 @@ class KisBrokerage(LiveBrokerage):
                 "ORD_DVSN": "00",
             }
 
-        r = await self._client.post(f"{kis_host(self.paper)}{path}",
-                                    headers=await self._headers(tr_id, body), json=body)
+        headers = await self._headers(tr_id, body)
+        self._enforce_submission_guard(order)
+        r = await self._client.post(
+            f"{kis_host(self.paper)}{path}", headers=headers, json=body,
+        )
         r.raise_for_status()
         data = r.json()
         if str(data.get("rt_cd", "1")) != "0":
