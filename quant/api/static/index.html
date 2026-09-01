@@ -2618,6 +2618,10 @@ function shapeProblem(env, value) {
 }
 
 $("#setupSave").onclick = async () => {
+  if (rejectAuthMutationDuringLogout()) return;
+  const epoch = authEpoch;
+  const identity = authIdentity(me);
+  const stillCurrent = () => authActionIsCurrent(epoch, identity);
   const values = {};
   $("#setup").querySelectorAll("input[data-env]").forEach(el => {
     if (el.value.trim()) values[el.dataset.env] = el.value.trim();
@@ -2626,28 +2630,35 @@ $("#setupSave").onclick = async () => {
   if (bad.length) { note("#setupMsg", bad.join(" · "), "err"); return; }
   try {
     const saved = await post("/api/setup", {values});
+    if (!stillCurrent()) return;
     const pct = parseFloat($("#lLossPct").value);
+    if (!stillCurrent()) return;
     await post("/api/limits", {
       max_daily_notional: parseFloat($("#lNotional").value) || 0,
       max_daily_orders: parseInt($("#lOrders").value, 10) || 0,
       max_daily_loss: parseFloat($("#lLoss").value) || 0,
       max_daily_loss_pct: isFinite(pct) ? pct / 100 : 0,
     });
+    if (!stillCurrent()) return;
     // Clear the inputs: the values are stored and can never be read back,
     // so leaving them on screen only creates a second copy to leak.
     $("#setup").querySelectorAll("input[data-env]").forEach(el => (el.value = ""));
     await loadSetup();
+    if (!stillCurrent()) return;
     renderVenues();
     renderOperator();
     renderLinks();
     await loadLimits();
+    if (!stillCurrent()) return;
     renderSteps();
-    await loadStrategies();
+    const strategiesLoaded = await loadStrategies();
+    if (!strategiesLoaded || !stillCurrent()) return;
     note("#setupMsg",
       `저장 완료 — 자격증명 ${(saved.written || []).length}건, 하루 한도 적용됨. ` +
       `저장된 비밀값은 다시 조회할 수 없습니다.`, "ok");
     refreshManual();
   } catch (e) {
+    if (isStaleAuthResponse(e) || !stillCurrent()) return;
     note("#setupMsg", "저장 실패: " + e.message, "err");
   }
 };
@@ -3113,6 +3124,8 @@ $("#registerForm").addEventListener("submit", async ev => {
    나가면 남의 화면을 잠깐 보여주는 게 아니라, 401 을 뿌리며 로그인 화면을
    깜빡이게 만듭니다. */
 function start() {
+  const epoch = authEpoch;
+  const identity = authIdentity(me);
   showPage("trade");
   // 부품 이름 사전을 먼저 부릅니다. 늦게 와도 화면은 영어 식별자로 돌아가고,
   // 도착한 다음 줄부터 한국어가 됩니다 — 기다리게 만들 이유는 없습니다.
@@ -3135,7 +3148,9 @@ function start() {
   // `configuredKeys` 가 아직 비어 있어서 모든 전략에 "연동 필요" 가 붙고,
   // 실제로 연동을 마친 사람이 자기 전략을 고를 수 없게 됩니다.
   loadSetup().then(async () => {
-    await loadStrategies();
+    if (!authActionIsCurrent(epoch, identity)) return;
+    const strategiesLoaded = await loadStrategies();
+    if (!strategiesLoaded || !authActionIsCurrent(epoch, identity)) return;
     renderLinks();
     renderSteps();
     if (!linkedVenues.length) openSetup();
@@ -4042,12 +4057,17 @@ function alignRunningStrategySelection() {
 }
 
 async function loadStrategies() {
+  const epoch = authEpoch;
   try {
     const data = await api("/api/strategies");
+    if (epoch !== authEpoch) return false;
     strategies = data.strategies || [];
-  } catch { return; }
+  } catch (e) {
+    if (isStaleAuthResponse(e) || epoch !== authEpoch) return false;
+    return true;
+  }
   const sel = document.getElementById("strategyPick");
-  if (!sel) return;
+  if (!sel) return epoch === authEpoch;
   const keep = sel.value;
   const linked = new Set(Object.keys(configuredKeys || {}));
   sel.innerHTML = strategies.map(st => {
@@ -4073,6 +4093,7 @@ async function loadStrategies() {
   // selected strategy; otherwise a slow setup response can leave the initial
   // market/account surface on the demo strategy until the next poll.
   await refreshSymbols(true);
+  return epoch === authEpoch;
 }
 
 /* ── 고른 전략이 무엇을 하는가 ─────────────────────────────────────

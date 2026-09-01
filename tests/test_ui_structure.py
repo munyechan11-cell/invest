@@ -492,6 +492,27 @@ def test_initial_strategy_selection_refreshes_its_own_universe(script):
     body = re.search(r"async function loadStrategies\(\) \{(.*?)\n\}",
                      script, re.S).group(1)
     assert "await refreshSymbols(true)" in body
+    assert "return epoch === authEpoch" in body
+
+
+def test_setup_save_stops_if_the_authenticated_identity_changes(script):
+    import re
+    body = re.search(
+        r'\$\("#setupSave"\)\.onclick = async \(\) => \{(.*?)\n\};',
+        script, re.S,
+    ).group(1)
+    assert "const epoch = authEpoch" in body
+    assert "const identity = authIdentity(me)" in body
+    assert body.count("stillCurrent()") >= 6
+    assert "isStaleAuthResponse(e) || !stillCurrent()" in body
+
+
+def test_startup_setup_callback_is_bound_to_the_signed_in_identity(script):
+    import re
+    body = re.search(r"function start\(\) \{(.*?)\n\}", script, re.S).group(1)
+    assert "const epoch = authEpoch" in body
+    assert "const identity = authIdentity(me)" in body
+    assert body.count("authActionIsCurrent(epoch, identity)") >= 2
 
 
 def test_saving_credentials_refreshes_the_strategy_list(script):
