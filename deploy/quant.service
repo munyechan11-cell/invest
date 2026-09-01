@@ -8,6 +8,11 @@ Description=Quant trading desk
 After=network-online.target
 Wants=network-online.target
 
+# 계속 죽는 것을 무한히 되살리지 않습니다. 5분에 다섯 번 넘게 죽으면
+# 멈춰서 사람이 보게 합니다 — 자동 재시작이 문제를 가리면 안 됩니다.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
 [Service]
 Type=exec
 User=quant
@@ -24,10 +29,6 @@ TimeoutStopSec=90
 
 Restart=always
 RestartSec=5
-# 계속 죽는 것을 무한히 되살리지 않습니다. 5분에 다섯 번 넘게 죽으면
-# 멈춰서 사람이 보게 합니다 — 자동 재시작이 문제를 가리면 안 됩니다.
-StartLimitBurst=5
-StartLimitIntervalSec=300
 
 # 이 프로세스가 닿을 수 있는 곳을 좁힙니다. 남의 증권사 키를 들고 도는
 # 프로세스라 사고의 반경도 좁아야 합니다.

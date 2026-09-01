@@ -30,7 +30,12 @@ def test_the_service_gets_time_to_finish_its_cycle():
 
 def test_a_crash_loop_stops_instead_of_hiding():
     """계속 죽는 것을 무한히 되살리면 자동 재시작이 문제를 가립니다."""
-    assert "StartLimitBurst=" in UNIT and "StartLimitIntervalSec=" in UNIT
+    unit_section = UNIT.split("[Unit]", 1)[1].split("[Service]", 1)[0]
+    service_section = UNIT.split("[Service]", 1)[1].split("[Install]", 1)[0]
+    assert "StartLimitBurst=" in unit_section
+    assert "StartLimitIntervalSec=" in unit_section
+    assert "StartLimitBurst=" not in service_section
+    assert "StartLimitIntervalSec=" not in service_section
 
 
 def test_state_lives_outside_the_deploy_directory():
