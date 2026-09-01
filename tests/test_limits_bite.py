@@ -4,12 +4,14 @@
 0원으로 잡혀 금액 한도가 늘 통과했고, 다른 하나는 원장이 시뮬레이션 시각 대신
 벽시계로 날짜를 세어 매 봉 초기화됐습니다. 두 경로 모두 여기서 막습니다.
 """
+import asyncio
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from quant.brokerage.paper import PaperBrokerage
 from quant.core.account import Portfolio
 from quant.core.clock import SimClock
-from quant.core.types import UTC, Order, OrderSide, OrderType, Symbol
+from quant.core.types import UTC, Order, OrderSide, OrderType, RunMode, Symbol
 from quant.live.limits import TradingBudget
 
 SYM = Symbol("005930", venue="kis", quote_currency="KRW")
@@ -18,6 +20,23 @@ SYM = Symbol("005930", venue="kis", quote_currency="KRW")
 def _order(qty: float) -> Order:
     return Order(symbol=SYM, side=OrderSide.BUY, quantity=Decimal(str(qty)),
                  type=OrderType.MARKET)
+
+
+def test_disabled_caps_still_record_order_usage():
+    """Cap enforcement can be off; the account-day ledger cannot be off."""
+    portfolio = Portfolio(10_000_000.0, "KRW")
+    portfolio.mark(SYM, 70_000.0)
+    budget = TradingBudget()
+    broker = PaperBrokerage(portfolio, run_mode=RunMode.LIVE)
+    broker.budget = budget
+
+    submitted = asyncio.run(broker.submit(_order(1)))
+
+    assert submitted.status.value == "submitted"
+    assert not budget.configured
+    assert budget.today is not None
+    assert budget.today.orders == 1
+    assert budget.today.notional == 70_000.0
 
 
 # ── 가격 0원 문제 ────────────────────────────────────────────────────────

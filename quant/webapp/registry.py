@@ -37,7 +37,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -79,6 +81,26 @@ _BUDGET_ATTR = {
     "max_daily_loss": "max_loss",
     "max_daily_loss_pct": "max_loss_pct",
 }
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Durably replace one small settings file without exposing a partial one."""
+    fd, temporary = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
 
 #: LLM 제공자별 자격증명 이름. 데스크 알파가 있을 때만 봅니다.
 _LLM_SECRETS = {"anthropic": "ANTHROPIC_API_KEY",
@@ -450,7 +472,11 @@ class UserRegistry:
             run = store.reconciliation_run(
                 config.name, RunMode.LIVE.value, now=now
             )
-            account_gate = store.toss_account_start_gate(now=now)
+            account_gate = store.toss_account_start_gate(
+                resume_strategy=config.name,
+                resume_config_json=config.model_dump_json(),
+                now=now,
+            )
         except RecoveryArchiveError as exc:
             raise ReconciliationProblem(exc.code, str(exc), status=409) from exc
         finally:
@@ -481,10 +507,18 @@ class UserRegistry:
                 f"'{account_gate['blocking_strategy']}' 실거래 실행의 수동 복구가 "
                 f"먼저 필요합니다 (run {account_gate['blocking_run_id']})."
             )
-        elif restart_blocked:
+        elif account_gate["archive_cooldown_blocked"]:
             message = (
                 "당일 한도가 초기화되지 않도록 보관한 날에는 새 실거래를 "
                 f"시작할 수 없습니다. {next_start_allowed_at} 이후 다시 시작하세요."
+            )
+        elif account_gate["daily_budget_blocked"]:
+            message = (
+                "같은 Toss 계좌의 당일 한도를 유지하기 위해 "
+                f"'{account_gate['budget_blocking_strategy']}' 실행(run "
+                f"{account_gate['budget_blocking_run_id']})의 거래일이 끝날 "
+                f"때까지 다른 실거래 전략을 시작할 수 없습니다. "
+                f"{next_start_allowed_at} 이후 다시 시작하세요."
             )
         else:
             message = "현재 이 전략에 수동 복구가 필요한 실행은 없습니다."
@@ -495,6 +529,9 @@ class UserRegistry:
             "account_reconciliation_required": account_required,
             "blocking_run_id": account_gate["blocking_run_id"],
             "blocking_strategy": account_gate["blocking_strategy"],
+            "daily_budget_blocked": account_gate["daily_budget_blocked"],
+            "budget_blocking_run_id": account_gate["budget_blocking_run_id"],
+            "budget_blocking_strategy": account_gate["budget_blocking_strategy"],
             "restart_blocked": restart_blocked,
             "next_start_allowed_at": next_start_allowed_at,
             "confirmation_phrases": dict(RECOVERY_CONFIRMATION_PHRASES),
@@ -512,7 +549,11 @@ class UserRegistry:
         uid = self._uid(user_id)
         store = StateStore(self.state_path(uid))
         try:
-            gate = store.toss_account_start_gate(now=now)
+            gate = store.toss_account_start_gate(
+                resume_strategy=config.name,
+                resume_config_json=config.model_dump_json(),
+                now=now,
+            )
         except RecoveryArchiveError as exc:
             raise ReconciliationProblem(exc.code, str(exc), status=409) from exc
         finally:
@@ -528,7 +569,7 @@ class UserRegistry:
                     "blocking_strategy": gate["blocking_strategy"],
                 },
             )
-        if gate["restart_blocked"]:
+        if gate["archive_cooldown_blocked"]:
             raise ReconciliationProblem(
                 "reconciliation_start_blocked_until_next_kst_day",
                 "당일 한도가 초기화되지 않도록 보관한 날에는 새 실거래를 "
@@ -536,6 +577,21 @@ class UserRegistry:
                 "시작하세요.",
                 status=409,
                 details={
+                    "next_start_allowed_at": gate["next_start_allowed_at"],
+                },
+            )
+        if gate["daily_budget_blocked"]:
+            raise ReconciliationProblem(
+                "daily_budget_strategy_switch_blocked",
+                "같은 Toss 계좌의 당일 한도를 유지하기 위해 "
+                f"'{gate['budget_blocking_strategy']}' 실행(run "
+                f"{gate['budget_blocking_run_id']})의 거래일이 끝날 때까지 "
+                "다른 실거래 전략을 시작할 수 없습니다. "
+                f"{gate['next_start_allowed_at']} 이후 다시 시작하세요.",
+                status=409,
+                details={
+                    "budget_blocking_run_id": gate["budget_blocking_run_id"],
+                    "budget_blocking_strategy": gate["budget_blocking_strategy"],
                     "next_start_allowed_at": gate["next_start_allowed_at"],
                 },
             )
@@ -660,7 +716,25 @@ class UserRegistry:
         기다려야 하는 한도는 지금 필요해서 누른 사람에게 아무 소용이 없습니다.
         """
         stored = self.limits(user_id)
-        budget = getattr(getattr(self.trader(user_id), "engine", None), "budget", None)
+        if not all(math.isfinite(float(value)) for value in stored.values()):
+            raise ConfigRejected(
+                "저장된 하루 한도에 유한하지 않은 값이 있어 변경하지 "
+                "않았습니다. 운영자가 한도 파일을 확인해야 합니다."
+            )
+        trader = self.trader(user_id)
+        budget = getattr(getattr(trader, "engine", None), "budget", None)
+        candidate = dict(stored)
+        runtime_candidate = (
+            {key: float(getattr(budget, _BUDGET_ATTR[key]))
+             for key in LIMIT_KEYS}
+            if budget is not None else dict(candidate)
+        )
+        if not all(
+                math.isfinite(value) for value in runtime_candidate.values()):
+            raise ConfigRejected(
+                "실행 중인 하루 한도에 유한하지 않은 값이 있어 변경하지 "
+                "않았습니다. 봇을 멈추고 설정을 확인해야 합니다."
+            )
         updated: list[str] = []
         removed: list[str] = []
         ignored = [key for key in caps if key not in LIMIT_KEYS]
@@ -669,24 +743,45 @@ class UserRegistry:
             if sent is None:
                 continue
             value = abs(float(sent))
+            if not math.isfinite(value):
+                raise ValueError(f"{key} 한도는 유한한 숫자여야 합니다")
             if key == "max_daily_orders":
                 value = float(int(value))
             if not value and stored[key]:
                 removed.append(key)
-            stored[key] = value
+            candidate[key] = value
+            runtime_candidate[key] = value
             updated.append(key)
-            if budget is not None:
-                setattr(budget, _BUDGET_ATTR[key],
-                        int(value) if key == "max_daily_orders" else value)
+        if (
+            trader is not None
+            and trader.config.mode is RunMode.LIVE
+            and not any(runtime_candidate.values())
+        ):
+            raise ConfigRejected(
+                "실거래 실행 중에는 모든 하루 한도를 해제할 수 없습니다. "
+                "당일 한도만 명시적으로 넘기려면 '오늘 한도 해제'를 사용하고, "
+                "영구 설정을 바꾸려면 봇을 먼저 멈추세요."
+            )
         path = self.paths(user_id).limits
-        path.write_text(json.dumps(stored, ensure_ascii=False, indent=1),
-                        encoding="utf-8")
+        _atomic_write_text(
+            path, json.dumps(candidate, ensure_ascii=False, indent=1),
+        )
+        # The durable file is the restart source of truth. Only expose the new
+        # values to a running bot after that replace succeeds, so disk-full or
+        # permission failures cannot produce runtime=4 / stored=5 split-brain.
+        if budget is not None:
+            for key in updated:
+                value = candidate[key]
+                setattr(
+                    budget, _BUDGET_ATTR[key],
+                    int(value) if key == "max_daily_orders" else value,
+                )
         if updated:
             self.accounts.record(user_id, "limits_saved", ", ".join(updated))
         if removed:
             log.warning("사용자 %s 의 하루 한도 해제: %s — 다시 설정하기 전까지 무제한입니다",
                         user_id, ", ".join(removed))
-        return {"saved": stored, "updated": updated, "removed": removed,
+        return {"saved": candidate, "updated": updated, "removed": removed,
                 "ignored": ignored,
                 "applied_now": budget.status() if budget is not None else None}
 

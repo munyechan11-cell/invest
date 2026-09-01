@@ -54,6 +54,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -253,10 +254,10 @@ class LimitsRequest(BaseModel):
     release the loss cap it never mentioned.
     """
 
-    max_daily_notional: float | None = None
+    max_daily_notional: float | None = Field(default=None, allow_inf_nan=False)
     max_daily_orders: int | None = None
-    max_daily_loss: float | None = None
-    max_daily_loss_pct: float | None = None
+    max_daily_loss: float | None = Field(default=None, allow_inf_nan=False)
+    max_daily_loss_pct: float | None = Field(default=None, allow_inf_nan=False)
 
 
 #: (요청 필드, TradingBudget 속성, .env 키, 변환)
@@ -2535,6 +2536,29 @@ def create_app(config: StrategyConfig | None = None,
     async def runtime_problem(_request: Request, exc: RuntimeProblem):
         """레지스트리가 문장으로 끝낸 실패 — 상태 코드까지 스스로 알고 있습니다."""
         return JSONResponse(status_code=exc.status, content=exc.to_dict())
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_problem(
+            _request: Request, exc: RequestValidationError):
+        """Return serializable validation details without echoing secrets."""
+        def safe_detail(value):
+            if value is None or isinstance(value, (str, int, bool)):
+                return value
+            if isinstance(value, float):
+                return value if math.isfinite(value) else None
+            if isinstance(value, dict):
+                return {str(key): safe_detail(item)
+                        for key, item in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [safe_detail(item) for item in value]
+            return str(value)[:500]
+
+        details = [
+            {key: safe_detail(value) for key, value in error.items()
+             if key != "input"}
+            for error in exc.errors()
+        ]
+        return SafeJSONResponse(status_code=422, content={"detail": details})
 
     @app.exception_handler(Exception)
     async def unhandled(_request: Request, exc: Exception):

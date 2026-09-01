@@ -431,6 +431,26 @@ async def test_a_users_limits_reach_their_running_bot_now(registry, accounts):
         await registry.stop(person.id)
 
 
+async def test_limits_write_failure_does_not_mutate_the_running_budget(
+        registry, accounts, monkeypatch):
+    person = user(accounts)
+    registry.save_limits(person.id, {"max_daily_orders": 5})
+    await registry.start(person.id, paper_config())
+    trader = await until_running(registry, person.id)
+    try:
+        def fail_replace(_source, _target):
+            raise OSError("simulated disk-full replace failure")
+
+        monkeypatch.setattr(os, "replace", fail_replace)
+        with pytest.raises(OSError, match="disk-full"):
+            registry.save_limits(person.id, {"max_daily_orders": 4})
+
+        assert trader.engine.budget.max_orders == 5
+        assert registry.limits(person.id)["max_daily_orders"] == 5
+    finally:
+        await registry.stop(person.id)
+
+
 # ── 한 사람당 봇 하나 ───────────────────────────────────────────────────
 def test_status_before_anything_is_started(registry, accounts):
     person = user(accounts)

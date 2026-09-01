@@ -32,6 +32,7 @@ from quant.live.state import (
 from quant.live.trader import LiveTrader
 from quant.webapp import accounts as accounts_module
 from quant.webapp.auth_api import SESSION_COOKIE
+from quant.webapp.registry import ReconciliationProblem
 
 
 def toss_live_config(name: str = "recover-toss") -> StrategyConfig:
@@ -49,6 +50,15 @@ def toss_live_config(name: str = "recover-toss") -> StrategyConfig:
         "broker": {"type": "toss", "live_trading_confirmed": True},
         "limits": {"max_daily_orders": 5},
     })
+
+
+def toss_live_scope_config(
+        name: str, *, currency: str = "KRW", timezone: float = 9,
+) -> StrategyConfig:
+    data = toss_live_config(name).model_dump()
+    data["portfolio"]["base_currency"] = currency
+    data["limits"]["timezone_offset_hours"] = timezone
+    return StrategyConfig.model_validate(data)
 
 
 def other_live_config(name: str, broker: str) -> StrategyConfig:
@@ -384,6 +394,252 @@ def test_toss_account_gate_cannot_be_bypassed_with_another_strategy(tmp_path):
         store.close()
 
 
+def test_clean_stop_cannot_reset_the_toss_daily_loss_with_another_strategy(
+        tmp_path):
+    """A clean stop must not turn a strategy switch into a fresh allowance."""
+    path = tmp_path / "state.db"
+    strategy_a = toss_live_config("toss-a")
+    strategy_b = toss_live_config("toss-b")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    store = StateStore(path)
+    try:
+        store.start_run(
+            strategy_a.name, "live", 100_000.0,
+            strategy_a.model_dump_json(), now=now,
+        )
+        budget = TradingBudget(
+            max_daily_loss=1_000.0, timezone_offset_hours=9,
+        )
+        assert not store.restore_budget(budget, now=now)
+        budget.record_trade(-1_500.0, now=now)
+        store.conn.execute(
+            "UPDATE day_budget SET updated_at=? WHERE run_id=?",
+            (now.isoformat(), store.run_id),
+        )
+        store.conn.commit()
+        store.stop_run()
+
+        with pytest.raises(RecoveryArchiveError) as blocked:
+            store.start_run(
+                strategy_b.name, "live", 100_000.0,
+                strategy_b.model_dump_json(), now=now,
+            )
+        assert blocked.value.code == \
+            "daily_budget_strategy_switch_blocked"
+    finally:
+        store.close()
+
+
+def test_same_toss_strategy_resumes_its_exact_daily_ledger(tmp_path):
+    path = tmp_path / "state.db"
+    config = toss_live_config("toss-a")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    first = StateStore(path)
+    run_id = first.start_run(
+        config.name, "live", 100_000.0, config.model_dump_json(), now=now,
+    )
+    budget = TradingBudget(max_daily_loss=1_000.0, timezone_offset_hours=9)
+    first.restore_budget(budget, now=now)
+    budget.record_trade(-1_500.0, now=now)
+    first.conn.execute(
+        "INSERT INTO events(run_id, ts, type, payload) VALUES(?,?,?,?)",
+        (run_id, now.isoformat(), "order_submitted",
+         json.dumps({"id": "fill-1"})),
+    )
+    first.conn.execute(
+        "INSERT INTO events(run_id, ts, type, payload) VALUES(?,?,?,?)",
+        (run_id, now.isoformat(), "order_filled",
+         json.dumps({"order_id": "fill-1", "fee": 0})),
+    )
+    first.conn.execute(
+        "UPDATE day_budget SET orders=1, notional=100, updated_at=? "
+        "WHERE run_id=?",
+        (now.isoformat(), run_id),
+    )
+    first.conn.commit()
+    first.stop_run()
+    first.close()
+
+    resumed = StateStore(path)
+    try:
+        gate = resumed.assert_toss_account_start_allowed(
+            resume_strategy=config.name,
+            resume_config_json=config.model_dump_json(),
+            now=now,
+        )
+        assert not gate["daily_budget_blocked"]
+        assert gate["resumable_run_id"] == run_id
+        assert resumed.prepare_toss_live_run(
+            config.name, 100_000.0, config.model_dump_json(), now=now,
+        )
+        assert resumed.run_id == run_id
+        restored = TradingBudget(
+            max_daily_loss=1_000.0, timezone_offset_hours=9,
+        )
+        assert resumed.restore_budget(restored, now=now)
+        assert restored.today.realized_pnl == pytest.approx(-1_500.0)
+        resumed.conn.execute(
+            "UPDATE day_budget SET updated_at=? WHERE run_id=?",
+            (now.isoformat(), run_id),
+        )
+        resumed.conn.commit()
+
+        # Only the exact resume is safe. A direct fresh run with the same name
+        # would reset the ledger just as surely as changing the name.
+        with pytest.raises(RecoveryArchiveError) as fresh:
+            resumed.start_run(
+                config.name, "live", 100_000.0,
+                config.model_dump_json(), now=now,
+            )
+        assert fresh.value.code == "daily_budget_strategy_switch_blocked"
+    finally:
+        resumed.close()
+
+
+def test_unused_toss_ledger_can_switch_and_used_ledger_expires_at_its_boundary(
+        tmp_path):
+    config_a = toss_live_scope_config("toss-a", timezone=0)
+    config_b = toss_live_config("toss-b")
+    now = datetime(2026, 8, 31, 20, 0, tzinfo=UTC)
+
+    unused = StateStore(tmp_path / "unused.db")
+    try:
+        unused.start_run(
+            config_a.name, "live", 100_000.0,
+            config_a.model_dump_json(), now=now,
+        )
+        empty = TradingBudget(max_daily_orders=5, timezone_offset_hours=9)
+        unused.restore_budget(empty, now=now)
+        unused.stop_run()
+        assert unused.start_run(
+            config_b.name, "live", 100_000.0,
+            config_b.model_dump_json(), now=now,
+        )
+    finally:
+        unused.close()
+
+    used = StateStore(tmp_path / "used.db")
+    try:
+        used.start_run(
+            config_a.name, "live", 100_000.0,
+            config_a.model_dump_json(), now=now,
+        )
+        utc_budget = TradingBudget(
+            max_daily_loss=1_000.0, timezone_offset_hours=0,
+        )
+        used.restore_budget(utc_budget, now=now)
+        utc_budget.record_trade(-1_500.0, now=now)
+        used.conn.execute(
+            "UPDATE day_budget SET updated_at=? WHERE run_id=?",
+            (now.isoformat(), used.run_id),
+        )
+        used.conn.commit()
+        used.stop_run()
+
+        blocked = used.toss_account_start_gate(
+            resume_strategy=config_b.name,
+            resume_config_json=config_b.model_dump_json(),
+            now=now,
+        )
+        assert blocked["daily_budget_blocked"]
+        assert blocked["next_start_allowed_at"] == \
+            "2026-09-01T15:00:00+00:00"
+
+        allowed_id = used.start_run(
+            config_b.name, "live", 100_000.0,
+            config_b.model_dump_json(),
+            now=datetime(2026, 9, 1, 15, 0, tzinfo=UTC),
+        )
+        assert allowed_id > 0
+    finally:
+        used.close()
+
+
+def test_toss_daily_budget_gate_does_not_capture_dry_run_or_kis(tmp_path):
+    path = tmp_path / "state.db"
+    toss = toss_live_config("toss-a")
+    dry = StrategyConfig.model_validate({
+        **toss_live_config("dry-b").model_dump(), "mode": "dry_run",
+    })
+    kis = other_live_config("kis-b", "kis")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    store = StateStore(path)
+    try:
+        toss_id = store.start_run(
+            toss.name, "live", 100_000.0, toss.model_dump_json(), now=now,
+        )
+        budget = TradingBudget(max_daily_orders=5, timezone_offset_hours=9)
+        store.restore_budget(budget, now=now)
+        budget.record_trade(-1.0, now=now)
+        store.stop_run()
+
+        dry_id = store.start_run(
+            dry.name, "dry_run", 100_000.0, dry.model_dump_json(), now=now,
+        )
+        kis_id = store.start_run(
+            kis.name, "live", 100_000.0, kis.model_dump_json(), now=now,
+        )
+        assert kis_id > dry_id > toss_id
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "code"),
+    [
+        ("day", "not-a-day", "daily_budget_time_invalid"),
+        ("tz_offset_hours", 99.0, "daily_budget_time_invalid"),
+        ("updated_at", "not-a-time", "daily_budget_time_invalid"),
+        ("realized_pnl", "not-a-number", "daily_budget_value_invalid"),
+        ("starting_equity", float("inf"), "daily_budget_value_invalid"),
+        ("starting_equity", -1.0, "daily_budget_value_invalid"),
+        ("orders", -1, "daily_budget_value_invalid"),
+        ("orders", 1.5, "daily_budget_value_invalid"),
+        ("notional", -100.0, "daily_budget_value_invalid"),
+        ("fees", -1.0, "daily_budget_value_invalid"),
+        ("blocked", -1, "daily_budget_value_invalid"),
+    ],
+)
+def test_invalid_toss_daily_budget_fails_closed(
+        tmp_path, column, value, code):
+    path = tmp_path / "state.db"
+    config = toss_live_config("toss-a")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+    store = StateStore(path)
+    try:
+        run_id = store.start_run(
+            config.name, "live", 100_000.0,
+            config.model_dump_json(), now=now,
+        )
+        budget = TradingBudget(max_daily_loss=1_000.0, timezone_offset_hours=9)
+        store.restore_budget(budget, now=now)
+        budget.record_trade(-1.0, now=now)
+        store.conn.execute(
+            "UPDATE day_budget SET updated_at=? WHERE run_id=?",
+            (now.isoformat(), run_id),
+        )
+        store.conn.execute(
+            f"UPDATE day_budget SET {column}=? WHERE run_id=?",
+            (value, run_id),
+        )
+        store.conn.commit()
+
+        with pytest.raises(RecoveryArchiveError) as blocked:
+            store.toss_account_start_gate(
+                resume_strategy="toss-b",
+                resume_config_json=toss_live_config(
+                    "toss-b",
+                ).model_dump_json(),
+                now=now,
+            )
+        assert blocked.value.code == code
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize("archive_first", [False, True])
 def test_direct_live_trader_checks_the_toss_account_before_resuming(
         tmp_path, archive_first):
@@ -424,6 +680,994 @@ def test_direct_live_trader_checks_the_toss_account_before_resuming(
         assert trader.state.run_id is None
     finally:
         trader.state.close()
+
+
+def test_direct_live_trader_can_only_resume_the_used_strategy(
+        tmp_path, monkeypatch):
+    path = tmp_path / "state.db"
+    config = toss_live_config("toss-a")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+    original_recovery_now = StateStore._recovery_now
+    monkeypatch.setattr(
+        StateStore, "_recovery_now",
+        staticmethod(lambda value=None: (
+            now if value is None else original_recovery_now(value)
+        )),
+    )
+
+    seeded = StateStore(path)
+    run_id = seeded.start_run(
+        config.name, "live", 100_000.0, config.model_dump_json(), now=now,
+    )
+    budget = TradingBudget(max_daily_loss=1_000.0, timezone_offset_hours=9)
+    seeded.restore_budget(budget, now=now)
+    budget.record_trade(-1_500.0, now=now)
+    seeded.conn.execute(
+        "UPDATE day_budget SET updated_at=? WHERE run_id=?",
+        (now.isoformat(), run_id),
+    )
+    seeded.conn.commit()
+    seeded.stop_run()
+    seeded.close()
+
+    trader = LiveTrader.__new__(LiveTrader)
+    trader.config = config
+    trader.resume = True
+    trader.state = StateStore(path)
+    trader._attach_observers = lambda: None
+
+    class ReachedWarmup(RuntimeError):
+        pass
+
+    async def warmup():
+        raise ReachedWarmup
+
+    trader.warmup = warmup
+    try:
+        with pytest.raises(ReachedWarmup):
+            asyncio.run(trader.start())
+        assert trader.state.run_id == run_id
+    finally:
+        trader.state.close()
+
+
+@pytest.mark.parametrize(
+    ("old_currency", "old_timezone", "new_currency", "new_timezone"),
+    [
+        ("USD", 9, "KRW", 9),
+        ("KRW", 9, "KRW", 0),
+    ],
+)
+def test_same_name_toss_scope_change_cannot_relabel_a_used_ledger(
+        tmp_path, old_currency, old_timezone, new_currency, new_timezone):
+    path = tmp_path / "state.db"
+    name = "same-name"
+    old = toss_live_scope_config(
+        name, currency=old_currency, timezone=old_timezone,
+    )
+    target = toss_live_scope_config(
+        name, currency=new_currency, timezone=new_timezone,
+    )
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    seeded = StateStore(path)
+    run_id = seeded.start_run(
+        name, "live", 100_000.0, old.model_dump_json(), now=now,
+    )
+    budget = TradingBudget(
+        max_daily_loss=1_000.0,
+        timezone_offset_hours=old_timezone,
+    )
+    seeded.restore_budget(budget, now=now)
+    budget.record_trade(-1_500.0, now=now)
+    seeded.conn.execute(
+        "UPDATE day_budget SET updated_at=? WHERE run_id=?",
+        (now.isoformat(), run_id),
+    )
+    seeded.conn.commit()
+    seeded.stop_run()
+    seeded.close()
+
+    contender = StateStore(path)
+    try:
+        gate = contender.toss_account_start_gate(
+            resume_strategy=name,
+            resume_config_json=target.model_dump_json(),
+            now=now,
+        )
+        assert gate["resumable_run_id"] is None
+        assert gate["daily_budget_blocked"]
+        with pytest.raises(RecoveryArchiveError) as blocked:
+            contender.prepare_toss_live_run(
+                name, 100_000.0, target.model_dump_json(), now=now,
+            )
+        assert blocked.value.code == "daily_budget_strategy_switch_blocked"
+        assert contender.conn.execute(
+            "SELECT COUNT(*) n FROM runs",
+        ).fetchone()["n"] == 1
+    finally:
+        contender.close()
+
+
+@pytest.mark.parametrize("later_kind", ["kis", "corrupt"])
+def test_later_same_name_non_toss_run_cannot_redirect_exact_resume(
+        tmp_path, later_kind):
+    path = tmp_path / "state.db"
+    config = toss_live_scope_config("same-name")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    seeded = StateStore(path)
+    toss_run_id = seeded.start_run(
+        config.name, "live", 100_000.0, config.model_dump_json(), now=now,
+    )
+    budget = TradingBudget(max_daily_loss=1_000.0, timezone_offset_hours=9)
+    seeded.restore_budget(budget, now=now)
+    budget.record_trade(-1_500.0, now=now)
+    seeded.conn.execute(
+        "UPDATE day_budget SET updated_at=? WHERE run_id=?",
+        (now.isoformat(), toss_run_id),
+    )
+    seeded.conn.commit()
+    seeded.stop_run()
+    later_json = (
+        other_live_config(config.name, "kis").model_dump_json()
+        if later_kind == "kis" else "{corrupt"
+    )
+    later_id = seeded.start_run(
+        config.name, "live", 100_000.0, later_json, now=now,
+    )
+    seeded.stop_run()
+    seeded.close()
+
+    contender = StateStore(path)
+    try:
+        gate = contender.toss_account_start_gate(
+            resume_strategy=config.name,
+            resume_config_json=config.model_dump_json(),
+            now=now,
+        )
+        assert gate["resumable_run_id"] is None
+        assert gate["budget_blocking_run_id"] == toss_run_id
+        with pytest.raises(RecoveryArchiveError) as blocked:
+            contender.prepare_toss_live_run(
+                config.name, 100_000.0, config.model_dump_json(), now=now,
+            )
+        assert blocked.value.code == "daily_budget_strategy_switch_blocked"
+        assert contender.conn.execute(
+            "SELECT id FROM runs ORDER BY id DESC LIMIT 1",
+        ).fetchone()["id"] == later_id
+    finally:
+        contender.close()
+
+
+def test_positive_fourteen_budget_stays_blocked_until_next_kst_day(
+        tmp_path):
+    path = tmp_path / "state.db"
+    source = toss_live_scope_config("source", timezone=14)
+    target = toss_live_scope_config("target", timezone=9)
+    used_at = datetime(2026, 8, 31, 9, 0, tzinfo=UTC)
+
+    store = StateStore(path)
+    source_id = store.start_run(
+        source.name, "live", 100_000.0,
+        source.model_dump_json(), now=used_at,
+    )
+    budget = TradingBudget(max_daily_orders=5, timezone_offset_hours=14)
+    store.restore_budget(budget, now=used_at)
+    budget.record_trade(-1.0, now=used_at)
+    store.conn.execute(
+        "UPDATE day_budget SET updated_at=? WHERE run_id=?",
+        (used_at.isoformat(), source_id),
+    )
+    store.conn.commit()
+    store.stop_run()
+
+    after_source_midnight = datetime(2026, 8, 31, 10, 0, tzinfo=UTC)
+    gate = store.toss_account_start_gate(
+        resume_strategy=target.name,
+        resume_config_json=target.model_dump_json(),
+        now=after_source_midnight,
+    )
+    assert gate["daily_budget_blocked"]
+    assert gate["next_start_allowed_at"] == "2026-08-31T15:00:00+00:00"
+
+    new_id = store.start_run(
+        target.name, "live", 100_000.0, target.model_dump_json(),
+        now=datetime(2026, 8, 31, 15, 0, tzinfo=UTC),
+    )
+    assert new_id > source_id
+    store.close()
+
+
+def test_toss_prepare_claims_state_before_warmup_window(tmp_path):
+    path = tmp_path / "state.db"
+    first_config = toss_live_scope_config("first")
+    second_config = toss_live_scope_config("second")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    first = StateStore(path)
+    second = StateStore(path)
+    try:
+        assert not first.prepare_toss_live_run(
+            first_config.name, 100_000.0,
+            first_config.model_dump_json(), now=now,
+        )
+        with pytest.raises(StateInUseError):
+            second.prepare_toss_live_run(
+                second_config.name, 100_000.0,
+                second_config.model_dump_json(), now=now,
+            )
+    finally:
+        first.close()
+        second.close()
+
+
+def test_exact_resume_rejects_multiple_active_ledgers_for_one_run(tmp_path):
+    path = tmp_path / "state.db"
+    config = toss_live_scope_config("same-run")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    seeded = StateStore(path)
+    run_id = seeded.start_run(
+        config.name, "live", 100_000.0, config.model_dump_json(), now=now,
+    )
+    budget = TradingBudget(max_daily_loss=1_000.0, timezone_offset_hours=9)
+    seeded.restore_budget(budget, now=now)
+    budget.record_trade(-500.0, now=now)
+    seeded.conn.execute(
+        "UPDATE day_budget SET updated_at=? WHERE run_id=?",
+        (now.isoformat(), run_id),
+    )
+    seeded.conn.execute(
+        "INSERT INTO day_budget(run_id, day, notional, orders, realized_pnl, "
+        "fees, starting_equity, blocked, halt_reason, tz_offset_hours, "
+        "updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (run_id, "2026-08-30", 0.0, 0, -900.0, 0.0, 0.0, 0, "", 9.0,
+         now.isoformat()),
+    )
+    seeded.conn.commit()
+    seeded.stop_run()
+    seeded.close()
+
+    contender = StateStore(path)
+    try:
+        gate = contender.toss_account_start_gate(
+            resume_strategy=config.name,
+            resume_config_json=config.model_dump_json(),
+            now=now,
+        )
+        assert gate["resumable_run_id"] is None
+        assert gate["daily_budget_blocked"]
+        with pytest.raises(RecoveryArchiveError) as blocked:
+            contender.prepare_toss_live_run(
+                config.name, 100_000.0, config.model_dump_json(), now=now,
+            )
+        assert blocked.value.code == "daily_budget_strategy_switch_blocked"
+    finally:
+        contender.close()
+
+
+@pytest.mark.parametrize(
+    "corrupt_config",
+    ["{broken", "name-mismatch"],
+)
+def test_unknown_used_live_ledger_fails_closed_for_toss_target(
+        tmp_path, corrupt_config):
+    path = tmp_path / "state.db"
+    source = toss_live_scope_config("source")
+    target = toss_live_scope_config("target")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    store = StateStore(path)
+    run_id = store.start_run(
+        source.name, "live", 100_000.0, source.model_dump_json(), now=now,
+    )
+    budget = TradingBudget(max_daily_loss=1_000.0, timezone_offset_hours=9)
+    store.restore_budget(budget, now=now)
+    budget.record_trade(-1_500.0, now=now)
+    replacement = (
+        "{broken" if corrupt_config == "{broken"
+        else toss_live_scope_config("somebody-else").model_dump_json()
+    )
+    store.conn.execute(
+        "UPDATE runs SET config_json=? WHERE id=?", (replacement, run_id),
+    )
+    store.conn.execute(
+        "UPDATE day_budget SET updated_at=? WHERE run_id=?",
+        (now.isoformat(), run_id),
+    )
+    store.conn.commit()
+    store.stop_run()
+
+    with pytest.raises(RecoveryArchiveError) as blocked:
+        store.prepare_toss_live_run(
+            target.name, 100_000.0, target.model_dump_json(), now=now,
+        )
+    assert blocked.value.code == "daily_budget_scope_invalid"
+    assert store.conn.execute(
+        "SELECT COUNT(*) n FROM runs",
+    ).fetchone()["n"] == 1
+    store.close()
+
+
+def test_unknown_unresolved_live_run_fails_closed_for_toss_target(tmp_path):
+    path = tmp_path / "state.db"
+    source = toss_live_scope_config("source")
+    target = toss_live_scope_config("target")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    store = StateStore(path)
+    run_id = store.start_run(
+        source.name, "live", 100_000.0, source.model_dump_json(), now=now,
+    )
+    store.mark_reconciliation_required()
+    store.conn.execute(
+        "UPDATE runs SET config_json='{broken' WHERE id=?", (run_id,),
+    )
+    store.conn.commit()
+
+    with pytest.raises(RecoveryArchiveError) as blocked:
+        store.prepare_toss_live_run(
+            target.name, 100_000.0, target.model_dump_json(), now=now,
+        )
+    assert blocked.value.code == "reconciliation_stored_config_mismatch"
+    store.close()
+
+
+def test_nonscalar_broker_type_with_current_fill_fails_closed(tmp_path):
+    path = tmp_path / "state.db"
+    source = toss_live_scope_config("source")
+    target = toss_live_scope_config("target")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+    raw = source.model_dump()
+    raw["broker"]["type"] = []
+
+    store = StateStore(path)
+    run_id = store.start_run(
+        source.name, "live", 100_000.0, json.dumps(raw), now=now,
+    )
+    store.conn.execute(
+        "INSERT INTO events(run_id, ts, type, payload) VALUES(?,?,?,?)",
+        (run_id, now.isoformat(), "order_filled",
+         json.dumps({"order_id": "legacy"})),
+    )
+    store.conn.commit()
+    store.stop_run()
+
+    with pytest.raises(RecoveryArchiveError) as blocked:
+        store.prepare_toss_live_run(
+            target.name, 100_000.0, target.model_dump_json(), now=now,
+        )
+    assert blocked.value.code == "daily_budget_scope_invalid"
+    store.close()
+
+
+def test_unknown_event_scope_uses_worst_case_day_boundary(tmp_path):
+    path = tmp_path / "state.db"
+    source = toss_live_scope_config("source", timezone=-5)
+    target = toss_live_scope_config("target")
+    event_at = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+    before_every_possible_reset = datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+    raw = source.model_dump()
+    raw["broker"]["type"] = []
+
+    store = StateStore(path)
+    run_id = store.start_run(
+        source.name, "live", 100_000.0, json.dumps(raw), now=event_at,
+    )
+    store.conn.execute(
+        "INSERT INTO events(run_id, ts, type, payload) VALUES(?,?,?,?)",
+        (run_id, event_at.isoformat(), "order_filled",
+         json.dumps({"order_id": "legacy", "fee": 0})),
+    )
+    store.conn.commit()
+    store.stop_run()
+
+    with pytest.raises(RecoveryArchiveError) as blocked:
+        store.prepare_toss_live_run(
+            target.name, 100_000.0, target.model_dump_json(),
+            now=before_every_possible_reset,
+        )
+    assert blocked.value.code == "daily_budget_scope_invalid"
+
+    target_id = store.start_run(
+        target.name, "live", 100_000.0, target.model_dump_json(),
+        now=event_at + timedelta(days=1),
+    )
+    assert target_id > run_id
+    store.close()
+
+
+def test_older_unresolved_toss_run_cannot_hide_behind_newer_clean_head(
+        tmp_path):
+    """Legacy duplicate heads cannot erase venue uncertainty for the account."""
+    path = tmp_path / "state.db"
+    same = toss_live_scope_config("same")
+    other = toss_live_scope_config("other")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    seeded = StateStore(path)
+    older_id = seeded.start_run(
+        same.name, "live", 100_000.0, same.model_dump_json(), now=now,
+    )
+    seeded.stop_run()
+    newer_id = seeded.start_run(
+        same.name, "live", 100_000.0, same.model_dump_json(), now=now,
+    )
+    seeded.stop_run()
+    seeded.conn.execute(
+        "UPDATE runs SET requires_reconciliation=1, archived_at=NULL "
+        "WHERE id=?",
+        (older_id,),
+    )
+    seeded.conn.commit()
+    seeded.close()
+
+    contender = StateStore(path)
+    try:
+        for target in (other, same):
+            with pytest.raises(RecoveryArchiveError) as blocked:
+                contender.prepare_toss_live_run(
+                    target.name, 100_000.0,
+                    target.model_dump_json(), now=now,
+                )
+            assert blocked.value.code == "reconciliation_required"
+            gate = contender.toss_account_start_gate(
+                resume_strategy=target.name,
+                resume_config_json=target.model_dump_json(),
+                now=now,
+            )
+            assert gate["blocking_run_id"] == older_id
+        assert contender.run_id is None
+        totals = contender.conn.execute(
+            "SELECT MAX(id) latest, COUNT(*) count FROM runs",
+        ).fetchone()
+        assert (totals["latest"], totals["count"]) == (newer_id, 2)
+    finally:
+        contender.close()
+
+
+def test_future_toss_budget_day_fails_closed_after_clock_rollback(tmp_path):
+    path = tmp_path / "state.db"
+    source = toss_live_scope_config("source")
+    other = toss_live_scope_config("other")
+    used_at = datetime(2026, 9, 1, 5, 0, tzinfo=UTC)
+    corrected_now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    seeded = StateStore(path)
+    run_id = seeded.start_run(
+        source.name, "live", 100_000.0,
+        source.model_dump_json(), now=used_at,
+    )
+    budget = TradingBudget(max_daily_orders=5, timezone_offset_hours=9)
+    seeded.restore_budget(budget, now=used_at)
+    budget.record_trade(-1.0, now=used_at)
+    seeded.conn.execute(
+        "UPDATE day_budget SET updated_at=? WHERE run_id=?",
+        (used_at.isoformat(), run_id),
+    )
+    seeded.conn.commit()
+    seeded.stop_run()
+    seeded.close()
+
+    contender = StateStore(path)
+    try:
+        for target in (other, source):
+            with pytest.raises(RecoveryArchiveError) as blocked:
+                contender.prepare_toss_live_run(
+                    target.name, 100_000.0, target.model_dump_json(),
+                    now=corrected_now,
+                )
+            assert blocked.value.code == "daily_budget_time_invalid"
+        assert contender.run_id is None
+        assert contender.conn.execute(
+            "SELECT COUNT(*) n FROM runs",
+        ).fetchone()["n"] == 1
+    finally:
+        contender.close()
+
+
+@pytest.mark.parametrize(
+    ("ledger_kind", "event_type", "event_count"),
+    [
+        ("missing", "order_filled", 1),
+        ("zero", "order_filled", 2),
+        ("zero", "trade_closed", 1),
+        ("fee_only", "order_filled", 1),
+        ("fee_and_pnl", "trade_closed", 1),
+    ],
+)
+def test_legacy_fill_without_used_budget_blocks_resume_and_fresh_run(
+        tmp_path, ledger_kind, event_type, event_count):
+    """A legacy fill proves usage but cannot safely reconstruct its allowance."""
+    path = tmp_path / "state.db"
+    source = toss_live_scope_config("source")
+    other = toss_live_scope_config("other")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    seeded = StateStore(path)
+    run_id = seeded.start_run(
+        source.name, "live", 100_000.0,
+        source.model_dump_json(), now=now,
+    )
+    if ledger_kind == "zero":
+        budget = TradingBudget(max_daily_orders=5, timezone_offset_hours=9)
+        seeded.restore_budget(budget, now=now)
+    elif ledger_kind in {"fee_only", "fee_and_pnl"}:
+        budget = TradingBudget(max_daily_orders=5, timezone_offset_hours=9)
+        seeded.restore_budget(budget, now=now)
+        seeded.conn.execute(
+            "UPDATE day_budget SET fees=1, realized_pnl=?, updated_at=? "
+            "WHERE run_id=?",
+            (-5 if ledger_kind == "fee_and_pnl" else 0,
+             now.isoformat(), run_id),
+        )
+    for index in range(event_count):
+        payload = (
+            json.dumps({"order_id": f"legacy-{index}"})
+            if event_type == "order_filled" else "{}"
+        )
+        seeded.conn.execute(
+            "INSERT INTO events(run_id, ts, type, payload) VALUES(?,?,?,?)",
+            (run_id, now.isoformat(), event_type, payload),
+        )
+    seeded.conn.commit()
+    seeded.stop_run()
+    seeded.close()
+
+    contender = StateStore(path)
+    try:
+        for target in (source, other):
+            gate = contender.toss_account_start_gate(
+                resume_strategy=target.name,
+                resume_config_json=target.model_dump_json(), now=now,
+            )
+            assert gate["resumable_run_id"] is None
+            assert gate["daily_budget_blocked"]
+            assert gate["budget_blocking_run_id"] == run_id
+            with pytest.raises(RecoveryArchiveError) as blocked:
+                contender.prepare_toss_live_run(
+                    target.name, 100_000.0,
+                    target.model_dump_json(), now=now,
+                )
+            assert blocked.value.code == "daily_budget_strategy_switch_blocked"
+        assert contender.conn.execute(
+            "SELECT COUNT(*) n FROM runs",
+        ).fetchone()["n"] == 1
+
+        next_day_id = contender.start_run(
+            other.name, "live", 100_000.0, other.model_dump_json(),
+            now=datetime(2026, 8, 31, 15, 0, tzinfo=UTC),
+        )
+        assert next_day_id > run_id
+    finally:
+        contender.close()
+
+
+@pytest.mark.parametrize(
+    ("submitted_ids", "fill_payloads", "resume_allowed"),
+    [
+        (["partial-1"],
+         [{"order_id": "partial-1", "fee": 0},
+          {"order_id": "partial-1", "fee": 0}], True),
+        (["first"],
+         [{"order_id": "first", "fee": 0},
+          {"order_id": "unrecorded-second", "fee": 0}], False),
+        (["first"], ["{broken"], False),
+    ],
+)
+def test_fill_order_ids_must_fit_the_durable_order_count(
+        tmp_path, submitted_ids, fill_payloads, resume_allowed):
+    path = tmp_path / "state.db"
+    config = toss_live_scope_config("source")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    seeded = StateStore(path)
+    run_id = seeded.start_run(
+        config.name, "live", 100_000.0,
+        config.model_dump_json(), now=now,
+    )
+    budget = TradingBudget(max_daily_orders=5, timezone_offset_hours=9)
+    budget.roll(now)
+    seeded.save_budget(budget)
+    seeded.conn.execute(
+        "UPDATE day_budget SET orders=1, notional=100, updated_at=? "
+        "WHERE run_id=?",
+        (now.isoformat(), run_id),
+    )
+    for order_id in submitted_ids:
+        seeded.conn.execute(
+            "INSERT INTO events(run_id, ts, type, payload) VALUES(?,?,?,?)",
+            (run_id, now.isoformat(), "order_submitted",
+             json.dumps({"id": order_id})),
+        )
+    for payload in fill_payloads:
+        serialized = payload if isinstance(payload, str) else json.dumps(payload)
+        seeded.conn.execute(
+            "INSERT INTO events(run_id, ts, type, payload) VALUES(?,?,?,?)",
+            (run_id, now.isoformat(), "order_filled", serialized),
+        )
+    seeded.conn.commit()
+    seeded.stop_run()
+    seeded.close()
+
+    contender = StateStore(path)
+    try:
+        gate = contender.toss_account_start_gate(
+            resume_strategy=config.name,
+            resume_config_json=config.model_dump_json(), now=now,
+        )
+        assert (gate["resumable_run_id"] == run_id) is resume_allowed
+        assert gate["daily_budget_blocked"] is (not resume_allowed)
+        if resume_allowed:
+            assert contender.prepare_toss_live_run(
+                config.name, 100_000.0,
+                config.model_dump_json(), now=now,
+            )
+        else:
+            with pytest.raises(RecoveryArchiveError) as blocked:
+                contender.prepare_toss_live_run(
+                    config.name, 100_000.0,
+                    config.model_dump_json(), now=now,
+                )
+            assert blocked.value.code == "daily_budget_strategy_switch_blocked"
+    finally:
+        contender.close()
+
+
+def test_fill_and_trade_events_cannot_claim_more_than_the_durable_ledger(
+        tmp_path):
+    path = tmp_path / "state.db"
+    config = toss_live_scope_config("source")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    store = StateStore(path)
+    run_id = store.start_run(
+        config.name, "live", 100_000.0,
+        config.model_dump_json(), now=now,
+    )
+    budget = TradingBudget(max_daily_orders=5, timezone_offset_hours=9)
+    budget.roll(now, equity=100_000.0)
+    store.save_budget(budget)
+    store.conn.execute(
+        "UPDATE day_budget SET orders=1, notional=100, fees=0, "
+        "realized_pnl=0, updated_at=? WHERE run_id=?",
+        (now.isoformat(), run_id),
+    )
+    events = [
+        ("order_submitted", {"id": "order-1"}),
+        ("order_filled", {"order_id": "order-1", "fee": 5}),
+        ("trade_closed", {"pnl": -1_500}),
+    ]
+    for event_type, payload in events:
+        store.conn.execute(
+            "INSERT INTO events(run_id, ts, type, payload) VALUES(?,?,?,?)",
+            (run_id, now.isoformat(), event_type, json.dumps(payload)),
+        )
+    store.conn.commit()
+    store.stop_run()
+
+    gate = store.toss_account_start_gate(
+        resume_strategy=config.name,
+        resume_config_json=config.model_dump_json(), now=now,
+    )
+    assert gate["resumable_run_id"] is None
+    assert gate["daily_budget_blocked"]
+    with pytest.raises(RecoveryArchiveError) as blocked:
+        store.prepare_toss_live_run(
+            config.name, 100_000.0, config.model_dump_json(), now=now,
+        )
+    assert blocked.value.code == "daily_budget_strategy_switch_blocked"
+    store.close()
+
+
+def test_cross_midnight_fill_links_to_its_prior_day_submission(tmp_path):
+    path = tmp_path / "state.db"
+    config = toss_live_scope_config("source")
+    submitted_at = datetime(2026, 8, 31, 14, 59, tzinfo=UTC)
+    filled_at = datetime(2026, 8, 31, 15, 1, tzinfo=UTC)
+    current = datetime(2026, 8, 31, 16, 0, tzinfo=UTC)
+
+    store = StateStore(path)
+    run_id = store.start_run(
+        config.name, "live", 100_000.0,
+        config.model_dump_json(), now=submitted_at,
+    )
+    rows = [
+        (run_id, "2026-08-31", 200.0, 1, 0.0, 0.0, 100_000.0, 0,
+         "", 9.0, submitted_at.isoformat()),
+        (run_id, "2026-09-01", 0.0, 0, 0.0, 1.0, 100_000.0, 0,
+         "", 9.0, filled_at.isoformat()),
+    ]
+    store.conn.executemany(
+        "INSERT INTO day_budget(run_id, day, notional, orders, realized_pnl, "
+        "fees, starting_equity, blocked, halt_reason, tz_offset_hours, "
+        "updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        rows,
+    )
+    store.conn.execute(
+        "INSERT INTO events(run_id, ts, type, payload) VALUES(?,?,?,?)",
+        (run_id, submitted_at.isoformat(), "order_submitted",
+         json.dumps({"id": "overnight-1"})),
+    )
+    store.conn.execute(
+        "INSERT INTO events(run_id, ts, type, payload) VALUES(?,?,?,?)",
+        (run_id, filled_at.isoformat(), "order_filled",
+         json.dumps({"order_id": "overnight-1", "fee": 1})),
+    )
+    store.conn.commit()
+    store.stop_run()
+
+    gate = store.toss_account_start_gate(
+        resume_strategy=config.name,
+        resume_config_json=config.model_dump_json(), now=current,
+    )
+    assert not gate["daily_budget_blocked"]
+    assert gate["resumable_run_id"] == run_id
+    assert store.prepare_toss_live_run(
+        config.name, 100_000.0, config.model_dump_json(), now=current,
+    )
+    store.close()
+
+
+@pytest.mark.parametrize(
+    ("stored_pct", "target_pct"), [(0.05, 0.05), (0.0, 0.05)],
+)
+def test_used_percentage_loss_ledger_requires_positive_starting_equity(
+        tmp_path, stored_pct, target_pct):
+    path = tmp_path / "state.db"
+    stored_data = toss_live_scope_config("source").model_dump()
+    stored_data["limits"]["max_daily_loss_pct"] = stored_pct
+    stored = StrategyConfig.model_validate(stored_data)
+    target_data = stored.model_dump()
+    target_data["limits"]["max_daily_loss_pct"] = target_pct
+    target = StrategyConfig.model_validate(target_data)
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    store = StateStore(path)
+    run_id = store.start_run(
+        stored.name, "live", 100_000.0,
+        stored.model_dump_json(), now=now,
+    )
+    store.conn.execute(
+        "INSERT INTO day_budget(run_id, day, notional, orders, realized_pnl, "
+        "fees, starting_equity, blocked, halt_reason, tz_offset_hours, "
+        "updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (run_id, "2026-08-31", 100.0, 1, -10_000.0, 0.0, 0.0, 0,
+         "", 9.0, now.isoformat()),
+    )
+    store.conn.commit()
+    store.stop_run()
+
+    with pytest.raises(RecoveryArchiveError) as blocked:
+        store.prepare_toss_live_run(
+            target.name, 100_000.0, target.model_dump_json(), now=now,
+        )
+    assert blocked.value.code == "daily_budget_value_invalid"
+    store.close()
+
+
+def test_future_budget_update_time_fails_closed_even_when_day_is_old(tmp_path):
+    path = tmp_path / "state.db"
+    source = toss_live_scope_config("source")
+    target = toss_live_scope_config("target")
+    used_at = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+    current = datetime(2026, 9, 1, 5, 0, tzinfo=UTC)
+
+    store = StateStore(path)
+    run_id = store.start_run(
+        source.name, "live", 100_000.0,
+        source.model_dump_json(), now=used_at,
+    )
+    budget = TradingBudget(max_daily_orders=5, timezone_offset_hours=9)
+    store.restore_budget(budget, now=used_at)
+    budget.record_trade(-1.0, now=used_at)
+    store.conn.execute(
+        "UPDATE day_budget SET updated_at=? WHERE run_id=?",
+        (datetime(2026, 9, 2, 5, 0, tzinfo=UTC).isoformat(), run_id),
+    )
+    store.conn.commit()
+    store.stop_run()
+
+    with pytest.raises(RecoveryArchiveError) as blocked:
+        store.prepare_toss_live_run(
+            target.name, 100_000.0, target.model_dump_json(), now=current,
+        )
+    assert blocked.value.code == "daily_budget_time_invalid"
+    assert store.conn.execute(
+        "SELECT COUNT(*) n FROM runs",
+    ).fetchone()["n"] == 1
+    store.close()
+
+
+def test_expired_budget_ignores_corrupt_numeric_usage(tmp_path):
+    path = tmp_path / "state.db"
+    source = toss_live_scope_config("source")
+    target = toss_live_scope_config("target")
+    written_at = datetime(2026, 8, 30, 5, 0, tzinfo=UTC)
+    current = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    store = StateStore(path)
+    run_id = store.start_run(
+        source.name, "live", 100_000.0,
+        source.model_dump_json(), now=written_at,
+    )
+    store.conn.execute(
+        "INSERT INTO day_budget(run_id, day, notional, orders, realized_pnl, "
+        "fees, starting_equity, blocked, halt_reason, tz_offset_hours, "
+        "updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (run_id, "2026-08-30", 100.0, 1, "bad", 0.0, 100_000.0, 0,
+         "", 9.0, written_at.isoformat()),
+    )
+    store.conn.commit()
+    store.stop_run()
+
+    target_id = store.start_run(
+        target.name, "live", 100_000.0,
+        target.model_dump_json(), now=current,
+    )
+    assert target_id > run_id
+    store.close()
+
+
+@pytest.mark.parametrize("event_ts", ["not-a-time", "2026-08-31T05:00:01+00:00"])
+def test_invalid_or_future_toss_fill_time_fails_closed(tmp_path, event_ts):
+    path = tmp_path / "state.db"
+    source = toss_live_scope_config("source")
+    target = toss_live_scope_config("target")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    store = StateStore(path)
+    run_id = store.start_run(
+        source.name, "live", 100_000.0,
+        source.model_dump_json(), now=now,
+    )
+    store.conn.execute(
+        "INSERT INTO events(run_id, ts, type, payload) VALUES(?,?,?,?)",
+        (run_id, event_ts, "order_filled", "{}"),
+    )
+    store.conn.commit()
+    store.stop_run()
+
+    with pytest.raises(RecoveryArchiveError) as blocked:
+        store.prepare_toss_live_run(
+            target.name, 100_000.0, target.model_dump_json(), now=now,
+        )
+    assert blocked.value.code == "daily_budget_event_time_invalid"
+    assert store.conn.execute(
+        "SELECT COUNT(*) n FROM runs",
+    ).fetchone()["n"] == 1
+    store.close()
+
+
+def test_kis_fill_event_does_not_capture_the_toss_account_gate(tmp_path):
+    path = tmp_path / "state.db"
+    kis = other_live_config("kis", "kis")
+    toss = toss_live_scope_config("toss")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    store = StateStore(path)
+    kis_id = store.start_run(
+        kis.name, "live", 100_000.0, kis.model_dump_json(), now=now,
+    )
+    store.conn.execute(
+        "INSERT INTO events(run_id, ts, type, payload) VALUES(?,?,?,?)",
+        (kis_id, now.isoformat(), "order_filled", "{broken"),
+    )
+    store.conn.commit()
+    store.stop_run()
+
+    toss_id = store.start_run(
+        toss.name, "live", 100_000.0, toss.model_dump_json(), now=now,
+    )
+    assert toss_id > kis_id
+    store.close()
+
+
+def test_malformed_kis_budget_does_not_capture_toss_account_gate(tmp_path):
+    path = tmp_path / "state.db"
+    kis = other_live_config("kis", "kis")
+    toss = toss_live_scope_config("toss")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+
+    store = StateStore(path)
+    kis_id = store.start_run(
+        kis.name, "live", 100_000.0, kis.model_dump_json(), now=now,
+    )
+    budget = TradingBudget(max_daily_loss=1_000.0, timezone_offset_hours=9)
+    store.restore_budget(budget, now=now)
+    budget.record_trade(-1.0, now=now)
+    store.conn.execute(
+        "UPDATE day_budget SET realized_pnl='not-a-number' WHERE run_id=?",
+        (kis_id,),
+    )
+    store.conn.commit()
+    store.stop_run()
+
+    toss_id = store.start_run(
+        toss.name, "live", 100_000.0, toss.model_dump_json(), now=now,
+    )
+    assert toss_id > kis_id
+    store.close()
+
+
+def test_mutated_zero_cap_toss_config_is_rejected_at_start_boundary(tmp_path):
+    config = toss_live_scope_config("zero-cap")
+    config.limits.max_daily_notional = 0
+    config.limits.max_daily_orders = 0
+    config.limits.max_daily_loss = 0
+    config.limits.max_daily_loss_pct = 0
+
+    store = StateStore(tmp_path / "state.db")
+    try:
+        with pytest.raises(RecoveryArchiveError) as blocked:
+            store.prepare_toss_live_run(
+                config.name, 100_000.0, config.model_dump_json(),
+            )
+        assert blocked.value.code == "daily_budget_target_scope_invalid"
+    finally:
+        store.close()
+
+    trader = LiveTrader.__new__(LiveTrader)
+    trader.config = config
+    with pytest.raises(ValueError, match="at least one daily cap"):
+        asyncio.run(trader.start())
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_daily_notional", float("nan")),
+        ("max_daily_loss", float("inf")),
+        ("max_daily_loss_pct", float("-inf")),
+        ("timezone_offset_hours", float("nan")),
+        ("timezone_offset_hours", 25.0),
+    ],
+)
+def test_nonfinite_or_out_of_range_live_limits_are_rejected(field, value):
+    data = toss_live_scope_config("invalid-limit").model_dump()
+    data["limits"][field] = value
+    with pytest.raises(ValueError):
+        StrategyConfig.model_validate(data)
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity"])
+def test_limits_api_rejects_nonfinite_values(recovery_api, value):
+    client, _app, _config = recovery_api
+    register(client, f"finite-{value.lower()}@example.com")
+    response = client.post(
+        "/api/limits",
+        content=f'{{"max_daily_loss": {value}}}',
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 422
+
+
+def test_running_live_bot_cannot_remove_its_last_daily_cap(
+        recovery_api, monkeypatch):
+    client, app, config = recovery_api
+    owner_id, _cookie = register(client, "last-cap@example.com")
+    app.state.registry.save_limits(owner_id, {"max_daily_orders": 5})
+    budget = TradingBudget(max_daily_orders=5)
+    trader = SimpleNamespace(
+        config=config,
+        engine=SimpleNamespace(budget=budget),
+    )
+    monkeypatch.setattr(
+        app.state.registry, "trader",
+        lambda user_id: trader if user_id == owner_id else None,
+    )
+
+    response = client.post("/api/limits", json={
+        "max_daily_notional": 0,
+        "max_daily_orders": 0,
+        "max_daily_loss": 0,
+        "max_daily_loss_pct": 0,
+    })
+    assert response.status_code == 400
+    assert response.json()["code"] == "config_rejected"
+    assert budget.max_orders == 5
+    assert app.state.registry.limits(owner_id)["max_daily_orders"] == 5
 
 
 @pytest.mark.parametrize("reason", ["1234567890", "가" * 500])
@@ -636,6 +1880,58 @@ def api_payload(run_id: int, *, reason: str = "토스 앱과 다섯 항목을 �
         "confirmations": dict(RECOVERY_CONFIRMATION_PHRASES),
         "acknowledgement": RECOVERY_ACKNOWLEDGEMENT_PHRASE,
     }
+
+
+def test_registry_reports_clean_same_day_toss_strategy_switch(
+        recovery_api):
+    client, app, config = recovery_api
+    owner_id, _cookie = register(client, "owner@example.com")
+    other = toss_live_config("recover-toss-b")
+    now = datetime(2026, 8, 31, 5, 0, tzinfo=UTC)
+    store = StateStore(app.state.registry.state_path(owner_id))
+    try:
+        run_id = store.start_run(
+            config.name, "live", 100_000.0,
+            config.model_dump_json(), now=now,
+        )
+        budget = TradingBudget(
+            max_daily_loss=1_000.0, timezone_offset_hours=9,
+        )
+        store.restore_budget(budget, now=now)
+        budget.record_trade(-1_500.0, now=now)
+        store.conn.execute(
+            "UPDATE day_budget SET updated_at=? WHERE run_id=?",
+            (now.isoformat(), run_id),
+        )
+        store.conn.commit()
+        store.stop_run()
+    finally:
+        store.close()
+
+    # Exact resume remains available; the other template cannot open a new
+    # allowance, and the operator receives a specific non-numeric explanation.
+    app.state.registry._assert_recovery_start_allowed(
+        owner_id, config, now=now,
+    )
+    with pytest.raises(ReconciliationProblem) as blocked:
+        app.state.registry._assert_recovery_start_allowed(
+            owner_id, other, now=now,
+        )
+    assert blocked.value.code == "daily_budget_strategy_switch_blocked"
+    assert blocked.value.details == {
+        "budget_blocking_run_id": run_id,
+        "budget_blocking_strategy": config.name,
+        "next_start_allowed_at": "2026-08-31T15:00:00+00:00",
+    }
+
+    status = app.state.registry.reconciliation_status(
+        owner_id, other, now=now,
+    )
+    assert not status["required"]
+    assert status["daily_budget_blocked"] and status["restart_blocked"]
+    assert status["budget_blocking_run_id"] == run_id
+    assert "다른 실거래 전략을 시작할 수 없습니다" in status["message"]
+    assert "1,500" not in status["message"]
 
 
 def test_owner_scoped_api_archives_without_constructing_a_broker(

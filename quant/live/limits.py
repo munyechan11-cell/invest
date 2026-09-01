@@ -23,6 +23,7 @@ exit: a limit that traps you in a losing position is not a safety feature.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
@@ -76,6 +77,14 @@ class TradingBudget:
         halt_until_next_day: bool = True,
         clock=None,
     ):
+        numeric_limits = (
+            max_daily_notional, max_daily_orders, max_daily_loss,
+            max_daily_loss_pct, timezone_offset_hours,
+        )
+        if not all(math.isfinite(float(value)) for value in numeric_limits):
+            raise ValueError("일일 한도와 시간대는 유한한 숫자여야 합니다")
+        if abs(float(timezone_offset_hours)) > 24:
+            raise ValueError("일일 한도 시간대는 UTC-24..UTC+24 범위여야 합니다")
         self.max_notional = max_daily_notional
         self.max_orders = max_daily_orders
         self.max_loss = abs(max_daily_loss)
@@ -228,13 +237,23 @@ class TradingBudget:
     def _persist(self) -> None:
         if self._store is None:
             return
+        store = self._store
         try:
-            self._store.save_budget(self)
+            store.save_budget(self)
         except Exception:
             # Never let a bookkeeping failure stop the trading path, but say so
-            # loudly: from here the caps only hold until the next restart.
+            # loudly. The store keeps a sticky uncertainty marker, so even if a
+            # later write recovers, shutdown cannot call this a clean run.
+            mark_failed = getattr(
+                store, "mark_accounting_persistence_failed", None,
+            )
+            if mark_failed is not None:
+                mark_failed()
             self._store = None
-            log.exception("일일 한도 저장 실패 — 재시작하면 오늘 사용량이 초기화됩니다")
+            log.exception(
+                "일일 한도 저장 실패 — 이번 실행은 정상 종료로 표시하지 않고 "
+                "수동 계좌 대조가 필요한 격리 상태로 남깁니다"
+            )
 
     def to_state(self) -> dict:
         """Today's ledger as a plain dict, for the state DB."""

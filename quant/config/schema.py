@@ -187,13 +187,18 @@ class LimitsConfig(ConfigBlock):
     a default.
     """
 
-    max_daily_notional: float = 0.0     # 하루 총 거래대금 한도
+    max_daily_notional: float = Field(default=0.0, allow_inf_nan=False)
+    # 하루 총 거래대금 한도
     max_daily_orders: int = 0           # 하루 주문 건수 한도
-    max_daily_loss: float = 0.0         # 하루 실현손실 한도 (통화 단위)
-    max_daily_loss_pct: float = 0.0     # 하루 실현손실 한도 (자산 대비 비율)
+    max_daily_loss: float = Field(default=0.0, allow_inf_nan=False)
+    # 하루 실현손실 한도 (통화 단위)
+    max_daily_loss_pct: float = Field(default=0.0, allow_inf_nan=False)
+    # 하루 실현손실 한도 (자산 대비 비율)
     #: when "today" rolls over. Defaults to KST so the reset does not land in
     #: the middle of the KRX session it is meant to be bounding.
-    timezone_offset_hours: float = 9.0
+    timezone_offset_hours: float = Field(
+        default=9.0, ge=-24.0, le=24.0, allow_inf_nan=False,
+    )
     halt_until_next_day: bool = True
 
 

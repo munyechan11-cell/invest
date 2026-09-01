@@ -1380,7 +1380,8 @@ function renderTape(symbols) {
    사전에 없는 값은 원문 그대로 흘립니다. 새 이벤트 종류가 하나 생겼다고 그
    줄이 빈칸이 되면, 무슨 일이 일어났는지조차 알 수 없게 됩니다. */
 const EVENT_KO = {
-  order_filled: "체결", trade_closed: "매매 종료", protection: "보호 장치",
+  order_submitted: "주문 접수", order_filled: "체결",
+  trade_closed: "매매 종료", protection: "보호 장치",
   order_rejected: "주문 거부", deliberation: "심의", insight: "신호",
   equity: "자산", error: "오류",
 };
@@ -1400,6 +1401,9 @@ function pushEvent(e) {
   const sym = symLabel(p.symbol, nameOf(p, "symbol"));
   let msg = "", tone = "";
   switch (e.type) {
+    case "order_submitted":
+      msg = `${SIDE_KO[p.side] || p.side} ${p.quantity} ${sym} 주문 접수`;
+      tone = "gold"; break;
     case "order_filled":
       msg = `${SIDE_KO[p.side] || p.side} ${p.quantity} ${sym} @ ${p.price}`;
       tone = p.side === "buy" ? "up" : "down"; break;

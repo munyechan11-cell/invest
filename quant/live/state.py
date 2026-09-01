@@ -20,12 +20,13 @@ import contextlib
 import errno
 import json
 import logging
+import math
 import os
 import socket
 import sqlite3
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -308,6 +309,10 @@ class StateStore:
         # clears it; a crash can never look clean merely because the first account
         # snapshot is still stale.
         self.restored_reconciliation_required = False
+        # A successful later SQLite write cannot prove that an earlier budget
+        # or execution event made it to disk. Keep that uncertainty sticky for
+        # this process so shutdown cannot clear the run's venue quarantine.
+        self.accounting_persistence_failed = False
         self._owns = False
         self._lock_fd: int | None = None
         #: `remember_ticker` 의 upsert 를 감싸는 잠금. 이 값이 **없어서**
@@ -491,6 +496,38 @@ class StateStore:
         self.run_id = cur.lastrowid
         return self.run_id
 
+    def prepare_toss_live_run(
+            self, strategy: str, starting_cash: float, config_json: str,
+            *, resume: bool = True, now: datetime | None = None) -> bool:
+        """Claim the account ledger, then choose one exact resume or fresh run.
+
+        The ownership claim deliberately spans warm-up in ``LiveTrader``. A
+        second process therefore cannot spend one strategy's allowance after
+        this check while the selected strategy continues with an empty budget.
+        """
+        if self._stored_toss_live_scope(config_json, strategy) is None:
+            raise RecoveryArchiveError(
+                "daily_budget_target_scope_invalid",
+                "시작할 Toss 실거래 전략의 통화와 한도 시간대를 검증할 수 "
+                "없어 실행하지 않습니다.",
+            )
+        self._claim()
+        gate = self.assert_toss_account_start_allowed(
+            resume_strategy=strategy if resume else None,
+            resume_config_json=config_json if resume else None,
+            now=now,
+        )
+        resumable_run_id = gate["resumable_run_id"] if resume else None
+        if resumable_run_id is not None:
+            self.resume_run_exact(
+                strategy, "live", int(resumable_run_id), config_json,
+            )
+            return True
+        self.start_run(
+            strategy, "live", starting_cash, config_json, now=now,
+        )
+        return False
+
     def resume_run(self, strategy: str, mode: str) -> int | None:
         """Reopen the most recent run for this strategy and mode.
 
@@ -519,6 +556,76 @@ class StateStore:
         )
         self.conn.execute("UPDATE runs SET stopped_at=NULL WHERE id=?", (self.run_id,))
         self.conn.commit()
+        return self.run_id
+
+    def resume_run_exact(
+            self, strategy: str, mode: str, expected_run_id: int,
+            expected_config_json: str) -> int:
+        """Atomically reopen only the preflighted Toss lifecycle head.
+
+        Generic ``resume_run`` intentionally remains usable by read-only legacy
+        callers. Live Toss startup uses this stricter path after taking the DB
+        owner claim, so a later KIS/corrupt row or a currency/timezone change
+        can never redirect the resume to a different allowance.
+        """
+        self._claim()
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            row = self.conn.execute(
+                "SELECT id, requires_reconciliation, archived_at, config_json "
+                "FROM runs WHERE strategy=? AND mode=? "
+                "ORDER BY id DESC LIMIT 1",
+                (strategy, mode),
+            ).fetchone()
+            if row is None or int(row["id"]) != int(expected_run_id):
+                raise RecoveryArchiveError(
+                    "daily_budget_resume_run_changed",
+                    "시작 전 확인한 Toss 실행이 최신 실행과 달라져 재개하지 "
+                    "않습니다. 상태를 다시 조회하세요.",
+                )
+            if row["archived_at"] is not None:
+                raise RecoveryArchiveError(
+                    "daily_budget_resume_run_changed",
+                    "시작 전 확인한 Toss 실행이 이미 보관되어 재개하지 "
+                    "않습니다. 상태를 다시 조회하세요.",
+                )
+            if bool(row["requires_reconciliation"]):
+                raise RecoveryArchiveError(
+                    "reconciliation_required",
+                    f"'{strategy}' 실행의 수동 복구가 먼저 필요합니다 "
+                    f"(run {expected_run_id}).",
+                )
+            target_scope = self._stored_toss_live_scope(
+                expected_config_json, strategy,
+            )
+            stored_scope = self._stored_toss_live_scope(
+                row["config_json"], strategy,
+            )
+            if target_scope is None or stored_scope != target_scope:
+                raise RecoveryArchiveError(
+                    "daily_budget_resume_scope_changed",
+                    "시작 전 확인한 Toss 실행의 통화 또는 한도 시간대가 "
+                    "달라져 재개하지 않습니다.",
+                )
+            updated = self.conn.execute(
+                "UPDATE runs SET stopped_at=NULL WHERE id=? "
+                "AND archived_at IS NULL AND requires_reconciliation=0",
+                (expected_run_id,),
+            )
+            if updated.rowcount != 1:
+                raise RecoveryArchiveError(
+                    "daily_budget_resume_run_changed",
+                    "Toss 실행 상태가 동시에 변경되어 재개하지 않습니다. "
+                    "상태를 다시 조회하세요.",
+                )
+            self.conn.commit()
+        except Exception:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
+        self.run_id = int(expected_run_id)
+        self.restored_reconciliation_required = False
+        self.restored_venue_truth = False
         return self.run_id
 
     @staticmethod
@@ -579,65 +686,643 @@ class StateStore:
             ),
         }
 
-    def toss_account_start_gate(self, *, now: datetime | None = None) -> dict:
+    @staticmethod
+    def _active_budget_cutoff(
+            day_value: object, tz_value: object, updated_value: object,
+            current: datetime,
+    ) -> datetime | None:
+        """Return the UTC reset boundary while one stored daily ledger is live.
+
+        The row's own timezone is authoritative.  That prevents changing the
+        next template's timezone from making a still-current Toss allowance
+        disappear.  Invalid timing data fails closed instead of granting a new
+        live allowance whose boundary we cannot prove.
+        """
+        try:
+            ledger_day = date.fromisoformat(str(day_value))
+            offset_hours = float(tz_value)
+        except (TypeError, ValueError) as exc:
+            raise RecoveryArchiveError(
+                "daily_budget_time_invalid",
+                "저장된 당일 한도의 거래일을 검증할 수 없어 새 실거래를 "
+                "시작하지 않습니다.",
+            ) from exc
+        if not math.isfinite(offset_hours) or abs(offset_hours) > 24:
+            raise RecoveryArchiveError(
+                "daily_budget_time_invalid",
+                "저장된 당일 한도의 시간대를 검증할 수 없어 새 실거래를 "
+                "시작하지 않습니다.",
+            )
+        if not isinstance(updated_value, str):
+            raise RecoveryArchiveError(
+                "daily_budget_time_invalid",
+                "저장된 당일 한도의 갱신 시각을 검증할 수 없어 새 실거래를 "
+                "시작하지 않습니다.",
+            )
+        try:
+            updated_text = (
+                updated_value[:-1] + "+00:00"
+                if updated_value.endswith("Z") else updated_value
+            )
+            updated = datetime.fromisoformat(updated_text)
+        except ValueError as exc:
+            raise RecoveryArchiveError(
+                "daily_budget_time_invalid",
+                "저장된 당일 한도의 갱신 시각을 검증할 수 없어 새 실거래를 "
+                "시작하지 않습니다.",
+            ) from exc
+        if updated.tzinfo is None or updated.utcoffset() is None:
+            raise RecoveryArchiveError(
+                "daily_budget_time_invalid",
+                "저장된 당일 한도의 갱신 시각에 UTC 오프셋이 없어 새 "
+                "실거래를 시작하지 않습니다.",
+            )
+        updated = updated.astimezone(UTC)
+        if updated > current:
+            raise RecoveryArchiveError(
+                "daily_budget_time_invalid",
+                "저장된 당일 한도의 갱신 시각이 현재보다 미래라 새 "
+                "실거래를 시작하지 않습니다.",
+            )
+        offset = timedelta(hours=offset_hours)
+        current_source_day = (current + offset).date()
+        if ledger_day > current_source_day:
+            raise RecoveryArchiveError(
+                "daily_budget_time_invalid",
+                "저장된 당일 한도의 거래일이 현재 시각보다 미래라 새 "
+                "실거래를 시작하지 않습니다.",
+            )
+        source_day_active = current_source_day == ledger_day
+        current_kst_day = (current + _KST_OFFSET).date()
+        updated_on_current_kst_day = (
+            updated + _KST_OFFSET
+        ).date() == current_kst_day
+        if not source_day_active and not updated_on_current_kst_day:
+            return None
+        next_day = ledger_day + timedelta(days=1)
+        source_cutoff = (
+            datetime(next_day.year, next_day.month, next_day.day, tzinfo=UTC)
+            - offset
+        )
+        next_kst_day = current_kst_day + timedelta(days=1)
+        kst_cutoff = (
+            datetime(
+                next_kst_day.year, next_kst_day.month, next_kst_day.day,
+                tzinfo=UTC,
+            ) - _KST_OFFSET
+        )
+        return max(source_cutoff, kst_cutoff)
+
+    @staticmethod
+    def _daily_budget_was_used(row: sqlite3.Row) -> bool:
+        """Whether opening a fresh ledger would hand back spent allowance."""
+        try:
+            notional = float(row["notional"])
+            orders = float(row["orders"])
+            realized_pnl = float(row["realized_pnl"])
+            fees = float(row["fees"])
+            starting_equity = float(row["starting_equity"])
+            blocked = float(row["blocked"])
+        except (TypeError, ValueError) as exc:
+            raise RecoveryArchiveError(
+                "daily_budget_value_invalid",
+                "저장된 당일 한도 사용량을 검증할 수 없어 새 실거래를 "
+                "시작하지 않습니다.",
+            ) from exc
+        values = (
+            notional, orders, realized_pnl, fees, starting_equity, blocked,
+        )
+        if (
+            not all(math.isfinite(value) for value in values)
+            or notional < 0
+            or fees < 0
+            or starting_equity < 0
+            or orders < 0
+            or not orders.is_integer()
+            or blocked < 0
+            or not blocked.is_integer()
+            or (row["halt_reason"] is not None
+                and not isinstance(row["halt_reason"], str))
+        ):
+            raise RecoveryArchiveError(
+                "daily_budget_value_invalid",
+                "저장된 당일 한도 사용량을 검증할 수 없어 새 실거래를 "
+                "시작하지 않습니다.",
+            )
+        return bool(any(value != 0 for value in (
+            notional, orders, realized_pnl, fees, blocked,
+        ))
+                    or str(row["halt_reason"] or "").strip())
+
+    @staticmethod
+    def _validated_order_event_time(
+            timestamp_value: object, current: datetime,
+    ) -> datetime:
+        if not isinstance(timestamp_value, str):
+            raise RecoveryArchiveError(
+                "daily_budget_event_time_invalid",
+                "저장된 체결 증거의 시각을 검증할 수 없어 새 실거래를 "
+                "시작하지 않습니다.",
+            )
+        try:
+            timestamp_text = (
+                timestamp_value[:-1] + "+00:00"
+                if timestamp_value.endswith("Z") else timestamp_value
+            )
+            occurred = datetime.fromisoformat(timestamp_text)
+        except ValueError as exc:
+            raise RecoveryArchiveError(
+                "daily_budget_event_time_invalid",
+                "저장된 체결 증거의 시각을 검증할 수 없어 새 실거래를 "
+                "시작하지 않습니다.",
+            ) from exc
+        if occurred.tzinfo is None or occurred.utcoffset() is None:
+            raise RecoveryArchiveError(
+                "daily_budget_event_time_invalid",
+                "저장된 체결 증거의 시각에 UTC 오프셋이 없어 새 실거래를 "
+                "시작하지 않습니다.",
+            )
+        occurred = occurred.astimezone(UTC)
+        if occurred > current:
+            raise RecoveryArchiveError(
+                "daily_budget_event_time_invalid",
+                "저장된 체결 증거의 시각이 현재보다 미래라 새 실거래를 "
+                "시작하지 않습니다.",
+            )
+        return occurred
+
+    @classmethod
+    def _active_order_event_cutoff(
+            cls, timestamp_value: object, offset_hours: float,
+            current: datetime,
+    ) -> datetime | None:
+        """Return the conservative reset boundary for one persisted fill.
+
+        Older releases could persist ``order_filled`` while leaving an empty
+        daily ledger after all caps were disabled at runtime. The event proves
+        account usage, but its payload cannot reconstruct the accepted order,
+        partial-fill notional, or realised loss. It therefore acts only as a
+        fail-closed presence signal until both its source day and KST day end.
+        """
+        occurred = cls._validated_order_event_time(timestamp_value, current)
+        offset = timedelta(hours=offset_hours)
+        event_source_day = (occurred + offset).date()
+        current_source_day = (current + offset).date()
+        event_kst_day = (occurred + _KST_OFFSET).date()
+        current_kst_day = (current + _KST_OFFSET).date()
+        if (event_source_day != current_source_day
+                and event_kst_day != current_kst_day):
+            return None
+        source_next = event_source_day + timedelta(days=1)
+        source_cutoff = datetime(
+            source_next.year, source_next.month, source_next.day, tzinfo=UTC,
+        ) - offset
+        kst_next = current_kst_day + timedelta(days=1)
+        kst_cutoff = datetime(
+            kst_next.year, kst_next.month, kst_next.day, tzinfo=UTC,
+        ) - _KST_OFFSET
+        return max(source_cutoff, kst_cutoff)
+
+    @classmethod
+    def _unknown_order_event_cutoff(
+            cls, timestamp_value: object, current: datetime,
+    ) -> datetime | None:
+        """Bound an unverifiable scope without guessing one timezone.
+
+        From any event instant, every UTC-24..UTC+24 local calendar day ends
+        within 24 hours. Until then a corrupt broker/scope cannot prove that a
+        Toss allowance expired, so the safe result is a temporary quarantine.
+        """
+        occurred = cls._validated_order_event_time(timestamp_value, current)
+        event_kst_day = (occurred + _KST_OFFSET).date()
+        next_kst_day = event_kst_day + timedelta(days=1)
+        kst_cutoff = datetime(
+            next_kst_day.year, next_kst_day.month, next_kst_day.day,
+            tzinfo=UTC,
+        ) - _KST_OFFSET
+        cutoff = max(occurred + timedelta(days=1), kst_cutoff)
+        return cutoff if current < cutoff else None
+
+    def toss_account_start_gate(
+            self, *, resume_strategy: str | None = None,
+            resume_config_json: str | None = None,
+            now: datetime | None = None,
+    ) -> dict:
         """Account-wide gate over each Toss-live strategy's lifecycle head.
 
         The newest *valid Toss-live* row per strategy/mode is the head. A later
         KIS run reusing the same strategy name must not erase an archived Toss
         run's cooldown, because it is a different brokerage account.
+
+        ``resume_strategy`` permits exactly that strategy's single current-day
+        head to reopen.  Every fresh run, a different strategy, or ambiguous
+        multiple same-day ledgers stays blocked until all of their own daily
+        reset boundaries.  We intentionally do not add KRW and USD counters.
         """
+        current = self._recovery_now(now)
         rows = self.conn.execute(
             "SELECT id, strategy, mode, requires_reconciliation, archived_at, "
             "config_json FROM runs WHERE mode='live' ORDER BY id DESC"
         ).fetchall()
         seen: set[tuple[str, str]] = set()
         required: list[sqlite3.Row] = []
-        cutoffs: list[datetime] = []
+        archived_cutoffs: list[datetime] = []
         for row in rows:
-            if not self._stored_toss_live_config(
-                    row["config_json"], row["strategy"]):
+            broker_type = self._stored_live_broker_type(
+                row["config_json"], row["strategy"],
+            )
+            if broker_type != "toss":
+                if broker_type is None:
+                    if (bool(row["requires_reconciliation"])
+                            and row["archived_at"] is None):
+                        raise RecoveryArchiveError(
+                            "reconciliation_stored_config_mismatch",
+                            "복구가 필요한 실거래 실행의 증권사를 검증할 수 "
+                            "없어 새 Toss 실거래를 시작하지 않습니다.",
+                        )
+                    cutoff = self._next_kst_start(row["archived_at"])
+                    if cutoff is not None:
+                        archived_cutoffs.append(cutoff)
                 continue
+            if bool(row["requires_reconciliation"]) and row["archived_at"] is None:
+                # Every unresolved Toss run quarantines the shared account.
+                # ``seen`` is only a lifecycle-head filter for archive
+                # cooldowns; applying it here lets a later clean legacy row
+                # hide an older unresolved run with real venue uncertainty.
+                required.append(row)
             pair = (row["strategy"], row["mode"])
             if pair in seen:
                 continue
             seen.add(pair)
-            if bool(row["requires_reconciliation"]) and row["archived_at"] is None:
-                required.append(row)
             cutoff = self._next_kst_start(row["archived_at"])
             if cutoff is not None:
-                cutoffs.append(cutoff)
+                archived_cutoffs.append(cutoff)
+
+        latest_target = next((
+            row for row in rows
+            if row["strategy"] == resume_strategy and row["mode"] == "live"
+        ), None)
+        target_scope = self._stored_toss_live_scope(
+            resume_config_json, resume_strategy,
+        )
+        stored_scope = (
+            self._stored_toss_live_scope(
+                latest_target["config_json"], latest_target["strategy"],
+            ) if latest_target is not None else None
+        )
+        resumable_run_id = (
+            int(latest_target["id"])
+            if latest_target is not None
+            and latest_target["archived_at"] is None
+            and not bool(latest_target["requires_reconciliation"])
+            and target_scope is not None
+            and stored_scope == target_scope
+            else None
+        )
+        budget_rows = self.conn.execute(
+            "SELECT r.id, r.strategy, r.config_json, d.day, d.notional, "
+            "d.orders, d.realized_pnl, d.fees, d.starting_equity, d.blocked, "
+            "d.halt_reason, "
+            "d.tz_offset_hours, d.updated_at FROM runs r "
+            "JOIN day_budget d ON d.run_id=r.id "
+            "WHERE r.mode='live' ORDER BY r.id DESC, d.day DESC"
+        ).fetchall()
+        current_budget_rows: list[tuple[sqlite3.Row, datetime]] = []
+        active_budgets: list[tuple[sqlite3.Row, datetime]] = []
+        for row in budget_rows:
+            broker_type = self._stored_live_broker_type(
+                row["config_json"], row["strategy"],
+            )
+            if broker_type is not None and broker_type != "toss":
+                continue
+            stored_scope = self._stored_toss_live_scope(
+                row["config_json"], row["strategy"],
+            )
+            if stored_scope is None:
+                cutoff = self._active_budget_cutoff(
+                    row["day"], row["tz_offset_hours"], row["updated_at"],
+                    current,
+                )
+                if cutoff is not None:
+                    raise RecoveryArchiveError(
+                        "daily_budget_scope_invalid",
+                        "저장된 실거래 당일 한도의 증권사, 통화 또는 시간대를 "
+                        "검증할 수 없어 새 Toss 실거래를 시작하지 않습니다.",
+                    )
+                continue
+            trusted_cutoff = self._active_budget_cutoff(
+                row["day"], stored_scope[1], row["updated_at"], current,
+            )
+            try:
+                budget_offset = float(row["tz_offset_hours"])
+            except (TypeError, ValueError) as exc:
+                if trusted_cutoff is not None:
+                    raise RecoveryArchiveError(
+                        "daily_budget_time_invalid",
+                        "저장된 당일 한도의 시간대를 검증할 수 없어 새 "
+                        "실거래를 시작하지 않습니다.",
+                    ) from exc
+                continue
+            if not math.isfinite(budget_offset) or abs(budget_offset) > 24:
+                if trusted_cutoff is not None:
+                    raise RecoveryArchiveError(
+                        "daily_budget_time_invalid",
+                        "저장된 당일 한도의 시간대를 검증할 수 없어 새 "
+                        "실거래를 시작하지 않습니다.",
+                    )
+                continue
+            if budget_offset != stored_scope[1]:
+                stored_cutoff = self._active_budget_cutoff(
+                    row["day"], budget_offset, row["updated_at"], current,
+                )
+                if trusted_cutoff is not None or stored_cutoff is not None:
+                    raise RecoveryArchiveError(
+                        "daily_budget_scope_invalid",
+                        "저장된 Toss 실행과 당일 한도의 시간대가 달라 새 "
+                        "실거래를 시작하지 않습니다.",
+                    )
+                continue
+            if trusted_cutoff is None:
+                continue
+            was_used = self._daily_budget_was_used(row)
+            stored_config = json.loads(row["config_json"])
+            max_loss_pct = abs(float(
+                stored_config["limits"]["max_daily_loss_pct"]
+            ))
+            if (
+                was_used
+                and max_loss_pct > 0
+                and float(row["starting_equity"]) <= 0
+            ):
+                raise RecoveryArchiveError(
+                    "daily_budget_value_invalid",
+                    "비율 손실 한도가 있는 당일 원장의 시작 자산을 검증할 "
+                    "수 없어 새 실거래를 시작하지 않습니다.",
+                )
+            current_budget_rows.append((row, trusted_cutoff))
+            if was_used:
+                active_budgets.append((row, trusted_cutoff))
+
+        if resumable_run_id is not None and target_scope is not None:
+            target_config = json.loads(resume_config_json or "")
+            target_loss_pct = abs(float(
+                target_config["limits"]["max_daily_loss_pct"]
+            ))
+            if target_loss_pct > 0 and any(
+                    int(row["id"]) == resumable_run_id
+                    and float(row["starting_equity"]) <= 0
+                    for row, _ in active_budgets):
+                raise RecoveryArchiveError(
+                    "daily_budget_value_invalid",
+                    "비율 손실 한도를 적용할 당일 원장의 시작 자산을 검증할 "
+                    "수 없어 실거래를 재개하지 않습니다.",
+                )
+
+        event_rows = self.conn.execute(
+            "SELECT r.id, r.strategy, r.config_json, e.ts, e.type, e.payload "
+            "FROM runs r JOIN events e ON e.run_id=r.id "
+            "WHERE r.mode='live' AND e.type IN "
+            "('order_submitted','order_filled','trade_closed') "
+            "ORDER BY e.id DESC"
+        ).fetchall()
+        active_events: dict[int, tuple[sqlite3.Row, datetime]] = {}
+        all_submitted_ids: dict[int, set[str]] = {}
+        active_event_days: dict[int, set[str]] = {}
+        active_submitted_ids: dict[tuple[int, str], set[str]] = {}
+        active_filled_ids: dict[int, set[str]] = {}
+        active_trade_runs: set[int] = set()
+        active_fill_fees: dict[tuple[int, str], float] = {}
+        active_trade_pnl: dict[tuple[int, str], float] = {}
+        invalid_event_payload_runs: set[int] = set()
+        for row in event_rows:
+            broker_type = self._stored_live_broker_type(
+                row["config_json"], row["strategy"],
+            )
+            if broker_type is not None and broker_type != "toss":
+                continue
+            stored_scope = self._stored_toss_live_scope(
+                row["config_json"], row["strategy"],
+            )
+            event_cutoff = (
+                self._active_order_event_cutoff(
+                    row["ts"], stored_scope[1], current,
+                ) if stored_scope is not None
+                else self._unknown_order_event_cutoff(row["ts"], current)
+            )
+            if stored_scope is None and event_cutoff is not None:
+                raise RecoveryArchiveError(
+                    "daily_budget_scope_invalid",
+                    "저장된 당일 체결 증거의 증권사, 통화 또는 시간대를 "
+                    "검증할 수 없어 새 Toss 실거래를 시작하지 않습니다.",
+                )
+            if stored_scope is None:
+                continue
+            run_id = int(row["id"])
+            occurred = self._validated_order_event_time(row["ts"], current)
+            event_day = (
+                occurred + timedelta(hours=stored_scope[1])
+            ).date().isoformat()
+            if event_cutoff is not None:
+                previous = active_events.get(run_id)
+                if previous is None or event_cutoff > previous[1]:
+                    active_events[run_id] = (row, event_cutoff)
+                active_event_days.setdefault(run_id, set()).add(event_day)
+            try:
+                payload = json.loads(row["payload"] or "")
+            except (TypeError, json.JSONDecodeError):
+                if event_cutoff is not None or row["type"] == "order_submitted":
+                    invalid_event_payload_runs.add(run_id)
+                continue
+            if not isinstance(payload, dict):
+                if event_cutoff is not None or row["type"] == "order_submitted":
+                    invalid_event_payload_runs.add(run_id)
+                continue
+            if row["type"] == "order_submitted":
+                order_id = payload.get("id")
+                if not isinstance(order_id, str) or not order_id.strip():
+                    invalid_event_payload_runs.add(run_id)
+                    continue
+                clean_id = order_id.strip()
+                all_submitted_ids.setdefault(run_id, set()).add(clean_id)
+                if event_cutoff is not None:
+                    active_submitted_ids.setdefault(
+                        (run_id, event_day), set(),
+                    ).add(clean_id)
+            elif event_cutoff is not None and row["type"] == "order_filled":
+                order_id = payload.get("order_id")
+                if not isinstance(order_id, str) or not order_id.strip():
+                    invalid_event_payload_runs.add(run_id)
+                    continue
+                try:
+                    fee = float(payload.get("fee"))
+                except (TypeError, ValueError):
+                    invalid_event_payload_runs.add(run_id)
+                    continue
+                if not math.isfinite(fee) or fee < 0:
+                    invalid_event_payload_runs.add(run_id)
+                    continue
+                active_filled_ids.setdefault(run_id, set()).add(order_id.strip())
+                key = (run_id, event_day)
+                active_fill_fees[key] = active_fill_fees.get(key, 0.0) + fee
+            elif event_cutoff is not None and row["type"] == "trade_closed":
+                try:
+                    pnl = float(payload.get("pnl"))
+                except (TypeError, ValueError):
+                    invalid_event_payload_runs.add(run_id)
+                    continue
+                if not math.isfinite(pnl):
+                    invalid_event_payload_runs.add(run_id)
+                    continue
+                active_trade_runs.add(run_id)
+                key = (run_id, event_day)
+                active_trade_pnl[key] = active_trade_pnl.get(key, 0.0) + pnl
+
+        event_accounted_run_ids: set[int] = set()
+        for run_id in active_events:
+            linked_ids = all_submitted_ids.get(run_id, set())
+            filled_ids = active_filled_ids.get(run_id, set())
+            if (
+                run_id in invalid_event_payload_runs
+                or not filled_ids.issubset(linked_ids)
+                or (run_id in active_trade_runs and not filled_ids)
+            ):
+                continue
+            matching_rows = {
+                str(row["day"]): row for row, _ in current_budget_rows
+                if int(row["id"]) == run_id
+            }
+            if any(
+                    day not in matching_rows
+                    for day in active_event_days.get(run_id, set())):
+                continue
+            submissions_match = all(
+                float(matching_rows[day]["orders"]) >= len(order_ids)
+                and float(matching_rows[day]["notional"]) > 0
+                for (candidate_id, day), order_ids
+                in active_submitted_ids.items()
+                if candidate_id == run_id
+            )
+            fees_match = all(
+                float(matching_rows[day]["fees"]) + 1e-9 >= fees
+                for (candidate_id, day), fees in active_fill_fees.items()
+                if candidate_id == run_id
+            )
+            pnl_is_conservative = all(
+                float(matching_rows[day]["realized_pnl"]) <= pnl + 1e-9
+                for (candidate_id, day), pnl in active_trade_pnl.items()
+                if candidate_id == run_id
+            )
+            if submissions_match and fees_match and pnl_is_conservative:
+                event_accounted_run_ids.add(run_id)
+        ambiguous_events = [
+            item for run_id, item in active_events.items()
+            if (run_id in invalid_event_payload_runs
+                or run_id not in event_accounted_run_ids)
+        ]
+
+        # ``restore_budget`` consumes exactly the lexically latest day row.
+        # An anomalous DB can contain two still-active days for one run, or a
+        # newer inactive/corrupt row in front of the active one. In either
+        # case excluding the whole run by id would restore only one row and
+        # silently hand back the usage in the other, so exact resume is not
+        # safe until an operator repairs the ledger.
+        if resumable_run_id is not None:
+            resumable_active = [
+                row for row, _ in active_budgets
+                if int(row["id"]) == resumable_run_id
+            ]
+            latest_budget = next((
+                row for row in budget_rows
+                if int(row["id"]) == resumable_run_id
+            ), None)
+            active_matches_restore = bool(
+                len(resumable_active) == 1
+                and latest_budget is not None
+                and resumable_active[0]["day"] == latest_budget["day"]
+            )
+            if resumable_active and not active_matches_restore:
+                resumable_run_id = None
+            if any(
+                    int(row["id"]) == resumable_run_id
+                    for row, _ in ambiguous_events):
+                # A fill with a missing or incomplete ledger cannot be
+                # reconstructed safely from partial-fill events. Do not resume
+                # it with a fresh allowance; wait for the account-day boundary.
+                resumable_run_id = None
+
+        conflicting_usage = [
+            item for item in active_budgets
+            if resumable_run_id is None or int(item[0]["id"]) != resumable_run_id
+        ]
+        conflicting_usage.extend(
+            item for item in ambiguous_events
+            if resumable_run_id is None or int(item[0]["id"]) != resumable_run_id
+        )
 
         blocking = required[0] if required else None
-        next_start = max(cutoffs) if cutoffs else None
-        current = self._recovery_now(now)
+        budget_blocking = conflicting_usage[0][0] if conflicting_usage else None
+        archive_next = max(archived_cutoffs) if archived_cutoffs else None
+        budget_next = (
+            max(cutoff for _, cutoff in conflicting_usage)
+            if conflicting_usage else None
+        )
+        all_cutoffs = [value for value in (archive_next, budget_next)
+                       if value is not None]
+        next_start = max(all_cutoffs) if all_cutoffs else None
+        archive_blocked = bool(archive_next and current < archive_next)
+        daily_budget_blocked = bool(conflicting_usage)
         return {
             "reconciliation_required": blocking is not None,
             "blocking_run_id": int(blocking["id"]) if blocking is not None else None,
             "blocking_strategy": (
                 blocking["strategy"] if blocking is not None else None
             ),
-            "restart_blocked": bool(next_start and current < next_start),
+            "archive_cooldown_blocked": archive_blocked,
+            "daily_budget_blocked": daily_budget_blocked,
+            "budget_blocking_run_id": (
+                int(budget_blocking["id"]) if budget_blocking is not None else None
+            ),
+            "budget_blocking_strategy": (
+                budget_blocking["strategy"] if budget_blocking is not None else None
+            ),
+            "resumable_run_id": resumable_run_id,
+            "restart_blocked": bool(archive_blocked or daily_budget_blocked),
             "next_start_allowed_at": (
                 next_start.isoformat() if next_start is not None else None
             ),
         }
 
     def assert_toss_account_start_allowed(
-            self, *, now: datetime | None = None) -> dict:
+            self, *, resume_strategy: str | None = None,
+            resume_config_json: str | None = None,
+            now: datetime | None = None) -> dict:
         """Fail closed before a Toss-live run is resumed or created."""
-        gate = self.toss_account_start_gate(now=now)
+        gate = self.toss_account_start_gate(
+            resume_strategy=resume_strategy,
+            resume_config_json=resume_config_json,
+            now=now,
+        )
         if gate["reconciliation_required"]:
             raise RecoveryArchiveError(
                 "reconciliation_required",
                 f"'{gate['blocking_strategy']}' 실행의 수동 복구가 먼저 필요합니다 "
                 f"(run {gate['blocking_run_id']}).",
             )
-        if gate["restart_blocked"]:
+        if gate["archive_cooldown_blocked"]:
             raise RecoveryArchiveError(
                 "reconciliation_start_blocked_until_next_kst_day",
                 "당일 한도가 초기화되지 않도록 보관한 날에는 새 실거래를 "
                 f"시작할 수 없습니다. {gate['next_start_allowed_at']} 이후 다시 "
                 "시작하세요.",
+            )
+        if gate["daily_budget_blocked"]:
+            raise RecoveryArchiveError(
+                "daily_budget_strategy_switch_blocked",
+                "같은 Toss 계좌의 당일 한도를 유지하기 위해 "
+                f"'{gate['budget_blocking_strategy']}' 실행(run "
+                f"{gate['budget_blocking_run_id']})의 거래일이 끝날 때까지 새 "
+                "실거래 원장을 열 수 없습니다. "
+                f"{gate['next_start_allowed_at']} 이후 다시 시작하세요.",
             )
         return gate
 
@@ -706,18 +1391,82 @@ class StateStore:
         return clean_reason, proof_json
 
     @staticmethod
-    def _stored_toss_live_config(raw: str | None, strategy: str) -> bool:
+    def _stored_live_broker_type(
+            raw: str | None, strategy: str,
+    ) -> str | None:
         try:
             config = json.loads(raw or "")
         except (TypeError, json.JSONDecodeError):
-            return False
+            return None
         broker = config.get("broker") if isinstance(config, dict) else None
-        return bool(
+        if not (
             isinstance(broker, dict)
             and config.get("name") == strategy
             and config.get("mode") == "live"
+        ):
+            return None
+        broker_type = broker.get("type")
+        if (
+            not isinstance(broker_type, str)
+            or broker_type not in {"paper", "ccxt", "kis", "alpaca", "toss"}
+        ):
+            return None
+        return broker_type
+
+    @classmethod
+    def _stored_toss_live_config(cls, raw: str | None, strategy: str) -> bool:
+        return cls._stored_live_broker_type(raw, strategy) == "toss"
+
+    @staticmethod
+    def _stored_toss_live_scope(
+            raw: str | None, strategy: str | None,
+    ) -> tuple[str, float] | None:
+        """Return the durable allowance scope for one validated Toss run."""
+        if not isinstance(strategy, str) or not strategy:
+            return None
+        try:
+            config = json.loads(raw or "")
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(config, dict):
+            return None
+        broker = config.get("broker")
+        portfolio = config.get("portfolio")
+        limits = config.get("limits")
+        if not (
+            config.get("name") == strategy
+            and config.get("mode") == "live"
+            and isinstance(broker, dict)
             and broker.get("type") == "toss"
-        )
+            and isinstance(portfolio, dict)
+            and isinstance(limits, dict)
+        ):
+            return None
+        currency = portfolio.get("base_currency")
+        offset_value = limits.get("timezone_offset_hours")
+        if not isinstance(currency, str) or not currency.strip():
+            return None
+        if isinstance(offset_value, bool) or not isinstance(
+                offset_value, (int, float)):
+            return None
+        offset_hours = float(offset_value)
+        if not math.isfinite(offset_hours) or abs(offset_hours) > 24:
+            return None
+        cap_values = [
+            limits.get("max_daily_notional"),
+            limits.get("max_daily_orders"),
+            limits.get("max_daily_loss"),
+            limits.get("max_daily_loss_pct"),
+        ]
+        if any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                for value in cap_values):
+            return None
+        if not any(float(value) != 0 for value in cap_values):
+            return None
+        return currency.strip().upper(), offset_hours
 
     def archive_reconciliation_run(
             self, *, run_id: int, strategy: str, mode: str, operator: str,
@@ -1389,6 +2138,18 @@ class StateStore:
              json.dumps(payload, ensure_ascii=False, default=str)),
         )
         self.conn.commit()
+
+    def mark_accounting_persistence_failed(self) -> None:
+        """Remember one lost accounting write until this store is discarded."""
+        self.accounting_persistence_failed = True
+
+    def record_accounting_event(self, event_type: str, payload: dict) -> None:
+        """Persist money-moving evidence and retain any write uncertainty."""
+        try:
+            self.record_event(event_type, payload)
+        except Exception:
+            self.mark_accounting_persistence_failed()
+            raise
 
     # ── reads ────────────────────────────────────────────────────────────
     def restore_positions(self, portfolio: Portfolio,

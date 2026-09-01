@@ -429,12 +429,18 @@ class Engine:
     async def _book_fills(self, fills: list[Fill]) -> list[Fill]:
         """Apply fills and publish their accounting events exactly once."""
         for fill in fills:
+            equity_before = self.ctx.portfolio.equity
             closed = self.ctx.portfolio.apply_fill(fill)
-            await self.bus.publish(EventType.ORDER_FILLED, _fill_dict(fill))
+            # Persist the account-day ledger before publishing the durable fill
+            # event. A restart may use that event as proof that the associated
+            # order and loss allowance were not silently handed back.
+            self.budget.roll(equity=equity_before)
             self.budget.record_fill(fill)
             if closed is not None:
                 self.budget.record_trade(closed.pnl)
                 self.risk.on_trade_closed(self.ctx, closed)
+            await self.bus.publish(EventType.ORDER_FILLED, _fill_dict(fill))
+            if closed is not None:
                 await self.bus.publish(EventType.TRADE_CLOSED, _trade_dict(closed))
         return fills
 
@@ -497,7 +503,7 @@ def _order_dict(o: Order) -> dict:
 def _fill_dict(f: Fill) -> dict:
     return {
         "order_id": f.order_id, "symbol": f.symbol.ticker, "side": f.side.value,
-        "quantity": float(f.quantity), "price": f.price, "fee": round(f.fee, 4),
+        "quantity": float(f.quantity), "price": f.price, "fee": float(f.fee),
         "slippage_bps": round(f.slippage * 10_000, 2), "liquidity": f.liquidity,
         "ts": f.ts.isoformat(),
     }
@@ -507,8 +513,8 @@ def _trade_dict(t: ClosedTrade) -> dict:
     return {
         "symbol": t.symbol.ticker, "side": t.side.value, "quantity": float(t.quantity),
         "entry_price": t.entry_price, "exit_price": t.exit_price,
-        "pnl": round(t.pnl, 2), "pnl_pct": round(t.pnl_pct * 100, 3),
-        "fees": round(t.fees, 4), "entry_ts": t.entry_ts.isoformat(),
+        "pnl": float(t.pnl), "pnl_pct": round(t.pnl_pct * 100, 3),
+        "fees": float(t.fees), "entry_ts": t.entry_ts.isoformat(),
         "exit_ts": t.exit_ts.isoformat(), "duration_hours": round(
             t.duration.total_seconds() / 3600, 2),
         "exit_tag": t.exit_tag,

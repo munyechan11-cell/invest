@@ -71,8 +71,12 @@ class Brokerage(ABC):
                                  equity=equity)
 
     def _budget_record(self, order: Order) -> None:
-        if self.budget is None or not self.budget.configured:
+        if self.budget is None:
             return
+        # Usage is account history, not merely cap enforcement. Keep recording
+        # it even when every cap is temporarily disabled; otherwise a zero-fee
+        # order can leave an all-zero ledger and a strategy switch will grant a
+        # fresh allowance on the same account day.
         price = order.limit_price or 0.0
         if price <= 0 and self.portfolio is not None:
             price = self.portfolio.position(order.symbol).last_price

@@ -33,6 +33,7 @@ from quant.config.schema import (
 )
 from quant.core.clock import next_candle_close
 from quant.core.engine import UnsafeShutdownError
+from quant.core.events import EventType
 from quant.core.types import UTC, RunMode
 from quant.data.providers.local import SyntheticProvider
 from quant.live.state import StateStore
@@ -245,6 +246,144 @@ def test_verified_clean_truth_shutdown_clears_the_crash_quarantine(tmp_path):
     finally:
         conn.close()
     assert required == 0
+
+
+def test_budget_write_failure_stays_quarantined_after_write_recovery(
+        tmp_path, monkeypatch):
+    db = tmp_path / "budget-write-failure.db"
+    trader = make_trader(tmp_path, db.name)
+    trader.engine.brokerage = _TruthBroker(trader)
+
+    async def scenario():
+        await trader.start()
+        original_save = trader.state.save_budget
+
+        def fail_budget(_budget):
+            raise sqlite3.OperationalError("simulated budget write failure")
+
+        monkeypatch.setattr(trader.state, "save_budget", fail_budget)
+        trader.engine.budget.record_trade(-1.0)
+        assert trader.state.accounting_persistence_failed
+
+        # The database is writable again, but recovery cannot erase the fact
+        # that one earlier accounting write was lost.
+        monkeypatch.setattr(trader.state, "save_budget", original_save)
+        trader.engine.budget.bind_store(trader.state)
+        trader.engine.budget.record_trade(-1.0)
+        with pytest.raises(UnsafeShutdownError, match="회계 기록 저장"):
+            await trader.shutdown()
+
+    asyncio.run(scenario())
+
+    conn = sqlite3.connect(str(db))
+    try:
+        stopped, required, pnl = conn.execute(
+            "SELECT r.stopped_at, r.requires_reconciliation, d.realized_pnl "
+            "FROM runs r JOIN day_budget d ON d.run_id=r.id "
+            "ORDER BY r.id DESC, d.day DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert pnl == -2.0, "the recovered budget write did not reach SQLite"
+    assert stopped is None and required == 1
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload"),
+    [
+        (EventType.ORDER_SUBMITTED, {"id": "event-order"}),
+        (EventType.ORDER_FILLED, {"order_id": "event-order", "fee": 0.0}),
+        (EventType.TRADE_CLOSED, {"pnl": 1.0}),
+    ],
+)
+def test_accounting_event_write_failure_stays_quarantined_after_recovery(
+        tmp_path, monkeypatch, event_type, payload):
+    db = tmp_path / f"{event_type.value}-write-failure.db"
+    trader = make_trader(tmp_path, db.name)
+    trader.engine.brokerage = _TruthBroker(trader)
+
+    async def scenario():
+        await trader.start()
+        original_record = trader.state.record_event
+
+        def fail_event(_event_type, _payload):
+            raise sqlite3.OperationalError("simulated event write failure")
+
+        monkeypatch.setattr(trader.state, "record_event", fail_event)
+        await trader.engine.ctx.bus.publish(event_type, payload)
+        assert trader.state.accounting_persistence_failed
+
+        monkeypatch.setattr(trader.state, "record_event", original_record)
+        await trader.engine.ctx.bus.publish(event_type, payload)
+        assert trader.state.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE type=?", (event_type.value,)
+        ).fetchone()[0] == 1
+        with pytest.raises(UnsafeShutdownError, match="회계 기록 저장"):
+            await trader.shutdown()
+
+    asyncio.run(scenario())
+
+    conn = sqlite3.connect(str(db))
+    try:
+        stopped, required = conn.execute(
+            "SELECT stopped_at, requires_reconciliation FROM runs "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert stopped is None and required == 1
+
+
+def test_budget_and_event_failures_remain_sticky_after_both_writes_recover(
+        tmp_path, monkeypatch):
+    db = tmp_path / "both-accounting-writes-fail.db"
+    trader = make_trader(tmp_path, db.name)
+    trader.engine.brokerage = _TruthBroker(trader)
+
+    async def scenario():
+        await trader.start()
+        original_save = trader.state.save_budget
+        original_record = trader.state.record_event
+
+        def fail_budget(_budget):
+            raise sqlite3.OperationalError("simulated budget write failure")
+
+        def fail_event(_event_type, _payload):
+            raise sqlite3.OperationalError("simulated event write failure")
+
+        monkeypatch.setattr(trader.state, "save_budget", fail_budget)
+        trader.engine.budget.record_trade(-1.0)
+        monkeypatch.setattr(trader.state, "record_event", fail_event)
+        await trader.engine.ctx.bus.publish(
+            EventType.ORDER_SUBMITTED, {"id": "both-order"},
+        )
+        assert trader.state.accounting_persistence_failed
+
+        monkeypatch.setattr(trader.state, "save_budget", original_save)
+        monkeypatch.setattr(trader.state, "record_event", original_record)
+        trader.engine.budget.bind_store(trader.state)
+        trader.engine.budget.record_trade(-1.0)
+        await trader.engine.ctx.bus.publish(
+            EventType.ORDER_SUBMITTED, {"id": "both-order"},
+        )
+        with pytest.raises(UnsafeShutdownError, match="회계 기록 저장"):
+            await trader.shutdown()
+
+    asyncio.run(scenario())
+
+    conn = sqlite3.connect(str(db))
+    try:
+        stopped, required = conn.execute(
+            "SELECT stopped_at, requires_reconciliation FROM runs "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        recovered_events = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE type='order_submitted'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert recovered_events == 1
+    assert stopped is None and required == 1
 
 
 def test_unsafe_shutdown_is_persisted_without_a_clean_stop_notification(tmp_path):
