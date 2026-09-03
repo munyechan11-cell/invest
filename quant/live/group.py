@@ -326,22 +326,4 @@ class GroupTrader:
                 f"{'구동중' if self.alive else '정지'}>")
 
 
-def paper_venue_for(group: AgentGroup, configs: dict, base_currency: str = "KRW"):
-    """관찰 전용 그룹이 쓸 가상 증권사.
-
-    `mode` 가 전부 `dry_run` 인 그룹에는 실제 어댑터를 물리지 않습니다. 물리면
-    관찰만 하기로 한 주문이 진짜 계좌로 나갑니다 — 게이트웨이가 그것을 막고는
-    있지만, 애초에 닿지 않게 하는 편이 방어선 하나를 아끼는 것보다 낫습니다.
-    """
-    from quant.brokerage.paper import PaperBrokerage
-    from quant.core.account import Portfolio
-
-    if group.has_live:
-        raise ValueError(
-            "실거래 에이전트가 있는 그룹에는 가상 증권사를 쓸 수 없습니다"
-        )
-    cash = sum(float(c.portfolio.starting_cash) for c in configs.values())
-    return PaperBrokerage(Portfolio(cash, base_currency))
-
-
-__all__ = ["GroupTrader", "STOP_GRACE_SECONDS", "paper_venue_for", "RunMode"]
+__all__ = ["GroupTrader", "STOP_GRACE_SECONDS"]
