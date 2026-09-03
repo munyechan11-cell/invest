@@ -277,6 +277,7 @@ function $(selector) {
 }
 function setConn() {}
 function setRunning() {}
+function adoptAgents() {}
 function note() {}
 function adoptRunMode() {}
 function runningLabel(value) { return value || "—"; }
@@ -361,6 +362,7 @@ function $(selector) {
 }
 function setConn() {}
 function setRunning() {}
+function adoptAgents() {}
 function note() {}
 function adoptRunMode() {}
 function alignRunningStrategySelection() { return false; }
@@ -493,6 +495,7 @@ function $(selector) {
 }
 function setConn() {}
 function setRunning() {}
+function adoptAgents() {}
 function note() {}
 function adoptRunMode() {}
 function alignRunningStrategySelection() { return false; }
@@ -572,6 +575,7 @@ function $(selector) {
 }
 function setConn() {}
 function setRunning() {}
+function adoptAgents() {}
 function note() {}
 function adoptRunMode() {}
 function runningLabel(value) { return value || "—"; }

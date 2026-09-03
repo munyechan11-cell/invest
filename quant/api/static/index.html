@@ -226,6 +226,33 @@
         <button class="btn buy" id="runStart">▶ 시작</button>
         <button class="btn" id="runStop" hidden>■ 정지</button>
       </div>
+
+      <!-- 여러 성향을 한 계좌에서 동시에.
+
+           계좌는 하나이므로 자본을 나눠 씁니다. 합이 100% 를 넘을 수 없고,
+           남는 몫은 현금으로 남습니다. 성향·손절·하루 한도는 에이전트마다
+           따로 저장되므로, 같은 종목을 공격형과 보수형이 각자의 손절로 들 수
+           있습니다 — 증권사에는 합계 수량 하나로만 보이지만 원장은 갈려 있고,
+           한쪽의 손절이 다른 쪽 물량을 팔지 않습니다. -->
+      <details class="agentsetup" id="agentSetup">
+        <summary>여러 성향 동시 운용 <small>최대 4개</small></summary>
+        <p class="msg dim" style="margin:8px 0">
+          계좌 하나를 나눠 씁니다. 예를 들어 10만원을 5만/5만로 갈라 공격형과
+          보수형을 함께 돌릴 수 있습니다. <b>성향과 손절과 하루 한도는
+          에이전트마다 따로</b>이고, 계좌 전체 한도가 그 위에 따로 있습니다.
+        </p>
+        <div id="agentRows"></div>
+        <div class="agentfoot">
+          <button type="button" class="btn" id="agentAdd">+ 에이전트 추가</button>
+          <span class="weightsum" id="agentWeightSum">합계 0%</span>
+          <button type="button" class="btn buy" id="agentStart">▶ 함께 시작</button>
+        </div>
+        <div class="msg" id="agentMsg" role="status" aria-live="polite"></div>
+      </details>
+
+      <!-- 돌고 있는 에이전트들. 여기서 고른 하나가 아래 수동 매매·한도·성향의
+           대상이 됩니다. 고르지 않으면 서버가 400 으로 되묻습니다. -->
+      <nav class="agenttabs" id="agentTabs" aria-label="실행 중인 에이전트" hidden></nav>
       <!-- 고른 전략이 무엇을 하는지. 영어 식별자만 보여주면 그게 뭔지 이미
            아는 사람만 이 버튼을 누를 수 있습니다. -->
       <div class="livebar" id="liveBar">
@@ -1582,6 +1609,7 @@ async function refresh() {
     const s = await api("/api/status");
     if (generation !== refreshGeneration) return;
     botState = s;
+    adoptAgents(s);
     // **어떤 전략이 돌고 있는가는 서버만 압니다.** 선택기는 새로고침 때마다
     // "연동이 끝난 첫 전략" 으로 리셋되고, 봇이 도는 동안에는 감춰져 있어서
     // 사용자가 고칠 수도 없습니다. 그 값을 실행 상태로 읽으면 화면이 돌지도
@@ -1817,6 +1845,66 @@ function scrollToDesk() {
 
 
 /* ── 수동 개입 ───────────────────────────────────────────────────────── */
+/* ── 에이전트 ─────────────────────────────────────────────────────────
+   한 계좌에서 성향이 다른 봇을 넷까지 굴릴 때, 화면의 모든 조작은 "어느
+   에이전트에게" 가 붙어야 합니다. 붙이지 않으면 서버가 400 으로 되묻습니다 —
+   조용히 하나를 고르면 전체 청산이 그 하나만 정리하고 성공을 돌려주고,
+   사용자는 전부 정리된 줄 알고 화면을 닫습니다. */
+let agents = [];          // 지금 도는 에이전트 id 들
+let activeAgent = "";     // 화면이 지금 조작 대상으로 삼은 하나
+
+function adoptAgents(status) {
+  const rows = (status && status.agents) || [];
+  agents = rows.map(a => a.agent_id);
+  // 고른 에이전트가 사라졌으면(정지·재구성) 고르지 않은 상태로 되돌립니다.
+  // 없어진 이름을 계속 붙여 보내면 서버가 "그 에이전트는 실행 중이 아닙니다"
+  // 로 거절하고, 사용자는 자기가 무엇을 잘못했는지 알 수 없습니다.
+  if (activeAgent && !agents.includes(activeAgent)) activeAgent = "";
+  // 첫 에이전트를 자동으로 고릅니다. 서버가 조용히 고르는 것과 다릅니다 —
+  // 탭이 어느 것이 선택됐는지 화면에 계속 보여주고, 주문 확인창이 그 이름을
+  // 말합니다. 아무것도 고르지 않은 채로 두면 모든 조작이 400 으로 튕기는데,
+  // 그건 안전이 아니라 고장으로 읽힙니다.
+  if (!activeAgent && agents.length) activeAgent = agents[0];
+  renderAgentTabs(rows);
+}
+
+function renderAgentTabs(rows) {
+  const bar = document.getElementById("agentTabs");
+  if (!bar) return;
+  bar.hidden = rows.length < 2;
+  if (rows.length < 2) return;
+  bar.innerHTML = rows.map(a => {
+    const on = a.agent_id === activeAgent ? " on" : "";
+    const live = a.mode === "live" ? '<i class="livedot" title="실거래">●</i>' : "";
+    const cash = Object.values(a.allocated || {})[0];
+    const stopped = a.running ? "" : ' data-stopped="1"';
+    return `<button type="button" class="agtab px${on}"${stopped}
+      data-agent="${esc(a.agent_id)}"
+      aria-pressed="${a.agent_id === activeAgent}"
+      title="${esc(a.error || a.strategy || "")}">${live}${esc(a.label)}
+      <small>${cash == null ? "" : num(cash, 0)}</small></button>`;
+  }).join("");
+  bar.querySelectorAll("[data-agent]").forEach(el => {
+    el.onclick = () => {
+      activeAgent = el.dataset.agent;
+      renderAgentTabs(rows);
+      refreshManual();
+      loadLimits();
+    };
+  });
+}
+
+function withAgent(path) {
+  if (!activeAgent) return path;
+  return path + (path.includes("?") ? "&" : "?") +
+    "agent_id=" + encodeURIComponent(activeAgent);
+}
+
+function agentLabel(id) {
+  const row = ((botState && botState.agents) || []).find(a => a.agent_id === id);
+  return row ? row.label : id;
+}
+
 async function post(path, body) {
   const epoch = authEpoch;
   const r = await fetch(path, {
@@ -1865,7 +1953,13 @@ async function confirmOrderReview({
   // The header/selector can be stale by one poll. Re-read the server immediately
   // before the human approval so a dry-run label can never approve a live queue.
   const status = await api("/api/status");
-  const mode = status && status.running ? status.mode : "";
+  // 그룹이면 **이 주문이 나갈 에이전트의** 모드가 맞습니다. 계좌 전체 등급은
+  // 가장 위험한 에이전트를 따르므로, 관찰용 에이전트에 넣는 주문에까지
+  // "🔴 실거래" 라고 써 붙이면 그 경고가 곧 무의미해집니다.
+  const mine = ((status && status.agents) || [])
+    .find(a => a.agent_id === activeAgent);
+  const mode = status && status.running
+    ? (mine ? mine.mode : status.mode) : "";
   if (mode !== "live" && mode !== "dry_run") {
     throw new Error("실행 중인 매매 모드를 확인할 수 없어 주문을 검토하지 못했습니다");
   }
@@ -1905,8 +1999,16 @@ async function confirmOrderReview({
   const consequence = mode === "live"
     ? "실거래 주문 요청이 대기열에 들어갑니다. 최신 호가·계좌·한도 검사를 다시 통과하면 실제 증권사로 발주됩니다."
     : "모의매매 대기열에만 추가되며 실제 증권사 주문은 나가지 않습니다.";
+  // 에이전트가 여럿이면 **어느 것에 나가는지** 를 확인창이 말해야 합니다.
+  // 탭이 화면에 보이긴 하지만, 전체 청산을 누르는 사람이 확인해야 하는 것은
+  // "무엇을" 만이 아니라 "누구의 것을" 입니다 — 공격형을 정리하려다 보수형을
+  // 비우는 것은 탭 하나 잘못 눌러서 일어납니다.
+  const agentLine = agents.length > 1
+    ? [`에이전트: ${agentLabel(activeAgent)} (나머지 ${agents.length - 1}개는 그대로)`]
+    : [];
   return confirm([
     `주문 검토 — ${MODE_BADGE[mode]}`,
+    ...agentLine,
     `전략: ${runningLabel(status.strategy)}`,
     `종목: ${label || payload.ticker || "모든 보유 종목"}`,
     `구분: ${actionLabel}`,
@@ -1955,15 +2057,15 @@ async function manualAction(path, needsAmount, action) {
   }
 }
 
-$("#mBuy").onclick = () => manualAction("/api/manual/buy", true, "buy");
-$("#mSell").onclick = () => manualAction("/api/manual/sell", true, "sell");
-$("#mClose").onclick = () => manualAction("/api/manual/close", false, "close");
+$("#mBuy").onclick = () => manualAction(withAgent("/api/manual/buy"), true, "buy");
+$("#mSell").onclick = () => manualAction(withAgent("/api/manual/sell"), true, "sell");
+$("#mClose").onclick = () => manualAction(withAgent("/api/manual/close"), false, "close");
 $("#mCloseAll").onclick = async () => {
   try {
     if (!await confirmOrderReview({
       action: "close_all", label: "모든 보유 종목",
     })) return;
-    await post("/api/manual/close_all");
+    await post(withAgent("/api/manual/close_all"));
     note("#mMsg", "전체 청산 접수됨 — 다음 사이클에 처리됩니다", "ok");
     refreshManual();
   } catch (e) { note("#mMsg", "실패: " + e.message, "err"); }
@@ -1972,7 +2074,7 @@ $("#mCloseAll").onclick = async () => {
 let paused = false;
 $("#mPause").onclick = async () => {
   try {
-    await post(paused ? "/api/manual/resume" : "/api/manual/pause");
+    await post(withAgent(paused ? "/api/manual/resume" : "/api/manual/pause"));
     refreshManual();
   } catch (e) { note("#mMsg", "실패: " + e.message, "err"); }
 };
@@ -1990,7 +2092,7 @@ function gauge(label, used, limit, unit) {
 
 async function refreshManual() {
   let data;
-  try { data = await api("/api/manual"); } catch { return; }
+  try { data = await api(withAgent("/api/manual")); } catch { return; }
   paused = !!data.paused;
   $("#mPause").textContent = paused ? "▶ 자동매매 재개" : "⏸ 자동매매 일시정지";
   $("#mPause").className = "btn" + (paused ? " warn" : "");
@@ -2007,7 +2109,8 @@ async function refreshManual() {
   $("#mPins").querySelectorAll("[data-unpin]").forEach(el => {
     el.onclick = async () => {
       try {
-        await post("/api/manual/unpin/" + encodeURIComponent(el.dataset.unpin));
+        await post(withAgent(
+          "/api/manual/unpin/" + encodeURIComponent(el.dataset.unpin)));
         refreshManual();
       } catch (e) { note("#mMsg", "실패: " + e.message, "err"); }
     };
@@ -2114,7 +2217,7 @@ function updateQuizProgress() {
 
 async function submitQuiz() {
   try {
-    const res = await post("/api/profile", {answers: quizAnswers});
+    const res = await post(withAgent("/api/profile"), {answers: quizAnswers});
     $("#quizResult").innerHTML =
       `<div class="msg ok">진단 완료: <b>${esc(res.name)}</b> (${esc(res.code)}) — ${esc(res.description)}<br>
        목표 변동성 ${(res.settings.target_annual_vol * 100).toFixed(0)}% ·
@@ -2174,7 +2277,7 @@ $("#pApply").onclick = async () => {
   });
   const epoch = authEpoch;
   try {
-    const response = await fetch("/api/profile", {
+    const response = await fetch(withAgent("/api/profile"), {
       method: "PATCH",
       headers: {"Content-Type": "application/json"},
       credentials: "same-origin",
@@ -2220,7 +2323,7 @@ async function loadQuiz() {
 
 async function loadProfile() {
   try {
-    const p = await api("/api/profile");
+    const p = await api(withAgent("/api/profile"));
     profileDone = !!p.completed;
     renderProfile(p);
     if (p.completed && quizQuestions.length) {
@@ -2466,7 +2569,7 @@ function renderOperator() {
 
 async function loadLimits() {
   try {
-    const lim = await api("/api/limits");
+    const lim = await api(withAgent("/api/limits"));
     const cfg = lim.configured || {
       max_daily_notional: lim.notional?.limit, max_daily_orders: lim.orders?.limit,
       max_daily_loss: lim.loss?.limit, max_daily_loss_pct: lim.loss?.limit_pct,
@@ -2633,7 +2736,7 @@ $("#setupSave").onclick = async () => {
     if (!stillCurrent()) return;
     const pct = parseFloat($("#lLossPct").value);
     if (!stillCurrent()) return;
-    await post("/api/limits", {
+    await post(withAgent("/api/limits"), {
       max_daily_notional: parseFloat($("#lNotional").value) || 0,
       max_daily_orders: parseInt($("#lOrders").value, 10) || 0,
       max_daily_loss: parseFloat($("#lLoss").value) || 0,
@@ -3693,7 +3796,7 @@ async function chartOrder(side) {
       label: orderSymbolLabel(d.ticker, nameOf(d, "ticker")),
     });
     if (!approved) return;
-    const res = await post("/api/manual/" + side, payload);
+    const res = await post(withAgent("/api/manual/" + side), payload);
     note("#cMsg", `접수됨: ${JSON.stringify(res.queued || res)}`.slice(0, 300), "ok");
     loadChart();
     refreshManual();
@@ -5242,6 +5345,14 @@ function renderRunSummary(running) {
 function runnerState(running) {
   document.getElementById("runStart").hidden = running;
   document.getElementById("runStop").hidden = !running;
+  // 단일 봇과 그룹은 배타적입니다 — 계좌가 하나이므로 둘이 동시에 돌면 상태
+  // DB 소유권부터 충돌합니다. 도는 동안 구성기를 감춰 두면, 눌러도 409 로
+  // 거절당할 버튼을 사용자가 찾아다니지 않습니다.
+  const setup = document.getElementById("agentSetup");
+  if (setup) {
+    setup.hidden = running;
+    if (running) setup.open = false;
+  }
   // 돌기 시작하면 전략 설명과 선택기를 접습니다 — 이미 고른 것을 계속
   // 펼쳐 두면 아래 심의가 화면 밖으로 밀립니다.
   renderRunSummary(running);
@@ -5298,6 +5409,176 @@ document.getElementById("runStart").onclick = async () => {
     // "이미 실행 중" 이라고 거절당했는데 버튼이 ▶ 시작 그대로면, 화면이 서로
     // 모순되는 두 말을 동시에 합니다. 서버가 방금 사실을 알려 줬으니 그것에
     // 맞춥니다.
+    refresh();
+  }
+};
+
+/* ── 여러 성향 동시 운용 ─────────────────────────────────────────────
+   행 하나가 에이전트 하나입니다. 서버가 받는 것과 같은 모양으로 들고 있다가
+   그대로 보냅니다 — 화면 상태와 요청 본문이 다른 자료구조면, 둘이 어긋났을 때
+   어느 쪽이 맞는지 알 수 없습니다. */
+let agentRows = [];
+const AGENT_MAX = 4;
+
+function defaultAgentId(index) {
+  return "a" + (index + 1);
+}
+
+function addAgentRow() {
+  if (agentRows.length >= AGENT_MAX) return;
+  const usable = strategies.filter(x => !missingFor(x).length);
+  const pick = usable[agentRows.length % Math.max(usable.length, 1)];
+  agentRows.push({
+    agent_id: defaultAgentId(agentRows.length),
+    label: agentRows.length === 0 ? "공격 · 단기"
+      : agentRows.length === 1 ? "보수 · 장기" : `에이전트 ${agentRows.length + 1}`,
+    config_path: pick ? pick.id : "",
+    capital_weight: 0,
+    // 사용자가 직접 적은 비중은 화면이 다시 건드리지 않습니다. 적어 둔 숫자가
+    // 다음 "+ 추가" 한 번에 사라지면, 그건 도와주는 것이 아닙니다.
+    touched: false,
+    mode: "dry_run",
+  });
+  rebalanceAgents();
+  renderAgentRows();
+}
+
+function rebalanceAgents() {
+  // 자동 배분 — 손대지 않은 행끼리 남은 몫을 고르게 나눕니다.
+  const free = agentRows.filter(r => !r.touched);
+  if (!free.length) return;
+  const taken = agentRows
+    .filter(r => r.touched)
+    .reduce((t, r) => t + r.capital_weight, 0);
+  // 손댄 행들이 이미 100% 를 채웠으면 나머지는 최소치를 갖고, 합계 뱃지가
+  // 넘친 사실을 붉게 말합니다 — 조용히 0 을 주면 "왜 안 사지" 가 됩니다.
+  const each = Math.max(0.01, Math.floor((1 - taken) / free.length * 100) / 100);
+  free.forEach(r => { r.capital_weight = each; });
+}
+
+function renderAgentRows() {
+  const host = document.getElementById("agentRows");
+  if (!host) return;
+  const options = strategies.map(st => {
+    const blocked = missingFor(st).length;
+    return {id: st.id, label: stLabel(st) + (blocked ? " (키 필요)" : ""),
+            blocked};
+  });
+  host.innerHTML = agentRows.map((row, i) => `
+    <div class="agentrow" data-i="${i}" data-live="${row.mode === "live" ? 1 : 0}">
+      <input class="lb" value="${esc(row.label)}" data-f="label"
+        aria-label="${i + 1}번째 에이전트 이름" maxlength="40">
+      <select class="cf" data-f="config_path"
+        aria-label="${i + 1}번째 에이전트 전략">
+        ${options.map(o => `<option value="${esc(o.id)}"
+          ${o.id === row.config_path ? "selected" : ""}
+          ${o.blocked ? "disabled" : ""}>${esc(o.label)}</option>`).join("")}
+      </select>
+      <input class="wt" type="number" min="1" max="100" step="1"
+        value="${Math.round(row.capital_weight * 100)}" data-f="capital_weight"
+        aria-label="${i + 1}번째 에이전트 자본 비중 %">
+      <select class="md" data-f="mode" aria-label="${i + 1}번째 에이전트 모드">
+        <option value="dry_run" ${row.mode === "dry_run" ? "selected" : ""}>모의</option>
+        <option value="live" ${row.mode === "live" ? "selected" : ""}>🔴 실거래</option>
+      </select>
+      <button type="button" class="drop" data-drop="${i}"
+        aria-label="${i + 1}번째 에이전트 삭제">✕</button>
+    </div>`).join("");
+
+  host.querySelectorAll("[data-f]").forEach(el => {
+    el.onchange = () => {
+      const i = Number(el.closest(".agentrow").dataset.i);
+      const field = el.dataset.f;
+      if (field === "capital_weight") {
+        agentRows[i].capital_weight =
+          Math.min(100, Math.max(1, Number(el.value) || 1)) / 100;
+        agentRows[i].touched = true;
+        rebalanceAgents();
+      } else {
+        agentRows[i][field] = el.value;
+      }
+      renderAgentRows();
+    };
+  });
+  host.querySelectorAll("[data-drop]").forEach(el => {
+    el.onclick = () => {
+      agentRows.splice(Number(el.dataset.drop), 1);
+      rebalanceAgents();
+      renderAgentRows();
+    };
+  });
+  renderWeightSum();
+}
+
+function renderWeightSum() {
+  const badge = document.getElementById("agentWeightSum");
+  if (!badge) return;
+  const total = Math.round(
+    agentRows.reduce((t, r) => t + r.capital_weight, 0) * 100);
+  const over = total > 100;
+  badge.dataset.over = over ? "1" : "0";
+  badge.textContent = over
+    ? `합계 ${total}% — 100% 를 넘을 수 없습니다`
+    : `합계 ${total}%` + (total < 100 ? ` · 남는 ${100 - total}% 는 현금` : "");
+  const start = document.getElementById("agentStart");
+  if (start) start.disabled = over || agentRows.length === 0;
+}
+
+document.getElementById("agentAdd").onclick = addAgentRow;
+
+// 처음 펼쳤을 때 빈 상자를 보여주면, 사용자는 무엇을 해야 하는지 알기 위해
+// 버튼을 한 번 더 눌러야 합니다. 이 기능을 쓰는 사람이 원하는 최소 구성 —
+// 성향 둘 — 을 미리 깔아 둡니다.
+document.getElementById("agentSetup").addEventListener("toggle", () => {
+  const box = document.getElementById("agentSetup");
+  if (box.open && agentRows.length === 0) {
+    addAgentRow();
+    addAgentRow();
+  }
+});
+
+document.getElementById("agentStart").onclick = async () => {
+  if (!agentRows.length) return note("#agentMsg", "에이전트를 하나는 추가하세요", "err");
+  const ids = agentRows.map(r => r.agent_id);
+  if (new Set(ids).size !== ids.length) {
+    return note("#agentMsg", "에이전트 id 가 겹칩니다", "err");
+  }
+  const body = {agents: []};
+  for (const row of agentRows) {
+    const st = strategies.find(x => x.id === row.config_path);
+    if (!st) return note("#agentMsg", `${row.label}: 전략을 고르세요`, "err");
+    const {touched: _touched, ...spec} = row;   // `touched` 는 화면 것입니다
+    // 실거래 확인은 **에이전트마다** 받습니다. 하나를 확인했다고 나머지가
+    // 열리면, 관찰용으로 넣은 에이전트가 진짜 주문을 내고 있다는 사실을
+    // 사용자가 모른 채로 하루를 보냅니다.
+    if (row.mode === "live") {
+      const typed = prompt(
+        `🔴 '${row.label}' 을(를) 실거래로 시작합니다.\n\n` +
+        `이 에이전트에 배정된 계좌 자본의 ${Math.round(row.capital_weight * 100)}% 로 ` +
+        `**진짜 주문이 나가고 진짜 돈이 움직입니다.** 되돌릴 수 없습니다.\n\n` +
+        `계속하려면 전략 이름을 그대로 적으세요:\n${st.name}`);
+      if (typed === null) return note("#agentMsg", "취소했습니다", "dim");
+      if (typed.trim() !== st.name) {
+        return note("#agentMsg",
+          `${row.label}: 이름이 다릅니다 — "${st.name}" 을 그대로 적어야 합니다.`,
+          "err");
+      }
+      spec.confirm = typed.trim();
+    }
+    body.agents.push(spec);
+  }
+  note("#agentMsg", "시작하는 중…", "dim");
+  try {
+    const res = await post("/api/trader/group/start", body);
+    const live = res.agents.filter(a => a.mode === "live").length;
+    note("#agentMsg",
+      `${res.agents.length}개 시작됨` + (live ? ` (실거래 ${live}개)` : ""), "ok");
+    document.getElementById("agentSetup").open = false;
+    setRunning(true);
+    refresh();
+    scrollToDesk();
+  } catch (e) {
+    note("#agentMsg", "시작하지 못했습니다: " + e.message, "err");
     refresh();
   }
 };

@@ -265,6 +265,15 @@ class GroupTrader:
         return {
             "running": self.alive,
             "started_at": self.started_at.isoformat() if self.started_at else None,
+            # 계좌의 위험 등급 — **가장 위험한 에이전트가 정합니다.** 넷 중
+            # 하나만 실거래여도 이 계좌에서는 진짜 주문이 나갑니다.
+            #
+            # 최상위에 두는 이유는 화면 때문입니다. 단일 봇 시절부터 있던 코드가
+            # `status.mode` 를 읽어 "이것이 진짜 돈인가" 를 판정하는데, 그룹
+            # 응답에 그 키가 없으면 그 판정이 실패하고 **수동 주문이 통째로
+            # 막힙니다** — 안전이 아니라 고장으로 읽히는 종류의 실패입니다.
+            "mode": (RunMode.LIVE.value if self.group.has_live
+                     else RunMode.DRY_RUN.value),
             "account": self.gateway.status(),
             "agents": agents,
         }

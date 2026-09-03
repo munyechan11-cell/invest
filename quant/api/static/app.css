@@ -655,6 +655,55 @@ footer{max-width:1180px;margin:0 auto;padding:14px 12px;color:var(--muted);font-
   color:var(--ink);border:2px solid var(--field);padding:8px 10px;font-size:13px}
 .runbar .btn{flex:0 0 auto}
 
+/* ── 여러 성향 동시 운용 ──────────────────────────────────────────────
+   계좌 하나를 넷까지 나눠 씁니다. 화면이 답해야 하는 것은 두 가지입니다 —
+   "지금 몇 %를 나눠 줬는가"(합이 100%를 넘으면 시작할 수 없습니다)와
+   "지금 내가 조작하는 것이 누구인가"(고르지 않으면 서버가 되묻습니다).
+   그래서 합계 뱃지와 에이전트 탭이 둘 다 항상 보이는 자리에 있습니다. */
+.agentsetup{margin-top:12px;border:2px solid var(--field);background:var(--plate)}
+.agentsetup>summary{padding:10px 12px;cursor:pointer;font-family:var(--px);
+  font-size:11px;color:var(--gold);letter-spacing:.5px}
+.agentsetup>summary small{color:var(--muted);margin-left:8px;font-family:inherit}
+.agentsetup[open]>summary{border-bottom:2px solid var(--field)}
+.agentsetup>*:not(summary){padding-left:12px;padding-right:12px}
+
+.agentrow{display:grid;gap:8px;align-items:center;margin-bottom:8px;
+  grid-template-columns:minmax(90px,1fr) minmax(120px,1.6fr) 74px 104px 40px}
+.agentrow input,.agentrow select{min-height:40px;background:var(--panel);
+  color:var(--ink);border:2px solid var(--field);padding:6px 8px;font-size:13px;
+  min-width:0}
+.agentrow .wt{text-align:right}
+/* 실거래 줄은 눈에 띄어야 합니다. 넷 중 하나만 진짜 돈이면, 그 하나가
+   나머지와 같은 회색으로 보이는 것이 이 화면에서 가장 위험합니다. */
+.agentrow[data-live="1"]{outline:2px solid var(--red);outline-offset:2px}
+.agentrow .drop{min-height:40px;background:none;border:2px solid var(--field);
+  color:var(--muted);cursor:pointer;font-size:14px}
+.agentrow .drop:hover{border-color:var(--red);color:var(--red)}
+@media (max-width:560px){
+  .agentrow{grid-template-columns:1fr 1fr;grid-template-areas:
+    "label label" "cfg cfg" "wt mode" "drop drop"}
+  .agentrow .lb{grid-area:label} .agentrow .cf{grid-area:cfg}
+  .agentrow .wt{grid-area:wt} .agentrow .md{grid-area:mode}
+  .agentrow .drop{grid-area:drop}
+}
+
+.agentfoot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  padding-bottom:10px}
+.weightsum{font-family:var(--px);font-size:11px;color:var(--muted);
+  margin-left:auto}
+.weightsum[data-over="1"]{color:var(--bad)}
+
+.agenttabs{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
+.agtab{background:var(--plate);border:2px solid var(--field);color:var(--muted);
+  padding:7px 11px;min-height:40px;cursor:pointer;font-size:12px;
+  display:flex;align-items:center;gap:6px}
+.agtab.on{border-color:var(--gold);color:var(--gold);background:var(--panel)}
+.agtab small{color:var(--muted);font-size:11px}
+/* 멈춘 에이전트를 살아 있는 것과 같은 모양으로 두면, 사용자는 그것이 아직
+   시장에 있다고 믿습니다. */
+.agtab[data-stopped="1"]{opacity:.5;text-decoration:line-through}
+.agtab .livedot{color:var(--red);font-size:9px;line-height:1}
+
 /* ── 첫 화면 ──────────────────────────────────────────────────────────
    여기가 처음 오는 사람이 보는 전부입니다. 곧바로 이메일 칸부터 내밀면,
    무엇에 가입하는지 모른 채로 비밀번호를 만들게 됩니다. 실제로 자기 돈을

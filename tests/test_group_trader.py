@@ -338,3 +338,34 @@ def test_a_non_korean_error_keeps_its_type_name(group):
 
     gt._finished("defend", Boom)
     assert gt.errors["defend"] == "ValueError: bad config"
+
+
+# ── 화면이 읽는 최상위 키 ────────────────────────────────────────────────
+def test_status_carries_a_top_level_mode(group):
+    """단일 봇 시절부터 있던 화면 코드가 `status.mode` 로 "이것이 진짜 돈인가"
+    를 판정합니다. 그룹 응답에 그 키가 없으면 판정이 실패하고 **수동 주문이
+    통째로 막힙니다** — 안전이 아니라 고장으로 읽히는 실패입니다.
+    """
+    gt, _ = group
+    assert gt.status()["mode"] == RunMode.DRY_RUN.value
+
+
+def test_one_live_agent_makes_the_whole_account_read_as_live(tmp_path):
+    """계좌의 위험 등급은 가장 위험한 에이전트가 정합니다."""
+    mixed = AgentGroup(agents=(
+        AgentSpec(agent_id="watch", label="관찰", config_path="a.yaml",
+                  capital_weight=0.5, mode=RunMode.DRY_RUN),
+        AgentSpec(agent_id="real", label="실거래", config_path="b.yaml",
+                  capital_weight=0.5, mode=RunMode.LIVE),
+    ))
+    gt = GroupTrader(mixed, {"watch": config("a"), "real": config("b")},
+                     str(tmp_path / "s.db"), venue=Venue())
+    try:
+        status = gt.status()
+        assert status["mode"] == RunMode.LIVE.value
+        # 에이전트별 모드는 그대로 남습니다 — 관찰용 주문에까지 "실거래" 라고
+        # 써 붙이면 그 경고가 곧 무의미해집니다.
+        assert {a["agent_id"]: a["mode"] for a in status["agents"]} == {
+            "watch": "dry_run", "real": "live"}
+    finally:
+        gt.state.close()
