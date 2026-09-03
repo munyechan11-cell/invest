@@ -190,6 +190,71 @@ CREATE TABLE IF NOT EXISTS day_budget (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (run_id, day)
 );
+CREATE TABLE IF NOT EXISTS account_budget (
+  -- 계좌 단위 하루 한도. `day_budget` 과 **따로** 삽니다.
+  --
+  -- 같은 테이블에 넣을 자리가 없습니다. `day_budget` 의 PK 는
+  -- `(run_id, day)` 인데 계좌 한도에는 run_id 가 없습니다. 아무 에이전트의
+  -- run_id 를 빌리면 그 에이전트의 원장과 한 행에서 충돌하고, 가짜 run 행을
+  -- 만들면 그것이 `day_budget JOIN runs WHERE mode='live'` 스캔에 걸려
+  -- Toss 계좌 게이트가 모든 시작을 영구히 거절합니다.
+  --
+  -- 상태 DB 는 사용자 하나당 하나이고 그 안의 계좌도 하나이므로, 날짜만으로
+  -- 유일합니다.
+  -- `mode` 가 PK 에 있는 이유: 모의 그룹의 가상 주문이 실거래 계좌의 하루
+  -- 허용치를 먹으면 안 됩니다. 반대 방향은 더 나쁩니다 — 아침에 모의로
+  -- 시험하다 20 건을 쓰고 실거래로 바꾸면 계좌가 이미 멈춰 있습니다.
+  -- `day_budget` 은 `run_id` 를 통해 `runs.mode` 로 갈리지만 계좌 원장에는
+  -- run 이 없으므로 여기서 직접 가릅니다.
+  day TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'live',
+  notional REAL NOT NULL DEFAULT 0, orders INTEGER NOT NULL DEFAULT 0,
+  realized_pnl REAL NOT NULL DEFAULT 0, fees REAL NOT NULL DEFAULT 0,
+  starting_equity REAL NOT NULL DEFAULT 0, blocked INTEGER NOT NULL DEFAULT 0,
+  halt_reason TEXT, tz_offset_hours REAL NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (day, mode)
+);
+CREATE TABLE IF NOT EXISTS sleeve_position (
+  -- "005930 20주 중 누구의 10주인가" 를 재시작 너머로 기억합니다.
+  --
+  -- 이것이 없으면 재시작이 **모든 보유를 팔 수 없게** 만듭니다. 게이트웨이의
+  -- 슬리브 원장이 빈 채로 뜨면 `adopt_unassigned` 가 계좌 전부를 미귀속으로
+  -- 받아 적고(미귀속은 아무도 팔 수 없습니다), 에이전트 장부는 positions 에서
+  -- 정상 복원되므로 화면에는 포지션이 그대로 보입니다. 그 상태에서 손절이
+  -- 나가면 `min(장부, 원장)` 이 0 을 골라 거절합니다 — 그리고 합계 불변식은
+  -- Σ슬리브(0) + 미귀속(20) == 증권사(20) 이라 아무 경고도 하지 않습니다.
+  --
+  -- 에이전트 장부(`positions`)와 별개로 둡니다. 둘은 서로를 검산하고, 어긋나면
+  -- `SleeveBrokerage._sleeve_quantity` 가 작은 쪽을 골라 안전한 방향으로
+  -- 틀립니다.
+  agent_id TEXT NOT NULL, symbol_key TEXT NOT NULL,
+  quantity TEXT NOT NULL, updated_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, symbol_key)
+);
+CREATE TABLE IF NOT EXISTS order_agent (
+  -- 주문 하나가 어느 에이전트의 것인가.
+  --
+  -- 게이트웨이가 메모리에만 들고 있으면, 미체결 주문을 남긴 채 재시작했을 때
+  -- 그 주문의 체결이 **미귀속** 으로 떨어집니다. 미귀속 물량은 어느 에이전트도
+  -- 팔 수 없고 합계 불변식은 그것을 정상으로 읽으므로, 판 적도 없는 주식이
+  -- 영원히 계좌에 남습니다 — 손절도 청산도 닿지 않는 채로.
+  --
+  -- **어디까지 실제로 되살리는지는 어댑터가 정합니다.** 체결은 어댑터가
+  -- 자기 `_orders` 를 훑어 만들고, 그 표는 재시작하면 비어 있습니다. 즉
+  -- 토스 실거래에서 재시작 전 주문의 체결이 이 표를 거쳐 돌아오는 일은
+  -- 없습니다 — 그쪽은 더 강하게 막습니다. 소유권을 확인할 수 없는 미체결
+  -- 주문이 계좌에 있으면 `TossBrokerage.connect()` 가 아예 연결을 거부하므로,
+  -- 애초에 그 상태로 그룹이 시작되지 않습니다.
+  --
+  -- 그래서 이 표가 실제로 일하는 자리는 좁습니다: 같은 프로세스 안의 재연결,
+  -- 모의·페이퍼 경로, 그리고 주문 표를 되살리는 어댑터가 생길 때. 좁다고
+  -- 빼지는 않습니다 — 귀속을 잃는 쪽의 대가가 "영원히 팔 수 없는 물량" 이고,
+  -- 이 표의 비용은 주문당 한 줄입니다.
+  order_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  symbol_key TEXT,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS db_owner (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   pid INTEGER NOT NULL, host TEXT NOT NULL,
@@ -290,6 +355,18 @@ class StateStore:
         for column in ("archived_at", "archive_reason", "archived_by"):
             if column not in have_runs:
                 self.conn.execute(f"ALTER TABLE runs ADD COLUMN {column} TEXT")
+        # `account_budget` 의 PK 가 `(day)` 에서 `(day, mode)` 로 바뀌었습니다.
+        # `CREATE TABLE IF NOT EXISTS` 는 기존 테이블의 PK 를 바꾸지 않으므로,
+        # 옛 모양이면 새로 만듭니다. 이 표는 배포된 적이 없어 지울 자료도
+        # 사실상 없습니다 — 있어도 오늘 하루치이고, 없으면 그날의 계좌 허용치가
+        # 한 번 새로 시작할 뿐입니다.
+        have_acct = {
+            r["name"] for r in self.conn.execute(
+                "PRAGMA table_info(account_budget)")
+        }
+        if have_acct and "mode" not in have_acct:
+            self.conn.execute("DROP TABLE account_budget")
+            self.conn.executescript(SCHEMA)
         if "agent_id" not in have_runs:
             # 기존 행은 전부 빈 문자열이 됩니다 — 에이전트 개념이 없던 실행이고,
             # 그룹을 쓰지 않는 단일 실행도 같은 값을 씁니다. 그래서 이 마이그레이션
@@ -1873,6 +1950,155 @@ class StateStore:
         self.save_budget(budget)          # the stored row now matches the ledger
         return restored
 
+    # ── 계좌 단위 하루 한도 ──────────────────────────────────────────────
+    def save_account_budget(self, budget: TradingBudget,
+                            mode: str = "live") -> None:
+        """계좌 원장을 적는다. 실행(run)이 아니라 **계좌** 의 것입니다.
+
+        `save_budget` 과 달리 `run_id` 를 보지 않습니다 — 그룹의 마스터 한도는
+        어느 에이전트의 실행에도 속하지 않고, 에이전트가 전부 바뀌어도 같은
+        계좌의 같은 하루 허용치입니다.
+        """
+        state = budget.to_state()
+        if not state:
+            return
+        self._claim()
+        try:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO account_budget(day, mode, notional, "
+                "orders, realized_pnl, fees, starting_equity, blocked, "
+                "halt_reason, tz_offset_hours, updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (state["day"], str(mode), state["notional"], state["orders"],
+                 state["realized_pnl"], state["fees"], state["starting_equity"],
+                 state["blocked"], state["halt_reason"],
+                 state["tz_offset_hours"], datetime.now(UTC).isoformat()),
+            )
+            self.conn.commit()
+        except Exception:
+            # 연결은 공유됩니다. 열린 트랜잭션을 남기면 다음에 쓰는 사람이 —
+            # 다른 에이전트가 — 우리의 반쯤 적용된 상태를 커밋합니다.
+            with contextlib.suppress(Exception):
+                self.conn.rollback()
+            raise
+
+    def restore_account_budget(self, budget: TradingBudget,
+                               now: datetime | None = None,
+                               mode: str = "live") -> bool:
+        """계좌 원장을 되살리고, 그 뒤로도 계속 적게 한다.
+
+        이것이 없으면 **재시작이 계좌에 새 허용치를 줍니다.** 하루 손실 한도가
+        걸려 "다음 거래일까지 중단" 이 된 계좌를 재배포 한 번이 풀어 주는데,
+        그건 한도가 아니라 한도와 초기화 버튼을 함께 둔 것입니다 — 그리고 그
+        버튼은 봇이 고장 났을 때 가장 자주 눌립니다.
+        """
+        self._claim()
+        row = self.conn.execute(
+            "SELECT * FROM account_budget WHERE mode=? ORDER BY day DESC LIMIT 1",
+            (str(mode),),
+        ).fetchone()
+        if row is not None:
+            # **저장된 시간대를 따릅니다.** `load_state` 는 시간대가 다르면
+            # 복원을 취소하는데, 계좌 원장에서 그 취소는 곧 "하루 손실 한도로
+            # 멈춘 계좌가 다시 열린다" 입니다. 그리고 여기서 시간대는 그룹의
+            # 첫 번째 에이전트 설정에서 왔을 뿐이라, 에이전트 순서를 바꾸거나
+            # 설정 하나를 손보는 것만으로 달라집니다 — 그 정도의 일이 계좌
+            # 방어선을 지워서는 안 됩니다. 계좌의 "오늘" 은 계좌의 성질입니다.
+            stored_tz = float(row["tz_offset_hours"] or 0.0)
+            if abs(stored_tz - budget.tz_offset.total_seconds() / 3600) > 1e-9:
+                log.warning(
+                    "계좌 원장의 시간대(UTC%+g)를 따릅니다 — 설정은 UTC%+g "
+                    "입니다. 하루 경계를 바꾸려면 원장이 비는 다음 거래일에 "
+                    "하세요.", stored_tz,
+                    budget.tz_offset.total_seconds() / 3600)
+                budget.tz_offset = timedelta(hours=stored_tz)
+        restored = budget.load_state(dict(row) if row is not None else {}, now)
+        budget.bind_store(_AccountBudgetStore(self, mode))
+        self.save_account_budget(budget, mode)
+        return restored
+
+    # ── 슬리브 원장 ──────────────────────────────────────────────────────
+    def save_sleeves(self, sleeves: dict[str, dict[str, Decimal]]) -> None:
+        """누가 무엇을 얼마나 들고 있는지. 계좌 전체를 통째로 다시 씁니다.
+
+        에이전트는 넷까지, 종목은 전략당 몇 개이므로 행은 늘 수십 개 이하입니다.
+        부분 갱신보다 통째 교체가 안전합니다 — 0 이 된 항목이 지워지지 않고
+        남으면, 다음 재시작이 판 적 없는 물량을 되살립니다.
+        """
+        self._claim()
+        now = datetime.now(UTC).isoformat()
+        rows = [(agent_id, key, str(qty), now)
+                for agent_id, book in (sleeves or {}).items()
+                for key, qty in book.items() if qty != 0]
+        try:
+            self.conn.execute("DELETE FROM sleeve_position")
+            if rows:
+                self.conn.executemany(
+                    "INSERT INTO sleeve_position(agent_id, symbol_key, quantity, "
+                    "updated_at) VALUES(?,?,?,?)", rows)
+            self.conn.commit()
+        except Exception:
+            # 지우고 다시 넣는 사이에 실패하면 원장이 비어 버립니다. 되돌리지
+            # 않으면 다음 재시작이 모든 보유를 미귀속으로 읽고, 그러면 아무도
+            # 자기 포지션을 팔 수 없습니다.
+            with contextlib.suppress(Exception):
+                self.conn.rollback()
+            raise
+
+    def restore_sleeves(self) -> dict[str, dict[str, Decimal]]:
+        """저장된 슬리브 원장. `agent_id → {symbol_key: 수량}`."""
+        self._claim()
+        out: dict[str, dict[str, Decimal]] = {}
+        for row in self.conn.execute(
+                "SELECT agent_id, symbol_key, quantity FROM sleeve_position"):
+            try:
+                qty = Decimal(row["quantity"])
+            except (ArithmeticError, TypeError, ValueError):
+                log.warning("슬리브 수량을 읽지 못해 건너뜁니다: %s %s",
+                            row["agent_id"], row["symbol_key"])
+                continue
+            if qty != 0:
+                out.setdefault(row["agent_id"], {})[row["symbol_key"]] = qty
+        return out
+
+    # ── 주문 → 에이전트 귀속 ─────────────────────────────────────────────
+    def save_order_agent(self, order_id: str, agent_id: str,
+                         symbol_key: str = "") -> None:
+        """이 주문이 누구 것인지 적는다. 체결이 돌아올 때 유일한 근거입니다."""
+        if not order_id or not agent_id:
+            return
+        self._claim()
+        self.conn.execute(
+            "INSERT OR REPLACE INTO order_agent(order_id, agent_id, symbol_key, "
+            "created_at) VALUES(?,?,?,?)",
+            (str(order_id), str(agent_id), str(symbol_key or ""),
+             datetime.now(UTC).isoformat()),
+        )
+        self.conn.commit()
+
+    def forget_order_agent(self, order_id: str) -> None:
+        self._claim()
+        self.conn.execute("DELETE FROM order_agent WHERE order_id=?",
+                          (str(order_id),))
+        self.conn.commit()
+
+    def restore_order_agents(self, prune_older_than_days: int = 7) -> dict[str, str]:
+        """재시작 전에 낸 주문들의 귀속. `order.id → agent_id`.
+
+        오래된 행은 지웁니다. 일주일 전에 낸 주문의 체결이 이제 와서 돌아오는
+        일은 없고, 지우지 않으면 이 표만 무한히 자랍니다. 지우는 것이 위험한
+        방향도 아닙니다 — 귀속을 잃은 체결은 미귀속으로 가고, 미귀속은 아무도
+        팔 수 없으므로 남의 물량을 파는 쪽으로는 절대 틀리지 않습니다.
+        """
+        self._claim()
+        cutoff = (datetime.now(UTC) - timedelta(days=prune_older_than_days))
+        self.conn.execute("DELETE FROM order_agent WHERE created_at < ?",
+                          (cutoff.isoformat(),))
+        self.conn.commit()
+        return {r["order_id"]: r["agent_id"]
+                for r in self.conn.execute(
+                    "SELECT order_id, agent_id FROM order_agent")}
+
     # ── decision journal ─────────────────────────────────────────────────
     # Two halves of one question — what did this desk decide, and was it right.
     # Both used to live only in memory, which made them dead code in practice:
@@ -2482,6 +2708,30 @@ class StateStore:
         않게 만듭니다.
         """
         return AgentStateView(self, agent_id)
+
+
+class _AccountBudgetStore:
+    """`TradingBudget.bind_store` 가 요구하는 두 가지만 갖춘 시점.
+
+    `TradingBudget` 은 값이 바뀔 때마다 `store.save_budget(self)` 를 부릅니다.
+    계좌 예산에 `StateStore` 를 그대로 물리면 그 호출이 `day_budget` 으로 가서
+    **어느 에이전트의 실행 원장을 계좌 값으로 덮어씁니다.** 여기서 자리를
+    바꿔 줍니다.
+    """
+
+    __slots__ = ("store", "mode")
+
+    def __init__(self, store: StateStore, mode: str = "live"):
+        self.store = store
+        self.mode = mode
+
+    def save_budget(self, budget: TradingBudget) -> None:
+        self.store.save_account_budget(budget, self.mode)
+
+    def mark_accounting_persistence_failed(self) -> None:
+        # 계좌 원장을 잃은 것도 같은 DB 의 사실입니다 — 그룹 전체의 종료를
+        # 정상으로 확정할 수 없습니다.
+        self.store.mark_accounting_persistence_failed()
 
 
 class AgentStateView(StateStore):

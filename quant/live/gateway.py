@@ -27,6 +27,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from decimal import Decimal
 from typing import Any
@@ -42,6 +43,11 @@ log = logging.getLogger("quant.live.gateway")
 #: 수량 비교 허용 오차. 소수점 수량을 쓰는 종목(암호화폐)에서 부동소수 왕복이
 #: 남기는 먼지만 흡수합니다. 주식 한 주는 절대 이 안에 들어오지 않습니다.
 QUANTITY_EPSILON = Decimal("0.00000001")
+
+#: 슬리브 원장 안에서 미귀속 몫이 쓰는 자리. 에이전트 id 정규식이 대문자를
+#: 허용하지 않으므로(`quant.live.agents._AGENT_ID`) 실제 에이전트와 겹칠 수
+#: 없습니다.
+_UNASSIGNED = "__UNASSIGNED__"
 
 
 class GroupHalted(RuntimeError):
@@ -68,9 +74,13 @@ class AccountGateway:
         master_budget: TradingBudget | None = None,
         base_currency: str = "KRW",
         allocation_quantum: str = "1",
+        store=None,
     ):
         self.group = group
         self.venue = venue
+        #: 주문 귀속을 재시작 너머로 적어 두는 곳. 없으면(테스트·백테스트)
+        #: 메모리에만 남습니다.
+        self.store = store
         #: 계좌 단위 한도. 에이전트 한도보다 **나중에** 검사되지만 더 강합니다 —
         #: 에이전트 넷이 각자 자기 한도 안에 있어도 계좌 합계는 넘을 수 있고,
         #: 실제로 돈이 나가는 곳은 계좌입니다.
@@ -105,6 +115,10 @@ class AccountGateway:
         #: `unassigned := 증권사 − Σ슬리브` 가 불변식을 항상 참으로 만들어,
         #: 불변식이 잡으라고 있는 바로 그 사건을 지워 버립니다.
         self._unassigned_adopted = False
+
+        #: agent_id → 그 에이전트의 장부. 계좌 한도가 시장가 주문에 매길
+        #: 가격을 여기서 읽습니다 — 증권사 어댑터의 장부는 마크되지 않습니다.
+        self._agent_books: dict[str, Any] = {}
 
         self._halted_reason = ""
         self._halt_drift: dict = {}
@@ -178,6 +192,10 @@ class AccountGateway:
             )
 
         assigned = self.aggregate_sleeves()
+        # 이미 복원된 미귀속도 우리 것입니다. 빼지 않으면 그만큼이 "봇이 만들지
+        # 않은 보유" 로 한 번 더 계산됩니다.
+        for key, qty in self._unassigned.items():
+            assigned[key] = assigned.get(key, Decimal("0")) + qty
         adopted: dict[str, Decimal] = {}
         short: dict[str, dict] = {}
         for key in sorted(set(venue_positions) | set(assigned)):
@@ -205,8 +223,10 @@ class AccountGateway:
             )
             raise GroupHalted(self._halted_reason, short)
 
-        self._unassigned = adopted
+        for key, qty in adopted.items():
+            self._unassigned[key] = self._unassigned.get(key, Decimal("0")) + qty
         self._unassigned_adopted = True
+        self._persist_sleeves()
         if self._unassigned:
             log.info("봇이 만들지 않은 보유를 미귀속으로 둡니다 (매도 대상 아님): %s",
                      {k: str(v) for k, v in self._unassigned.items()})
@@ -227,10 +247,82 @@ class AccountGateway:
             total[key] = total.get(key, Decimal("0")) + qty
         return {key: qty for key, qty in total.items() if qty != 0}
 
-    def apply_fill(self, agent_id: str, symbol: Symbol, signed_quantity: Decimal) -> None:
-        """체결을 발주 에이전트의 슬리브에 귀속한다."""
-        book = self._sleeves.setdefault(agent_id, {})
+    def apply_fill(self, agent_id: str, symbol: Symbol,
+                   signed_quantity: Decimal) -> None:
+        """체결을 발주 에이전트의 슬리브에 귀속한다.
+
+        **그룹에 없는 에이전트에는 귀속하지 않습니다.** 예전에는
+        `setdefault` 가 없는 에이전트의 장부를 만들어 냈는데, 그 유령 슬리브의
+        수량이 `aggregate_sleeves()` 에 합산되어 합계 불변식을 정상으로
+        통과시켰습니다 — 아무도 팔 수 없는 물량이 계좌에 있는데 원장은 건강하다고
+        말하는 상태입니다. 상태 DB 는 사용자당 하나라 예전 그룹의 에이전트 이름이
+        남아 있고, 이름은 사용자가 정하므로 실제로 바뀝니다.
+        """
+        if agent_id not in self._sleeves:
+            self._unassigned[symbol.key] = (
+                self._unassigned.get(symbol.key, Decimal("0")) + signed_quantity
+            )
+            log.warning(
+                "그룹에 없는 에이전트 %s 의 체결을 미귀속으로 둡니다: %s %s",
+                agent_id, symbol, signed_quantity,
+            )
+            self._persist_sleeves()
+            return
+        book = self._sleeves[agent_id]
         book[symbol.key] = book.get(symbol.key, Decimal("0")) + signed_quantity
+        self._persist_sleeves()
+
+    def _persist_sleeves(self) -> None:
+        """슬리브 원장을 디스크에 남긴다.
+
+        이것이 없으면 재시작이 **모든 보유를 팔 수 없게** 만듭니다 — 빈 원장으로
+        뜨면 계좌 전부가 미귀속이 되고, 미귀속은 아무도 팔 수 없으며, 합계
+        불변식은 그 상태를 정상으로 읽습니다.
+        """
+        if self.store is None:
+            return
+        try:
+            self.store.save_sleeves({
+                **{a: dict(b) for a, b in self._sleeves.items()},
+                _UNASSIGNED: dict(self._unassigned),
+            })
+        except Exception:  # noqa: BLE001 — 기록 실패가 매매를 막지는 않는다
+            log.exception("슬리브 원장을 저장하지 못했습니다")
+            mark = getattr(self.store, "mark_accounting_persistence_failed", None)
+            if mark is not None:
+                mark()
+
+    def adopt_sleeves(self, stored: dict[str, dict[str, Decimal]]) -> int:
+        """저장된 슬리브 원장을 이어받는다. **미귀속 채택보다 먼저** 해야 합니다.
+
+        순서가 뒤집히면 `adopt_unassigned` 가 빈 원장을 보고 계좌 전부를
+        미귀속으로 받아 적습니다.
+        """
+        adopted = 0
+        for agent_id, book in (stored or {}).items():
+            if agent_id == _UNASSIGNED:
+                self._unassigned = {k: v for k, v in book.items() if v != 0}
+                continue
+            if agent_id not in self._sleeves:
+                # 지금 그룹에 없는 에이전트의 보유입니다. 미귀속으로 둡니다 —
+                # 아무도 팔 수 없지만 계좌에는 분명히 있으므로 불변식이 알아야
+                # 합니다.
+                for key, qty in book.items():
+                    self._unassigned[key] = (
+                        self._unassigned.get(key, Decimal("0")) + qty)
+                log.warning("지금 그룹에 없는 에이전트 %s 의 보유를 미귀속으로 "
+                            "둡니다: %s", agent_id,
+                            {k: str(v) for k, v in book.items()})
+                continue
+            self._sleeves[agent_id] = {k: Decimal(str(v)) for k, v in book.items()
+                                       if v != 0}
+            adopted += len(self._sleeves[agent_id])
+        if adopted or self._unassigned:
+            log.info("슬리브 원장 복원: %s · 미귀속 %s",
+                     {a: {k: str(v) for k, v in b.items()}
+                      for a, b in self._sleeves.items() if b},
+                     {k: str(v) for k, v in self._unassigned.items()})
+        return adopted
 
     def attribute(self, order: Order) -> str | None:
         """이 주문을 낸 에이전트. 모르면 None — 우리가 낸 주문이 아닙니다."""
@@ -255,6 +347,22 @@ class AccountGateway:
             if abs(ours - theirs) > QUANTITY_EPSILON:
                 drift[key] = {"원장": str(ours), "증권사": str(theirs),
                               "차이": str(theirs - ours)}
+
+        # 미귀속이 음수가 되는 것은 시작 때만 막고 있었습니다. 매도 체결의
+        # 귀속을 잃으면 `settle` 이 그것을 미귀속에서 빼서 음수로 만들고, 그
+        # 음수가 파는 쪽 슬리브의 남은 수량과 상쇄되어 합계가 맞아떨어집니다 —
+        # 원장은 있다고 하는데 계좌에는 없는 주식이 그렇게 숨습니다.
+        negative = {key: str(qty) for key, qty in self._unassigned.items()
+                    if qty < 0}
+        if negative and not drift:
+            self.halt(
+                f"미귀속 수량이 음수입니다 — {negative}. 체결의 주인을 잃어 "
+                f"원장이 계좌에 없는 물량을 주장하고 있습니다. 증권사 앱에서 "
+                f"보유와 체결을 확인한 뒤 다시 시작하세요.",
+                {"unassigned_negative": negative},
+            )
+            return {"__unassigned__": {"원장": "음수", "증권사": "",
+                                       "차이": str(negative)}}
 
         if drift:
             detail = "; ".join(
@@ -301,10 +409,26 @@ class AccountGateway:
             order.updated_at = utcnow()
             return order
 
-        self._order_agent[order.id] = agent_id
+        # **증권사로 나가기 전에** 적습니다. 보낸 뒤에 적으면, 그 사이에 죽은
+        # 프로세스가 남긴 주문은 주인을 잃습니다 — 그 체결은 미귀속으로 가고,
+        # 미귀속은 아무도 팔 수 없으므로 판 적도 없는 주식이 손절도 청산도 닿지
+        # 않는 채로 계좌에 남습니다.
+        self._remember_order(order.id, agent_id, order.symbol.key)
         submitted = await self.venue.submit(order)
         if submitted.status is OrderStatus.REJECTED:
-            self._order_agent.pop(order.id, None)
+            # **확실한 거절에서만** 지웁니다. `LiveBrokerage.submit` 은 어댑터의
+            # 모든 예외를 REJECTED 로 접어 넣는데, 그중에는 "증권사가 이미
+            # 받았을 수도 있다" 는 애매한 실패가 섞여 있습니다(토스는 같은
+            # clientOrderId 로 두 번 시도해 둘 다 실패했을 때 체결 조회 채널을
+            # 내리고 이 경로로 옵니다). 그때 귀속을 지우면, 이 기록이 존재하는
+            # 이유인 바로 그 창에서 기록이 사라집니다.
+            if getattr(self.venue, "fill_channel_ok", True):
+                self._forget_order(order.id)
+            else:
+                log.warning(
+                    "%s 의 주문 %s 은 거절로 왔지만 체결 조회 채널이 내려가 "
+                    "있어 귀속 기록을 남겨 둡니다 — 증권사가 이미 받았을 수 "
+                    "있습니다", agent_id, order.id)
             return submitted
 
         self._master_record(submitted)
@@ -421,10 +545,25 @@ class AccountGateway:
         return (held > 0) == (order.side is OrderSide.SELL)
 
     def _last_price(self, symbol: Symbol) -> float:
-        book = getattr(self.venue, "portfolio", None)
-        if book is None:
+        """계좌 한도가 시장가 주문에 매길 가격.
+
+        **증권사 어댑터의 장부를 믿을 수 없습니다.** 그 장부는 계좌 진실 전용
+        으로 만들어져 어떤 봉도 마크하지 않고 어떤 체결도 적용받지 않으므로,
+        `last_price` 가 언제나 0 입니다. 그러면 시장가 주문의 거래대금이 전부
+        0 으로 계산되고, 계좌 거래대금 한도는 하루 종일 초록색인 채로 아무것도
+        막지 않습니다 — 100만원 한도에 350만원이 통과하는 것을 재현했습니다.
+
+        에이전트 장부는 매 봉 마크됩니다. 그중 값이 있는 아무거나 쓰면 됩니다 —
+        같은 종목의 같은 시세이므로 누구 것인지는 중요하지 않습니다.
+        """
+        for book in self._agent_books.values():
+            price = book.position(symbol).last_price
+            if price > 0:
+                return price
+        venue_book = getattr(self.venue, "portfolio", None)
+        if venue_book is None:
             return 0.0
-        return book.position(symbol).last_price
+        return venue_book.position(symbol).last_price
 
     # ── 체결 귀속 ────────────────────────────────────────────────────────
     #
@@ -463,6 +602,7 @@ class AccountGateway:
                 )
                 log.warning("발주자를 모르는 체결을 미귀속으로 둡니다: %s %s",
                             fill.symbol, fill.quantity)
+                self._persist_sleeves()
                 continue
             self._record_fill(agent_id, fill)
             by_agent.setdefault(agent_id, []).append(fill)
@@ -564,10 +704,61 @@ class AccountGateway:
                             agent_id, payload)
 
         engine.ctx.bus.on(EventType.TRADE_CLOSED, _on_trade_closed)
+        # 이 엔진의 장부를 시세 출처로도 씁니다 — 위 `_last_price` 참조.
+        book = getattr(engine.ctx, "portfolio", None)
+        if book is not None:
+            self._agent_books[agent_id] = book
+
+    def _remember_order(self, order_id: str, agent_id: str,
+                        symbol_key: str = "") -> None:
+        self._order_agent[order_id] = agent_id
+        if self.store is None:
+            return
+        try:
+            self.store.save_order_agent(order_id, agent_id, symbol_key)
+        except Exception:  # noqa: BLE001 — 기록 실패가 주문을 막지는 않는다
+            log.exception("주문 귀속을 저장하지 못했습니다: %s → %s",
+                          order_id, agent_id)
+
+    def _forget_order(self, order_id: str) -> None:
+        self._order_agent.pop(order_id, None)
+        if self.store is None:
+            return
+        with contextlib.suppress(Exception):
+            self.store.forget_order_agent(order_id)
+
+    def adopt_order_agents(self, mapping: dict[str, str]) -> int:
+        """재시작 전에 낸 주문들의 귀속을 이어받는다.
+
+        메모리에 있는 것이 우선입니다 — 이 프로세스가 방금 적은 것이 더
+        최신입니다.
+        """
+        added = 0
+        for order_id, agent_id in (mapping or {}).items():
+            if agent_id not in self._sleeves:
+                # 지금 그룹에 없는 에이전트입니다. 이어받으면 그 체결이
+                # 유령 슬리브로 가고, 그 수량이 합계에 더해져 불변식을
+                # 정상으로 통과시킵니다.
+                log.warning("지금 그룹에 없는 에이전트 %s 의 주문 귀속을 "
+                            "버립니다: %s", agent_id, order_id)
+                continue
+            if order_id not in self._order_agent:
+                self._order_agent[order_id] = agent_id
+                added += 1
+        if added:
+            # "복구했다" 고 단정하지 않습니다. 체결은 어댑터의 주문 표에서
+            # 나오고 그 표는 재시작하면 비어 있으므로, 이 귀속이 실제로 쓰이는
+            # 것은 어댑터가 그 주문을 다시 아는 경우뿐입니다. 일어나지 않은
+            # 복구를 일어났다고 적으면, 운영자는 확인해야 할 것을 확인하지
+            # 않습니다.
+            log.info("재시작 전 주문 %d건의 귀속을 이어받았습니다 — 해당 주문의 "
+                     "체결이 실제로 돌아올지는 증권사 어댑터가 그 주문을 다시 "
+                     "아는지에 달렸습니다", added)
+        return added
 
     def forget_order(self, order_id: str) -> None:
         """종결된 주문의 귀속 기록을 지운다. 오래 돌면 이 표만 커집니다."""
-        self._order_agent.pop(order_id, None)
+        self._forget_order(order_id)
 
     # ── 수명주기 ─────────────────────────────────────────────────────────
     async def connect(self) -> None:

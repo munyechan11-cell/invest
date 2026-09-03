@@ -220,8 +220,14 @@ async def test_pre_existing_holdings_are_adopted_before_any_agent_trades(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_an_unreadable_balance_allocates_zero_not_a_guess(tmp_path):
-    """추정치를 넣으면 그 추정으로 진짜 주문이 나갑니다."""
+async def test_an_unreadable_balance_refuses_to_start(tmp_path):
+    """추정치를 넣으면 그 추정으로 진짜 주문이 나갑니다. 그렇다고 0 을 나눠
+    주고 계속 도는 것도 답이 아닙니다 — 자본 배분의 분모이자 **비율 손실
+    한도의 기준** 이라, 0 이면 `max_daily_loss_pct` 가 하루 종일 걸리지 않고
+    복원된 포지션은 그 사이에도 계속 움직입니다.
+    """
+    from quant.live.gateway import GroupHalted
+
     class Broken(Venue):
         async def balances(self):
             raise RuntimeError("증권사 응답 없음")
@@ -230,8 +236,9 @@ async def test_an_unreadable_balance_allocates_zero_not_a_guess(tmp_path):
                      {"attack": config("a"), "defend": config("b")},
                      str(tmp_path / "s.db"), venue=Broken())
     try:
-        await gt.start()
-        assert gt.gateway.sleeve_balances("attack") == {"KRW": 0.0}
+        with pytest.raises(GroupHalted, match="잔고를 읽지 못해"):
+            await gt.start()
+        assert gt.alive is False
     finally:
         await gt.shutdown(wait=1.0)
 

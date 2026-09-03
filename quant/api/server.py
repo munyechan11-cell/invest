@@ -1246,7 +1246,17 @@ class Desk:
         return trader.desk() if trader is not None else None
 
     def release_halt(self, agent_id: str = "") -> dict:
-        budget = self.require_trader(agent_id).engine.budget
+        """오늘 하루만 한도를 면제한다.
+
+        `agent_id` 가 비었는데 그룹이 돌면 **계좌 전체** 한도입니다. 예전에는
+        여기서 `require_trader()` 만 불러, 그룹에서는 "어느 에이전트?" 로 되묻고
+        에이전트를 지정하면 그 에이전트의 한도만 풀렸습니다 — 걸린 것이 계좌
+        한도일 때 그것을 푸는 길이 화면 어디에도 없었습니다.
+        """
+        budget = self.registry._live_budget(self.user.id, agent_id)
+        if budget is None:
+            # 이 경로가 곧 "어느 에이전트?" 를 묻습니다.
+            budget = self.require_trader(agent_id).engine.budget
         budget.release()
         return budget.status()
 
@@ -1388,9 +1398,14 @@ class UserDesk(Desk):
 
     # ── 하루 한도 ────────────────────────────────────────────────────────
     def limits(self, agent_id: str = "") -> dict:
-        trader = self.trader(agent_id)
-        if trader is not None:
-            return trader.engine.budget.status()
+        # 그룹이 돌 때 `agent_id` 가 비면 **계좌 전체** 한도입니다. 그 자리에서
+        # "실행 중 아님" 을 돌려주면, 지금 걸려 있는 계좌 한도를 화면이 보여줄
+        # 방법이 없어집니다 — 그리고 그 한도야말로 실거래에서 마지막 방어선입니다.
+        budget = self.registry._live_budget(self.user.id, agent_id)
+        if budget is not None:
+            return {**budget.status(),
+                    "scope": "agent" if agent_id else (
+                        "account" if self.registry.group(self.user.id) else "bot")}
         return {"running": False,
                 "configured": self.registry.limits(self.user.id, agent_id)}
 

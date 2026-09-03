@@ -54,6 +54,7 @@ from quant.live.agents import _AGENT_ID
 from quant.live.credentials import VENUES_BY_ID
 from quant.live.group import STOP_GRACE_SECONDS as GROUP_STOP_GRACE
 from quant.live.group import GroupTrader
+from quant.live.limits import TradingBudget
 from quant.live.profile import InvestorProfile, ProfileStore, apply_profile
 from quant.live.spend import SpendMeter
 from quant.live.state import (
@@ -835,6 +836,38 @@ class UserRegistry:
             return dict.fromkeys(LIMIT_KEYS, 0.0)
         return {key: float(raw.get(key) or 0.0) for key in LIMIT_KEYS}
 
+    def _scope_is_live(self, user_id: int, agent_id: str, trader) -> bool:
+        """이 한도가 지키는 것이 진짜 돈인가.
+
+        계좌 한도(`agent_id` 없음)는 **에이전트 하나라도 실거래면** 진짜 돈을
+        지킵니다. 여기서 그 봇의 트레이더만 보면 안 됩니다 — 그룹에서
+        `trader(user_id, "")` 는 여럿일 때 `None` 이라, 실거래 그룹이 도는 중에
+        계좌 한도를 통째로 해제할 수 있게 됩니다.
+
+        그룹에서 계좌 한도는 에이전트별이 아닌 **유일한** 한도이므로, 그것을
+        지우는 것은 단일 봇에서 마지막 한도를 지우는 것보다 위험합니다.
+        """
+        if not agent_id:
+            group = self.group(user_id)
+            if group is not None:
+                return group.has_live
+        return bool(trader is not None
+                    and trader.config.mode is RunMode.LIVE)
+
+    def _live_budget(self, user_id: int, agent_id: str = ""):
+        """이 한도가 지금 적용되는 원장. 없으면 None.
+
+        `agent_id` 가 비었는데 그룹이 돌고 있으면 **계좌 마스터 원장** 입니다 —
+        그룹에서 사용자 레벨 한도는 계좌 전체의 상한이기 때문입니다. 단일 봇이면
+        예전처럼 그 봇의 원장입니다.
+        """
+        if not agent_id:
+            group = self.group(user_id)
+            if group is not None:
+                return group.gateway.master_budget
+        trader = self.trader(user_id, agent_id)
+        return getattr(getattr(trader, "engine", None), "budget", None)
+
     def save_limits(self, user_id: int, caps: dict[str, float | None],
                     agent_id: str = "") -> dict:
         """부분 갱신. 안 보낸 항목은 그대로 두고, 명시적 0 은 한도를 해제합니다.
@@ -849,7 +882,7 @@ class UserRegistry:
                 "않았습니다. 운영자가 한도 파일을 확인해야 합니다."
             )
         trader = self.trader(user_id, agent_id)
-        budget = getattr(getattr(trader, "engine", None), "budget", None)
+        budget = self._live_budget(user_id, agent_id)
         candidate = dict(stored)
         runtime_candidate = (
             {key: float(getattr(budget, _BUDGET_ATTR[key]))
@@ -879,11 +912,8 @@ class UserRegistry:
             candidate[key] = value
             runtime_candidate[key] = value
             updated.append(key)
-        if (
-            trader is not None
-            and trader.config.mode is RunMode.LIVE
-            and not any(runtime_candidate.values())
-        ):
+        if self._scope_is_live(user_id, agent_id, trader) and not any(
+                runtime_candidate.values()):
             raise ConfigRejected(
                 "실거래 실행 중에는 모든 하루 한도를 해제할 수 없습니다. "
                 "당일 한도만 명시적으로 넘기려면 '오늘 한도 해제'를 사용하고, "
@@ -1294,6 +1324,32 @@ class UserRegistry:
             | {uid for uid, group in self._groups.items() if group.alive}
         )
 
+    def account_budget(self, user_id: int,
+                       config: StrategyConfig) -> TradingBudget:
+        """계좌 전체의 하루 한도. **에이전트 한도의 합이 아닙니다.**
+
+        합으로 정의하면 방어선이 봇 수만큼 곱해집니다 — 넷이 각자 10만원 손실
+        한도를 갖고 있으면 계좌는 40만원까지 열리고, 그건 계좌 한도를 두지
+        않은 것과 같습니다.
+
+        값은 **사용자 레벨** 한도 파일에서 옵니다. 그룹을 쓰지 않는 사람이
+        예전부터 쓰던 그 파일이고, 그룹에서는 그것이 계좌 전체의 상한이 됩니다
+        — 화면에서 한 자리를 새로 배우지 않아도 되고, 단일 봇에서 그룹으로
+        넘어온 사람의 한도가 조용히 사라지지도 않습니다.
+
+        시간대와 정지 정책은 설정에서 가져옵니다. 계좌 한도의 "오늘" 이 에이전트
+        한도의 "오늘" 과 다른 시각에 갈리면, 자정 무렵에 한쪽만 초기화됩니다.
+        """
+        saved = self.limits(user_id)
+        return TradingBudget(
+            max_daily_notional=saved["max_daily_notional"],
+            max_daily_orders=int(saved["max_daily_orders"]),
+            max_daily_loss=saved["max_daily_loss"],
+            max_daily_loss_pct=saved["max_daily_loss_pct"],
+            timezone_offset_hours=config.limits.timezone_offset_hours,
+            halt_until_next_day=config.limits.halt_until_next_day,
+        )
+
     def build_account_venue(self, user_id: int, config: StrategyConfig):
         """그룹이 물 증권사 어댑터 하나. **자기만의 장부** 를 갖습니다.
 
@@ -1373,6 +1429,21 @@ class UserRegistry:
                 self._settings_paths(uid, spec.agent_id).profile)
             meters[spec.agent_id] = self._meter(uid, cfg)
 
+        if master_budget is None:
+            master_budget = self.account_budget(uid, first)
+        if group.has_live and not master_budget.configured:
+            # 계좌 한도가 없으면 에이전트별 한도만 남는데, 그것들의 합이 곧
+            # 계좌의 노출입니다 — 넷이 각자 10만원 한도를 지켜도 계좌는 40만원을
+            # 잃습니다. 이 기능이 막으려고 존재하는 사고 그 자체이므로, 실거래
+            # 에서는 닫는 쪽으로 실패합니다. `quant live` 가 단일 봇에 요구하는
+            # 것("실거래에는 하루 한도가 하나는 있어야 한다")과 같은 규칙입니다.
+            raise ConfigRejected(
+                "실거래 그룹에는 계좌 전체 하루 한도가 하나는 있어야 합니다. "
+                "에이전트별 한도만으로는 계좌를 지키지 못합니다 — 넷이 각자 "
+                "자기 한도를 지켜도 계좌는 그 네 배를 잃을 수 있습니다. "
+                "마이페이지의 하루 한도(계좌)에서 먼저 설정하세요."
+            )
+
         trader_group = GroupTrader(
             group, prepared, self.state_path(uid), venue=venue,
             master_budget=master_budget, base_currency=base_currency,
@@ -1389,7 +1460,17 @@ class UserRegistry:
                     None, on_event)
 
         self._groups[uid] = trader_group
-        await trader_group.start()
+        try:
+            await trader_group.start()
+        except BaseException:
+            # 시작이 실패하면 이 그룹은 상태 DB 소유권만 붙들고 앉아 있습니다.
+            # 그대로 두면 사용자가 자격증명을 고치고 다시 눌러도 "이 프로세스가
+            # 이미 이 상태 파일로 트레이더를 돌리고 있습니다" 로 막히고, 그
+            # 문장은 지금 상황을 설명하지 못합니다.
+            self._groups.pop(uid, None)
+            with contextlib.suppress(Exception):
+                await trader_group.shutdown(wait=1.0)
+            raise
         self.accounts.record(
             uid, "group_started",
             ", ".join(f"{s.agent_id}({s.mode.value})" for s in group.agents))

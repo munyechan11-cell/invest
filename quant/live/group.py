@@ -37,7 +37,7 @@ from typing import Any
 from quant.brokerage.sleeve import SleeveBrokerage
 from quant.core.types import UTC, RunMode
 from quant.live.agents import AgentGroup, AgentSpec
-from quant.live.gateway import AccountGateway
+from quant.live.gateway import AccountGateway, GroupHalted
 from quant.live.limits import TradingBudget
 from quant.live.state import StateStore
 from quant.live.trader import LiveTrader
@@ -84,6 +84,7 @@ class GroupTrader:
         self.gateway = AccountGateway(
             group, venue, master_budget=master_budget,
             base_currency=base_currency, allocation_quantum=allocation_quantum,
+            store=self.state,
         )
 
         self.traders: dict[str, LiveTrader] = {}
@@ -135,10 +136,47 @@ class GroupTrader:
         에이전트는 자기 몫이 0 인 줄 알고, 미귀속 채택 전에 불변식을 보면
         사용자가 앱에서 직접 산 주식이 드리프트로 읽혀 그룹이 즉사합니다.
         """
+        # 계좌 원장을 **어느 에이전트도 주문을 내기 전에** 되살립니다. 이것이
+        # 없으면 재시작이 계좌에 새 허용치를 줍니다 — 하루 손실 한도가 걸려
+        # 멈춘 계좌를 재배포 한 번이 풀어 주는데, 그건 한도가 아니라 한도와
+        # 초기화 버튼을 함께 둔 것이고 그 버튼은 봇이 고장 났을 때 가장 자주
+        # 눌립니다.
+        mode = (RunMode.LIVE.value if self.group.has_live
+                else RunMode.DRY_RUN.value)
+        self.state.restore_account_budget(self.gateway.master_budget, mode=mode)
+        # **미귀속 채택보다 먼저** 슬리브 원장을 되살립니다. 순서가 뒤집히면
+        # `adopt_unassigned` 가 빈 원장을 보고 계좌 전부를 미귀속으로 받아
+        # 적고, 미귀속은 아무도 팔 수 없으므로 재시작 하나가 모든 보유를
+        # 영구히 묶어 버립니다 — 그리고 합계 불변식은 그 상태를 정상으로
+        # 읽으므로 아무도 알아채지 못합니다.
+        self.gateway.adopt_sleeves(self.state.restore_sleeves())
+        # 재시작 전에 낸 주문들의 주인도 함께 이어받습니다. 잃으면 그 체결이
+        # 미귀속으로 떨어지고, 미귀속은 아무도 팔 수 없으므로 판 적도 없는
+        # 주식이 손절도 청산도 닿지 않는 채로 계좌에 남습니다.
+        self.gateway.adopt_order_agents(self.state.restore_order_agents())
+
         await self.gateway.connect()
 
         equity = await self._account_equity()
+        if equity <= 0:
+            # 잔고를 못 읽으면 시작하지 않습니다. 0 을 나눠 주면 에이전트들은
+            # 자기 몫이 없는 줄 알고 아무것도 사지 않는데, 그보다 나쁜 것은
+            # **비율 손실 한도가 조용히 죽는다** 는 점입니다 — 분모(시작 자산)가
+            # 0 이면 `max_daily_loss_pct` 는 하루 종일 걸리지 않고, 복원된
+            # 포지션은 그 사이에도 계속 움직입니다.
+            raise GroupHalted(
+                "계좌 잔고를 읽지 못해 그룹을 시작하지 않았습니다. 자본 배분의 "
+                "분모이자 비율 손실 한도의 기준이라, 모르는 채로 시작하면 계좌 "
+                "한도가 걸리지 않습니다. 증권사 연동을 확인한 뒤 다시 시작하세요."
+            )
         self.gateway.allocate_capital(equity)
+        # 비율 손실 한도의 분모. 오늘 원장이 이미 있으면 그 시작 자산을 그대로
+        # 두어야 합니다 — 장중 재시작마다 분모를 지금 자산으로 갈아 끼우면,
+        # 이미 20% 를 잃은 계좌가 "오늘은 아직 0%" 가 됩니다.
+        ledger = self.gateway.master_budget.roll(equity=equity)
+        if not ledger.starting_equity:
+            ledger.starting_equity = equity
+            self.state.save_account_budget(self.gateway.master_budget, mode)
 
         venue_positions = await self.gateway.venue.positions()
         self.gateway.adopt_unassigned(venue_positions)
