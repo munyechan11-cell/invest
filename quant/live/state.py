@@ -2419,3 +2419,112 @@ class StateStore:
     def close(self) -> None:
         self._release_ownership()
         self.conn.close()
+
+    # ── 에이전트별 시점 ──────────────────────────────────────────────────
+    def agent_view(self, agent_id: str) -> AgentStateView:
+        """한 에이전트가 쓰는 시점. 연결과 소유권은 이 저장소의 것을 씁니다.
+
+        에이전트마다 `StateStore` 를 새로 만들 수는 없습니다. `_claim()` 의
+        advisory lock 은 **open file description 단위** 라, 같은 프로세스에서
+        두 번째로 여는 순간 `LOCK_EX|LOCK_NB` 가 실패하고 `StateInUseError` 로
+        끝납니다 — 자기 자신에게 잠기는 셈입니다.
+
+        그렇다고 하나를 그대로 넷이 나눠 쓸 수도 없습니다. `run_id` 가 인스턴스
+        속성이라, 마지막으로 `start_run` 을 부른 에이전트의 값이 남고 넷이 전부
+        그 run 에 자기 포지션과 하루 원장을 적습니다. 포지션 PK 가
+        `(run_id, symbol_key)` 이므로 나중에 적는 쪽이 앞사람을 덮어씁니다.
+
+        그래서 **연결·소유권·파일락은 공유하고 `run_id` 만 가릅니다.**
+        `accounting_persistence_failed` 는 공유합니다 — 회계 기록을 잃은 것은
+        DB 하나의 사실이고, 한 에이전트의 실패는 그룹 전체의 종료를 안전하지
+        않게 만듭니다.
+        """
+        return AgentStateView(self, agent_id)
+
+
+class AgentStateView(StateStore):
+    """공유 저장소를 한 에이전트의 눈으로 본 것. 연결을 새로 열지 않습니다.
+
+    `StateStore` 를 상속하되 `__init__` 을 부르지 않습니다 — 부르면 같은 파일에
+    두 번째 연결이 열리고 파일락이 자기 자신에게 걸립니다. 대신 공유해야 할
+    것만 원본에서 가져오고, 갈라야 할 것만 새로 만듭니다.
+    """
+
+    def __init__(self, owner: StateStore, agent_id: str):  # noqa: D107
+        # super().__init__ 은 의도적으로 부르지 않습니다 (위 docstring 참조).
+        self.owner = owner
+        self.agent_id = str(agent_id or "")
+        # ── 공유: 계좌에 하나뿐인 것들 ──
+        self.path = owner.path
+        self.conn = owner.conn
+        self._lock = owner._lock
+        # ── 갈림: 에이전트의 실행 ──
+        self.run_id: int | None = None
+        self.restored_reconciliation_required = False
+        self.restored_venue_truth = False
+        self._scored_saved = 0
+
+    # 소유권은 원본의 것입니다. 시점이 따로 주장하면 자기 자신에게 잠깁니다.
+    @property
+    def _owns(self) -> bool:
+        return self.owner._owns
+
+    @_owns.setter
+    def _owns(self, value: bool) -> None:
+        self.owner._owns = value
+
+    @property
+    def _heartbeat_at(self) -> float:
+        return self.owner._heartbeat_at
+
+    @_heartbeat_at.setter
+    def _heartbeat_at(self, value: float) -> None:
+        self.owner._heartbeat_at = value
+
+    @property
+    def _lock_fd(self):
+        return getattr(self.owner, "_lock_fd", None)
+
+    @_lock_fd.setter
+    def _lock_fd(self, value) -> None:
+        self.owner._lock_fd = value
+
+    @property
+    def accounting_persistence_failed(self) -> bool:
+        """회계 기록을 잃은 것은 DB 하나의 사실입니다.
+
+        한 에이전트의 예산 저장이 실패하면 그 DB 로 도는 그룹 전체의 종료를
+        정상으로 확정할 수 없습니다.
+        """
+        return self.owner.accounting_persistence_failed
+
+    @accounting_persistence_failed.setter
+    def accounting_persistence_failed(self, value: bool) -> None:
+        self.owner.accounting_persistence_failed = bool(value)
+
+    def close(self) -> None:
+        """아무것도 닫지 않습니다 — 연결도 소유권도 이 시점의 것이 아닙니다.
+
+        `LiveTrader` 는 두 종료 경로 모두에서 `state.close()` 를 무조건 부릅니다.
+        시점이 그것을 그대로 수행하면, 먼저 끝난 에이전트 하나가 아직 매매 중인
+        나머지 셋의 DB 연결과 그룹 전체의 소유권 주장을 닫아 버립니다.
+        """
+        return None
+
+    # ── 에이전트 실행의 시작/재개 ────────────────────────────────────────
+    def start_run(self, strategy, mode, starting_cash, config_json="", *,
+                  now=None, agent_id=None):
+        return super().start_run(
+            strategy, mode, starting_cash, config_json, now=now,
+            agent_id=self.agent_id if agent_id is None else agent_id)
+
+    def resume_run(self, strategy, mode, agent_id=None):
+        return super().resume_run(
+            strategy, mode,
+            self.agent_id if agent_id is None else agent_id)
+
+    def resume_run_exact(self, strategy, mode, expected_run_id,
+                         expected_config_json, agent_id=None):
+        return super().resume_run_exact(
+            strategy, mode, expected_run_id, expected_config_json,
+            self.agent_id if agent_id is None else agent_id)

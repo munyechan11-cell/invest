@@ -58,6 +58,8 @@ class LiveTrader:
         max_consecutive_errors: int = 10,
         profile_path: str | None = None,
         meter: SpendMeter | None = None,
+        brokerage=None,
+        state: StateStore | None = None,
     ):
         if config.mode is RunMode.BACKTEST:
             raise ValueError("LiveTrader needs mode: dry_run or live")
@@ -69,9 +71,17 @@ class LiveTrader:
         self.config = config
         self.engine: Engine
         self.provider: DataProvider
-        self.engine, self.provider = build_engine(config, clock=RealClock())
+        self.engine, self.provider = build_engine(
+            config, clock=RealClock(), brokerage=brokerage)
         self.calendar = getattr(self.engine, "calendar", None)
-        self.state = StateStore(state_path)
+        # 여럿이 한 계좌를 나눠 쓸 때는 그룹이 상태 저장소를 열어 소유권을 잡고
+        # 에이전트별 시점(`StateStore.agent_view`)을 나눠 줍니다. 트레이더마다
+        # `StateStore` 를 열면 advisory lock 이 open file description 단위라
+        # 같은 프로세스 안에서 자기 자신에게 잠깁니다.
+        self.state = state if state is not None else StateStore(state_path)
+        #: 저장소를 우리가 열었는가. 주입받았으면 닫는 것도 우리 몫이 아닙니다 —
+        #: 먼저 끝난 에이전트가 나머지의 연결을 닫아 버립니다.
+        self._owns_state = state is None
         self.resume = resume
         self.max_errors = max_consecutive_errors
         # 이 봇이 쓴 LLM 을 누구 앞으로 다는가. 단일 사용자 배포에서는 셀
@@ -1252,10 +1262,13 @@ class LiveTrader:
         except Exception:  # noqa: BLE001 — ownership release still comes next
             log.exception("could not mark failed startup as stopped")
         finally:
-            try:
-                self.state.close()
-            except Exception:  # noqa: BLE001 — best-effort final release
-                log.exception("could not close state after startup failure")
+            # 주입받은 저장소는 그룹의 것입니다. 먼저 실패한 에이전트 하나가
+            # 아직 매매 중인 나머지의 연결과 소유권 주장을 닫으면 안 됩니다.
+            if self._owns_state:
+                try:
+                    self.state.close()
+                except Exception:  # noqa: BLE001 — best-effort final release
+                    log.exception("could not close state after startup failure")
 
     async def shutdown(self) -> None:
         if self._stopped or (not self.running and self.started_at is None):
@@ -1328,10 +1341,11 @@ class LiveTrader:
                     await close()
                 except Exception:  # noqa: BLE001 — best-effort final release
                     log.exception("could not close %s during shutdown", label)
-            try:
-                self.state.close()
-            except Exception:  # noqa: BLE001 — best-effort final release
-                log.exception("could not close state during shutdown")
+            if self._owns_state:
+                try:
+                    self.state.close()
+                except Exception:  # noqa: BLE001 — best-effort final release
+                    log.exception("could not close state during shutdown")
         if shutdown_error is not None:
             raise shutdown_error
 
