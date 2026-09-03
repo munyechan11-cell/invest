@@ -52,6 +52,8 @@ from quant.config.schema import StrategyConfig
 from quant.core.types import UTC, RunMode
 from quant.live.agents import _AGENT_ID
 from quant.live.credentials import VENUES_BY_ID
+from quant.live.group import STOP_GRACE_SECONDS as GROUP_STOP_GRACE
+from quant.live.group import GroupTrader
 from quant.live.profile import InvestorProfile, ProfileStore, apply_profile
 from quant.live.spend import SpendMeter
 from quant.live.state import (
@@ -174,8 +176,33 @@ class NotRunning(RuntimeProblem):
     status = 404
     code = "not_running"
 
-    def __init__(self) -> None:
-        super().__init__("실행 중인 봇이 없습니다")
+    def __init__(self, agent_id: str = "") -> None:
+        super().__init__(
+            f"에이전트 '{agent_id}' 가 실행 중이 아닙니다" if agent_id
+            else "실행 중인 봇이 없습니다"
+        )
+
+
+class AgentRequired(RuntimeProblem):
+    """에이전트가 여럿인데 어느 것인지 말하지 않았다.
+
+    조용히 하나를 고르면 안 됩니다. `close_all` 이 그 하나만 정리하고 성공을
+    돌려주면, 사용자는 전부 정리된 줄 알고 화면을 닫습니다 — 나머지 셋은 그대로
+    시장에 남아 있습니다. 성향 변경도 마찬가지로 엉뚱한 봇에 적용됩니다.
+    """
+
+    status = 400
+    code = "agent_required"
+
+    def __init__(self, agents: list[str]):
+        self.agents = agents
+        super().__init__(
+            f"에이전트가 여럿입니다 ({', '.join(agents)}) — 어느 에이전트에 "
+            f"적용할지 지정해 주세요."
+        )
+
+    def to_dict(self) -> dict:
+        return {**super().to_dict(), "agents": self.agents}
 
 
 class ReconciliationProblem(RuntimeProblem):
@@ -461,6 +488,9 @@ class UserRegistry:
         self.root = Path(root or os.environ.get("QUANT_USER_DATA", "data/users"))
         self.root.mkdir(parents=True, exist_ok=True)
         self._bots: dict[int, _Bot] = {}
+        #: 사용자별 에이전트 그룹. `_bots` 와 배타적입니다 — 계좌가 하나이므로
+        #: 단일 봇과 그룹이 동시에 돌면 상태 DB 소유권부터 충돌합니다.
+        self._groups: dict[int, GroupTrader] = {}
         # AI 데스크 비용은 서비스가 냅니다. 계량을 켜 두지 않으면 한 사람의
         # 설정 실수가 운영자 카드로 청구되고, 나중에 소급해서 만들 수도
         # 없습니다 — "누가 얼마나 썼나" 는 기록이 없으면 답이 없습니다.
@@ -921,22 +951,28 @@ class UserRegistry:
             raise CredentialsMissing(report["missing"])
 
     # ── 설정 준비 ────────────────────────────────────────────────────────
-    def prepare(self, user_id: int, config: StrategyConfig) -> StrategyConfig:
-        """이 사용자의 성향과 하루 한도를 반영한 설정. **자격증명은 없습니다.**
+    def prepare(self, user_id: int, config: StrategyConfig,
+                agent_id: str = "") -> StrategyConfig:
+        """성향과 하루 한도를 반영한 설정. **자격증명은 없습니다.**
 
         이 반환값은 화면에 보여줘도 되고 저장해도 됩니다. 키가 들어간 사본은
         엔진을 세울 때만 따로 만들어집니다.
+
+        `agent_id` 를 주면 **그 에이전트의** 성향과 한도를 씁니다. 에이전트마다
+        손절과 사이징이 다른 것이 이 기능의 전부이므로, 여기서 사람의 것을
+        쓰면 넷이 같은 성향으로 돕니다.
         """
         cfg = config.model_copy(deep=True)
 
-        profile = self.profile(user_id)
+        profile = self.profile(user_id, agent_id)
         if profile.completed:
             cfg, touched = apply_profile(cfg, profile)
             if touched:
-                log.info("사용자 %s 투자 성향 '%s' 적용: %s",
-                         user_id, profile.name, ", ".join(touched))
+                log.info("사용자 %s%s 투자 성향 '%s' 적용: %s", user_id,
+                         f" 에이전트 {agent_id}" if agent_id else "",
+                         profile.name, ", ".join(touched))
 
-        saved = self.limits(user_id)
+        saved = self.limits(user_id, agent_id)
         for key in LIMIT_KEYS:
             value = _effective(float(getattr(cfg.limits, key)), saved[key])
             setattr(cfg.limits, key, int(value) if key == "max_daily_orders" else value)
@@ -1189,28 +1225,54 @@ class UserRegistry:
         except Exception:       # pragma: no cover - 계정 DB 가 닫힌 경우 등
             log.warning("감사 기록 실패: user=%s action=%s", uid, action)
 
+    def group(self, user_id: int) -> GroupTrader | None:
+        """돌고 있는 에이전트 그룹, 없으면 None."""
+        group = self._groups.get(self._uid(user_id))
+        return group if group is not None and group.alive else None
+
+    def agent_ids(self, user_id: int) -> list[str]:
+        group = self.group(user_id)
+        return list(group.group.ids) if group is not None else []
+
     def trader(self, user_id: int, agent_id: str = ""):
         """돌고 있는 트레이더, 없으면 None. 수동 매매·조회 엔드포인트가 씁니다.
 
-        `agent_id` 는 그룹 안의 한 대를 가리킵니다. 아직 그룹 실행 경로가 없으므로
-        지금은 빈 값(그룹을 쓰지 않는 단일 봇)만 트레이더를 돌려주고, 에이전트를
-        지정하면 None 입니다 — 그 에이전트는 아직 돌 수 없습니다. 조용히 단일
-        봇을 돌려주지 않는 것이 중요합니다: 그러면 공격형의 성향 변경이 보수형
-        봇에 적용되고, 화면은 성공했다고 말합니다.
+        `agent_id` 를 주면 그룹 안의 그 한 대입니다. 주지 않았는데 그룹이 여럿을
+        돌리고 있으면 **아무것도 돌려주지 않습니다** — 조용히 하나를 고르면
+        `close_all` 이 그 하나만 정리하고 성공을 돌려주고, 사용자는 전부
+        정리된 줄 알고 화면을 닫습니다. `require_trader` 가 그 자리에서
+        `AgentRequired` 로 물어봅니다.
         """
+        uid = self._uid(user_id)
+        group = self.group(uid)
+        if group is not None:
+            if agent_id:
+                return group.trader(agent_id)
+            ids = group.group.ids
+            return group.trader(ids[0]) if len(ids) == 1 else None
         if agent_id:
             return None
-        bot = self._bots.get(self._uid(user_id))
+        bot = self._bots.get(uid)
         return bot.trader if bot is not None and bot.alive else None
 
-    def require_trader(self, user_id: int):
-        trader = self.trader(user_id)
+    def require_trader(self, user_id: int, agent_id: str = ""):
+        uid = self._uid(user_id)
+        group = self.group(uid)
+        if group is not None and not agent_id and len(group.group.ids) > 1:
+            raise AgentRequired(list(group.group.ids))
+        trader = self.trader(uid, agent_id)
         if trader is None:
-            raise NotRunning()
+            raise NotRunning(agent_id)
         return trader
 
     def status(self, user_id: int) -> dict:
-        bot = self._bots.get(self._uid(user_id))
+        uid = self._uid(user_id)
+        running_group = self._groups.get(uid)
+        if running_group is not None:
+            # 그룹 상태는 에이전트별 배열과 계좌 요약을 함께 답니다. 기존 화면이
+            # 읽던 평평한 키(`running`)는 그대로 둡니다.
+            return running_group.status()
+        bot = self._bots.get(uid)
         if bot is None:
             return {"running": False, "message": "봇이 실행 중이 아닙니다"}
         if not bot.alive:
@@ -1227,11 +1289,84 @@ class UserRegistry:
         return {**bot.trader.status(), "requested_at": bot.started_at.isoformat()}
 
     def running(self) -> list[int]:
-        return sorted(uid for uid, bot in self._bots.items() if bot.alive)
+        return sorted(
+            {uid for uid, bot in self._bots.items() if bot.alive}
+            | {uid for uid, group in self._groups.items() if group.alive}
+        )
+
+    async def start_group(self, user_id: int, group, configs: dict,
+                          *, venue, on_event: Callable | None = None,
+                          master_budget=None, base_currency: str = "KRW",
+                          resume: bool = True) -> dict:
+        """이 사용자의 에이전트 그룹을 띄운다. 계좌 하나당 그룹 하나까지.
+
+        단일 봇과 그룹은 배타적입니다. 계좌가 하나이므로 둘이 동시에 돌면 상태
+        DB 소유권부터 충돌하고, 그 전에 이미 같은 현금을 두 번 사이징합니다.
+
+        성향과 하루 한도는 **에이전트마다** 자기 파일에서 옵니다. 그것이 이
+        기능의 전부이므로, 여기서 섞이면 나머지는 전부 무의미합니다.
+        """
+        uid = self._uid(user_id)
+        existing = self._bots.get(uid)
+        if existing is not None and existing.alive:
+            raise AlreadyRunning(existing.strategy)
+        running_group = self._groups.get(uid)
+        if running_group is not None and running_group.alive:
+            raise AlreadyRunning(
+                ", ".join(s.label for s in running_group.group.agents))
+
+        prepared: dict = {}
+        profiles: dict[str, str] = {}
+        meters: dict = {}
+        for spec in group.agents:
+            config = configs[spec.agent_id]
+            cfg = self.prepare(uid, config, spec.agent_id)
+            self.assert_ready(uid, cfg)
+            wired = _with_credentials(cfg, self.accounts.secrets_for(uid))
+            prepared[spec.agent_id] = wired
+            profiles[spec.agent_id] = str(
+                self._settings_paths(uid, spec.agent_id).profile)
+            meters[spec.agent_id] = self._meter(uid, cfg)
+
+        trader_group = GroupTrader(
+            group, prepared, self.state_path(uid), venue=venue,
+            master_budget=master_budget, base_currency=base_currency,
+            profile_paths=profiles, meters=meters, resume=resume,
+        )
+        # 엔진은 키를 받았고, 트레이더가 계속 들고 다니는 설정은 받지 않습니다.
+        # `LiveTrader.start()` 가 `config.model_dump_json()` 을 상태 DB 에 그대로
+        # 적기 때문에, 되돌리지 않으면 앱 시크릿이 평문으로 남습니다.
+        for spec in group.agents:
+            trader_group.traders[spec.agent_id].config = self.prepare(
+                uid, configs[spec.agent_id], spec.agent_id)
+            if on_event is not None:
+                trader_group.traders[spec.agent_id].engine.ctx.bus.on(
+                    None, on_event)
+
+        self._groups[uid] = trader_group
+        await trader_group.start()
+        self.accounts.record(
+            uid, "group_started",
+            ", ".join(f"{s.agent_id}({s.mode.value})" for s in group.agents))
+        log.info("사용자 %s 그룹 시작: %s", uid, ", ".join(group.ids))
+        return trader_group.status()
+
+    async def stop_group(self, user_id: int,
+                         wait: float = GROUP_STOP_GRACE) -> dict:
+        uid = self._uid(user_id)
+        group = self._groups.get(uid)
+        if group is None or not group.alive:
+            raise NotRunning()
+        result = await group.stop(wait)
+        self._note(uid, "group_stopped", ", ".join(group.group.ids))
+        return result
 
     async def stop(self, user_id: int, wait: float = STOP_GRACE_SECONDS) -> dict:
         """이번 사이클을 끝내고 멈춘다. 보유 포지션은 그대로 둡니다."""
         uid = self._uid(user_id)
+        group = self._groups.get(uid)
+        if group is not None and group.alive:
+            return await self.stop_group(uid, wait)
         bot = self._bots.get(uid)
         if bot is None or not bot.alive:
             raise NotRunning()
@@ -1266,3 +1401,13 @@ class UserRegistry:
         if alive:
             await asyncio.wait({bot.task for bot in alive}, timeout=5.0)
         self._bots.clear()
+
+        # 그룹은 자기 종료 절차가 따로 있습니다 — 트레이더들이 각자 마지막
+        # 상태를 적은 뒤에야 증권사 연결과 DB 소유권을 놓습니다. 여기서도
+        # 함께 기다립니다: 하나씩 순서대로면 마지막 사용자의 여유가 앞사람들의
+        # 대기 시간만큼 줄어듭니다.
+        groups = list(self._groups.values())
+        if groups:
+            await asyncio.gather(
+                *(g.shutdown(wait) for g in groups), return_exceptions=True)
+        self._groups.clear()
