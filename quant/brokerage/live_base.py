@@ -40,6 +40,12 @@ class _CapitalOrderCheckpoint:
 class LiveBrokerage(Brokerage):
     """Base for venue adapters. Subclasses implement the four `_venue_*` hooks."""
 
+    #: Every venue adapter reaches a real venue, so the live loop's between-bar
+    #: work (quote refresh, fill polling, stop re-evaluation, submission guard)
+    #: always applies here.  A `SleeveBrokerage` sets this from the adapter it
+    #: sits on top of — see `quant.brokerage.base.Brokerage.venue_backed`.
+    venue_backed = True
+
     #: Most brokers are intentionally *not* account-authoritative: a strategy may
     #: own a 1,000,000 KRW slice of a 50,000,000 KRW account.  Adopting the whole
     #: account there silently multiplies risk.  A venue adapter must opt in only

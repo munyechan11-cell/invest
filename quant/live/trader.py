@@ -113,7 +113,7 @@ class LiveTrader:
     def _bind_submission_guard(self) -> None:
         """Put session and durable-accounting truth at the final order gate."""
         brokerage = getattr(getattr(self, "engine", None), "brokerage", None)
-        if isinstance(brokerage, LiveBrokerage):
+        if getattr(brokerage, "venue_backed", False):
             brokerage.set_submission_guard(self._submission_error)
 
     def _submission_error(self, order) -> str:
@@ -299,6 +299,15 @@ class LiveTrader:
             log.info("run %s 복원: 포지션 %d건, 핀 %d건", self.state.run_id,
                      restored, pinned)
         if isinstance(self.engine.brokerage, LiveBrokerage):
+            # Deliberately `isinstance`, not `venue_backed`. This branch and the
+            # `mark_reconciliation_required` one below decide who may adopt the
+            # ACCOUNT's cash and holdings as their own, and in a multi-agent
+            # group that is the gateway alone — four sleeves each adopting the
+            # same account would count the same cash four times. Every *other*
+            # LiveBrokerage branch in this file asks a different question ("do
+            # orders reach a real venue?") and keys off `venue_backed`, which a
+            # sleeve answers yes to. See quant/brokerage/base.py:Brokerage.
+            #
             # This is a durable StateStore fact, not a guess from the cash value.
             # A first-ever real-account adoption may import existing holdings;
             # a resumed venue ledger must instead explain every quantity/cash
@@ -709,7 +718,7 @@ class LiveTrader:
     async def _poll_live_fills(self) -> list:
         """Poll only while local orders need observation, with bounded backoff."""
         brokerage = self.engine.brokerage
-        if not isinstance(brokerage, LiveBrokerage):
+        if not getattr(brokerage, "venue_backed", False):
             return []
         now = time.monotonic()
         if now < getattr(self, "_next_fill_poll_at", 0.0):
@@ -911,7 +920,7 @@ class LiveTrader:
         # Then require the venue snapshot to equal that exact known quantity.
         # A lagging KIS-style holdings response must not restore the pre-fill
         # position and make the replacement oversell it.
-        if isinstance(broker, LiveBrokerage):
+        if getattr(broker, "venue_backed", False):
             if canceled_any:
                 await self.engine.settle_live_fills()
             # Only a symbol whose resting order was actually canceled needs the
@@ -971,7 +980,7 @@ class LiveTrader:
         """Short, rate-safe work that must not wait for the next strategy bar."""
         market_open = self._market_is_open()
         missing: dict[str, str] = {}
-        if market_open and isinstance(self.engine.brokerage, LiveBrokerage):
+        if market_open and getattr(self.engine.brokerage, "venue_backed", False):
             _, missing = await self._refresh_quotes()
         await self._poll_live_fills()
 
@@ -979,7 +988,7 @@ class LiveTrader:
         # beginning of the cycle is not permission to submit now.
         if not self._market_is_open():
             return
-        if (isinstance(self.engine.brokerage, LiveBrokerage)
+        if (getattr(self.engine.brokerage, "venue_backed", False)
                 and self.engine.ctx.portfolio.open_positions):
             # Stops and drawdown cuts are safety decisions, not alpha decisions.
             # Re-evaluate them on the current mark instead of waiting up to one
@@ -1081,7 +1090,7 @@ class LiveTrader:
                 return
             await self._refresh_universe()
             fills_pre_settled = False
-            if isinstance(self.engine.brokerage, LiveBrokerage):
+            if getattr(self.engine.brokerage, "venue_backed", False):
                 # One cumulative fill is visible through both the order and
                 # holdings endpoints. Book the order fill first, then let venue
                 # truth correct the final account. Reversing these two steps

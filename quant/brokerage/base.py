@@ -35,6 +35,23 @@ class Brokerage(ABC):
     #: rather than the strategy's intentions.
     budget = None
     portfolio = None
+    #: Orders reach a real venue and fills come back out of band.
+    #:
+    #: This is what the live loop's *between-bar* work keys off: refreshing
+    #: quotes, polling fills, re-evaluating stops, and installing the final
+    #: submission guard. A simulated brokerage settles inside the bar it is
+    #: given, so none of that work has anything to do; a venue-backed one has
+    #: a whole daily candle of time in which a stop must still be able to fire.
+    #:
+    #: It is deliberately separate from `isinstance(brokerage, LiveBrokerage)`.
+    #: That test also decides *account-capital adoption* — who may claim the
+    #: account's cash and holdings as their own — and a sleeve in a
+    #: multi-agent group must answer **no** to that while still answering
+    #: **yes** here. Conflating the two silently disables safety: a sleeve
+    #: would evaluate its stop-loss once per bar instead of every few seconds,
+    #: never book a between-bar fill, and submit with no final guard — all
+    #: without raising or logging anything.
+    venue_backed = False
 
     def _reduces_position(self, order: Order) -> bool:
         if self.portfolio is None:

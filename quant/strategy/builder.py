@@ -415,8 +415,23 @@ def build_engine(
     clock: Clock | None = None,
     bus: EventBus | None = None,
     portfolio: Portfolio | None = None,
+    brokerage: Brokerage | None = None,
 ) -> tuple[Engine, DataProvider]:
-    """Returns the assembled engine and the data provider that feeds it."""
+    """Returns the assembled engine and the data provider that feeds it.
+
+    `brokerage` exists for the multi-agent case: several agents share one
+    account, so each engine must receive a `SleeveBrokerage` view of that
+    account rather than construct its own venue adapter. Four adapters on one
+    credential would authenticate four times, poll four times against one rate
+    budget, and each adopt the same cash as its own.
+
+    It has to be a **constructor argument**, not something assigned afterwards.
+    `Engine.__init__` wires `brokerage.budget`, `brokerage.portfolio` and
+    `ctx.brokerage` from whatever it is given; replacing the attribute later
+    leaves the sleeve's budget and book unset and leaves `ctx.brokerage`
+    pointing at the account adapter, which is a path around every guarantee the
+    sleeve exists to make.
+    """
     portfolio = portfolio or Portfolio(
         config.portfolio.starting_cash, config.portfolio.base_currency
     )
@@ -483,7 +498,7 @@ def build_engine(
         alpha=build_alpha(config, flow_feed),
         portfolio_model=build_portfolio_model(config),
         execution_model=execution,
-        brokerage=build_brokerage(config, portfolio, fee, slippage, fill),
+        brokerage=brokerage or build_brokerage(config, portfolio, fee, slippage, fill),
         risk_models=build_risk_models(config),
         protections=build_protections(config),
         budget=budget,
