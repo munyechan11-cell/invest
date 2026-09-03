@@ -3,31 +3,30 @@
 <head>
 <meta charset="utf-8">
 <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#080B14">
+<meta name="theme-color" content="#ffffff">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="퀀트 데스크">
 <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
 <link rel="icon" href="/static/icons/icon-64.png">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>◆ QUANT TRADING FLOOR ◆</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/app.css?v=20260825-a11y-flow">
+<title>QUANT TRADING FLOOR</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css?v=20260903-toss">
 </head>
 <body class="booting">
 
 <a class="skip-link app-only" href="#mainContent">본문으로 건너뛰기</a>
 
-<div class="boot" id="boot"><span>◆ 확인 중 …</span></div>
+<div class="boot" id="boot"><span>확인 중 …</span></div>
 
 <!-- 로그인 · 회원가입 — 사용자가 정해지기 전에는 이 화면만 존재합니다 -->
 <div class="gate" id="gate">
  <div class="land">
 
   <div class="hero demoshut">
-    <h1>◆ QUANT TRADING FLOOR ◆</h1>
+    <h1>QUANT TRADING FLOOR</h1>
     <p class="sub">규칙 기반 전략과 AI 애널리스트 16명이 같은 종목을 두고 심의하고,
       결론이 서면 내 증권사 계좌로 주문을 냅니다. 무엇을 왜 사는지 발언 하나하나가
       화면에 남습니다.</p>
@@ -41,7 +40,7 @@
   </div>
 
   <div id="demoStage" hidden>
-    <div class="lead">◆ 심의 재생 <span>실제 한 종목의 심의를 그대로 재생합니다.
+    <div class="lead">심의 재생 <span>실제 한 종목의 심의를 그대로 재생합니다.
       실시간 시세가 아니고 주문도 나가지 않습니다.</span>
       <button class="btn" id="demoClose">닫기</button></div>
   </div>
@@ -590,7 +589,7 @@
         <div>
           <div class="who" id="acctWho">—</div>
           <div class="row" style="margin-top:12px;gap:9px;display:flex;flex-wrap:wrap">
-        <button class="btn tap" id="mAsk">◆ 16명에게 물어보기</button>
+        <button class="btn tap" id="mAsk">16명에게 물어보기</button>
         <span class="dim" id="mAskCost">심의 1회는 서비스가 비용을 냅니다 —
           요금제 한도 안에서 쓸 수 있습니다.</span>
       </div>
@@ -735,7 +734,7 @@
      aria-labelledby="setupTitle">
   <div class="sheet">
     <header>
-      <h2 id="setupTitle">◆ 초기 설정 ◆</h2>
+      <h2 id="setupTitle">초기 설정</h2>
       <span style="flex:1"></span>
       <button class="btn tap" id="setupClose">닫기</button>
     </header>
@@ -4925,8 +4924,8 @@ async function askDeskFor(raw) {
   const btn = $("#mAsk"), out = $("#mAskOut");
   const side = document.getElementById("tryNowGo");
   btn.disabled = true;
-  btn.textContent = "◆ 심의 중… (최대 2분)";
-  if (side) { side.disabled = true; side.textContent = "◆ 심의 중… (최대 2분)"; }
+  btn.textContent = "심의 중… (최대 2분)";
+  if (side) { side.disabled = true; side.textContent = "심의 중… (최대 2분)"; }
   out.hidden = true;
   try {
     // 봇이 돌고 있으면 선택기는 감춰져 있고 값도 리셋됩니다. 그 값으로

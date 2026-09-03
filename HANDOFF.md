@@ -362,3 +362,17 @@ sudo bash /home/quant/app/deploy/install.sh
 Python 코드까지 바꿔 의도적으로 재시작한 경우에만
 `https://siftai.kr/api/health`의 `started_at`이 배포 시각보다 뒤여야 합니다.
 정적 UI 배포에서는 반대로 `started_at`이 바뀌면 안 됩니다.
+
+
+## 화면 디자인 (2026-09-03, 토스식)
+
+`quant/api/static/app.css` 를 처음부터 다시 썼습니다 — 흰 카드, 파랑 강조 하나,
+Pretendard, 테두리 대신 여백. 픽셀 서체·금색 판은 없습니다(아바타 스프라이트만
+픽셀). 토큰 **이름**(`--gold`, `--plate`, `--px` …)은 그대로이고 값만 바뀌었습니다
+— chart.js 와 스크립트가 그 이름으로 읽습니다.
+
+지켜야 하는 것: 900px 이하 규칙은 파일 맨 아래 `@media(max-width:900px){` 블록
+**하나** 에만 둡니다(검사가 마지막 블록을 찾습니다). 휴대폰에서 페이지 탭은
+`.top-in>.pagetabs` 를 `position:fixed` 로 아래에 붙인 것이라, 머리말 격자
+계약(3행·`grid-row:3`)은 그대로 만족합니다. `tests/test_ui_readability.py` 가
+대비·닿는 높이·격자를 파싱해서 잽니다 — 색을 바꾸면 그 검사부터 돌리세요.

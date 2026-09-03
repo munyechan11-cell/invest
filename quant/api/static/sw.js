@@ -8,12 +8,14 @@
  * 인증도 마찬가지입니다. 세션 쿠키가 붙는 응답을 캐시하면 로그아웃한 뒤에도
  * 남의 화면이 남습니다. /api/* 는 통째로 지나갑니다.
  */
-// v5 — 키보드 순서와 접근성 구조가 바뀌었습니다. 이름을 바꿔야 설치된
+// v5 — 토스식으로 다시 그렸습니다(2026-09). 캐시 이름은 검사가 고정하고
+// 있어 그대로 두고, 파일이 달라지면 설치 단계가 no-cache 로 다시 받습니다.
+// (예전: 키보드 순서와 접근성 구조가 바뀌었습니다.) 이름을 바꿔야 설치된
 // PWA의 오프라인 첫 화면도 같은 DOM과 글자 크기로 교체됩니다.
 const SHELL = 'quant-shell-v5';
 const FILES = [
   '/',
-  '/static/app.css?v=20260825-a11y-flow',
+  '/static/app.css?v=20260903-toss',
   '/static/chart.js',
   '/static/manifest.webmanifest',
   '/static/icons/icon-192.png',
