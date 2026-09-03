@@ -1655,7 +1655,7 @@ def test_running_live_bot_cannot_remove_its_last_daily_cap(
     )
     monkeypatch.setattr(
         app.state.registry, "trader",
-        lambda user_id: trader if user_id == owner_id else None,
+        lambda user_id, agent_id="": trader if user_id == owner_id else None,
     )
 
     response = client.post("/api/limits", json={
@@ -2061,7 +2061,8 @@ def test_api_rejects_bot_running_wrong_template_and_incomplete_body(
         "/api/trader/reconciliation/archive", json=missing
     ).status_code == 422
 
-    monkeypatch.setattr(app.state.registry, "trader", lambda _uid: object())
+    monkeypatch.setattr(app.state.registry, "trader",
+                        lambda _uid, agent_id="": object())
     status = client.get(
         "/api/trader/reconciliation", params={"config_path": "recover_toss"}
     )

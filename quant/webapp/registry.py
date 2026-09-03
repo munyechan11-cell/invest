@@ -50,6 +50,7 @@ from pydantic import ValidationError
 
 from quant.config.schema import StrategyConfig
 from quant.core.types import UTC, RunMode
+from quant.live.agents import _AGENT_ID
 from quant.live.credentials import VENUES_BY_ID
 from quant.live.profile import InvestorProfile, ProfileStore, apply_profile
 from quant.live.spend import SpendMeter
@@ -416,10 +417,33 @@ class _Bot:
 
 @dataclass(frozen=True)
 class UserPaths:
-    """한 사용자의 파일들. 전부 그 사람 디렉터리 안에 있습니다."""
+    """한 사용자의 파일들. 전부 그 사람 디렉터리 안에 있습니다.
+
+    `profile` 과 `limits` 는 **에이전트를 쓰지 않는 사람의 것** 입니다. 1인 1봇
+    시절부터 있던 자리라 그대로 두었습니다 — 그룹을 만들지 않은 사용자의 성향과
+    한도가 파일 이동 때문에 초기화되면, 그 사람은 자기가 고른 손절 폭을 잃고도
+    그 사실을 모릅니다.
+
+    `state_db` 는 에이전트가 몇이든 **하나** 입니다. 계좌가 하나이기 때문이고,
+    `StateStore._claim()` 의 flock 이 open file description 단위라 에이전트마다
+    `StateStore` 를 만들면 같은 프로세스 안에서도 서로를 잠급니다.
+    """
 
     home: Path
     state_db: Path
+    profile: Path
+    limits: Path
+    agents_root: Path
+
+
+@dataclass(frozen=True)
+class AgentPaths:
+    """에이전트 한 대의 파일들. `data/users/u{id}/agents/{agent_id}/` 안입니다.
+
+    상태 DB 는 여기에 없습니다 — 계좌 것이지 에이전트 것이 아닙니다.
+    """
+
+    home: Path
     profile: Path
     limits: Path
 
@@ -455,18 +479,58 @@ class UserRegistry:
             raise ValueError(f"user id 는 양의 정수여야 합니다: {user_id!r}")
         return uid
 
+    @staticmethod
+    def _private_dir(path: Path) -> Path:
+        """디렉터리를 만들고 0700 으로 닫는다.
+
+        포지션과 체결 기록이 들어 있습니다. 같은 머신의 다른 계정이 읽을 이유가
+        없습니다. 에이전트 하위 디렉터리에도 똑같이 걸어야 합니다 — 한 단계만
+        빠뜨려도 그 아래 전부가 열립니다.
+        """
+        path.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(path, 0o700)
+        except OSError:  # pragma: no cover - 파일시스템이 허용하지 않는 경우
+            log.warning("디렉터리 권한을 700 으로 바꾸지 못했습니다: %s", path)
+        return path
+
     def paths(self, user_id: int) -> UserPaths:
         uid = self._uid(user_id)
-        home = self.root / f"u{uid}"
-        home.mkdir(parents=True, exist_ok=True)
-        try:
-            # 포지션과 체결 기록이 들어 있는 디렉터리입니다. 같은 머신의 다른
-            # 계정이 읽을 이유가 없습니다.
-            os.chmod(home, 0o700)
-        except OSError:  # pragma: no cover - 파일시스템이 허용하지 않는 경우
-            log.warning("사용자 디렉터리 권한을 700 으로 바꾸지 못했습니다: %s", home)
+        home = self._private_dir(self.root / f"u{uid}")
         return UserPaths(home=home, state_db=home / "state.db",
-                         profile=home / "profile.json", limits=home / "limits.json")
+                         profile=home / "profile.json",
+                         limits=home / "limits.json",
+                         agents_root=home / "agents")
+
+    def agent_paths(self, user_id: int, agent_id: str) -> AgentPaths:
+        """이 에이전트의 성향·한도 파일 자리.
+
+        `agent_id` 는 디렉터리 이름이 되므로 경로가 되기 **전에** 검증합니다.
+        `_uid()` 가 사용자 번호에 하는 것과 같은 이유이고, 같은 정규식을
+        `quant.live.agents` 와 공유합니다 — 그쪽에서 통과한 id 만 여기 옵니다.
+        """
+        if not _AGENT_ID.match(agent_id or ""):
+            raise ValueError(
+                f"에이전트 id 가 디렉터리 이름으로 쓸 수 없는 형태입니다: "
+                f"{agent_id!r}"
+            )
+        root = self._private_dir(self.paths(user_id).agents_root)
+        home = self._private_dir(root / agent_id)
+        return AgentPaths(home=home, profile=home / "profile.json",
+                          limits=home / "limits.json")
+
+    def _settings_paths(self, user_id: int, agent_id: str = "") -> AgentPaths:
+        """성향·한도가 어느 파일에서 오는가.
+
+        `agent_id` 가 비어 있으면 1인 1봇 시절의 사용자 레벨 파일입니다. 그룹을
+        만들지 않은 사용자의 경로가 정확히 그대로여야 하므로, 여기서 갈라 두고
+        아래 접근자들은 전부 이 함수만 부릅니다.
+        """
+        if not agent_id:
+            user = self.paths(user_id)
+            return AgentPaths(home=user.home, profile=user.profile,
+                              limits=user.limits)
+        return self.agent_paths(user_id, agent_id)
 
     def state_path(self, user_id: int) -> str:
         """이 사용자의 상태 DB 경로. 포지션·현금·잠금·핀·일일 원장이 여기 있습니다."""
@@ -671,25 +735,33 @@ class UserRegistry:
         }
 
     # ── 투자 성향 ────────────────────────────────────────────────────────
-    def profile_store(self, user_id: int) -> ProfileStore:
-        return ProfileStore(self.paths(user_id).profile)
+    def profile_store(self, user_id: int, agent_id: str = "") -> ProfileStore:
+        return ProfileStore(self._settings_paths(user_id, agent_id).profile)
 
-    def profile(self, user_id: int) -> InvestorProfile:
-        return self.profile_store(user_id).load()
+    def profile(self, user_id: int, agent_id: str = "") -> InvestorProfile:
+        return self.profile_store(user_id, agent_id).load()
 
-    def save_profile(self, user_id: int, profile: InvestorProfile) -> dict | None:
-        """성향을 저장하고, 돌고 있는 봇에는 즉시 반영할 수 있는 것만 반영한다."""
-        self.profile_store(user_id).save(profile)
-        self.accounts.record(user_id, "profile_saved", profile.code)
-        return self.apply_profile_live(user_id, profile)
+    def save_profile(self, user_id: int, profile: InvestorProfile,
+                     agent_id: str = "") -> dict | None:
+        """성향을 저장하고, 돌고 있는 봇에는 즉시 반영할 수 있는 것만 반영한다.
 
-    def apply_profile_live(self, user_id: int, profile: InvestorProfile) -> dict | None:
+        에이전트마다 성향이 다른 것이 이 기능의 전부이므로, 저장도 반영도
+        **그 에이전트에만** 닿아야 합니다.
+        """
+        self.profile_store(user_id, agent_id).save(profile)
+        self.accounts.record(user_id, "profile_saved",
+                             f"{agent_id}:{profile.code}" if agent_id
+                             else profile.code)
+        return self.apply_profile_live(user_id, profile, agent_id)
+
+    def apply_profile_live(self, user_id: int, profile: InvestorProfile,
+                           agent_id: str = "") -> dict | None:
         """사이즈·손절·한도는 바로 바뀝니다. 봉 주기와 알파 구성은 안 바뀝니다.
 
         후자는 엔진을 다시 세워야 하는 일이라, 반쯤 바뀐 채로 도는 것보다
         재시작이 필요하다고 말하는 편이 정직합니다.
         """
-        trader = self.trader(user_id)
+        trader = self.trader(user_id, agent_id)
         if trader is None:
             return None
         settings = profile.settings()
@@ -714,9 +786,14 @@ class UserRegistry:
                 "needs_restart": ["봉 주기", "알파 모델 구성", "AI 데스크 사용 여부"]}
 
     # ── 하루 한도 ────────────────────────────────────────────────────────
-    def limits(self, user_id: int) -> dict[str, float]:
-        """이 사용자가 저장해 둔 하루 한도. 0 은 "한도 없음" 입니다."""
-        path = self.paths(user_id).limits
+    def limits(self, user_id: int, agent_id: str = "") -> dict[str, float]:
+        """저장해 둔 하루 한도. 0 은 "한도 없음" 입니다.
+
+        `agent_id` 를 주면 그 에이전트의 한도입니다. 계좌 전체 한도는 이것들의
+        합이 아니라 별도로 존재합니다(`AccountGateway.master_budget`) — 합으로
+        정의하면 방어선이 봇 수만큼 곱해집니다.
+        """
+        path = self._settings_paths(user_id, agent_id).limits
         if not path.exists():
             return dict.fromkeys(LIMIT_KEYS, 0.0)
         try:
@@ -728,19 +805,20 @@ class UserRegistry:
             return dict.fromkeys(LIMIT_KEYS, 0.0)
         return {key: float(raw.get(key) or 0.0) for key in LIMIT_KEYS}
 
-    def save_limits(self, user_id: int, caps: dict[str, float | None]) -> dict:
+    def save_limits(self, user_id: int, caps: dict[str, float | None],
+                    agent_id: str = "") -> dict:
         """부분 갱신. 안 보낸 항목은 그대로 두고, 명시적 0 은 한도를 해제합니다.
 
         실행 중인 봇의 원장에도 그 자리에서 반영합니다 — 다음 재시작까지
         기다려야 하는 한도는 지금 필요해서 누른 사람에게 아무 소용이 없습니다.
         """
-        stored = self.limits(user_id)
+        stored = self.limits(user_id, agent_id)
         if not all(math.isfinite(float(value)) for value in stored.values()):
             raise ConfigRejected(
                 "저장된 하루 한도에 유한하지 않은 값이 있어 변경하지 "
                 "않았습니다. 운영자가 한도 파일을 확인해야 합니다."
             )
-        trader = self.trader(user_id)
+        trader = self.trader(user_id, agent_id)
         budget = getattr(getattr(trader, "engine", None), "budget", None)
         candidate = dict(stored)
         runtime_candidate = (
@@ -781,7 +859,7 @@ class UserRegistry:
                 "당일 한도만 명시적으로 넘기려면 '오늘 한도 해제'를 사용하고, "
                 "영구 설정을 바꾸려면 봇을 먼저 멈추세요."
             )
-        path = self.paths(user_id).limits
+        path = self._settings_paths(user_id, agent_id).limits
         _atomic_write_text(
             path, json.dumps(candidate, ensure_ascii=False, indent=1),
         )
@@ -1111,8 +1189,17 @@ class UserRegistry:
         except Exception:       # pragma: no cover - 계정 DB 가 닫힌 경우 등
             log.warning("감사 기록 실패: user=%s action=%s", uid, action)
 
-    def trader(self, user_id: int):
-        """돌고 있는 트레이더, 없으면 None. 수동 매매·조회 엔드포인트가 씁니다."""
+    def trader(self, user_id: int, agent_id: str = ""):
+        """돌고 있는 트레이더, 없으면 None. 수동 매매·조회 엔드포인트가 씁니다.
+
+        `agent_id` 는 그룹 안의 한 대를 가리킵니다. 아직 그룹 실행 경로가 없으므로
+        지금은 빈 값(그룹을 쓰지 않는 단일 봇)만 트레이더를 돌려주고, 에이전트를
+        지정하면 None 입니다 — 그 에이전트는 아직 돌 수 없습니다. 조용히 단일
+        봇을 돌려주지 않는 것이 중요합니다: 그러면 공격형의 성향 변경이 보수형
+        봇에 적용되고, 화면은 성공했다고 말합니다.
+        """
+        if agent_id:
+            return None
         bot = self._bots.get(self._uid(user_id))
         return bot.trader if bot is not None and bot.alive else None
 

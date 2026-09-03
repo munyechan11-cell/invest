@@ -87,6 +87,17 @@ CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   strategy TEXT NOT NULL,
   mode TEXT NOT NULL,
+  -- 어느 에이전트의 실행인가. 한 계좌를 여럿이 나눠 쓸 때만 채워집니다.
+  --
+  -- 포지션·잠금·핀·하루 원장이 전부 `run_id` 로 묶여 있으므로, 에이전트마다
+  -- runs 행을 하나씩 두면 그 테이블들이 전부 저절로 갈립니다. 새 컬럼은 이
+  -- 하나뿐입니다 — 나머지 테이블의 PK 는 건드리지 않습니다(기존 DB 에서
+  -- `CREATE TABLE IF NOT EXISTS` 는 PK 변경을 조용히 무시하고, 스키마 버전
+  -- 장치가 없어 되돌릴 방법도 없습니다).
+  --
+  -- 빈 문자열은 "에이전트 개념이 없던 실행" 입니다. 1인 1봇 시절의 기존 행과,
+  -- 그룹을 쓰지 않는 지금의 단일 실행이 모두 여기에 들어옵니다.
+  agent_id TEXT NOT NULL DEFAULT '',
   started_at TEXT NOT NULL,
   stopped_at TEXT,
   requires_reconciliation INTEGER NOT NULL DEFAULT 0,
@@ -279,6 +290,12 @@ class StateStore:
         for column in ("archived_at", "archive_reason", "archived_by"):
             if column not in have_runs:
                 self.conn.execute(f"ALTER TABLE runs ADD COLUMN {column} TEXT")
+        if "agent_id" not in have_runs:
+            # 기존 행은 전부 빈 문자열이 됩니다 — 에이전트 개념이 없던 실행이고,
+            # 그룹을 쓰지 않는 단일 실행도 같은 값을 씁니다. 그래서 이 마이그레이션
+            # 뒤에도 기존 사용자의 재개 경로는 정확히 같은 행을 찾습니다.
+            self.conn.execute(
+                "ALTER TABLE runs ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''")
         # Older live runs stored only the configured cash and high-water mark.
         # Defaulting them to ``configured`` is deliberate: the first successful
         # account-authoritative sync then establishes a fresh venue baseline,
@@ -471,7 +488,8 @@ class StateStore:
 
     # ── runs ─────────────────────────────────────────────────────────────
     def start_run(self, strategy: str, mode: str, starting_cash: float,
-                  config_json: str = "", *, now: datetime | None = None) -> int:
+                  config_json: str = "", *, now: datetime | None = None,
+                  agent_id: str = "") -> int:
         self._claim()
         # Defense in depth for callers outside the web registry. An archived
         # Toss run intentionally starts a new ledger, but never while *any*
@@ -487,9 +505,10 @@ class StateStore:
         self.restored_venue_truth = False
         started_at = self._recovery_now(now).isoformat()
         cur = self.conn.execute(
-            "INSERT INTO runs(strategy, mode, started_at, requires_reconciliation, "
-            "starting_cash, config_json) VALUES(?,?,?,?,?,?)",
-            (strategy, mode, started_at, 0,
+            "INSERT INTO runs(strategy, mode, agent_id, started_at, "
+            "requires_reconciliation, starting_cash, config_json) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (strategy, mode, str(agent_id or ""), started_at, 0,
              starting_cash, config_json),
         )
         self.conn.commit()
@@ -528,19 +547,29 @@ class StateStore:
         )
         return False
 
-    def resume_run(self, strategy: str, mode: str) -> int | None:
-        """Reopen the most recent run for this strategy and mode.
+    def resume_run(self, strategy: str, mode: str,
+                   agent_id: str = "") -> int | None:
+        """Reopen the most recent run for this strategy, mode and agent.
 
         Deliberately ignores `stopped_at`. A clean shutdown does not flatten
         the book — the positions are still there when the process comes back —
         so scoping resume to "runs that were never stopped" meant every normal
         restart woke up believing it held nothing and had its full starting
         cash. In live mode that is a second position on top of the first.
+
+        **`agent_id` 가 선택 조건에 들어가는 것이 핵심입니다.** runs 행에 적기만
+        하고 여기서 안 보면, 같은 전략 템플릿을 고른 두 에이전트가 `ORDER BY id
+        DESC LIMIT 1` 에서 **같은 run_id 로 수렴** 합니다. 그 뒤로 positions 의
+        PK 는 `(run_id, symbol_key)` 이므로 나중에 저장한 쪽이 앞사람의 포지션을
+        덮어쓰고, day_budget 의 PK 는 `(run_id, day)` 이므로 두 에이전트의 하루
+        허용치가 한 행으로 합쳐집니다. 다음 재시작에서는 **둘 다 같은 100주를
+        복원** 하고, 그날 오후 두 손절이 함께 나가 100주짜리 보유에 200주 매도가
+        떠납니다.
         """
         row = self.conn.execute(
             "SELECT id, requires_reconciliation, archived_at FROM runs "
-            "WHERE strategy=? AND mode=? ORDER BY id DESC LIMIT 1",
-            (strategy, mode),
+            "WHERE strategy=? AND mode=? AND agent_id=? ORDER BY id DESC LIMIT 1",
+            (strategy, mode, str(agent_id or "")),
         ).fetchone()
         # The latest row is the lifecycle head for this strategy/mode. If it
         # was archived after explicit manual reconciliation, going farther
@@ -560,7 +589,7 @@ class StateStore:
 
     def resume_run_exact(
             self, strategy: str, mode: str, expected_run_id: int,
-            expected_config_json: str) -> int:
+            expected_config_json: str, agent_id: str = "") -> int:
         """Atomically reopen only the preflighted Toss lifecycle head.
 
         Generic ``resume_run`` intentionally remains usable by read-only legacy
@@ -573,9 +602,9 @@ class StateStore:
             self.conn.execute("BEGIN IMMEDIATE")
             row = self.conn.execute(
                 "SELECT id, requires_reconciliation, archived_at, config_json "
-                "FROM runs WHERE strategy=? AND mode=? "
+                "FROM runs WHERE strategy=? AND mode=? AND agent_id=? "
                 "ORDER BY id DESC LIMIT 1",
-                (strategy, mode),
+                (strategy, mode, str(agent_id or "")),
             ).fetchone()
             if row is None or int(row["id"]) != int(expected_run_id):
                 raise RecoveryArchiveError(
