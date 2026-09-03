@@ -31,7 +31,7 @@ class _Desk(Desk):
     def __init__(self, engine: _Engine):
         self._trader = SimpleNamespace(engine=engine)
 
-    def require_trader(self):
+    def require_trader(self, agent_id: str = ""):
         return self._trader
 
 

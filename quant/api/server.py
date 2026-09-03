@@ -71,6 +71,7 @@ from quant.core.context import QUOTE_FUTURE_TOLERANCE
 from quant.core.events import Event
 from quant.core.types import UTC, RunMode, Symbol
 from quant.data.names import NameBook
+from quant.live.agents import MAX_AGENTS
 from quant.live.credentials import (
     OPERATOR_FIELDS,
     VENUES,
@@ -367,6 +368,29 @@ class StartRequest(BaseModel):
     #: 실거래일 때만 필요합니다. `quant live` 가 콘솔에서 받는 것과 같은 확인 —
     #: 전략 이름을 정확히 적어야 합니다.
     confirm: str = ""
+
+
+class AgentStartSpec(BaseModel):
+    """그룹 안의 에이전트 한 대. 화면이 카드 하나마다 이걸 보냅니다."""
+
+    model_config = {"extra": "forbid"}
+
+    agent_id: str = Field(..., min_length=1, max_length=32)
+    label: str = Field(..., min_length=1, max_length=40)
+    config_path: str = Field(..., min_length=1, max_length=200)
+    capital_weight: float = Field(..., gt=0.0, le=1.0)
+    mode: str = Field(default="dry_run", pattern="^(dry_run|live)$")
+    #: 실거래일 때만 필요합니다. 전략 이름을 정확히 적어야 합니다 — 에이전트
+    #: 마다 따로 받습니다. 하나를 확인했다고 나머지 셋이 열리지 않습니다.
+    confirm: str = ""
+
+
+class GroupStartRequest(BaseModel):
+    """에이전트 여럿을 한 계좌에 띄운다."""
+
+    model_config = {"extra": "forbid"}
+
+    agents: list[AgentStartSpec] = Field(..., min_length=1, max_length=4)
 
 
 class ReconciliationConfirmations(BaseModel):
@@ -1193,32 +1217,41 @@ class Desk:
     엔드포인트는 이것만 받습니다. `state.trader` 를 직접 만지는 줄이 하나라도
     남으면 그 줄이 남의 봇을 조종하는 경로가 되므로, 고르는 일은 `_desk`
     한 곳에만 있고 나머지는 자기 데스크만 압니다.
+
+    에이전트가 여럿이면 `agent_id` 가 그중 하나를 가리킵니다. 비워 두면
+    레지스트리가 **되묻습니다**(`AgentRequired`, 400) — 조용히 하나를 고르면
+    `close_all` 이 그 하나만 정리하고 성공을 돌려주고, 사용자는 전부 정리된
+    줄 알고 화면을 닫습니다.
     """
 
     user: User | None = None
 
     # ── 봇 ───────────────────────────────────────────────────────────────
-    def trader(self) -> Any:
+    def trader(self, agent_id: str = "") -> Any:
         raise NotImplementedError
 
-    def require_trader(self) -> Any:
+    def require_trader(self, agent_id: str = "") -> Any:
         raise NotImplementedError
 
-    def running(self) -> bool:
-        trader = self.trader()
+    def agents(self) -> list[str]:
+        """지금 도는 에이전트 목록. 그룹이 아니면 빈 목록입니다."""
+        return []
+
+    def running(self, agent_id: str = "") -> bool:
+        trader = self.trader(agent_id)
         return bool(trader is not None and trader.running)
 
-    def desk_model(self):
-        trader = self.trader()
+    def desk_model(self, agent_id: str = ""):
+        trader = self.trader(agent_id)
         return trader.desk() if trader is not None else None
 
-    def release_halt(self) -> dict:
-        budget = self.require_trader().engine.budget
+    def release_halt(self, agent_id: str = "") -> dict:
+        budget = self.require_trader(agent_id).engine.budget
         budget.release()
         return budget.status()
 
-    async def sync(self) -> dict:
-        engine = self.require_trader().engine
+    async def sync(self, agent_id: str = "") -> dict:
+        engine = self.require_trader(agent_id).engine
         # A cumulative live fill can appear in both the order detail and the
         # holdings snapshot.  The normal trader tick books order fills before
         # adopting venue truth; the operator-triggered sync must preserve that
@@ -1239,21 +1272,21 @@ class Desk:
         """이 사용자의 키로 세운 시세 프로바이더."""
         return self.registry.data_provider(self.user.id, config)
 
-    def run_config(self) -> StrategyConfig | None:
+    def run_config(self, agent_id: str = "") -> StrategyConfig | None:
         raise NotImplementedError
 
     def status(self) -> dict:
         raise NotImplementedError
 
     # ── 투자 성향 ────────────────────────────────────────────────────────
-    def profile_store(self) -> ProfileStore:
+    def profile_store(self, agent_id: str = "") -> ProfileStore:
         raise NotImplementedError
 
-    def save_profile(self, profile) -> dict | None:
+    def save_profile(self, profile, agent_id: str = "") -> dict | None:
         raise NotImplementedError
 
-    def clear_override(self, axis: str) -> dict:
-        store = self.profile_store()
+    def clear_override(self, axis: str, agent_id: str = "") -> dict:
+        store = self.profile_store(agent_id)
         profile = store.load()
         profile.overrides.pop(axis.upper(), None)
         store.save(profile)
@@ -1261,10 +1294,10 @@ class Desk:
         return profile.to_dict()
 
     # ── 하루 한도 ────────────────────────────────────────────────────────
-    def limits(self) -> dict:
+    def limits(self, agent_id: str = "") -> dict:
         raise NotImplementedError
 
-    def save_limits(self, req: LimitsRequest) -> dict:
+    def save_limits(self, req: LimitsRequest, agent_id: str = "") -> dict:
         raise NotImplementedError
 
     # ── 자격증명 ─────────────────────────────────────────────────────────
@@ -1285,6 +1318,9 @@ class Desk:
         raise NotImplementedError
 
     async def start(self, req: StartRequest) -> dict:
+        raise NotImplementedError
+
+    async def start_group(self, req: GroupStartRequest) -> dict:
         raise NotImplementedError
 
     async def stop(self) -> dict:
@@ -1317,11 +1353,14 @@ class UserDesk(Desk):
         self.registry = registry
 
     # ── 봇 ───────────────────────────────────────────────────────────────
-    def trader(self) -> Any:
-        return self.registry.trader(self.user.id)
+    def trader(self, agent_id: str = "") -> Any:
+        return self.registry.trader(self.user.id, agent_id)
 
-    def require_trader(self) -> Any:
-        return self.registry.require_trader(self.user.id)
+    def require_trader(self, agent_id: str = "") -> Any:
+        return self.registry.require_trader(self.user.id, agent_id)
+
+    def agents(self) -> list[str]:
+        return self.registry.agent_ids(self.user.id)
 
     @property
     def hub(self) -> Hub:
@@ -1331,8 +1370,8 @@ class UserDesk(Desk):
     def state_path(self) -> str:
         return self.registry.state_path(self.user.id)
 
-    def run_config(self) -> StrategyConfig | None:
-        trader = self.trader()
+    def run_config(self, agent_id: str = "") -> StrategyConfig | None:
+        trader = self.trader(agent_id)
         # 돌고 있으면 그 봇의 설정이 이 사람의 상태 DB 에 적힌 run 과 같은
         # 이름을 가집니다. 아니면 프로세스 기본 템플릿으로 물러섭니다.
         return trader.config if trader is not None else self.state.config
@@ -1341,21 +1380,23 @@ class UserDesk(Desk):
         return self.registry.status(self.user.id)
 
     # ── 투자 성향 ────────────────────────────────────────────────────────
-    def profile_store(self) -> ProfileStore:
-        return self.registry.profile_store(self.user.id)
+    def profile_store(self, agent_id: str = "") -> ProfileStore:
+        return self.registry.profile_store(self.user.id, agent_id)
 
-    def save_profile(self, profile) -> dict | None:
-        return self.registry.save_profile(self.user.id, profile)
+    def save_profile(self, profile, agent_id: str = "") -> dict | None:
+        return self.registry.save_profile(self.user.id, profile, agent_id)
 
     # ── 하루 한도 ────────────────────────────────────────────────────────
-    def limits(self) -> dict:
-        trader = self.trader()
+    def limits(self, agent_id: str = "") -> dict:
+        trader = self.trader(agent_id)
         if trader is not None:
             return trader.engine.budget.status()
-        return {"running": False, "configured": self.registry.limits(self.user.id)}
+        return {"running": False,
+                "configured": self.registry.limits(self.user.id, agent_id)}
 
-    def save_limits(self, req: LimitsRequest) -> dict:
-        out = self.registry.save_limits(self.user.id, req.model_dump())
+    def save_limits(self, req: LimitsRequest, agent_id: str = "") -> dict:
+        out = self.registry.save_limits(
+            self.user.id, req.model_dump(), agent_id)
         note = ("실행 중인 봇에는 즉시 적용됩니다" if out["applied_now"]
                 else "다음 실행부터 적용됩니다")
         if out["removed"]:
@@ -1467,6 +1508,41 @@ class UserDesk(Desk):
                 f"없습니다. 마이페이지에서 본인 Gemini 키를 넣거나, 데스크가 없는 "
                 f"전략을 고르세요."
                 if has_desk else f"모델을 준비하지 못했습니다: {exc}") from None
+
+    async def start_group(self, req: GroupStartRequest) -> dict:
+        """에이전트 여럿을 한 계좌에 띄운다.
+
+        실거래 확인은 **에이전트마다** 받습니다. 하나를 확인했다고 나머지가
+        열리면, 사용자는 관찰용으로 넣은 에이전트가 진짜 주문을 내고 있다는
+        사실을 모른 채로 하루를 보냅니다.
+        """
+        from quant.live.agents import AgentConfigError, AgentGroup
+
+        configs: dict = {}
+        rows: list[dict] = []
+        for spec in req.agents:
+            cfg = self.load_strategy(spec.config_path)
+            mode = RunMode(spec.mode)
+            if mode is RunMode.LIVE:
+                assert_live_start_allowed(cfg, spec.confirm)
+            configs[spec.agent_id] = _with_mode(cfg, mode)
+            rows.append(spec.model_dump())
+
+        try:
+            group = AgentGroup.from_dicts(rows)
+        except AgentConfigError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+        try:
+            return await self.registry.start_group(
+                self.user.id, group, configs, on_event=self.hub.publish)
+        except LLMError as exc:
+            log.warning("그룹 시작 실패(LLM): %s", exc)
+            raise HTTPException(
+                503,
+                "AI 데스크를 쓰는 전략인데 쓸 수 있는 LLM 키가 없습니다. "
+                "마이페이지에서 본인 Gemini 키를 넣거나, 데스크가 없는 전략을 "
+                f"고르세요. ({exc})") from None
 
     async def stop(self) -> dict:
         return await self.registry.stop(self.user.id)
@@ -2523,8 +2599,8 @@ def create_app(config: StrategyConfig | None = None,
 
     # ── 수동 개입 ────────────────────────────────────────────────────────
     @app.get("/api/manual")
-    async def manual_status(seat: Desk = Depends(desk)):
-        trader = seat.trader()
+    async def manual_status(agent_id: str = "", seat: Desk = Depends(desk)):
+        trader = seat.trader(agent_id)
         if trader is None:
             return {"running": False, "paused": False, "pending": [], "recent": []}
         engine = trader.engine
@@ -2542,8 +2618,9 @@ def create_app(config: StrategyConfig | None = None,
         }
 
     @app.post("/api/manual/buy")
-    async def manual_buy(req: ManualOrderRequest, seat: Desk = Depends(desk)):
-        trader = seat.require_trader()
+    async def manual_buy(req: ManualOrderRequest, agent_id: str = "",
+                         seat: Desk = Depends(desk)):
+        trader = seat.require_trader(agent_id)
         symbol = _resolve(trader, req.ticker)
         if req.quantity is None and req.notional is None:
             raise HTTPException(400, "수량 또는 금액 중 하나는 지정해야 합니다")
@@ -2560,8 +2637,9 @@ def create_app(config: StrategyConfig | None = None,
                 "note": "다음 봉 처리 시 브로커 안전장치(주문 한도·일일 한도)를 거쳐 발주됩니다"}
 
     @app.post("/api/manual/sell")
-    async def manual_sell(req: ManualOrderRequest, seat: Desk = Depends(desk)):
-        trader = seat.require_trader()
+    async def manual_sell(req: ManualOrderRequest, agent_id: str = "",
+                          seat: Desk = Depends(desk)):
+        trader = seat.require_trader(agent_id)
         symbol = _resolve(trader, req.ticker)
         from decimal import Decimal
 
@@ -2575,43 +2653,49 @@ def create_app(config: StrategyConfig | None = None,
         return {"queued": request.to_dict()}
 
     @app.post("/api/manual/close")
-    async def manual_close(req: ManualOrderRequest, seat: Desk = Depends(desk)):
-        trader = seat.require_trader()
+    async def manual_close(req: ManualOrderRequest, agent_id: str = "",
+                           seat: Desk = Depends(desk)):
+        trader = seat.require_trader(agent_id)
         symbol = _resolve(trader, req.ticker)
         seat.record("manual_close", symbol.ticker)
         return {"queued": trader.engine.manual.close(
             symbol, note=req.note or "대시보드 수동 청산").to_dict()}
 
     @app.post("/api/manual/close_all")
-    async def manual_close_all(seat: Desk = Depends(desk)):
-        trader = seat.require_trader()
+    async def manual_close_all(agent_id: str = "", seat: Desk = Depends(desk)):
+        # 에이전트를 지정하지 않으면 `require_trader` 가 400 으로 되묻습니다.
+        # 조용히 하나만 정리하고 성공을 돌려주면, 사용자는 전부 정리된 줄 알고
+        # 화면을 닫고 나머지 셋은 그대로 시장에 남습니다.
+        trader = seat.require_trader(agent_id)
         seat.record("manual_close_all")
         return {"queued": trader.engine.manual.close_all(
             note="대시보드 전체 청산").to_dict()}
 
     @app.post("/api/manual/pause")
-    async def manual_pause(seat: Desk = Depends(desk)):
-        trader = seat.require_trader()
+    async def manual_pause(agent_id: str = "", seat: Desk = Depends(desk)):
+        trader = seat.require_trader(agent_id)
         trader.engine.manual.pause("대시보드에서 일시정지")
         seat.record("manual_pause")
         return {"paused": True,
                 "note": "신규 진입만 중단됩니다. 손절·청산·수동주문은 계속 동작합니다."}
 
     @app.post("/api/manual/resume")
-    async def manual_resume(seat: Desk = Depends(desk)):
-        trader = seat.require_trader()
+    async def manual_resume(agent_id: str = "", seat: Desk = Depends(desk)):
+        trader = seat.require_trader(agent_id)
         trader.engine.manual.resume()
         seat.record("manual_resume")
         return {"paused": False}
 
     @app.post("/api/manual/unpin/{ticker}")
-    async def manual_unpin(ticker: str, seat: Desk = Depends(desk)):
-        trader = seat.require_trader()
+    async def manual_unpin(ticker: str, agent_id: str = "",
+                           seat: Desk = Depends(desk)):
+        trader = seat.require_trader(agent_id)
         trader.engine.ctx.unpin(_resolve(trader, ticker))
         return {"unpinned": ticker, "note": "이 종목을 다시 전략이 관리합니다"}
 
     @app.post("/api/limits")
-    async def limits_save(req: LimitsRequest, seat: Desk = Depends(desk)):
+    async def limits_save(req: LimitsRequest, agent_id: str = "",
+                          seat: Desk = Depends(desk)):
         """Apply daily caps now, and persist them for the next restart.
 
         **Partial.** Only the caps named in the request body change; a field
@@ -2619,16 +2703,16 @@ def create_app(config: StrategyConfig | None = None,
         and in storage alike. Sending an explicit `0` removes that cap — which
         means unlimited — and the response names every cap it removed.
         """
-        return seat.save_limits(req)
+        return seat.save_limits(req, agent_id)
 
     @app.get("/api/limits")
-    async def limits_get(seat: Desk = Depends(desk)):
-        return seat.limits()
+    async def limits_get(agent_id: str = "", seat: Desk = Depends(desk)):
+        return seat.limits(agent_id)
 
     @app.post("/api/limits/release")
-    async def limits_release(seat: Desk = Depends(desk)):
+    async def limits_release(agent_id: str = "", seat: Desk = Depends(desk)):
         """Clear a daily-cap halt for the rest of today. Deliberately explicit."""
-        out = seat.release_halt()
+        out = seat.release_halt(agent_id)
         seat.record("limits_released")
         return out
 
@@ -2643,32 +2727,35 @@ def create_app(config: StrategyConfig | None = None,
         }
 
     @app.get("/api/profile")
-    async def profile_get(seat: Desk = Depends(desk)):
-        return seat.profile_store().load().to_dict()
+    async def profile_get(agent_id: str = "", seat: Desk = Depends(desk)):
+        return seat.profile_store(agent_id).load().to_dict()
 
     @app.post("/api/profile")
-    async def profile_save(req: ProfileRequest, seat: Desk = Depends(desk)):
+    async def profile_save(req: ProfileRequest, agent_id: str = "",
+                           seat: Desk = Depends(desk)):
         profile = score_answers(req.answers)
         if not profile.answers:
             raise HTTPException(400, "인식된 답안이 없습니다")
-        applied = seat.save_profile(profile)
+        applied = seat.save_profile(profile, agent_id)
         return {**profile.to_dict(), "applied_now": applied}
 
     @app.patch("/api/profile")
-    async def profile_override(req: ProfileOverrideRequest, seat: Desk = Depends(desk)):
+    async def profile_override(req: ProfileOverrideRequest, agent_id: str = "",
+                               seat: Desk = Depends(desk)):
         """마이페이지에서 축을 직접 밀어 올리거나 내린다."""
-        profile = seat.profile_store().load()
+        profile = seat.profile_store(agent_id).load()
         for axis, value in req.overrides.items():
             axis = axis.upper()
             if axis not in ("R", "H", "E", "C"):
                 raise HTTPException(400, f"알 수 없는 축: {axis}")
             profile.overrides[axis] = max(-1.0, min(1.0, float(value)))
-        applied = seat.save_profile(profile)
+        applied = seat.save_profile(profile, agent_id)
         return {**profile.to_dict(), "applied_now": applied}
 
     @app.delete("/api/profile/override/{axis}")
-    async def profile_clear_override(axis: str, seat: Desk = Depends(desk)):
-        return seat.clear_override(axis)
+    async def profile_clear_override(axis: str, agent_id: str = "",
+                                     seat: Desk = Depends(desk)):
+        return seat.clear_override(axis, agent_id)
 
     # ── 초기 설정 ────────────────────────────────────────────────────────
     @app.get("/api/setup")
@@ -2969,8 +3056,42 @@ def create_app(config: StrategyConfig | None = None,
         """
         return await seat.start(req)
 
+    @app.post("/api/trader/group/start")
+    async def start_group(req: GroupStartRequest, seat: Desk = Depends(desk)):
+        """한 계좌에 성향이 다른 에이전트를 최대 넷까지 띄운다.
+
+        자본은 `capital_weight` 대로 나뉘고 합이 100% 를 넘을 수 없습니다.
+        성향·손절·하루 한도는 에이전트마다 자기 파일에서 옵니다.
+
+        실거래 확인(`confirm`)은 에이전트마다 따로 받습니다.
+        """
+        return await seat.start_group(req)
+
+    @app.get("/api/agents")
+    async def list_agents(seat: Desk = Depends(desk)):
+        """지금 도는 에이전트와, 각자의 저장된 성향·한도.
+
+        봇이 돌지 않아도 저장된 설정은 보여야 합니다 — 화면에서 성향을 먼저
+        정하고 나중에 켜는 것이 정상 순서입니다.
+        """
+        running = seat.agents()
+        return {
+            "running": running,
+            "max_agents": MAX_AGENTS,
+            "agents": [
+                {
+                    "agent_id": agent_id,
+                    "running": True,
+                    "profile": seat.profile_store(agent_id).load().to_dict(),
+                    "limits": seat.limits(agent_id),
+                }
+                for agent_id in running
+            ],
+        }
+
     @app.post("/api/trader/stop")
     async def stop_trader(seat: Desk = Depends(desk)):
+        """단일 봇이든 그룹이든 멈춘다. 보유 포지션은 그대로 둡니다."""
         return await seat.stop()
 
     @app.get("/api/trader/reconciliation")

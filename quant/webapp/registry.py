@@ -1294,9 +1294,32 @@ class UserRegistry:
             | {uid for uid, group in self._groups.items() if group.alive}
         )
 
+    def build_account_venue(self, user_id: int, config: StrategyConfig):
+        """그룹이 물 증권사 어댑터 하나. **자기만의 장부** 를 갖습니다.
+
+        어느 에이전트의 `Portfolio` 도 넘겨서는 안 됩니다. `LiveBrokerage` 는
+        `_sync_once` 에서 **계좌 전체** 의 수량과 현금을 자기 `portfolio` 에
+        적는데(`adopt_venue_capital`), 그것이 어느 에이전트의 장부이면 계좌
+        합계가 그 장부에 들어앉습니다. 그러면 그 에이전트의 손절 한 번이 다른
+        에이전트와 사용자의 보유까지 전부 팝니다 — 그리고 합계 불변식은 그것을
+        잡지 못합니다(나간 수량이 발주 에이전트에게 귀속되므로 Σ 는 맞습니다).
+
+        슬리브의 `_sleeve_quantity` 가 `min(장부, 원장)` 으로 한 겹 더 막고
+        있지만, 애초에 닿지 않게 하는 것이 방어선 하나를 아끼는 것보다 낫습니다.
+        """
+        from quant.core.account import Portfolio
+        from quant.strategy.builder import build_brokerage, build_costs
+
+        cfg = _with_credentials(self.prepare(user_id, config),
+                                self.accounts.secrets_for(user_id))
+        fee, slippage, fill = build_costs(cfg)
+        account_book = Portfolio(cfg.portfolio.starting_cash,
+                                 cfg.portfolio.base_currency)
+        return build_brokerage(cfg, account_book, fee, slippage, fill)
+
     async def start_group(self, user_id: int, group, configs: dict,
-                          *, venue, on_event: Callable | None = None,
-                          master_budget=None, base_currency: str = "KRW",
+                          *, venue=None, on_event: Callable | None = None,
+                          master_budget=None, base_currency: str | None = None,
                           resume: bool = True) -> dict:
         """이 사용자의 에이전트 그룹을 띄운다. 계좌 하나당 그룹 하나까지.
 
@@ -1314,6 +1337,28 @@ class UserRegistry:
         if running_group is not None and running_group.alive:
             raise AlreadyRunning(
                 ", ".join(s.label for s in running_group.group.agents))
+
+        first = configs[group.agents[0].agent_id]
+        if venue is None:
+            # 어댑터는 계좌에 하나입니다. 어느 에이전트의 설정으로 세우든 같은
+            # 증권사·같은 계좌번호이므로 첫 번째 것으로 세웁니다.
+            venue = self.build_account_venue(uid, first)
+        if base_currency is None:
+            # **설정에서 가져옵니다.** 여기에 통화를 박아 두면, 그와 다른 통화로
+            # 도는 계좌의 잔고 조회가 언제나 빈손으로 돌아옵니다. 그러면 자본
+            # 배분이 전원 0 원이 되고, 에이전트들은 자기 몫이 없는 줄 알고
+            # 아무것도 사지 않습니다 — 에러도 로그도 없이 그냥 안 삽니다.
+            base_currency = first.portfolio.base_currency
+
+        # 통화가 섞인 그룹은 받지 않습니다. 계좌 자산을 나누는 분모가 하나여야
+        # 하는데, 원화와 달러를 한 계좌에서 더하면 7만과 250 이 에러 없이
+        # 더해집니다.
+        currencies = {c.portfolio.base_currency for c in configs.values()}
+        if len(currencies) > 1:
+            raise ConfigRejected(
+                f"한 그룹의 에이전트는 같은 통화여야 합니다: "
+                f"{', '.join(sorted(currencies))}"
+            )
 
         prepared: dict = {}
         profiles: dict[str, str] = {}
