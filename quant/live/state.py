@@ -315,6 +315,18 @@ class StateStore:
             )
         self.conn.commit()
         self.run_id: int | None = None
+        #: 지금 도는 **그룹** 이 이 프로세스에서 연 실행들.
+        #:
+        #: 실거래 실행은 시작하자마자 `mark_reconciliation_required()` 로 crash
+        #: quarantine 을 건다. 계좌 게이트는 그 표시가 붙은 미보관 Toss 실행을
+        #: "증권사 상태가 불확실하다" 로 읽고 새 실거래를 막는데, 방금 이 프로세스가
+        #: 같은 그룹으로 띄운 형제에게는 그 해석이 틀렸다. 그것을 남으로 보면
+        #: **실거래 에이전트가 둘 이상인 그룹은 영원히 시작하지 못한다** — 하나가
+        #: 뜨는 순간 나머지가 자기 형제에게 막힌다.
+        #:
+        #: 그룹의 에이전트 시점만 여기 등록한다. 단일 봇은 등록하지 않으므로
+        #: 실패한 시작이 남긴 격리가 다음 시도를 막는 기존 동작이 그대로다.
+        self._group_run_ids: set[int] = set()
         # Set only by ``restore_positions`` from the durable run_state source.
         # LiveTrader passes this explicit fact to the broker before its first
         # account sync; inferring a restart from a cash number would confuse a
@@ -535,6 +547,7 @@ class StateStore:
             resume_strategy=strategy if resume else None,
             resume_config_json=config_json if resume else None,
             now=now,
+            resume_agent_id=self.current_agent_id,
         )
         resumable_run_id = gate["resumable_run_id"] if resume else None
         if resumable_run_id is not None:
@@ -936,6 +949,7 @@ class StateStore:
             self, *, resume_strategy: str | None = None,
             resume_config_json: str | None = None,
             now: datetime | None = None,
+            resume_agent_id: str | None = None,
     ) -> dict:
         """Account-wide gate over each Toss-live strategy's lifecycle head.
 
@@ -950,8 +964,9 @@ class StateStore:
         """
         current = self._recovery_now(now)
         rows = self.conn.execute(
-            "SELECT id, strategy, mode, requires_reconciliation, archived_at, "
-            "config_json FROM runs WHERE mode='live' ORDER BY id DESC"
+            "SELECT id, strategy, mode, agent_id, requires_reconciliation, "
+            "archived_at, config_json FROM runs WHERE mode='live' "
+            "ORDER BY id DESC"
         ).fetchall()
         seen: set[tuple[str, str]] = set()
         required: list[sqlite3.Row] = []
@@ -973,11 +988,22 @@ class StateStore:
                     if cutoff is not None:
                         archived_cutoffs.append(cutoff)
                 continue
-            if bool(row["requires_reconciliation"]) and row["archived_at"] is None:
+            if (bool(row["requires_reconciliation"])
+                    and row["archived_at"] is None
+                    and int(row["id"]) not in self._group_run_ids):
                 # Every unresolved Toss run quarantines the shared account.
                 # ``seen`` is only a lifecycle-head filter for archive
                 # cooldowns; applying it here lets a later clean legacy row
                 # hide an older unresolved run with real venue uncertainty.
+                #
+                # `_group_run_ids` 는 방금 이 프로세스가 같은 그룹으로 띄운
+                # 형제들이다. 그들의 격리는 시작할 때 누구나 거는 표시이지
+                # 증권사 상태가 불확실하다는 증거가 아니다. 남으로 보면 실거래
+                # 에이전트가 둘 이상인 그룹은 영원히 시작하지 못한다.
+                #
+                # 하루 한도 계산(`active_budgets`)에는 이 예외를 적용하지
+                # 않는다 — 형제들이 쓴 허용치는 같은 계좌의 것이므로 반드시
+                # 합쳐서 보여야 하고, 빼는 순간 방어선이 봇 수만큼 곱해진다.
                 required.append(row)
             pair = (row["strategy"], row["mode"])
             if pair in seen:
@@ -987,9 +1013,13 @@ class StateStore:
             if cutoff is not None:
                 archived_cutoffs.append(cutoff)
 
+        # 재개 대상은 **그 에이전트의** 최신 실행이다. agent_id 를 빼면 같은
+        # 전략 템플릿을 쓰는 형제의 실행이 선택되고, 그쪽 허용치를 이어받는다.
         latest_target = next((
             row for row in rows
             if row["strategy"] == resume_strategy and row["mode"] == "live"
+            and (resume_agent_id is None
+                 or str(row["agent_id"] or "") == str(resume_agent_id))
         ), None)
         target_scope = self._stored_toss_live_scope(
             resume_config_json, resume_strategy,
@@ -1324,12 +1354,14 @@ class StateStore:
     def assert_toss_account_start_allowed(
             self, *, resume_strategy: str | None = None,
             resume_config_json: str | None = None,
-            now: datetime | None = None) -> dict:
+            now: datetime | None = None,
+            resume_agent_id: str | None = None) -> dict:
         """Fail closed before a Toss-live run is resumed or created."""
         gate = self.toss_account_start_gate(
             resume_strategy=resume_strategy,
             resume_config_json=resume_config_json,
             now=now,
+            resume_agent_id=resume_agent_id,
         )
         if gate["reconciliation_required"]:
             raise RecoveryArchiveError(
@@ -2416,6 +2448,16 @@ class StateStore:
         return [{"ts": r["ts"], "type": r["type"],
                  "payload": json.loads(r["payload"] or "{}")} for r in rows]
 
+    @property
+    def current_agent_id(self) -> str | None:
+        """이 저장소가 대표하는 에이전트. 그룹이 아니면 None 입니다.
+
+        `None` 은 "에이전트를 가리지 않는다" 이고 빈 문자열은 "에이전트 개념이
+        없던 실행" 입니다. 둘을 구별해야 기존 단일 봇의 게이트 판정이 그대로
+        남습니다.
+        """
+        return None
+
     def close(self) -> None:
         self._release_ownership()
         self.conn.close()
@@ -2511,20 +2553,40 @@ class AgentStateView(StateStore):
         """
         return None
 
+    @property
+    def current_agent_id(self) -> str:
+        return self.agent_id
+
+    @property
+    def _group_run_ids(self) -> set:
+        """형제 목록은 그룹의 것입니다 — 시점마다 따로 두면 서로를 못 봅니다."""
+        return self.owner._group_run_ids
+
     # ── 에이전트 실행의 시작/재개 ────────────────────────────────────────
+    def _remember_sibling(self, run_id):
+        """이 실행을 "지금 이 그룹이 연 것" 으로 등록한다.
+
+        계좌 게이트가 형제의 시작 격리를 남의 미해결 실행으로 읽지 않게 하는
+        유일한 근거입니다. 등록은 **에이전트 시점만** 합니다 — 단일 봇이
+        등록하면 실패한 시작이 남긴 격리가 다음 시도를 막지 못하게 됩니다.
+        """
+        if run_id is not None:
+            self.owner._group_run_ids.add(int(run_id))
+        return run_id
+
     def start_run(self, strategy, mode, starting_cash, config_json="", *,
                   now=None, agent_id=None):
-        return super().start_run(
+        return self._remember_sibling(super().start_run(
             strategy, mode, starting_cash, config_json, now=now,
-            agent_id=self.agent_id if agent_id is None else agent_id)
+            agent_id=self.agent_id if agent_id is None else agent_id))
 
     def resume_run(self, strategy, mode, agent_id=None):
-        return super().resume_run(
+        return self._remember_sibling(super().resume_run(
             strategy, mode,
-            self.agent_id if agent_id is None else agent_id)
+            self.agent_id if agent_id is None else agent_id))
 
     def resume_run_exact(self, strategy, mode, expected_run_id,
                          expected_config_json, agent_id=None):
-        return super().resume_run_exact(
+        return self._remember_sibling(super().resume_run_exact(
             strategy, mode, expected_run_id, expected_config_json,
-            self.agent_id if agent_id is None else agent_id)
+            self.agent_id if agent_id is None else agent_id))
