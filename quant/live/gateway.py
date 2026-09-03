@@ -414,6 +414,15 @@ class AccountGateway:
         # 미귀속은 아무도 팔 수 없으므로 판 적도 없는 주식이 손절도 청산도 닿지
         # 않는 채로 계좌에 남습니다.
         self._remember_order(order.id, agent_id, order.symbol.key)
+        # 어댑터의 장부에 시세를 비춰 줍니다. 그 장부는 계좌 진실 전용이라
+        # 아무 봉도 마크되지 않으므로 `last_price` 가 언제나 0 이고,
+        # `LiveBrokerage._guard` 는 그 값으로 주문 금액을 매깁니다 — 시장가
+        # 주문이 **전부** "가격을 알 수 없어" 거절됩니다. 긴급 청산까지.
+        # 에이전트 장부는 매 봉 마크되므로 거기서 읽어 옮깁니다.
+        mark = self._last_price(order.symbol)
+        venue_book = getattr(self.venue, "portfolio", None)
+        if mark > 0 and venue_book is not None:
+            venue_book.mark(order.symbol, mark)
         submitted = await self.venue.submit(order)
         if submitted.status is OrderStatus.REJECTED:
             # **확실한 거절에서만** 지웁니다. `LiveBrokerage.submit` 은 어댑터의
@@ -500,6 +509,16 @@ class AccountGateway:
         규칙("빠져나오지 못하게 하는 것은 안전장치가 아니다")을 정면으로 어깁니다.
         """
         await self._drain_venue_fills()
+        # 계좌 자산을 새로 읽습니다. 시작 때 한 번만 읽으면 비율 손실 한도의
+        # 분모가 영원히 그날 아침 값이고, 날짜가 바뀌어도 그 값으로 새 원장을
+        # 만듭니다 — 20% 잃은 다음 날에도 "시작 자산" 이 잃기 전 금액입니다.
+        try:
+            balances = await self.venue.balances()
+            equity = float((balances or {}).get(self.base_currency) or 0.0)
+            if equity > 0:
+                self._account_equity = equity
+        except Exception:  # noqa: BLE001 — 못 읽으면 마지막 값을 그대로 쓴다
+            log.debug("계좌 자산 갱신 실패 — 마지막 값 유지")
         report = await self.venue.sync() or {}
         venue_positions = await self.venue.positions()
         drift = self.check_invariant(venue_positions)
@@ -773,6 +792,35 @@ class AccountGateway:
             return
         await self.venue.close()
         self._connected = False
+
+    # ── 슬리브가 종료·격리 판정에 쓰는 계좌 사실 ────────────────────────
+    @property
+    def sends_orders(self) -> bool:
+        """주문이 실제로 증권사로 나가는가. `Engine.stop` 이 체결 채널 검사를
+        이 값으로 켭니다 — 없으면 실거래 그룹의 종료 안전 게이트가 조용히
+        꺼집니다."""
+        return bool(getattr(self.venue, "sends_orders", False))
+
+    @property
+    def account_uses_venue_capital(self) -> bool:
+        """계좌가 증권사 잔고를 자본의 진실로 쓰는 실거래인가.
+
+        `LiveTrader` 가 crash quarantine 을 걸지 결정하는 근거입니다. 슬리브는
+        `LiveBrokerage` 가 아니라 예전 조건(`isinstance … and
+        uses_venue_capital`)을 통과하지 못했고, 그 결과 실거래 그룹은 격리를
+        한 번도 걸지 않아 **죽은 프로세스가 수동 대조 없이 재시작** 됐습니다.
+        """
+        return bool(getattr(self.venue, "uses_venue_capital", False)
+                    and getattr(self.venue, "live", False))
+
+    def remote_open_order_counter(self):
+        """증권사 쪽 미결 주문 수를 세는 함수, 어댑터가 제공할 때만.
+
+        제공하지 않는 어댑터(페이퍼)에 0 을 지어내 돌려주면 `Engine.stop` 이
+        "확인됨" 으로 읽습니다 — 확인한 적 없는 것을 확인했다고 적는 셈입니다.
+        그래서 있을 때만 함수를, 없을 때는 None 을 돌려줍니다.
+        """
+        return getattr(self.venue, "shutdown_remote_open_order_count", None)
 
     def status(self) -> dict[str, Any]:
         return {

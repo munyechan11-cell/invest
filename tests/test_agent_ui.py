@@ -64,9 +64,26 @@ def test_every_agent_scoped_call_goes_through_with_agent(path):
     bare = []
     for m in re.finditer(rf'["\']{re.escape(path)}["\']', SCRIPT):
         statement = _statement_around(m.start())
-        if "withAgent" not in statement:
+        # `withAccount` 는 "일부러 계좌 전체" 라는 뜻입니다 — ⚙설정의 하루
+        # 한도와 초기 성향 진단. 맨손 호출과 구별해야 합니다.
+        if "withAgent" not in statement and "withAccount" not in statement:
             bare.append(statement.strip()[:90])
-    assert not bare, f"{path} 를 withAgent 없이 부르는 자리: {bare}"
+    assert not bare, f"{path} 를 withAgent/withAccount 없이 부르는 자리: {bare}"
+
+
+def test_the_setup_sheet_edits_the_account_cap_not_an_agents():
+    """그룹이 도는 동안 ⚙설정의 하루 한도가 활성 에이전트의 파일에 적히면,
+    계좌 마스터 한도를 바꿀 길이 화면 어디에도 없습니다."""
+    load = _whole_fn("loadLimits")
+    assert 'withAccount("/api/limits")' in load
+    assert 'withAgent("/api/limits")' not in load
+    # 저장도 같은 범위여야 합니다 — 읽는 곳과 쓰는 곳이 다르면 사용자는
+    # 자기가 본 값을 고쳤다고 믿습니다.
+    assert 'post(withAccount("/api/limits")' in SCRIPT
+    # 에이전트 탭을 눌러도 설정 시트의 계좌 한도 칸이 에이전트 값으로
+    # 덮이지 않아야 합니다.
+    tabs = _whole_fn("renderAgentTabs")
+    assert "loadLimits()" not in tabs
 
 
 def test_with_agent_appends_nothing_when_no_agent_is_chosen():

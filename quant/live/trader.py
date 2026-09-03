@@ -336,8 +336,15 @@ class LiveTrader:
         # Commit the crash quarantine before the broker can perform any live
         # activity. Only Engine.stop's verified no-open-order path reaches
         # ``stop_run`` and clears it again.
-        if (isinstance(self.engine.brokerage, LiveBrokerage)
-                and self.engine.brokerage.uses_venue_capital):
+        # 슬리브는 `LiveBrokerage` 가 아니지만 그 뒤의 계좌는 실거래일 수
+        # 있습니다. 여기서 `isinstance` 만 보면 실거래 그룹은 격리를 한 번도
+        # 걸지 않고, 죽은 프로세스가 수동 대조 없이 재시작됩니다 — 이
+        # 격리가 막으려는 사고 그 자체입니다. 계좌 사실은 슬리브가
+        # `account_uses_venue_capital` 로 답합니다.
+        if ((isinstance(self.engine.brokerage, LiveBrokerage)
+                and self.engine.brokerage.uses_venue_capital)
+                or getattr(self.engine.brokerage,
+                           "account_uses_venue_capital", False)):
             self.state.mark_reconciliation_required()
         await self.engine.start()
         portfolio = self.engine.ctx.portfolio

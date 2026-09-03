@@ -1189,6 +1189,12 @@ class UserRegistry:
         existing = self._bots.get(uid)
         if existing is not None and existing.alive:
             raise AlreadyRunning(existing.strategy)
+        running_group = self._groups.get(uid)
+        if running_group is not None and running_group.alive:
+            # 배타성은 양방향이어야 합니다. 그룹 시작은 단일 봇을 봤지만 단일
+            # 봇 시작은 그룹을 보지 않아, 같은 계좌에 둘이 붙을 수 있었습니다.
+            raise AlreadyRunning(
+                ", ".join(a.label for a in running_group.group.agents))
 
         # This happens before build_trader/create_task. A UI request therefore
         # gets a synchronous 409 instead of briefly showing a bot that later
@@ -1396,9 +1402,15 @@ class UserRegistry:
 
         first = configs[group.agents[0].agent_id]
         if venue is None:
-            # 어댑터는 계좌에 하나입니다. 어느 에이전트의 설정으로 세우든 같은
-            # 증권사·같은 계좌번호이므로 첫 번째 것으로 세웁니다.
-            venue = self.build_account_venue(uid, first)
+            # 어댑터는 계좌에 하나이고, 그 실거래 여부는 **가장 위험한
+            # 에이전트** 가 정합니다. 예전에는 무조건 첫 번째 설정으로 세워서,
+            # [관찰, 실거래] 순서면 어댑터가 페이퍼로 만들어졌습니다 — 실거래를
+            # 확인한 에이전트가 조용히 가상 체결을 받고, 사용자는 진짜 주문이
+            # 나가는 줄 압니다. 실거래 에이전트가 하나라도 있으면 그 설정으로
+            # 세웁니다(같은 증권사·같은 계좌번호이므로 나머지는 같습니다).
+            anchor = next((configs[a.agent_id] for a in group.agents
+                           if a.is_live), first)
+            venue = self.build_account_venue(uid, anchor)
         if base_currency is None:
             # **설정에서 가져옵니다.** 여기에 통화를 박아 두면, 그와 다른 통화로
             # 도는 계좌의 잔고 조회가 언제나 빈손으로 돌아옵니다. 그러면 자본
@@ -1443,6 +1455,12 @@ class UserRegistry:
                 "자기 한도를 지켜도 계좌는 그 네 배를 잃을 수 있습니다. "
                 "마이페이지의 하루 한도(계좌)에서 먼저 설정하세요."
             )
+        if bool(getattr(venue, "live", False)) != group.has_live:
+            raise ConfigRejected(
+                "계좌 어댑터의 실거래 여부가 에이전트 구성과 다릅니다 — "
+                f"어댑터 {'실거래' if getattr(venue, 'live', False) else '모의'}, "
+                f"그룹 {'실거래' if group.has_live else '모의'}. 시작하지 않습니다."
+            )
 
         trader_group = GroupTrader(
             group, prepared, self.state_path(uid), venue=venue,
@@ -1484,6 +1502,11 @@ class UserRegistry:
         if group is None or not group.alive:
             raise NotRunning()
         result = await group.stop(wait)
+        # 멈추는 것과 놓는 것은 다릅니다. `stop()` 은 사이클을 끝내고 기다릴
+        # 뿐 증권사 연결도 상태 DB 소유권도 놓지 않아서, 예전에는 ■ 정지 뒤에
+        # 프로세스를 재시작하기 전까지 이 계좌로 아무것도 켤 수 없었습니다.
+        # 그룹 객체는 남겨 둡니다 — 죽은 에이전트의 이유를 화면이 읽습니다.
+        await group.shutdown(wait=min(wait, 5.0))
         self._note(uid, "group_stopped", ", ".join(group.group.ids))
         return result
 

@@ -258,6 +258,35 @@ class SleeveBrokerage(Brokerage):
     def fill_channel_up(self) -> None:
         self.gateway.fill_channel_up()
 
+    # ── 종료·격리 판정에 쓰이는 계좌 사실 ──────────────────────────────
+    @property
+    def sends_orders(self) -> bool:
+        """`Engine.stop` 은 이 값이 참일 때만 체결 채널이 복구됐는지 검사합니다.
+        슬리브에 없으면 실거래 그룹의 종료가 언제나 "안전" 으로 기록됩니다 —
+        체결을 볼 수 없는 채로 끝났어도."""
+        return bool(getattr(self.gateway, "sends_orders", False))
+
+    @property
+    def account_uses_venue_capital(self) -> bool:
+        """계좌가 실거래 증권사 잔고를 진실로 쓰는가. `LiveTrader` 가 crash
+        quarantine 을 걸 근거입니다 — 슬리브는 `LiveBrokerage` 가 아니라
+        예전 조건을 통과하지 못했고, 그래서 실거래 그룹은 격리 없이 돌았습니다."""
+        return bool(getattr(self.gateway, "account_uses_venue_capital", False))
+
+    def __getattr__(self, name: str):
+        # `shutdown_remote_open_order_count` 는 **있을 때만** 있어야 합니다.
+        # `Engine.stop` 은 `getattr(brokerage, …, None)` 으로 존재 여부를 보고,
+        # 있으면 부른 결과를 "증권사 미결 주문 확인" 으로 씁니다. 어댑터가 그
+        # 기능이 없는데 슬리브가 0 을 지어내면 확인한 적 없는 것을 확인했다고
+        # 적는 셈이고, 예외를 던지면 페이퍼 그룹의 모든 종료가 "불안전" 이
+        # 됩니다. 그래서 어댑터가 줄 때만 그대로 넘기고, 아니면 없는 척합니다.
+        if name == "shutdown_remote_open_order_count":
+            lookup = getattr(self.gateway, "remote_open_order_counter", None)
+            fn = lookup() if callable(lookup) else None
+            if fn is not None:
+                return fn
+        raise AttributeError(name)
+
     def drain_pending_fills(self) -> list[Fill]:
         """어댑터가 이미 검증해 둔 이 에이전트 몫의 체결. 네트워크를 타지 않습니다."""
         return self.gateway.drain_pending_fills_for(self.agent_id)

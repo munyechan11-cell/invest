@@ -2528,7 +2528,8 @@ class StateStore:
 
     def pnl_by_period(self, now: datetime | None = None,
                       strategy: str | None = None,
-                      mode: str | None = None) -> dict:
+                      mode: str | None = None,
+                      agent_id: str | None = None) -> dict:
         """오늘·이번주·이번달·올해 실현손익.
 
         **run 을 가로질러 셉니다.** 봇을 멈추고 다시 켜면 새 run 이 열리는데,
@@ -2566,6 +2567,11 @@ class StateStore:
         if mode:
             conds.append("mode=?")
             run_args.append(mode)
+        if agent_id:
+            # 그룹에서 "이번 달 얼마 벌었나" 는 에이전트마다 다른 질문입니다 —
+            # 합쳐서 보여주면 보수형이 번 돈이 공격형의 성적표에 찍힙니다.
+            conds.append("agent_id=?")
+            run_args.append(str(agent_id))
         run_filter = (f" AND t.run_id IN (SELECT id FROM runs WHERE {' AND '.join(conds)})"
                       if conds else "")
 
@@ -2592,7 +2598,8 @@ class StateStore:
         return out
 
     def trade_log(self, limit: int = 200, offset: int = 0,
-                  strategy: str | None = None, mode: str | None = None) -> dict:
+                  strategy: str | None = None, mode: str | None = None,
+                  agent_id: str | None = None) -> dict:
         """매매 기록 — run 을 가로질러, 최근 것부터.
 
         `recent_trades` 는 지금 돌고 있는 run 만 봅니다. 그건 화면 상단의
@@ -2606,12 +2613,18 @@ class StateStore:
         if mode:
             conds.append("mode=?")
             args.append(mode)
+        if agent_id:
+            # 그룹에서 "내가 뭘 사고팔았나" 는 에이전트마다 다른 질문입니다.
+            conds.append("agent_id=?")
+            args.append(str(agent_id))
         where = (f" WHERE t.run_id IN (SELECT id FROM runs WHERE {' AND '.join(conds)})"
                  if conds else "")
         total = self.conn.execute(
             f"SELECT COUNT(*) n FROM trades t{where}", args).fetchone()["n"]
+        # `r.agent_id` 를 같이 내보냅니다 — 기록은 나중에 다시 읽는 것이라,
+        # 어느 에이전트의 매매였는지가 줄에 남아 있어야 합니다.
         rows = self.conn.execute(
-            "SELECT t.*, r.strategy, r.mode FROM trades t "
+            "SELECT t.*, r.strategy, r.mode, r.agent_id FROM trades t "
             "JOIN runs r ON r.id = t.run_id" + where
             + " ORDER BY t.exit_ts DESC, t.id DESC LIMIT ? OFFSET ?",
             [*args, limit, offset]).fetchall()

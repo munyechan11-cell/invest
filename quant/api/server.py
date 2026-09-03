@@ -979,7 +979,8 @@ def _validated_l1_quote(quote: object, symbol: Symbol,
     }, ""
 
 
-def _select_run_readonly(store: StateStore, strategy: str, mode: str) -> int | None:
+def _select_run_readonly(store: StateStore, strategy: str, mode: str,
+                         agent_id: str = "") -> int | None:
     """Attach read methods to the latest lifecycle head without reopening it.
 
     ``StateStore.resume_run`` also clears ``runs.stopped_at``.  That is correct
@@ -987,10 +988,13 @@ def _select_run_readonly(store: StateStore, strategy: str, mode: str) -> int | N
     quarantined run look live.  Archived heads remain terminal, matching the
     selection semantics of ``resume_run`` without any UPDATE/COMMIT.
     """
+    # 그룹에서는 에이전트마다 자기 run 이 있습니다. `agent_id` 없이 고르면
+    # 같은 전략을 쓰는 형제 중 **가장 최근 것** 이 걸리고, 화면은 어느
+    # 에이전트의 곡선인지 모른 채 그것을 그립니다 — 탭을 눌러도 안 바뀝니다.
     row = store.conn.execute(
         "SELECT id, archived_at FROM runs WHERE strategy=? AND mode=? "
-        "ORDER BY id DESC LIMIT 1",
-        (strategy, mode),
+        "AND agent_id=? ORDER BY id DESC LIMIT 1",
+        (strategy, mode, str(agent_id or "")),
     ).fetchone()
     store.run_id = (
         int(row["id"])
@@ -1046,10 +1050,13 @@ def _template_config(name: str | None):
         return None
 
 
-def _selected_read_config(seat: Desk, strategy: str | None) -> StrategyConfig | None:
+def _selected_read_config(seat: Desk, strategy: str | None,
+                          agent_id: str = "") -> StrategyConfig | None:
     """Resolve one read-only screen without hiding an explicit bad selection."""
-    if seat.running():
-        return seat.run_config()
+    if seat.running(agent_id) or (not agent_id and seat.running()):
+        picked = seat.run_config(agent_id)
+        if picked is not None:
+            return picked
     if strategy is not None:
         # `resolve_template` preserves the useful 400 response. Falling through
         # to the process default here can show another strategy/account while
@@ -1239,7 +1246,17 @@ class Desk:
 
     def running(self, agent_id: str = "") -> bool:
         trader = self.trader(agent_id)
-        return bool(trader is not None and trader.running)
+        if trader is not None and trader.running:
+            return True
+        # 에이전트가 둘 이상이면 `trader()` 는 None 입니다(어느 것인지 되묻는
+        # 규칙). 그 None 을 "안 돈다" 로 읽으면 /api/health 가 실거래 그룹을
+        # 통째로 멈춘 것으로 보고합니다.
+        if agent_id:
+            return False
+        registry = getattr(self, "registry", None)
+        user = getattr(self, "user", None)
+        return bool(registry is not None and user is not None
+                    and registry.group(user.id) is not None)
 
     def desk_model(self, agent_id: str = ""):
         trader = self.trader(agent_id)
@@ -1813,6 +1830,7 @@ def create_app(config: StrategyConfig | None = None,
                      mode: str | None = Query(
                          None, pattern="^(backtest|dry_run|live)$",
                      ),
+                     agent_id: str = "",
                      seat: Desk = Depends(desk)):
         store = StateStore(seat.state_path)
         try:
@@ -1820,12 +1838,13 @@ def create_app(config: StrategyConfig | None = None,
             # ``run_config()``.  The chart must instead follow the strategy the
             # person selected, or a live Toss screen can quietly draw the demo
             # backtest curve underneath it.
-            cfg = _selected_read_config(seat, strategy)
+            cfg = _selected_read_config(seat, strategy, agent_id)
             selected_mode = mode or (cfg.mode.value if cfg else None)
             if cfg and selected_mode:
-                _select_run_readonly(store, cfg.name, selected_mode)
+                _select_run_readonly(store, cfg.name, selected_mode, agent_id)
             return {
                 "points": store.equity_curve(limit),
+                "agent_id": agent_id or None,
                 "strategy": cfg.name if cfg else None,
                 "mode": selected_mode,
             }
@@ -2210,13 +2229,14 @@ def create_app(config: StrategyConfig | None = None,
                      mode: str | None = Query(
                          None, pattern="^(backtest|dry_run|live)$",
                      ),
+                     agent_id: str = "",
                      seat: Desk = Depends(desk)):
         store = StateStore(seat.state_path)
         try:
-            cfg = _selected_read_config(seat, strategy)
+            cfg = _selected_read_config(seat, strategy, agent_id)
             selected_mode = mode or (cfg.mode.value if cfg else None)
             if cfg and selected_mode:
-                _select_run_readonly(store, cfg.name, selected_mode)
+                _select_run_readonly(store, cfg.name, selected_mode, agent_id)
             book = NameBook(seat.state_path, store=store)
             return {
                 "trades": book.tag(store.recent_trades(limit), "symbol"),
@@ -2229,6 +2249,7 @@ def create_app(config: StrategyConfig | None = None,
     @app.get("/api/pnl")
     async def pnl(strategy: str | None = Query(None, max_length=80),
                   mode: str | None = Query(None, max_length=16),
+                  agent_id: str = "",
                   seat: Desk = Depends(desk)):
         """오늘·이번주·이번달·올해 실현손익.
 
@@ -2237,7 +2258,8 @@ def create_app(config: StrategyConfig | None = None,
         """
         store = StateStore(seat.state_path)
         try:
-            return {"periods": store.pnl_by_period(strategy=strategy, mode=mode),
+            return {"periods": store.pnl_by_period(strategy=strategy, mode=mode,
+                                                   agent_id=agent_id or None),
                     # 모의로 번 돈은 실제로 번 돈이 아닙니다. 화면이 그 둘을
                     # 나눠 보여줄 수 있게 어느 모드에 거래가 있는지 알려줍니다.
                     "modes": store.modes_with_trades()}
@@ -2249,6 +2271,7 @@ def create_app(config: StrategyConfig | None = None,
                        offset: int = Query(0, ge=0),
                        strategy: str | None = Query(None, max_length=80),
                        mode: str | None = Query(None, max_length=16),
+                       agent_id: str = "",
                        seat: Desk = Depends(desk)):
         """매매 기록 — 지금 돌고 있는 run 만이 아니라 전부.
 
@@ -2258,7 +2281,8 @@ def create_app(config: StrategyConfig | None = None,
         store = StateStore(seat.state_path)
         try:
             payload = store.trade_log(limit=limit, offset=offset,
-                                      strategy=strategy, mode=mode)
+                                      strategy=strategy, mode=mode,
+                                      agent_id=agent_id or None)
             book = NameBook(seat.state_path, store=store)
             # 기록은 나중에 다시 읽는 것입니다. 반년 전 줄에 코드만 남아 있으면
             # 그때 내가 무엇을 사고팔았는지 알아볼 수 없습니다.

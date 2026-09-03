@@ -169,7 +169,19 @@ class GroupTrader:
                 "분모이자 비율 손실 한도의 기준이라, 모르는 채로 시작하면 계좌 "
                 "한도가 걸리지 않습니다. 증권사 연동을 확인한 뒤 다시 시작하세요."
             )
-        self.gateway.allocate_capital(equity)
+        allocations = self.gateway.allocate_capital(equity)
+        # **배분을 엔진 장부에 실제로 적습니다.** 예전에는 게이트웨이가 몫을
+        # 계산만 하고 아무 장부에도 쓰지 않아, 넷이 각자 템플릿의
+        # `starting_cash` 로 사이징했습니다 — 80만원 템플릿 넷이면 100만원
+        # 계좌에 320만원어치 매수 의도가 실립니다. 화면에는 "70,000 / 30,000"
+        # 이 뜨는데 봇은 그 숫자를 본 적이 없었습니다.
+        #
+        # 재개하는 실행은 뒤에서 `LiveTrader.start()` 가 durable 현금·포지션을
+        # 덮어씁니다 — 그쪽이 진실입니다. 여기 값은 새 실행의 출발점입니다.
+        for agent_id, share in allocations.items():
+            book = self.traders[agent_id].engine.ctx.portfolio
+            book.cash = book.starting_cash = float(share)
+            book.performance_baseline = book.high_water_mark = float(share)
         # 비율 손실 한도의 분모. 오늘 원장이 이미 있으면 그 시작 자산을 그대로
         # 두어야 합니다 — 장중 재시작마다 분모를 지금 자산으로 갈아 끼우면,
         # 이미 20% 를 잃은 계좌가 "오늘은 아직 0%" 가 됩니다.
@@ -261,6 +273,11 @@ class GroupTrader:
 
         with contextlib.suppress(Exception):
             await self.gateway.close()
+        # 저장소를 닫기 전에 계좌 원장의 바인딩을 풉니다. 풀지 않으면 종료
+        # 뒤의 상태 조회마다 `roll()` → `_persist()` 가 닫힌 연결에 쓰려다
+        # 예외를 남기고, 그 예외가 "회계 기록 실패" 로 표시됩니다.
+        with contextlib.suppress(Exception):
+            self.gateway.master_budget.bind_store(None)
         try:
             self.state.close()
         except Exception:  # noqa: BLE001 — best-effort final release

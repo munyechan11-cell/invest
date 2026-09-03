@@ -264,3 +264,14 @@ def test_the_old_single_bot_start_still_works(client):
         assert "agents" not in body
     finally:
         client.post("/api/trader/stop")
+
+
+def test_health_reports_a_group_as_running(client):
+    """`/api/health` 가 2개 이상 그룹을 "안 돈다" 로 보고하면, 감시가 실거래
+    그룹을 죽은 것으로 읽습니다."""
+    start_group(client, spec("attack", "attack"), spec("defend", "defend"))
+    try:
+        body = client.get("/api/health").json()
+        assert body.get("trader_running") is True
+    finally:
+        client.post("/api/trader/stop")

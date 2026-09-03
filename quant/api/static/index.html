@@ -1564,7 +1564,7 @@ async function loadEquity(refreshToken = null) {
   const requestedMode = pnlMode;
   try {
     const q = new URLSearchParams({limit: "1200", strategy, mode: requestedMode});
-    const points = await api(`/api/equity?${q}`);
+    const points = await api(withAgent(`/api/equity?${q}`));
     if (epoch !== authEpoch || generation !== equityGeneration ||
         strategy !== chartStrategy() ||
         requestedMode !== pnlMode ||
@@ -1889,9 +1889,20 @@ function renderAgentTabs(rows) {
       activeAgent = el.dataset.agent;
       renderAgentTabs(rows);
       refreshManual();
-      loadLimits();
+      // 곡선·손익·매매 기록은 에이전트마다 다른 run 을 봅니다. 탭만 바뀌고
+      // 아래가 그대로면, 화면은 "공격형" 이라고 써 놓고 보수형의 곡선을
+      // 보여줍니다.
+      refresh();
     };
   });
+}
+
+function withAccount(path) {
+  // 계좌 전체 범위 — 일부러 아무것도 붙이지 않습니다. ⚙설정의 하루 한도와
+  // 초기 성향 진단은 사람의 것이지 에이전트의 것이 아니고, 그룹에서 그
+  // 한도 파일은 계좌 마스터 한도가 됩니다. `withAgent` 로 보내면 활성
+  // 에이전트의 파일에 적혀서, 계좌 한도를 바꿀 길이 화면에 없어집니다.
+  return path;
 }
 
 function withAgent(path) {
@@ -2217,7 +2228,7 @@ function updateQuizProgress() {
 
 async function submitQuiz() {
   try {
-    const res = await post(withAgent("/api/profile"), {answers: quizAnswers});
+    const res = await post(withAccount("/api/profile"), {answers: quizAnswers});
     $("#quizResult").innerHTML =
       `<div class="msg ok">진단 완료: <b>${esc(res.name)}</b> (${esc(res.code)}) — ${esc(res.description)}<br>
        목표 변동성 ${(res.settings.target_annual_vol * 100).toFixed(0)}% ·
@@ -2569,7 +2580,7 @@ function renderOperator() {
 
 async function loadLimits() {
   try {
-    const lim = await api(withAgent("/api/limits"));
+    const lim = await api(withAccount("/api/limits"));
     const cfg = lim.configured || {
       max_daily_notional: lim.notional?.limit, max_daily_orders: lim.orders?.limit,
       max_daily_loss: lim.loss?.limit, max_daily_loss_pct: lim.loss?.limit_pct,
@@ -2736,7 +2747,7 @@ $("#setupSave").onclick = async () => {
     if (!stillCurrent()) return;
     const pct = parseFloat($("#lLossPct").value);
     if (!stillCurrent()) return;
-    await post(withAgent("/api/limits"), {
+    await post(withAccount("/api/limits"), {
       max_daily_notional: parseFloat($("#lNotional").value) || 0,
       max_daily_orders: parseInt($("#lOrders").value, 10) || 0,
       max_daily_loss: parseFloat($("#lLoss").value) || 0,
@@ -4667,7 +4678,7 @@ async function loadPnl() {
   const generation = ++pnlLoadGeneration;
   const asked = pnlMode;
   let d;
-  try { d = await api(`/api/pnl?mode=${encodeURIComponent(asked)}`); } catch { return; }
+  try { d = await api(withAgent(`/api/pnl?mode=${encodeURIComponent(asked)}`)); } catch { return; }
   if (epoch !== authEpoch || generation !== pnlLoadGeneration ||
       asked !== pnlMode) return;      // 늦게 온 남의 계정·모드 응답
   // 봇이 꺼져 있으면 어느 모드를 볼지 정할 근거가 없습니다. 서버가 "기록이
@@ -4718,8 +4729,8 @@ async function loadTradeLog(more) {
   if (!more) tradeShown = 0;
   let d;
   try {
-    d = await api(`/api/tradelog?limit=40&offset=${requestedOffset}`
-                  + `&mode=${encodeURIComponent(asked)}`);
+    d = await api(withAgent(`/api/tradelog?limit=40&offset=${requestedOffset}`
+                            + `&mode=${encodeURIComponent(asked)}`));
   } catch (e) {
     if (epoch !== authEpoch || generation !== tradeLogGeneration ||
         asked !== pnlMode) return;
@@ -4761,7 +4772,8 @@ async function loadTradeLog(more) {
     const side = t.side === "buy" ? "매수→매도" : "매도→매수";
     return `<tr>
       <td class="tl-sym">${esc(symLabel(t.symbol, nameOf(t, "symbol")))}</td>
-      <td class="tl-side dim">${side}</td>
+      <td class="tl-side dim">${side}${t.agent_id
+        ? " · " + esc(agentLabel(t.agent_id)) : ""}</td>
       <td class="tl-num">${num(t.quantity)}</td>
       <td class="tl-num">${num(t.entry_price)} → ${num(t.exit_price)}</td>
       <td class="tl-num ${cls}">${pnl > 0 ? "+" : ""}${num(pnl)}${pct}</td>
