@@ -219,8 +219,8 @@ header.top{position:sticky;top:0;z-index:40;padding:10px 24px;
   background:rgba(255,255,255,.92);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
   border-bottom:1px solid var(--line)}
 .top-in{max-width:1200px;margin:0 auto;display:grid;
-  grid-template-columns:10px auto auto minmax(0,1fr) auto auto;
-  grid-template-rows:auto auto;align-items:center;column-gap:12px;row-gap:6px;overflow:visible}
+  grid-template-columns:10px auto auto minmax(0,1fr) auto auto auto auto;
+  grid-template-rows:auto auto;align-items:center;column-gap:10px;row-gap:6px;overflow:visible}
 .top-in>*{min-width:0}
 .top-in>.conn{grid-column:1;grid-row:1}
 /* 로고는 홈으로 가는 문입니다. */
@@ -236,19 +236,20 @@ header.top{position:sticky;top:0;z-index:40;padding:10px 24px;
 .top-in>.mini[hidden]{display:none}
 .top-in>.grow{display:none}
 .top-in>.pagetabs{grid-column:5;grid-row:1;justify-self:end}
-.top-in>.headtools{grid-column:6;grid-row:1;position:relative}
-.top-in>#strategy{grid-column:2/5;grid-row:2;justify-self:start;max-width:100%}
-.top-in>#serverSince{grid-column:5/7;grid-row:2;justify-self:end}
-/* 보조 도구는 어느 폭에서든 버튼 하나 뒤에 접혀 있습니다. */
-.headtools>#headToolsToggle{display:flex;min-height:44px;align-items:center;
+/* 보조 도구(설정·데모·안내). 데스크톱은 머리말에 그대로 — 첫 방문 안내가
+   ⚙설정을 가리키므로 접어 두면 링이 빈자리에 그려집니다. 휴대폰은 아래
+   900px 블록에서 버튼 하나 뒤로 접습니다. */
+.headtools,.headtools-menu{display:contents}
+.headtools>#headToolsToggle{display:none;min-height:44px;align-items:center;
   justify-content:center;padding:6px 12px;font-size:14px;white-space:nowrap}
-.headtools-menu{display:none;position:absolute;right:0;top:calc(100% + 8px);z-index:70;
-  min-width:168px;padding:6px;background:var(--panel);border-radius:14px;
-  box-shadow:0 8px 30px rgba(25,31,40,.16)}
-.headtools.on>.headtools-menu{display:grid;gap:2px}
-.headtools-menu .btn{width:100%;justify-content:flex-start;background:transparent;
-  white-space:nowrap;text-align:left}
-.headtools-menu .btn:hover:not(:disabled){background:var(--bg)}
+.top-in .headtools-menu>.btn{background:transparent;color:var(--muted);font-size:14px;
+  padding:6px 10px;white-space:nowrap}
+.top-in .headtools-menu>.btn:hover:not(:disabled){background:var(--bg);color:var(--ink)}
+.top-in #setupBtn{grid-column:6;grid-row:1}
+.top-in #demoBtn{grid-column:7;grid-row:1}
+.top-in #tourBtn{grid-column:8;grid-row:1}
+.top-in>#strategy{grid-column:2/5;grid-row:2;justify-self:start;max-width:100%}
+.top-in>#serverSince{grid-column:5/9;grid-row:2;justify-self:end}
 .grow{flex:1}
 /* 현재 전략 이름 — 조용한 알약. (#authCard 의 .tabs .tab 은 아래에서 따로.) */
 .tab{font-size:13px;color:var(--muted);background:var(--bg);border:0;border-radius:999px;
@@ -1033,8 +1034,15 @@ body[data-page="account"] #pageAccount{display:grid;grid-template-columns:minmax
   .pagetabs button[aria-current="page"]{color:var(--blue-dark);background:var(--blue-soft);box-shadow:none}
   .top-in>.headtools{display:block;grid-column:10/13;grid-row:1;position:relative;
     min-width:0;justify-self:stretch}
-  .headtools>#headToolsToggle{width:100%;min-height:44px;padding:4px 6px;font-size:13px}
-  .headtools-menu .btn{grid-column:auto!important;grid-row:auto!important;width:100%;min-width:44px}
+  .headtools>#headToolsToggle{display:flex;width:100%;min-height:44px;padding:4px 6px;font-size:13px}
+  .headtools-menu{display:none;position:absolute;right:0;top:calc(100% + 8px);z-index:70;
+    min-width:168px;padding:6px;background:var(--panel);border-radius:14px;
+    box-shadow:0 8px 30px rgba(25,31,40,.16)}
+  .headtools.on>.headtools-menu{display:grid;gap:2px}
+  /* 첫 방문 안내가 도는 동안은 메뉴를 펼쳐 둡니다 — 1단계가 ⚙설정을 가리킵니다. */
+  body.touring .headtools-menu{display:grid;gap:2px}
+  .headtools-menu .btn{grid-column:auto!important;grid-row:auto!important;width:100%;min-width:44px;
+    justify-content:flex-start;text-align:left;color:var(--ink)}
   .top-in>#strategy,.top-in>#serverSince,.since{display:none}
   .viewtabs{top:0}
   .deck{scroll-margin-top:52px}
