@@ -87,6 +87,17 @@ CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   strategy TEXT NOT NULL,
   mode TEXT NOT NULL,
+  -- 어느 에이전트의 실행인가. 한 계좌를 여럿이 나눠 쓸 때만 채워집니다.
+  --
+  -- 포지션·잠금·핀·하루 원장이 전부 `run_id` 로 묶여 있으므로, 에이전트마다
+  -- runs 행을 하나씩 두면 그 테이블들이 전부 저절로 갈립니다. 새 컬럼은 이
+  -- 하나뿐입니다 — 나머지 테이블의 PK 는 건드리지 않습니다(기존 DB 에서
+  -- `CREATE TABLE IF NOT EXISTS` 는 PK 변경을 조용히 무시하고, 스키마 버전
+  -- 장치가 없어 되돌릴 방법도 없습니다).
+  --
+  -- 빈 문자열은 "에이전트 개념이 없던 실행" 입니다. 1인 1봇 시절의 기존 행과,
+  -- 그룹을 쓰지 않는 지금의 단일 실행이 모두 여기에 들어옵니다.
+  agent_id TEXT NOT NULL DEFAULT '',
   started_at TEXT NOT NULL,
   stopped_at TEXT,
   requires_reconciliation INTEGER NOT NULL DEFAULT 0,
@@ -178,6 +189,71 @@ CREATE TABLE IF NOT EXISTS day_budget (
   halt_reason TEXT, tz_offset_hours REAL NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (run_id, day)
+);
+CREATE TABLE IF NOT EXISTS account_budget (
+  -- 계좌 단위 하루 한도. `day_budget` 과 **따로** 삽니다.
+  --
+  -- 같은 테이블에 넣을 자리가 없습니다. `day_budget` 의 PK 는
+  -- `(run_id, day)` 인데 계좌 한도에는 run_id 가 없습니다. 아무 에이전트의
+  -- run_id 를 빌리면 그 에이전트의 원장과 한 행에서 충돌하고, 가짜 run 행을
+  -- 만들면 그것이 `day_budget JOIN runs WHERE mode='live'` 스캔에 걸려
+  -- Toss 계좌 게이트가 모든 시작을 영구히 거절합니다.
+  --
+  -- 상태 DB 는 사용자 하나당 하나이고 그 안의 계좌도 하나이므로, 날짜만으로
+  -- 유일합니다.
+  -- `mode` 가 PK 에 있는 이유: 모의 그룹의 가상 주문이 실거래 계좌의 하루
+  -- 허용치를 먹으면 안 됩니다. 반대 방향은 더 나쁩니다 — 아침에 모의로
+  -- 시험하다 20 건을 쓰고 실거래로 바꾸면 계좌가 이미 멈춰 있습니다.
+  -- `day_budget` 은 `run_id` 를 통해 `runs.mode` 로 갈리지만 계좌 원장에는
+  -- run 이 없으므로 여기서 직접 가릅니다.
+  day TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'live',
+  notional REAL NOT NULL DEFAULT 0, orders INTEGER NOT NULL DEFAULT 0,
+  realized_pnl REAL NOT NULL DEFAULT 0, fees REAL NOT NULL DEFAULT 0,
+  starting_equity REAL NOT NULL DEFAULT 0, blocked INTEGER NOT NULL DEFAULT 0,
+  halt_reason TEXT, tz_offset_hours REAL NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (day, mode)
+);
+CREATE TABLE IF NOT EXISTS sleeve_position (
+  -- "005930 20주 중 누구의 10주인가" 를 재시작 너머로 기억합니다.
+  --
+  -- 이것이 없으면 재시작이 **모든 보유를 팔 수 없게** 만듭니다. 게이트웨이의
+  -- 슬리브 원장이 빈 채로 뜨면 `adopt_unassigned` 가 계좌 전부를 미귀속으로
+  -- 받아 적고(미귀속은 아무도 팔 수 없습니다), 에이전트 장부는 positions 에서
+  -- 정상 복원되므로 화면에는 포지션이 그대로 보입니다. 그 상태에서 손절이
+  -- 나가면 `min(장부, 원장)` 이 0 을 골라 거절합니다 — 그리고 합계 불변식은
+  -- Σ슬리브(0) + 미귀속(20) == 증권사(20) 이라 아무 경고도 하지 않습니다.
+  --
+  -- 에이전트 장부(`positions`)와 별개로 둡니다. 둘은 서로를 검산하고, 어긋나면
+  -- `SleeveBrokerage._sleeve_quantity` 가 작은 쪽을 골라 안전한 방향으로
+  -- 틀립니다.
+  agent_id TEXT NOT NULL, symbol_key TEXT NOT NULL,
+  quantity TEXT NOT NULL, updated_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, symbol_key)
+);
+CREATE TABLE IF NOT EXISTS order_agent (
+  -- 주문 하나가 어느 에이전트의 것인가.
+  --
+  -- 게이트웨이가 메모리에만 들고 있으면, 미체결 주문을 남긴 채 재시작했을 때
+  -- 그 주문의 체결이 **미귀속** 으로 떨어집니다. 미귀속 물량은 어느 에이전트도
+  -- 팔 수 없고 합계 불변식은 그것을 정상으로 읽으므로, 판 적도 없는 주식이
+  -- 영원히 계좌에 남습니다 — 손절도 청산도 닿지 않는 채로.
+  --
+  -- **어디까지 실제로 되살리는지는 어댑터가 정합니다.** 체결은 어댑터가
+  -- 자기 `_orders` 를 훑어 만들고, 그 표는 재시작하면 비어 있습니다. 즉
+  -- 토스 실거래에서 재시작 전 주문의 체결이 이 표를 거쳐 돌아오는 일은
+  -- 없습니다 — 그쪽은 더 강하게 막습니다. 소유권을 확인할 수 없는 미체결
+  -- 주문이 계좌에 있으면 `TossBrokerage.connect()` 가 아예 연결을 거부하므로,
+  -- 애초에 그 상태로 그룹이 시작되지 않습니다.
+  --
+  -- 그래서 이 표가 실제로 일하는 자리는 좁습니다: 같은 프로세스 안의 재연결,
+  -- 모의·페이퍼 경로, 그리고 주문 표를 되살리는 어댑터가 생길 때. 좁다고
+  -- 빼지는 않습니다 — 귀속을 잃는 쪽의 대가가 "영원히 팔 수 없는 물량" 이고,
+  -- 이 표의 비용은 주문당 한 줄입니다.
+  order_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  symbol_key TEXT,
+  created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS db_owner (
   id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -279,6 +355,24 @@ class StateStore:
         for column in ("archived_at", "archive_reason", "archived_by"):
             if column not in have_runs:
                 self.conn.execute(f"ALTER TABLE runs ADD COLUMN {column} TEXT")
+        # `account_budget` 의 PK 가 `(day)` 에서 `(day, mode)` 로 바뀌었습니다.
+        # `CREATE TABLE IF NOT EXISTS` 는 기존 테이블의 PK 를 바꾸지 않으므로,
+        # 옛 모양이면 새로 만듭니다. 이 표는 배포된 적이 없어 지울 자료도
+        # 사실상 없습니다 — 있어도 오늘 하루치이고, 없으면 그날의 계좌 허용치가
+        # 한 번 새로 시작할 뿐입니다.
+        have_acct = {
+            r["name"] for r in self.conn.execute(
+                "PRAGMA table_info(account_budget)")
+        }
+        if have_acct and "mode" not in have_acct:
+            self.conn.execute("DROP TABLE account_budget")
+            self.conn.executescript(SCHEMA)
+        if "agent_id" not in have_runs:
+            # 기존 행은 전부 빈 문자열이 됩니다 — 에이전트 개념이 없던 실행이고,
+            # 그룹을 쓰지 않는 단일 실행도 같은 값을 씁니다. 그래서 이 마이그레이션
+            # 뒤에도 기존 사용자의 재개 경로는 정확히 같은 행을 찾습니다.
+            self.conn.execute(
+                "ALTER TABLE runs ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''")
         # Older live runs stored only the configured cash and high-water mark.
         # Defaulting them to ``configured`` is deliberate: the first successful
         # account-authoritative sync then establishes a fresh venue baseline,
@@ -298,6 +392,18 @@ class StateStore:
             )
         self.conn.commit()
         self.run_id: int | None = None
+        #: 지금 도는 **그룹** 이 이 프로세스에서 연 실행들.
+        #:
+        #: 실거래 실행은 시작하자마자 `mark_reconciliation_required()` 로 crash
+        #: quarantine 을 건다. 계좌 게이트는 그 표시가 붙은 미보관 Toss 실행을
+        #: "증권사 상태가 불확실하다" 로 읽고 새 실거래를 막는데, 방금 이 프로세스가
+        #: 같은 그룹으로 띄운 형제에게는 그 해석이 틀렸다. 그것을 남으로 보면
+        #: **실거래 에이전트가 둘 이상인 그룹은 영원히 시작하지 못한다** — 하나가
+        #: 뜨는 순간 나머지가 자기 형제에게 막힌다.
+        #:
+        #: 그룹의 에이전트 시점만 여기 등록한다. 단일 봇은 등록하지 않으므로
+        #: 실패한 시작이 남긴 격리가 다음 시도를 막는 기존 동작이 그대로다.
+        self._group_run_ids: set[int] = set()
         # Set only by ``restore_positions`` from the durable run_state source.
         # LiveTrader passes this explicit fact to the broker before its first
         # account sync; inferring a restart from a cash number would confuse a
@@ -471,7 +577,8 @@ class StateStore:
 
     # ── runs ─────────────────────────────────────────────────────────────
     def start_run(self, strategy: str, mode: str, starting_cash: float,
-                  config_json: str = "", *, now: datetime | None = None) -> int:
+                  config_json: str = "", *, now: datetime | None = None,
+                  agent_id: str = "") -> int:
         self._claim()
         # Defense in depth for callers outside the web registry. An archived
         # Toss run intentionally starts a new ledger, but never while *any*
@@ -487,9 +594,10 @@ class StateStore:
         self.restored_venue_truth = False
         started_at = self._recovery_now(now).isoformat()
         cur = self.conn.execute(
-            "INSERT INTO runs(strategy, mode, started_at, requires_reconciliation, "
-            "starting_cash, config_json) VALUES(?,?,?,?,?,?)",
-            (strategy, mode, started_at, 0,
+            "INSERT INTO runs(strategy, mode, agent_id, started_at, "
+            "requires_reconciliation, starting_cash, config_json) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (strategy, mode, str(agent_id or ""), started_at, 0,
              starting_cash, config_json),
         )
         self.conn.commit()
@@ -516,6 +624,7 @@ class StateStore:
             resume_strategy=strategy if resume else None,
             resume_config_json=config_json if resume else None,
             now=now,
+            resume_agent_id=self.current_agent_id,
         )
         resumable_run_id = gate["resumable_run_id"] if resume else None
         if resumable_run_id is not None:
@@ -528,19 +637,29 @@ class StateStore:
         )
         return False
 
-    def resume_run(self, strategy: str, mode: str) -> int | None:
-        """Reopen the most recent run for this strategy and mode.
+    def resume_run(self, strategy: str, mode: str,
+                   agent_id: str = "") -> int | None:
+        """Reopen the most recent run for this strategy, mode and agent.
 
         Deliberately ignores `stopped_at`. A clean shutdown does not flatten
         the book — the positions are still there when the process comes back —
         so scoping resume to "runs that were never stopped" meant every normal
         restart woke up believing it held nothing and had its full starting
         cash. In live mode that is a second position on top of the first.
+
+        **`agent_id` 가 선택 조건에 들어가는 것이 핵심입니다.** runs 행에 적기만
+        하고 여기서 안 보면, 같은 전략 템플릿을 고른 두 에이전트가 `ORDER BY id
+        DESC LIMIT 1` 에서 **같은 run_id 로 수렴** 합니다. 그 뒤로 positions 의
+        PK 는 `(run_id, symbol_key)` 이므로 나중에 저장한 쪽이 앞사람의 포지션을
+        덮어쓰고, day_budget 의 PK 는 `(run_id, day)` 이므로 두 에이전트의 하루
+        허용치가 한 행으로 합쳐집니다. 다음 재시작에서는 **둘 다 같은 100주를
+        복원** 하고, 그날 오후 두 손절이 함께 나가 100주짜리 보유에 200주 매도가
+        떠납니다.
         """
         row = self.conn.execute(
             "SELECT id, requires_reconciliation, archived_at FROM runs "
-            "WHERE strategy=? AND mode=? ORDER BY id DESC LIMIT 1",
-            (strategy, mode),
+            "WHERE strategy=? AND mode=? AND agent_id=? ORDER BY id DESC LIMIT 1",
+            (strategy, mode, str(agent_id or "")),
         ).fetchone()
         # The latest row is the lifecycle head for this strategy/mode. If it
         # was archived after explicit manual reconciliation, going farther
@@ -560,7 +679,7 @@ class StateStore:
 
     def resume_run_exact(
             self, strategy: str, mode: str, expected_run_id: int,
-            expected_config_json: str) -> int:
+            expected_config_json: str, agent_id: str = "") -> int:
         """Atomically reopen only the preflighted Toss lifecycle head.
 
         Generic ``resume_run`` intentionally remains usable by read-only legacy
@@ -573,9 +692,9 @@ class StateStore:
             self.conn.execute("BEGIN IMMEDIATE")
             row = self.conn.execute(
                 "SELECT id, requires_reconciliation, archived_at, config_json "
-                "FROM runs WHERE strategy=? AND mode=? "
+                "FROM runs WHERE strategy=? AND mode=? AND agent_id=? "
                 "ORDER BY id DESC LIMIT 1",
-                (strategy, mode),
+                (strategy, mode, str(agent_id or "")),
             ).fetchone()
             if row is None or int(row["id"]) != int(expected_run_id):
                 raise RecoveryArchiveError(
@@ -907,6 +1026,7 @@ class StateStore:
             self, *, resume_strategy: str | None = None,
             resume_config_json: str | None = None,
             now: datetime | None = None,
+            resume_agent_id: str | None = None,
     ) -> dict:
         """Account-wide gate over each Toss-live strategy's lifecycle head.
 
@@ -921,8 +1041,9 @@ class StateStore:
         """
         current = self._recovery_now(now)
         rows = self.conn.execute(
-            "SELECT id, strategy, mode, requires_reconciliation, archived_at, "
-            "config_json FROM runs WHERE mode='live' ORDER BY id DESC"
+            "SELECT id, strategy, mode, agent_id, requires_reconciliation, "
+            "archived_at, config_json FROM runs WHERE mode='live' "
+            "ORDER BY id DESC"
         ).fetchall()
         seen: set[tuple[str, str]] = set()
         required: list[sqlite3.Row] = []
@@ -944,11 +1065,22 @@ class StateStore:
                     if cutoff is not None:
                         archived_cutoffs.append(cutoff)
                 continue
-            if bool(row["requires_reconciliation"]) and row["archived_at"] is None:
+            if (bool(row["requires_reconciliation"])
+                    and row["archived_at"] is None
+                    and int(row["id"]) not in self._group_run_ids):
                 # Every unresolved Toss run quarantines the shared account.
                 # ``seen`` is only a lifecycle-head filter for archive
                 # cooldowns; applying it here lets a later clean legacy row
                 # hide an older unresolved run with real venue uncertainty.
+                #
+                # `_group_run_ids` 는 방금 이 프로세스가 같은 그룹으로 띄운
+                # 형제들이다. 그들의 격리는 시작할 때 누구나 거는 표시이지
+                # 증권사 상태가 불확실하다는 증거가 아니다. 남으로 보면 실거래
+                # 에이전트가 둘 이상인 그룹은 영원히 시작하지 못한다.
+                #
+                # 하루 한도 계산(`active_budgets`)에는 이 예외를 적용하지
+                # 않는다 — 형제들이 쓴 허용치는 같은 계좌의 것이므로 반드시
+                # 합쳐서 보여야 하고, 빼는 순간 방어선이 봇 수만큼 곱해진다.
                 required.append(row)
             pair = (row["strategy"], row["mode"])
             if pair in seen:
@@ -958,9 +1090,13 @@ class StateStore:
             if cutoff is not None:
                 archived_cutoffs.append(cutoff)
 
+        # 재개 대상은 **그 에이전트의** 최신 실행이다. agent_id 를 빼면 같은
+        # 전략 템플릿을 쓰는 형제의 실행이 선택되고, 그쪽 허용치를 이어받는다.
         latest_target = next((
             row for row in rows
             if row["strategy"] == resume_strategy and row["mode"] == "live"
+            and (resume_agent_id is None
+                 or str(row["agent_id"] or "") == str(resume_agent_id))
         ), None)
         target_scope = self._stored_toss_live_scope(
             resume_config_json, resume_strategy,
@@ -1295,12 +1431,14 @@ class StateStore:
     def assert_toss_account_start_allowed(
             self, *, resume_strategy: str | None = None,
             resume_config_json: str | None = None,
-            now: datetime | None = None) -> dict:
+            now: datetime | None = None,
+            resume_agent_id: str | None = None) -> dict:
         """Fail closed before a Toss-live run is resumed or created."""
         gate = self.toss_account_start_gate(
             resume_strategy=resume_strategy,
             resume_config_json=resume_config_json,
             now=now,
+            resume_agent_id=resume_agent_id,
         )
         if gate["reconciliation_required"]:
             raise RecoveryArchiveError(
@@ -1812,6 +1950,155 @@ class StateStore:
         self.save_budget(budget)          # the stored row now matches the ledger
         return restored
 
+    # ── 계좌 단위 하루 한도 ──────────────────────────────────────────────
+    def save_account_budget(self, budget: TradingBudget,
+                            mode: str = "live") -> None:
+        """계좌 원장을 적는다. 실행(run)이 아니라 **계좌** 의 것입니다.
+
+        `save_budget` 과 달리 `run_id` 를 보지 않습니다 — 그룹의 마스터 한도는
+        어느 에이전트의 실행에도 속하지 않고, 에이전트가 전부 바뀌어도 같은
+        계좌의 같은 하루 허용치입니다.
+        """
+        state = budget.to_state()
+        if not state:
+            return
+        self._claim()
+        try:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO account_budget(day, mode, notional, "
+                "orders, realized_pnl, fees, starting_equity, blocked, "
+                "halt_reason, tz_offset_hours, updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (state["day"], str(mode), state["notional"], state["orders"],
+                 state["realized_pnl"], state["fees"], state["starting_equity"],
+                 state["blocked"], state["halt_reason"],
+                 state["tz_offset_hours"], datetime.now(UTC).isoformat()),
+            )
+            self.conn.commit()
+        except Exception:
+            # 연결은 공유됩니다. 열린 트랜잭션을 남기면 다음에 쓰는 사람이 —
+            # 다른 에이전트가 — 우리의 반쯤 적용된 상태를 커밋합니다.
+            with contextlib.suppress(Exception):
+                self.conn.rollback()
+            raise
+
+    def restore_account_budget(self, budget: TradingBudget,
+                               now: datetime | None = None,
+                               mode: str = "live") -> bool:
+        """계좌 원장을 되살리고, 그 뒤로도 계속 적게 한다.
+
+        이것이 없으면 **재시작이 계좌에 새 허용치를 줍니다.** 하루 손실 한도가
+        걸려 "다음 거래일까지 중단" 이 된 계좌를 재배포 한 번이 풀어 주는데,
+        그건 한도가 아니라 한도와 초기화 버튼을 함께 둔 것입니다 — 그리고 그
+        버튼은 봇이 고장 났을 때 가장 자주 눌립니다.
+        """
+        self._claim()
+        row = self.conn.execute(
+            "SELECT * FROM account_budget WHERE mode=? ORDER BY day DESC LIMIT 1",
+            (str(mode),),
+        ).fetchone()
+        if row is not None:
+            # **저장된 시간대를 따릅니다.** `load_state` 는 시간대가 다르면
+            # 복원을 취소하는데, 계좌 원장에서 그 취소는 곧 "하루 손실 한도로
+            # 멈춘 계좌가 다시 열린다" 입니다. 그리고 여기서 시간대는 그룹의
+            # 첫 번째 에이전트 설정에서 왔을 뿐이라, 에이전트 순서를 바꾸거나
+            # 설정 하나를 손보는 것만으로 달라집니다 — 그 정도의 일이 계좌
+            # 방어선을 지워서는 안 됩니다. 계좌의 "오늘" 은 계좌의 성질입니다.
+            stored_tz = float(row["tz_offset_hours"] or 0.0)
+            if abs(stored_tz - budget.tz_offset.total_seconds() / 3600) > 1e-9:
+                log.warning(
+                    "계좌 원장의 시간대(UTC%+g)를 따릅니다 — 설정은 UTC%+g "
+                    "입니다. 하루 경계를 바꾸려면 원장이 비는 다음 거래일에 "
+                    "하세요.", stored_tz,
+                    budget.tz_offset.total_seconds() / 3600)
+                budget.tz_offset = timedelta(hours=stored_tz)
+        restored = budget.load_state(dict(row) if row is not None else {}, now)
+        budget.bind_store(_AccountBudgetStore(self, mode))
+        self.save_account_budget(budget, mode)
+        return restored
+
+    # ── 슬리브 원장 ──────────────────────────────────────────────────────
+    def save_sleeves(self, sleeves: dict[str, dict[str, Decimal]]) -> None:
+        """누가 무엇을 얼마나 들고 있는지. 계좌 전체를 통째로 다시 씁니다.
+
+        에이전트는 넷까지, 종목은 전략당 몇 개이므로 행은 늘 수십 개 이하입니다.
+        부분 갱신보다 통째 교체가 안전합니다 — 0 이 된 항목이 지워지지 않고
+        남으면, 다음 재시작이 판 적 없는 물량을 되살립니다.
+        """
+        self._claim()
+        now = datetime.now(UTC).isoformat()
+        rows = [(agent_id, key, str(qty), now)
+                for agent_id, book in (sleeves or {}).items()
+                for key, qty in book.items() if qty != 0]
+        try:
+            self.conn.execute("DELETE FROM sleeve_position")
+            if rows:
+                self.conn.executemany(
+                    "INSERT INTO sleeve_position(agent_id, symbol_key, quantity, "
+                    "updated_at) VALUES(?,?,?,?)", rows)
+            self.conn.commit()
+        except Exception:
+            # 지우고 다시 넣는 사이에 실패하면 원장이 비어 버립니다. 되돌리지
+            # 않으면 다음 재시작이 모든 보유를 미귀속으로 읽고, 그러면 아무도
+            # 자기 포지션을 팔 수 없습니다.
+            with contextlib.suppress(Exception):
+                self.conn.rollback()
+            raise
+
+    def restore_sleeves(self) -> dict[str, dict[str, Decimal]]:
+        """저장된 슬리브 원장. `agent_id → {symbol_key: 수량}`."""
+        self._claim()
+        out: dict[str, dict[str, Decimal]] = {}
+        for row in self.conn.execute(
+                "SELECT agent_id, symbol_key, quantity FROM sleeve_position"):
+            try:
+                qty = Decimal(row["quantity"])
+            except (ArithmeticError, TypeError, ValueError):
+                log.warning("슬리브 수량을 읽지 못해 건너뜁니다: %s %s",
+                            row["agent_id"], row["symbol_key"])
+                continue
+            if qty != 0:
+                out.setdefault(row["agent_id"], {})[row["symbol_key"]] = qty
+        return out
+
+    # ── 주문 → 에이전트 귀속 ─────────────────────────────────────────────
+    def save_order_agent(self, order_id: str, agent_id: str,
+                         symbol_key: str = "") -> None:
+        """이 주문이 누구 것인지 적는다. 체결이 돌아올 때 유일한 근거입니다."""
+        if not order_id or not agent_id:
+            return
+        self._claim()
+        self.conn.execute(
+            "INSERT OR REPLACE INTO order_agent(order_id, agent_id, symbol_key, "
+            "created_at) VALUES(?,?,?,?)",
+            (str(order_id), str(agent_id), str(symbol_key or ""),
+             datetime.now(UTC).isoformat()),
+        )
+        self.conn.commit()
+
+    def forget_order_agent(self, order_id: str) -> None:
+        self._claim()
+        self.conn.execute("DELETE FROM order_agent WHERE order_id=?",
+                          (str(order_id),))
+        self.conn.commit()
+
+    def restore_order_agents(self, prune_older_than_days: int = 7) -> dict[str, str]:
+        """재시작 전에 낸 주문들의 귀속. `order.id → agent_id`.
+
+        오래된 행은 지웁니다. 일주일 전에 낸 주문의 체결이 이제 와서 돌아오는
+        일은 없고, 지우지 않으면 이 표만 무한히 자랍니다. 지우는 것이 위험한
+        방향도 아닙니다 — 귀속을 잃은 체결은 미귀속으로 가고, 미귀속은 아무도
+        팔 수 없으므로 남의 물량을 파는 쪽으로는 절대 틀리지 않습니다.
+        """
+        self._claim()
+        cutoff = (datetime.now(UTC) - timedelta(days=prune_older_than_days))
+        self.conn.execute("DELETE FROM order_agent WHERE created_at < ?",
+                          (cutoff.isoformat(),))
+        self.conn.commit()
+        return {r["order_id"]: r["agent_id"]
+                for r in self.conn.execute(
+                    "SELECT order_id, agent_id FROM order_agent")}
+
     # ── decision journal ─────────────────────────────────────────────────
     # Two halves of one question — what did this desk decide, and was it right.
     # Both used to live only in memory, which made them dead code in practice:
@@ -2241,7 +2528,8 @@ class StateStore:
 
     def pnl_by_period(self, now: datetime | None = None,
                       strategy: str | None = None,
-                      mode: str | None = None) -> dict:
+                      mode: str | None = None,
+                      agent_id: str | None = None) -> dict:
         """오늘·이번주·이번달·올해 실현손익.
 
         **run 을 가로질러 셉니다.** 봇을 멈추고 다시 켜면 새 run 이 열리는데,
@@ -2279,6 +2567,11 @@ class StateStore:
         if mode:
             conds.append("mode=?")
             run_args.append(mode)
+        if agent_id:
+            # 그룹에서 "이번 달 얼마 벌었나" 는 에이전트마다 다른 질문입니다 —
+            # 합쳐서 보여주면 보수형이 번 돈이 공격형의 성적표에 찍힙니다.
+            conds.append("agent_id=?")
+            run_args.append(str(agent_id))
         run_filter = (f" AND t.run_id IN (SELECT id FROM runs WHERE {' AND '.join(conds)})"
                       if conds else "")
 
@@ -2305,7 +2598,8 @@ class StateStore:
         return out
 
     def trade_log(self, limit: int = 200, offset: int = 0,
-                  strategy: str | None = None, mode: str | None = None) -> dict:
+                  strategy: str | None = None, mode: str | None = None,
+                  agent_id: str | None = None) -> dict:
         """매매 기록 — run 을 가로질러, 최근 것부터.
 
         `recent_trades` 는 지금 돌고 있는 run 만 봅니다. 그건 화면 상단의
@@ -2319,12 +2613,18 @@ class StateStore:
         if mode:
             conds.append("mode=?")
             args.append(mode)
+        if agent_id:
+            # 그룹에서 "내가 뭘 사고팔았나" 는 에이전트마다 다른 질문입니다.
+            conds.append("agent_id=?")
+            args.append(str(agent_id))
         where = (f" WHERE t.run_id IN (SELECT id FROM runs WHERE {' AND '.join(conds)})"
                  if conds else "")
         total = self.conn.execute(
             f"SELECT COUNT(*) n FROM trades t{where}", args).fetchone()["n"]
+        # `r.agent_id` 를 같이 내보냅니다 — 기록은 나중에 다시 읽는 것이라,
+        # 어느 에이전트의 매매였는지가 줄에 남아 있어야 합니다.
         rows = self.conn.execute(
-            "SELECT t.*, r.strategy, r.mode FROM trades t "
+            "SELECT t.*, r.strategy, r.mode, r.agent_id FROM trades t "
             "JOIN runs r ON r.id = t.run_id" + where
             + " ORDER BY t.exit_ts DESC, t.id DESC LIMIT ? OFFSET ?",
             [*args, limit, offset]).fetchall()
@@ -2387,6 +2687,169 @@ class StateStore:
         return [{"ts": r["ts"], "type": r["type"],
                  "payload": json.loads(r["payload"] or "{}")} for r in rows]
 
+    @property
+    def current_agent_id(self) -> str | None:
+        """이 저장소가 대표하는 에이전트. 그룹이 아니면 None 입니다.
+
+        `None` 은 "에이전트를 가리지 않는다" 이고 빈 문자열은 "에이전트 개념이
+        없던 실행" 입니다. 둘을 구별해야 기존 단일 봇의 게이트 판정이 그대로
+        남습니다.
+        """
+        return None
+
     def close(self) -> None:
         self._release_ownership()
         self.conn.close()
+
+    # ── 에이전트별 시점 ──────────────────────────────────────────────────
+    def agent_view(self, agent_id: str) -> AgentStateView:
+        """한 에이전트가 쓰는 시점. 연결과 소유권은 이 저장소의 것을 씁니다.
+
+        에이전트마다 `StateStore` 를 새로 만들 수는 없습니다. `_claim()` 의
+        advisory lock 은 **open file description 단위** 라, 같은 프로세스에서
+        두 번째로 여는 순간 `LOCK_EX|LOCK_NB` 가 실패하고 `StateInUseError` 로
+        끝납니다 — 자기 자신에게 잠기는 셈입니다.
+
+        그렇다고 하나를 그대로 넷이 나눠 쓸 수도 없습니다. `run_id` 가 인스턴스
+        속성이라, 마지막으로 `start_run` 을 부른 에이전트의 값이 남고 넷이 전부
+        그 run 에 자기 포지션과 하루 원장을 적습니다. 포지션 PK 가
+        `(run_id, symbol_key)` 이므로 나중에 적는 쪽이 앞사람을 덮어씁니다.
+
+        그래서 **연결·소유권·파일락은 공유하고 `run_id` 만 가릅니다.**
+        `accounting_persistence_failed` 는 공유합니다 — 회계 기록을 잃은 것은
+        DB 하나의 사실이고, 한 에이전트의 실패는 그룹 전체의 종료를 안전하지
+        않게 만듭니다.
+        """
+        return AgentStateView(self, agent_id)
+
+
+class _AccountBudgetStore:
+    """`TradingBudget.bind_store` 가 요구하는 두 가지만 갖춘 시점.
+
+    `TradingBudget` 은 값이 바뀔 때마다 `store.save_budget(self)` 를 부릅니다.
+    계좌 예산에 `StateStore` 를 그대로 물리면 그 호출이 `day_budget` 으로 가서
+    **어느 에이전트의 실행 원장을 계좌 값으로 덮어씁니다.** 여기서 자리를
+    바꿔 줍니다.
+    """
+
+    __slots__ = ("store", "mode")
+
+    def __init__(self, store: StateStore, mode: str = "live"):
+        self.store = store
+        self.mode = mode
+
+    def save_budget(self, budget: TradingBudget) -> None:
+        self.store.save_account_budget(budget, self.mode)
+
+    def mark_accounting_persistence_failed(self) -> None:
+        # 계좌 원장을 잃은 것도 같은 DB 의 사실입니다 — 그룹 전체의 종료를
+        # 정상으로 확정할 수 없습니다.
+        self.store.mark_accounting_persistence_failed()
+
+
+class AgentStateView(StateStore):
+    """공유 저장소를 한 에이전트의 눈으로 본 것. 연결을 새로 열지 않습니다.
+
+    `StateStore` 를 상속하되 `__init__` 을 부르지 않습니다 — 부르면 같은 파일에
+    두 번째 연결이 열리고 파일락이 자기 자신에게 걸립니다. 대신 공유해야 할
+    것만 원본에서 가져오고, 갈라야 할 것만 새로 만듭니다.
+    """
+
+    def __init__(self, owner: StateStore, agent_id: str):  # noqa: D107
+        # super().__init__ 은 의도적으로 부르지 않습니다 (위 docstring 참조).
+        self.owner = owner
+        self.agent_id = str(agent_id or "")
+        # ── 공유: 계좌에 하나뿐인 것들 ──
+        self.path = owner.path
+        self.conn = owner.conn
+        self._lock = owner._lock
+        # ── 갈림: 에이전트의 실행 ──
+        self.run_id: int | None = None
+        self.restored_reconciliation_required = False
+        self.restored_venue_truth = False
+        self._scored_saved = 0
+
+    # 소유권은 원본의 것입니다. 시점이 따로 주장하면 자기 자신에게 잠깁니다.
+    @property
+    def _owns(self) -> bool:
+        return self.owner._owns
+
+    @_owns.setter
+    def _owns(self, value: bool) -> None:
+        self.owner._owns = value
+
+    @property
+    def _heartbeat_at(self) -> float:
+        return self.owner._heartbeat_at
+
+    @_heartbeat_at.setter
+    def _heartbeat_at(self, value: float) -> None:
+        self.owner._heartbeat_at = value
+
+    @property
+    def _lock_fd(self):
+        return getattr(self.owner, "_lock_fd", None)
+
+    @_lock_fd.setter
+    def _lock_fd(self, value) -> None:
+        self.owner._lock_fd = value
+
+    @property
+    def accounting_persistence_failed(self) -> bool:
+        """회계 기록을 잃은 것은 DB 하나의 사실입니다.
+
+        한 에이전트의 예산 저장이 실패하면 그 DB 로 도는 그룹 전체의 종료를
+        정상으로 확정할 수 없습니다.
+        """
+        return self.owner.accounting_persistence_failed
+
+    @accounting_persistence_failed.setter
+    def accounting_persistence_failed(self, value: bool) -> None:
+        self.owner.accounting_persistence_failed = bool(value)
+
+    def close(self) -> None:
+        """아무것도 닫지 않습니다 — 연결도 소유권도 이 시점의 것이 아닙니다.
+
+        `LiveTrader` 는 두 종료 경로 모두에서 `state.close()` 를 무조건 부릅니다.
+        시점이 그것을 그대로 수행하면, 먼저 끝난 에이전트 하나가 아직 매매 중인
+        나머지 셋의 DB 연결과 그룹 전체의 소유권 주장을 닫아 버립니다.
+        """
+        return None
+
+    @property
+    def current_agent_id(self) -> str:
+        return self.agent_id
+
+    @property
+    def _group_run_ids(self) -> set:
+        """형제 목록은 그룹의 것입니다 — 시점마다 따로 두면 서로를 못 봅니다."""
+        return self.owner._group_run_ids
+
+    # ── 에이전트 실행의 시작/재개 ────────────────────────────────────────
+    def _remember_sibling(self, run_id):
+        """이 실행을 "지금 이 그룹이 연 것" 으로 등록한다.
+
+        계좌 게이트가 형제의 시작 격리를 남의 미해결 실행으로 읽지 않게 하는
+        유일한 근거입니다. 등록은 **에이전트 시점만** 합니다 — 단일 봇이
+        등록하면 실패한 시작이 남긴 격리가 다음 시도를 막지 못하게 됩니다.
+        """
+        if run_id is not None:
+            self.owner._group_run_ids.add(int(run_id))
+        return run_id
+
+    def start_run(self, strategy, mode, starting_cash, config_json="", *,
+                  now=None, agent_id=None):
+        return self._remember_sibling(super().start_run(
+            strategy, mode, starting_cash, config_json, now=now,
+            agent_id=self.agent_id if agent_id is None else agent_id))
+
+    def resume_run(self, strategy, mode, agent_id=None):
+        return self._remember_sibling(super().resume_run(
+            strategy, mode,
+            self.agent_id if agent_id is None else agent_id))
+
+    def resume_run_exact(self, strategy, mode, expected_run_id,
+                         expected_config_json, agent_id=None):
+        return self._remember_sibling(super().resume_run_exact(
+            strategy, mode, expected_run_id, expected_config_json,
+            self.agent_id if agent_id is None else agent_id))

@@ -58,6 +58,8 @@ class LiveTrader:
         max_consecutive_errors: int = 10,
         profile_path: str | None = None,
         meter: SpendMeter | None = None,
+        brokerage=None,
+        state: StateStore | None = None,
     ):
         if config.mode is RunMode.BACKTEST:
             raise ValueError("LiveTrader needs mode: dry_run or live")
@@ -69,9 +71,17 @@ class LiveTrader:
         self.config = config
         self.engine: Engine
         self.provider: DataProvider
-        self.engine, self.provider = build_engine(config, clock=RealClock())
+        self.engine, self.provider = build_engine(
+            config, clock=RealClock(), brokerage=brokerage)
         self.calendar = getattr(self.engine, "calendar", None)
-        self.state = StateStore(state_path)
+        # 여럿이 한 계좌를 나눠 쓸 때는 그룹이 상태 저장소를 열어 소유권을 잡고
+        # 에이전트별 시점(`StateStore.agent_view`)을 나눠 줍니다. 트레이더마다
+        # `StateStore` 를 열면 advisory lock 이 open file description 단위라
+        # 같은 프로세스 안에서 자기 자신에게 잠깁니다.
+        self.state = state if state is not None else StateStore(state_path)
+        #: 저장소를 우리가 열었는가. 주입받았으면 닫는 것도 우리 몫이 아닙니다 —
+        #: 먼저 끝난 에이전트가 나머지의 연결을 닫아 버립니다.
+        self._owns_state = state is None
         self.resume = resume
         self.max_errors = max_consecutive_errors
         # 이 봇이 쓴 LLM 을 누구 앞으로 다는가. 단일 사용자 배포에서는 셀
@@ -113,7 +123,7 @@ class LiveTrader:
     def _bind_submission_guard(self) -> None:
         """Put session and durable-accounting truth at the final order gate."""
         brokerage = getattr(getattr(self, "engine", None), "brokerage", None)
-        if isinstance(brokerage, LiveBrokerage):
+        if getattr(brokerage, "venue_backed", False):
             brokerage.set_submission_guard(self._submission_error)
 
     def _submission_error(self, order) -> str:
@@ -299,6 +309,15 @@ class LiveTrader:
             log.info("run %s 복원: 포지션 %d건, 핀 %d건", self.state.run_id,
                      restored, pinned)
         if isinstance(self.engine.brokerage, LiveBrokerage):
+            # Deliberately `isinstance`, not `venue_backed`. This branch and the
+            # `mark_reconciliation_required` one below decide who may adopt the
+            # ACCOUNT's cash and holdings as their own, and in a multi-agent
+            # group that is the gateway alone — four sleeves each adopting the
+            # same account would count the same cash four times. Every *other*
+            # LiveBrokerage branch in this file asks a different question ("do
+            # orders reach a real venue?") and keys off `venue_backed`, which a
+            # sleeve answers yes to. See quant/brokerage/base.py:Brokerage.
+            #
             # This is a durable StateStore fact, not a guess from the cash value.
             # A first-ever real-account adoption may import existing holdings;
             # a resumed venue ledger must instead explain every quantity/cash
@@ -317,8 +336,15 @@ class LiveTrader:
         # Commit the crash quarantine before the broker can perform any live
         # activity. Only Engine.stop's verified no-open-order path reaches
         # ``stop_run`` and clears it again.
-        if (isinstance(self.engine.brokerage, LiveBrokerage)
-                and self.engine.brokerage.uses_venue_capital):
+        # 슬리브는 `LiveBrokerage` 가 아니지만 그 뒤의 계좌는 실거래일 수
+        # 있습니다. 여기서 `isinstance` 만 보면 실거래 그룹은 격리를 한 번도
+        # 걸지 않고, 죽은 프로세스가 수동 대조 없이 재시작됩니다 — 이
+        # 격리가 막으려는 사고 그 자체입니다. 계좌 사실은 슬리브가
+        # `account_uses_venue_capital` 로 답합니다.
+        if ((isinstance(self.engine.brokerage, LiveBrokerage)
+                and self.engine.brokerage.uses_venue_capital)
+                or getattr(self.engine.brokerage,
+                           "account_uses_venue_capital", False)):
             self.state.mark_reconciliation_required()
         await self.engine.start()
         portfolio = self.engine.ctx.portfolio
@@ -709,7 +735,7 @@ class LiveTrader:
     async def _poll_live_fills(self) -> list:
         """Poll only while local orders need observation, with bounded backoff."""
         brokerage = self.engine.brokerage
-        if not isinstance(brokerage, LiveBrokerage):
+        if not getattr(brokerage, "venue_backed", False):
             return []
         now = time.monotonic()
         if now < getattr(self, "_next_fill_poll_at", 0.0):
@@ -911,7 +937,7 @@ class LiveTrader:
         # Then require the venue snapshot to equal that exact known quantity.
         # A lagging KIS-style holdings response must not restore the pre-fill
         # position and make the replacement oversell it.
-        if isinstance(broker, LiveBrokerage):
+        if getattr(broker, "venue_backed", False):
             if canceled_any:
                 await self.engine.settle_live_fills()
             # Only a symbol whose resting order was actually canceled needs the
@@ -971,7 +997,7 @@ class LiveTrader:
         """Short, rate-safe work that must not wait for the next strategy bar."""
         market_open = self._market_is_open()
         missing: dict[str, str] = {}
-        if market_open and isinstance(self.engine.brokerage, LiveBrokerage):
+        if market_open and getattr(self.engine.brokerage, "venue_backed", False):
             _, missing = await self._refresh_quotes()
         await self._poll_live_fills()
 
@@ -979,7 +1005,7 @@ class LiveTrader:
         # beginning of the cycle is not permission to submit now.
         if not self._market_is_open():
             return
-        if (isinstance(self.engine.brokerage, LiveBrokerage)
+        if (getattr(self.engine.brokerage, "venue_backed", False)
                 and self.engine.ctx.portfolio.open_positions):
             # Stops and drawdown cuts are safety decisions, not alpha decisions.
             # Re-evaluate them on the current mark instead of waiting up to one
@@ -1081,7 +1107,7 @@ class LiveTrader:
                 return
             await self._refresh_universe()
             fills_pre_settled = False
-            if isinstance(self.engine.brokerage, LiveBrokerage):
+            if getattr(self.engine.brokerage, "venue_backed", False):
                 # One cumulative fill is visible through both the order and
                 # holdings endpoints. Book the order fill first, then let venue
                 # truth correct the final account. Reversing these two steps
@@ -1243,10 +1269,13 @@ class LiveTrader:
         except Exception:  # noqa: BLE001 — ownership release still comes next
             log.exception("could not mark failed startup as stopped")
         finally:
-            try:
-                self.state.close()
-            except Exception:  # noqa: BLE001 — best-effort final release
-                log.exception("could not close state after startup failure")
+            # 주입받은 저장소는 그룹의 것입니다. 먼저 실패한 에이전트 하나가
+            # 아직 매매 중인 나머지의 연결과 소유권 주장을 닫으면 안 됩니다.
+            if self._owns_state:
+                try:
+                    self.state.close()
+                except Exception:  # noqa: BLE001 — best-effort final release
+                    log.exception("could not close state after startup failure")
 
     async def shutdown(self) -> None:
         if self._stopped or (not self.running and self.started_at is None):
@@ -1319,10 +1348,11 @@ class LiveTrader:
                     await close()
                 except Exception:  # noqa: BLE001 — best-effort final release
                     log.exception("could not close %s during shutdown", label)
-            try:
-                self.state.close()
-            except Exception:  # noqa: BLE001 — best-effort final release
-                log.exception("could not close state during shutdown")
+            if self._owns_state:
+                try:
+                    self.state.close()
+                except Exception:  # noqa: BLE001 — best-effort final release
+                    log.exception("could not close state during shutdown")
         if shutdown_error is not None:
             raise shutdown_error
 

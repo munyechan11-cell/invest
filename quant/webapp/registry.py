@@ -50,7 +50,11 @@ from pydantic import ValidationError
 
 from quant.config.schema import StrategyConfig
 from quant.core.types import UTC, RunMode
+from quant.live.agents import _AGENT_ID
 from quant.live.credentials import VENUES_BY_ID
+from quant.live.group import STOP_GRACE_SECONDS as GROUP_STOP_GRACE
+from quant.live.group import GroupTrader
+from quant.live.limits import TradingBudget
 from quant.live.profile import InvestorProfile, ProfileStore, apply_profile
 from quant.live.spend import SpendMeter
 from quant.live.state import (
@@ -173,8 +177,33 @@ class NotRunning(RuntimeProblem):
     status = 404
     code = "not_running"
 
-    def __init__(self) -> None:
-        super().__init__("실행 중인 봇이 없습니다")
+    def __init__(self, agent_id: str = "") -> None:
+        super().__init__(
+            f"에이전트 '{agent_id}' 가 실행 중이 아닙니다" if agent_id
+            else "실행 중인 봇이 없습니다"
+        )
+
+
+class AgentRequired(RuntimeProblem):
+    """에이전트가 여럿인데 어느 것인지 말하지 않았다.
+
+    조용히 하나를 고르면 안 됩니다. `close_all` 이 그 하나만 정리하고 성공을
+    돌려주면, 사용자는 전부 정리된 줄 알고 화면을 닫습니다 — 나머지 셋은 그대로
+    시장에 남아 있습니다. 성향 변경도 마찬가지로 엉뚱한 봇에 적용됩니다.
+    """
+
+    status = 400
+    code = "agent_required"
+
+    def __init__(self, agents: list[str]):
+        self.agents = agents
+        super().__init__(
+            f"에이전트가 여럿입니다 ({', '.join(agents)}) — 어느 에이전트에 "
+            f"적용할지 지정해 주세요."
+        )
+
+    def to_dict(self) -> dict:
+        return {**super().to_dict(), "agents": self.agents}
 
 
 class ReconciliationProblem(RuntimeProblem):
@@ -416,10 +445,33 @@ class _Bot:
 
 @dataclass(frozen=True)
 class UserPaths:
-    """한 사용자의 파일들. 전부 그 사람 디렉터리 안에 있습니다."""
+    """한 사용자의 파일들. 전부 그 사람 디렉터리 안에 있습니다.
+
+    `profile` 과 `limits` 는 **에이전트를 쓰지 않는 사람의 것** 입니다. 1인 1봇
+    시절부터 있던 자리라 그대로 두었습니다 — 그룹을 만들지 않은 사용자의 성향과
+    한도가 파일 이동 때문에 초기화되면, 그 사람은 자기가 고른 손절 폭을 잃고도
+    그 사실을 모릅니다.
+
+    `state_db` 는 에이전트가 몇이든 **하나** 입니다. 계좌가 하나이기 때문이고,
+    `StateStore._claim()` 의 flock 이 open file description 단위라 에이전트마다
+    `StateStore` 를 만들면 같은 프로세스 안에서도 서로를 잠급니다.
+    """
 
     home: Path
     state_db: Path
+    profile: Path
+    limits: Path
+    agents_root: Path
+
+
+@dataclass(frozen=True)
+class AgentPaths:
+    """에이전트 한 대의 파일들. `data/users/u{id}/agents/{agent_id}/` 안입니다.
+
+    상태 DB 는 여기에 없습니다 — 계좌 것이지 에이전트 것이 아닙니다.
+    """
+
+    home: Path
     profile: Path
     limits: Path
 
@@ -437,6 +489,9 @@ class UserRegistry:
         self.root = Path(root or os.environ.get("QUANT_USER_DATA", "data/users"))
         self.root.mkdir(parents=True, exist_ok=True)
         self._bots: dict[int, _Bot] = {}
+        #: 사용자별 에이전트 그룹. `_bots` 와 배타적입니다 — 계좌가 하나이므로
+        #: 단일 봇과 그룹이 동시에 돌면 상태 DB 소유권부터 충돌합니다.
+        self._groups: dict[int, GroupTrader] = {}
         # AI 데스크 비용은 서비스가 냅니다. 계량을 켜 두지 않으면 한 사람의
         # 설정 실수가 운영자 카드로 청구되고, 나중에 소급해서 만들 수도
         # 없습니다 — "누가 얼마나 썼나" 는 기록이 없으면 답이 없습니다.
@@ -455,18 +510,58 @@ class UserRegistry:
             raise ValueError(f"user id 는 양의 정수여야 합니다: {user_id!r}")
         return uid
 
+    @staticmethod
+    def _private_dir(path: Path) -> Path:
+        """디렉터리를 만들고 0700 으로 닫는다.
+
+        포지션과 체결 기록이 들어 있습니다. 같은 머신의 다른 계정이 읽을 이유가
+        없습니다. 에이전트 하위 디렉터리에도 똑같이 걸어야 합니다 — 한 단계만
+        빠뜨려도 그 아래 전부가 열립니다.
+        """
+        path.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(path, 0o700)
+        except OSError:  # pragma: no cover - 파일시스템이 허용하지 않는 경우
+            log.warning("디렉터리 권한을 700 으로 바꾸지 못했습니다: %s", path)
+        return path
+
     def paths(self, user_id: int) -> UserPaths:
         uid = self._uid(user_id)
-        home = self.root / f"u{uid}"
-        home.mkdir(parents=True, exist_ok=True)
-        try:
-            # 포지션과 체결 기록이 들어 있는 디렉터리입니다. 같은 머신의 다른
-            # 계정이 읽을 이유가 없습니다.
-            os.chmod(home, 0o700)
-        except OSError:  # pragma: no cover - 파일시스템이 허용하지 않는 경우
-            log.warning("사용자 디렉터리 권한을 700 으로 바꾸지 못했습니다: %s", home)
+        home = self._private_dir(self.root / f"u{uid}")
         return UserPaths(home=home, state_db=home / "state.db",
-                         profile=home / "profile.json", limits=home / "limits.json")
+                         profile=home / "profile.json",
+                         limits=home / "limits.json",
+                         agents_root=home / "agents")
+
+    def agent_paths(self, user_id: int, agent_id: str) -> AgentPaths:
+        """이 에이전트의 성향·한도 파일 자리.
+
+        `agent_id` 는 디렉터리 이름이 되므로 경로가 되기 **전에** 검증합니다.
+        `_uid()` 가 사용자 번호에 하는 것과 같은 이유이고, 같은 정규식을
+        `quant.live.agents` 와 공유합니다 — 그쪽에서 통과한 id 만 여기 옵니다.
+        """
+        if not _AGENT_ID.match(agent_id or ""):
+            raise ValueError(
+                f"에이전트 id 가 디렉터리 이름으로 쓸 수 없는 형태입니다: "
+                f"{agent_id!r}"
+            )
+        root = self._private_dir(self.paths(user_id).agents_root)
+        home = self._private_dir(root / agent_id)
+        return AgentPaths(home=home, profile=home / "profile.json",
+                          limits=home / "limits.json")
+
+    def _settings_paths(self, user_id: int, agent_id: str = "") -> AgentPaths:
+        """성향·한도가 어느 파일에서 오는가.
+
+        `agent_id` 가 비어 있으면 1인 1봇 시절의 사용자 레벨 파일입니다. 그룹을
+        만들지 않은 사용자의 경로가 정확히 그대로여야 하므로, 여기서 갈라 두고
+        아래 접근자들은 전부 이 함수만 부릅니다.
+        """
+        if not agent_id:
+            user = self.paths(user_id)
+            return AgentPaths(home=user.home, profile=user.profile,
+                              limits=user.limits)
+        return self.agent_paths(user_id, agent_id)
 
     def state_path(self, user_id: int) -> str:
         """이 사용자의 상태 DB 경로. 포지션·현금·잠금·핀·일일 원장이 여기 있습니다."""
@@ -671,25 +766,33 @@ class UserRegistry:
         }
 
     # ── 투자 성향 ────────────────────────────────────────────────────────
-    def profile_store(self, user_id: int) -> ProfileStore:
-        return ProfileStore(self.paths(user_id).profile)
+    def profile_store(self, user_id: int, agent_id: str = "") -> ProfileStore:
+        return ProfileStore(self._settings_paths(user_id, agent_id).profile)
 
-    def profile(self, user_id: int) -> InvestorProfile:
-        return self.profile_store(user_id).load()
+    def profile(self, user_id: int, agent_id: str = "") -> InvestorProfile:
+        return self.profile_store(user_id, agent_id).load()
 
-    def save_profile(self, user_id: int, profile: InvestorProfile) -> dict | None:
-        """성향을 저장하고, 돌고 있는 봇에는 즉시 반영할 수 있는 것만 반영한다."""
-        self.profile_store(user_id).save(profile)
-        self.accounts.record(user_id, "profile_saved", profile.code)
-        return self.apply_profile_live(user_id, profile)
+    def save_profile(self, user_id: int, profile: InvestorProfile,
+                     agent_id: str = "") -> dict | None:
+        """성향을 저장하고, 돌고 있는 봇에는 즉시 반영할 수 있는 것만 반영한다.
 
-    def apply_profile_live(self, user_id: int, profile: InvestorProfile) -> dict | None:
+        에이전트마다 성향이 다른 것이 이 기능의 전부이므로, 저장도 반영도
+        **그 에이전트에만** 닿아야 합니다.
+        """
+        self.profile_store(user_id, agent_id).save(profile)
+        self.accounts.record(user_id, "profile_saved",
+                             f"{agent_id}:{profile.code}" if agent_id
+                             else profile.code)
+        return self.apply_profile_live(user_id, profile, agent_id)
+
+    def apply_profile_live(self, user_id: int, profile: InvestorProfile,
+                           agent_id: str = "") -> dict | None:
         """사이즈·손절·한도는 바로 바뀝니다. 봉 주기와 알파 구성은 안 바뀝니다.
 
         후자는 엔진을 다시 세워야 하는 일이라, 반쯤 바뀐 채로 도는 것보다
         재시작이 필요하다고 말하는 편이 정직합니다.
         """
-        trader = self.trader(user_id)
+        trader = self.trader(user_id, agent_id)
         if trader is None:
             return None
         settings = profile.settings()
@@ -714,9 +817,14 @@ class UserRegistry:
                 "needs_restart": ["봉 주기", "알파 모델 구성", "AI 데스크 사용 여부"]}
 
     # ── 하루 한도 ────────────────────────────────────────────────────────
-    def limits(self, user_id: int) -> dict[str, float]:
-        """이 사용자가 저장해 둔 하루 한도. 0 은 "한도 없음" 입니다."""
-        path = self.paths(user_id).limits
+    def limits(self, user_id: int, agent_id: str = "") -> dict[str, float]:
+        """저장해 둔 하루 한도. 0 은 "한도 없음" 입니다.
+
+        `agent_id` 를 주면 그 에이전트의 한도입니다. 계좌 전체 한도는 이것들의
+        합이 아니라 별도로 존재합니다(`AccountGateway.master_budget`) — 합으로
+        정의하면 방어선이 봇 수만큼 곱해집니다.
+        """
+        path = self._settings_paths(user_id, agent_id).limits
         if not path.exists():
             return dict.fromkeys(LIMIT_KEYS, 0.0)
         try:
@@ -728,20 +836,53 @@ class UserRegistry:
             return dict.fromkeys(LIMIT_KEYS, 0.0)
         return {key: float(raw.get(key) or 0.0) for key in LIMIT_KEYS}
 
-    def save_limits(self, user_id: int, caps: dict[str, float | None]) -> dict:
+    def _scope_is_live(self, user_id: int, agent_id: str, trader) -> bool:
+        """이 한도가 지키는 것이 진짜 돈인가.
+
+        계좌 한도(`agent_id` 없음)는 **에이전트 하나라도 실거래면** 진짜 돈을
+        지킵니다. 여기서 그 봇의 트레이더만 보면 안 됩니다 — 그룹에서
+        `trader(user_id, "")` 는 여럿일 때 `None` 이라, 실거래 그룹이 도는 중에
+        계좌 한도를 통째로 해제할 수 있게 됩니다.
+
+        그룹에서 계좌 한도는 에이전트별이 아닌 **유일한** 한도이므로, 그것을
+        지우는 것은 단일 봇에서 마지막 한도를 지우는 것보다 위험합니다.
+        """
+        if not agent_id:
+            group = self.group(user_id)
+            if group is not None:
+                return group.has_live
+        return bool(trader is not None
+                    and trader.config.mode is RunMode.LIVE)
+
+    def _live_budget(self, user_id: int, agent_id: str = ""):
+        """이 한도가 지금 적용되는 원장. 없으면 None.
+
+        `agent_id` 가 비었는데 그룹이 돌고 있으면 **계좌 마스터 원장** 입니다 —
+        그룹에서 사용자 레벨 한도는 계좌 전체의 상한이기 때문입니다. 단일 봇이면
+        예전처럼 그 봇의 원장입니다.
+        """
+        if not agent_id:
+            group = self.group(user_id)
+            if group is not None:
+                return group.gateway.master_budget
+        trader = self.trader(user_id, agent_id)
+        return getattr(getattr(trader, "engine", None), "budget", None)
+
+    def save_limits(self, user_id: int, caps: dict[str, float | None],
+                    agent_id: str = "") -> dict:
         """부분 갱신. 안 보낸 항목은 그대로 두고, 명시적 0 은 한도를 해제합니다.
 
         실행 중인 봇의 원장에도 그 자리에서 반영합니다 — 다음 재시작까지
         기다려야 하는 한도는 지금 필요해서 누른 사람에게 아무 소용이 없습니다.
         """
-        stored = self.limits(user_id)
+        stored = self.limits(user_id, agent_id)
         if not all(math.isfinite(float(value)) for value in stored.values()):
             raise ConfigRejected(
                 "저장된 하루 한도에 유한하지 않은 값이 있어 변경하지 "
                 "않았습니다. 운영자가 한도 파일을 확인해야 합니다."
             )
-        trader = self.trader(user_id)
-        budget = getattr(getattr(trader, "engine", None), "budget", None)
+        trader = self.trader(user_id, agent_id)
+        budget = self._live_budget(user_id, agent_id)
         candidate = dict(stored)
         runtime_candidate = (
             {key: float(getattr(budget, _BUDGET_ATTR[key]))
@@ -771,17 +912,14 @@ class UserRegistry:
             candidate[key] = value
             runtime_candidate[key] = value
             updated.append(key)
-        if (
-            trader is not None
-            and trader.config.mode is RunMode.LIVE
-            and not any(runtime_candidate.values())
-        ):
+        if self._scope_is_live(user_id, agent_id, trader) and not any(
+                runtime_candidate.values()):
             raise ConfigRejected(
                 "실거래 실행 중에는 모든 하루 한도를 해제할 수 없습니다. "
                 "당일 한도만 명시적으로 넘기려면 '오늘 한도 해제'를 사용하고, "
                 "영구 설정을 바꾸려면 봇을 먼저 멈추세요."
             )
-        path = self.paths(user_id).limits
+        path = self._settings_paths(user_id, agent_id).limits
         _atomic_write_text(
             path, json.dumps(candidate, ensure_ascii=False, indent=1),
         )
@@ -843,22 +981,28 @@ class UserRegistry:
             raise CredentialsMissing(report["missing"])
 
     # ── 설정 준비 ────────────────────────────────────────────────────────
-    def prepare(self, user_id: int, config: StrategyConfig) -> StrategyConfig:
-        """이 사용자의 성향과 하루 한도를 반영한 설정. **자격증명은 없습니다.**
+    def prepare(self, user_id: int, config: StrategyConfig,
+                agent_id: str = "") -> StrategyConfig:
+        """성향과 하루 한도를 반영한 설정. **자격증명은 없습니다.**
 
         이 반환값은 화면에 보여줘도 되고 저장해도 됩니다. 키가 들어간 사본은
         엔진을 세울 때만 따로 만들어집니다.
+
+        `agent_id` 를 주면 **그 에이전트의** 성향과 한도를 씁니다. 에이전트마다
+        손절과 사이징이 다른 것이 이 기능의 전부이므로, 여기서 사람의 것을
+        쓰면 넷이 같은 성향으로 돕니다.
         """
         cfg = config.model_copy(deep=True)
 
-        profile = self.profile(user_id)
+        profile = self.profile(user_id, agent_id)
         if profile.completed:
             cfg, touched = apply_profile(cfg, profile)
             if touched:
-                log.info("사용자 %s 투자 성향 '%s' 적용: %s",
-                         user_id, profile.name, ", ".join(touched))
+                log.info("사용자 %s%s 투자 성향 '%s' 적용: %s", user_id,
+                         f" 에이전트 {agent_id}" if agent_id else "",
+                         profile.name, ", ".join(touched))
 
-        saved = self.limits(user_id)
+        saved = self.limits(user_id, agent_id)
         for key in LIMIT_KEYS:
             value = _effective(float(getattr(cfg.limits, key)), saved[key])
             setattr(cfg.limits, key, int(value) if key == "max_daily_orders" else value)
@@ -1045,6 +1189,12 @@ class UserRegistry:
         existing = self._bots.get(uid)
         if existing is not None and existing.alive:
             raise AlreadyRunning(existing.strategy)
+        running_group = self._groups.get(uid)
+        if running_group is not None and running_group.alive:
+            # 배타성은 양방향이어야 합니다. 그룹 시작은 단일 봇을 봤지만 단일
+            # 봇 시작은 그룹을 보지 않아, 같은 계좌에 둘이 붙을 수 있었습니다.
+            raise AlreadyRunning(
+                ", ".join(a.label for a in running_group.group.agents))
 
         # This happens before build_trader/create_task. A UI request therefore
         # gets a synchronous 409 instead of briefly showing a bot that later
@@ -1111,19 +1261,54 @@ class UserRegistry:
         except Exception:       # pragma: no cover - 계정 DB 가 닫힌 경우 등
             log.warning("감사 기록 실패: user=%s action=%s", uid, action)
 
-    def trader(self, user_id: int):
-        """돌고 있는 트레이더, 없으면 None. 수동 매매·조회 엔드포인트가 씁니다."""
-        bot = self._bots.get(self._uid(user_id))
+    def group(self, user_id: int) -> GroupTrader | None:
+        """돌고 있는 에이전트 그룹, 없으면 None."""
+        group = self._groups.get(self._uid(user_id))
+        return group if group is not None and group.alive else None
+
+    def agent_ids(self, user_id: int) -> list[str]:
+        group = self.group(user_id)
+        return list(group.group.ids) if group is not None else []
+
+    def trader(self, user_id: int, agent_id: str = ""):
+        """돌고 있는 트레이더, 없으면 None. 수동 매매·조회 엔드포인트가 씁니다.
+
+        `agent_id` 를 주면 그룹 안의 그 한 대입니다. 주지 않았는데 그룹이 여럿을
+        돌리고 있으면 **아무것도 돌려주지 않습니다** — 조용히 하나를 고르면
+        `close_all` 이 그 하나만 정리하고 성공을 돌려주고, 사용자는 전부
+        정리된 줄 알고 화면을 닫습니다. `require_trader` 가 그 자리에서
+        `AgentRequired` 로 물어봅니다.
+        """
+        uid = self._uid(user_id)
+        group = self.group(uid)
+        if group is not None:
+            if agent_id:
+                return group.trader(agent_id)
+            ids = group.group.ids
+            return group.trader(ids[0]) if len(ids) == 1 else None
+        if agent_id:
+            return None
+        bot = self._bots.get(uid)
         return bot.trader if bot is not None and bot.alive else None
 
-    def require_trader(self, user_id: int):
-        trader = self.trader(user_id)
+    def require_trader(self, user_id: int, agent_id: str = ""):
+        uid = self._uid(user_id)
+        group = self.group(uid)
+        if group is not None and not agent_id and len(group.group.ids) > 1:
+            raise AgentRequired(list(group.group.ids))
+        trader = self.trader(uid, agent_id)
         if trader is None:
-            raise NotRunning()
+            raise NotRunning(agent_id)
         return trader
 
     def status(self, user_id: int) -> dict:
-        bot = self._bots.get(self._uid(user_id))
+        uid = self._uid(user_id)
+        running_group = self._groups.get(uid)
+        if running_group is not None:
+            # 그룹 상태는 에이전트별 배열과 계좌 요약을 함께 답니다. 기존 화면이
+            # 읽던 평평한 키(`running`)는 그대로 둡니다.
+            return running_group.status()
+        bot = self._bots.get(uid)
         if bot is None:
             return {"running": False, "message": "봇이 실행 중이 아닙니다"}
         if not bot.alive:
@@ -1140,11 +1325,197 @@ class UserRegistry:
         return {**bot.trader.status(), "requested_at": bot.started_at.isoformat()}
 
     def running(self) -> list[int]:
-        return sorted(uid for uid, bot in self._bots.items() if bot.alive)
+        return sorted(
+            {uid for uid, bot in self._bots.items() if bot.alive}
+            | {uid for uid, group in self._groups.items() if group.alive}
+        )
+
+    def account_budget(self, user_id: int,
+                       config: StrategyConfig) -> TradingBudget:
+        """계좌 전체의 하루 한도. **에이전트 한도의 합이 아닙니다.**
+
+        합으로 정의하면 방어선이 봇 수만큼 곱해집니다 — 넷이 각자 10만원 손실
+        한도를 갖고 있으면 계좌는 40만원까지 열리고, 그건 계좌 한도를 두지
+        않은 것과 같습니다.
+
+        값은 **사용자 레벨** 한도 파일에서 옵니다. 그룹을 쓰지 않는 사람이
+        예전부터 쓰던 그 파일이고, 그룹에서는 그것이 계좌 전체의 상한이 됩니다
+        — 화면에서 한 자리를 새로 배우지 않아도 되고, 단일 봇에서 그룹으로
+        넘어온 사람의 한도가 조용히 사라지지도 않습니다.
+
+        시간대와 정지 정책은 설정에서 가져옵니다. 계좌 한도의 "오늘" 이 에이전트
+        한도의 "오늘" 과 다른 시각에 갈리면, 자정 무렵에 한쪽만 초기화됩니다.
+        """
+        saved = self.limits(user_id)
+        return TradingBudget(
+            max_daily_notional=saved["max_daily_notional"],
+            max_daily_orders=int(saved["max_daily_orders"]),
+            max_daily_loss=saved["max_daily_loss"],
+            max_daily_loss_pct=saved["max_daily_loss_pct"],
+            timezone_offset_hours=config.limits.timezone_offset_hours,
+            halt_until_next_day=config.limits.halt_until_next_day,
+        )
+
+    def build_account_venue(self, user_id: int, config: StrategyConfig):
+        """그룹이 물 증권사 어댑터 하나. **자기만의 장부** 를 갖습니다.
+
+        어느 에이전트의 `Portfolio` 도 넘겨서는 안 됩니다. `LiveBrokerage` 는
+        `_sync_once` 에서 **계좌 전체** 의 수량과 현금을 자기 `portfolio` 에
+        적는데(`adopt_venue_capital`), 그것이 어느 에이전트의 장부이면 계좌
+        합계가 그 장부에 들어앉습니다. 그러면 그 에이전트의 손절 한 번이 다른
+        에이전트와 사용자의 보유까지 전부 팝니다 — 그리고 합계 불변식은 그것을
+        잡지 못합니다(나간 수량이 발주 에이전트에게 귀속되므로 Σ 는 맞습니다).
+
+        슬리브의 `_sleeve_quantity` 가 `min(장부, 원장)` 으로 한 겹 더 막고
+        있지만, 애초에 닿지 않게 하는 것이 방어선 하나를 아끼는 것보다 낫습니다.
+        """
+        from quant.core.account import Portfolio
+        from quant.strategy.builder import build_brokerage, build_costs
+
+        cfg = _with_credentials(self.prepare(user_id, config),
+                                self.accounts.secrets_for(user_id))
+        fee, slippage, fill = build_costs(cfg)
+        account_book = Portfolio(cfg.portfolio.starting_cash,
+                                 cfg.portfolio.base_currency)
+        return build_brokerage(cfg, account_book, fee, slippage, fill)
+
+    async def start_group(self, user_id: int, group, configs: dict,
+                          *, venue=None, on_event: Callable | None = None,
+                          master_budget=None, base_currency: str | None = None,
+                          resume: bool = True) -> dict:
+        """이 사용자의 에이전트 그룹을 띄운다. 계좌 하나당 그룹 하나까지.
+
+        단일 봇과 그룹은 배타적입니다. 계좌가 하나이므로 둘이 동시에 돌면 상태
+        DB 소유권부터 충돌하고, 그 전에 이미 같은 현금을 두 번 사이징합니다.
+
+        성향과 하루 한도는 **에이전트마다** 자기 파일에서 옵니다. 그것이 이
+        기능의 전부이므로, 여기서 섞이면 나머지는 전부 무의미합니다.
+        """
+        uid = self._uid(user_id)
+        existing = self._bots.get(uid)
+        if existing is not None and existing.alive:
+            raise AlreadyRunning(existing.strategy)
+        running_group = self._groups.get(uid)
+        if running_group is not None and running_group.alive:
+            raise AlreadyRunning(
+                ", ".join(s.label for s in running_group.group.agents))
+
+        first = configs[group.agents[0].agent_id]
+        if venue is None:
+            # 어댑터는 계좌에 하나이고, 그 실거래 여부는 **가장 위험한
+            # 에이전트** 가 정합니다. 예전에는 무조건 첫 번째 설정으로 세워서,
+            # [관찰, 실거래] 순서면 어댑터가 페이퍼로 만들어졌습니다 — 실거래를
+            # 확인한 에이전트가 조용히 가상 체결을 받고, 사용자는 진짜 주문이
+            # 나가는 줄 압니다. 실거래 에이전트가 하나라도 있으면 그 설정으로
+            # 세웁니다(같은 증권사·같은 계좌번호이므로 나머지는 같습니다).
+            anchor = next((configs[a.agent_id] for a in group.agents
+                           if a.is_live), first)
+            venue = self.build_account_venue(uid, anchor)
+        if base_currency is None:
+            # **설정에서 가져옵니다.** 여기에 통화를 박아 두면, 그와 다른 통화로
+            # 도는 계좌의 잔고 조회가 언제나 빈손으로 돌아옵니다. 그러면 자본
+            # 배분이 전원 0 원이 되고, 에이전트들은 자기 몫이 없는 줄 알고
+            # 아무것도 사지 않습니다 — 에러도 로그도 없이 그냥 안 삽니다.
+            base_currency = first.portfolio.base_currency
+
+        # 통화가 섞인 그룹은 받지 않습니다. 계좌 자산을 나누는 분모가 하나여야
+        # 하는데, 원화와 달러를 한 계좌에서 더하면 7만과 250 이 에러 없이
+        # 더해집니다.
+        currencies = {c.portfolio.base_currency for c in configs.values()}
+        if len(currencies) > 1:
+            raise ConfigRejected(
+                f"한 그룹의 에이전트는 같은 통화여야 합니다: "
+                f"{', '.join(sorted(currencies))}"
+            )
+
+        prepared: dict = {}
+        profiles: dict[str, str] = {}
+        meters: dict = {}
+        for spec in group.agents:
+            config = configs[spec.agent_id]
+            cfg = self.prepare(uid, config, spec.agent_id)
+            self.assert_ready(uid, cfg)
+            wired = _with_credentials(cfg, self.accounts.secrets_for(uid))
+            prepared[spec.agent_id] = wired
+            profiles[spec.agent_id] = str(
+                self._settings_paths(uid, spec.agent_id).profile)
+            meters[spec.agent_id] = self._meter(uid, cfg)
+
+        if master_budget is None:
+            master_budget = self.account_budget(uid, first)
+        if group.has_live and not master_budget.configured:
+            # 계좌 한도가 없으면 에이전트별 한도만 남는데, 그것들의 합이 곧
+            # 계좌의 노출입니다 — 넷이 각자 10만원 한도를 지켜도 계좌는 40만원을
+            # 잃습니다. 이 기능이 막으려고 존재하는 사고 그 자체이므로, 실거래
+            # 에서는 닫는 쪽으로 실패합니다. `quant live` 가 단일 봇에 요구하는
+            # 것("실거래에는 하루 한도가 하나는 있어야 한다")과 같은 규칙입니다.
+            raise ConfigRejected(
+                "실거래 그룹에는 계좌 전체 하루 한도가 하나는 있어야 합니다. "
+                "에이전트별 한도만으로는 계좌를 지키지 못합니다 — 넷이 각자 "
+                "자기 한도를 지켜도 계좌는 그 네 배를 잃을 수 있습니다. "
+                "마이페이지의 하루 한도(계좌)에서 먼저 설정하세요."
+            )
+        if bool(getattr(venue, "live", False)) != group.has_live:
+            raise ConfigRejected(
+                "계좌 어댑터의 실거래 여부가 에이전트 구성과 다릅니다 — "
+                f"어댑터 {'실거래' if getattr(venue, 'live', False) else '모의'}, "
+                f"그룹 {'실거래' if group.has_live else '모의'}. 시작하지 않습니다."
+            )
+
+        trader_group = GroupTrader(
+            group, prepared, self.state_path(uid), venue=venue,
+            master_budget=master_budget, base_currency=base_currency,
+            profile_paths=profiles, meters=meters, resume=resume,
+        )
+        # 엔진은 키를 받았고, 트레이더가 계속 들고 다니는 설정은 받지 않습니다.
+        # `LiveTrader.start()` 가 `config.model_dump_json()` 을 상태 DB 에 그대로
+        # 적기 때문에, 되돌리지 않으면 앱 시크릿이 평문으로 남습니다.
+        for spec in group.agents:
+            trader_group.traders[spec.agent_id].config = self.prepare(
+                uid, configs[spec.agent_id], spec.agent_id)
+            if on_event is not None:
+                trader_group.traders[spec.agent_id].engine.ctx.bus.on(
+                    None, on_event)
+
+        self._groups[uid] = trader_group
+        try:
+            await trader_group.start()
+        except BaseException:
+            # 시작이 실패하면 이 그룹은 상태 DB 소유권만 붙들고 앉아 있습니다.
+            # 그대로 두면 사용자가 자격증명을 고치고 다시 눌러도 "이 프로세스가
+            # 이미 이 상태 파일로 트레이더를 돌리고 있습니다" 로 막히고, 그
+            # 문장은 지금 상황을 설명하지 못합니다.
+            self._groups.pop(uid, None)
+            with contextlib.suppress(Exception):
+                await trader_group.shutdown(wait=1.0)
+            raise
+        self.accounts.record(
+            uid, "group_started",
+            ", ".join(f"{s.agent_id}({s.mode.value})" for s in group.agents))
+        log.info("사용자 %s 그룹 시작: %s", uid, ", ".join(group.ids))
+        return trader_group.status()
+
+    async def stop_group(self, user_id: int,
+                         wait: float = GROUP_STOP_GRACE) -> dict:
+        uid = self._uid(user_id)
+        group = self._groups.get(uid)
+        if group is None or not group.alive:
+            raise NotRunning()
+        result = await group.stop(wait)
+        # 멈추는 것과 놓는 것은 다릅니다. `stop()` 은 사이클을 끝내고 기다릴
+        # 뿐 증권사 연결도 상태 DB 소유권도 놓지 않아서, 예전에는 ■ 정지 뒤에
+        # 프로세스를 재시작하기 전까지 이 계좌로 아무것도 켤 수 없었습니다.
+        # 그룹 객체는 남겨 둡니다 — 죽은 에이전트의 이유를 화면이 읽습니다.
+        await group.shutdown(wait=min(wait, 5.0))
+        self._note(uid, "group_stopped", ", ".join(group.group.ids))
+        return result
 
     async def stop(self, user_id: int, wait: float = STOP_GRACE_SECONDS) -> dict:
         """이번 사이클을 끝내고 멈춘다. 보유 포지션은 그대로 둡니다."""
         uid = self._uid(user_id)
+        group = self._groups.get(uid)
+        if group is not None and group.alive:
+            return await self.stop_group(uid, wait)
         bot = self._bots.get(uid)
         if bot is None or not bot.alive:
             raise NotRunning()
@@ -1179,3 +1550,13 @@ class UserRegistry:
         if alive:
             await asyncio.wait({bot.task for bot in alive}, timeout=5.0)
         self._bots.clear()
+
+        # 그룹은 자기 종료 절차가 따로 있습니다 — 트레이더들이 각자 마지막
+        # 상태를 적은 뒤에야 증권사 연결과 DB 소유권을 놓습니다. 여기서도
+        # 함께 기다립니다: 하나씩 순서대로면 마지막 사용자의 여유가 앞사람들의
+        # 대기 시간만큼 줄어듭니다.
+        groups = list(self._groups.values())
+        if groups:
+            await asyncio.gather(
+                *(g.shutdown(wait) for g in groups), return_exceptions=True)
+        self._groups.clear()

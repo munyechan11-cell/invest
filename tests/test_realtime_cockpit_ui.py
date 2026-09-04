@@ -325,8 +325,15 @@ def test_every_money_action_uses_code_first_review_before_posting():
     assert "`${code} · ${nm}`" in symbol
     assert "const status = await api(\"/api/status\")" in review
     assert "실거래 주문 요청이 대기열에 들어갑니다" in review
+    # 확인이 발주보다 **먼저** 와야 합니다. 경로는 `withAgent(...)` 로 감싸여
+    # 있는데(에이전트가 여럿일 때 어느 것에 나가는지를 붙입니다), 그 래핑이
+    # 순서를 바꾸지는 않습니다 — 여기서 고정하는 것은 순서입니다.
     assert manual.index("await confirmOrderReview") < manual.index("await post(path")
-    assert chart.index("await confirmOrderReview") < chart.index('await post("/api/manual/"')
+    assert chart.index("await confirmOrderReview") < chart.index(
+        'await post(withAgent("/api/manual/"')
+    # 그리고 확인창은 **어느 에이전트의** 포지션인지 말해야 합니다. 전체 청산을
+    # 누르는 사람이 확인할 것은 "무엇을" 만이 아니라 "누구의 것을" 입니다.
+    assert "에이전트: ${agentLabel(activeAgent)}" in review
     for label in ("매수 주문 검토", "매도 주문 검토", "이 종목 청산 검토"):
         assert label in HTML
 
