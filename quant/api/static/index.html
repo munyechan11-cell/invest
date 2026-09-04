@@ -13,7 +13,7 @@
 <title>QUANT TRADING FLOOR</title>
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" rel="stylesheet">
-<link rel="stylesheet" href="/static/app.css?v=20260904-toss3">
+<link rel="stylesheet" href="/static/app.css?v=20260904-toss4">
 </head>
 <body class="booting">
 
@@ -937,9 +937,10 @@ function sprite(hair, shirt) {
     if (c === "hair") c = hair; else if (c === "shirt") c = shirt;
     r += `<rect x="${x * px}" y="${y * px}" width="${px}" height="${px}" fill="${c}"/>`;
   }));
-  // desk monitor glow
-  r += `<rect x="${px * 2}" y="${px * (h - 2)}" width="${px * 6}" height="${px * 2}" fill="#12331f"/>`;
-  r += `<rect x="${px * 3}" y="${px * (h - 2) + 2}" width="${px * 4}" height="${px * 2 - 4}" fill="#57d977"/>`;
+  // 책상 위 모니터 — 밝은 바닥에 맞춘 옅은 틀과 파란 화면. 예전의 짙은 초록은
+  // 흰 방에서 좌석마다 검은 띠로 보였습니다.
+  r += `<rect x="${px * 2}" y="${px * (h - 2)}" width="${px * 6}" height="${px * 2}" fill="#d5dae0"/>`;
+  r += `<rect x="${px * 3}" y="${px * (h - 2) + 2}" width="${px * 4}" height="${px * 2 - 4}" fill="#8fbcff"/>`;
   return r + "</svg>";
 }
 
