@@ -190,7 +190,7 @@ class GroupTrader:
             ledger.starting_equity = equity
             self.state.save_account_budget(self.gateway.master_budget, mode)
 
-        venue_positions = await self.gateway.venue.positions()
+        venue_positions = await self.gateway.read_venue_positions()
         self.gateway.adopt_unassigned(venue_positions)
 
         self.started_at = datetime.now(UTC)
@@ -211,6 +211,10 @@ class GroupTrader:
         """배분의 분모. 읽지 못하면 0 입니다 — 추정치로 주문을 내지 않습니다."""
         try:
             return await self.gateway.read_account_cash()
+        except GroupHalted:
+            # 통화가 다르다는 것은 "못 읽었다" 가 아니라 "읽었는데 쓸 수 없다"
+            # 입니다. 그 말을 그대로 사용자에게 보냅니다.
+            raise
         except Exception as exc:  # noqa: BLE001 — 배분 전이라 주문은 아직 없다
             log.error("계좌 잔고를 읽지 못해 자본을 배분하지 못했습니다: %s", exc)
             return 0.0

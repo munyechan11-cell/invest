@@ -1606,7 +1606,9 @@ async function refresh() {
   }
 
   try {
-    const s = await api("/api/status");
+    // 고른 에이전트의 장부·전략을 받습니다. 맨손으로 부르면 서버가 첫
+    // 에이전트를 골라, 탭은 보수형인데 머리말은 공격형인 화면이 됩니다.
+    const s = await api(withAgent("/api/status"));
     if (generation !== refreshGeneration) return;
     botState = s;
     adoptAgents(s);

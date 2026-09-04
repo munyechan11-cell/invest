@@ -96,9 +96,12 @@ async def test_a_group_starts_on_a_venue_whose_balances_are_empty(tmp_path):
         await gt.shutdown(wait=1.0)
 
 
-# ── ② 시장가 주문은 주문 낸 에이전트의 시세로 ────────────────────────────
+# ── ② 시장가 주문의 한도 가격은 장부들 중 가장 높은 값 ─────────────────
 @pytest.mark.asyncio
-async def test_market_orders_are_priced_with_the_submitting_agents_own_mark():
+async def test_market_orders_are_priced_with_the_highest_mark_any_agent_holds():
+    """어느 쪽 장부가 최신인지 알 수 없으므로(시각이 없다) 한도는 넘치게
+    세는 쪽으로 — 공격형이 어제 종가로, 보수형이 오늘 시세로 서로의 주문을
+    싸게 적는 두 방향 모두 막습니다."""
     venue = adapter()
     gw = AccountGateway(group("slow", "fast"), venue, base_currency="KRW")
     slow, fast = Portfolio(500_000, "KRW"), Portfolio(500_000, "KRW")
@@ -114,10 +117,46 @@ async def test_market_orders_are_priced_with_the_submitting_agents_own_mark():
     # 수량을 바꿉니다 — 어댑터가 10초 안의 동일 주문을 중복으로 막습니다.
     placed = await gw.submit_for("slow", market(qty=2))
     assert placed.status is not OrderStatus.REJECTED, placed.reject_reason
-    assert venue.portfolio.position(SAMSUNG).last_price == 50_000.0
+    assert venue.portfolio.position(SAMSUNG).last_price == 60_000.0
+    assert gw._last_price(SAMSUNG, "slow") == 60_000.0
+    assert gw._last_price(SAMSUNG, "nobody") == 60_000.0
 
-    # 자기 장부에 값이 없을 때만 형제의 것으로 물러선다.
-    assert gw._last_price(SAMSUNG, "nobody") == 50_000.0
+
+# ── ②′ 증권사 보유도 어댑터 계약으로 ─────────────────────────────────────
+@pytest.mark.asyncio
+async def test_venue_positions_fall_back_to_the_adapters_book():
+    """`positions()` 는 `balances()` 의 쌍둥이 — 실제 어댑터는 `{}` 를 돌려주고
+    증권사 진실은 `sync()` 가 맞춰 둔 어댑터 장부에 있습니다."""
+    venue = adapter()
+    venue.portfolio.position(SAMSUNG).quantity = Decimal("2")
+    gw = AccountGateway(group("a"), venue, base_currency="KRW")
+    assert await venue.positions() == {}
+    assert await gw.read_venue_positions() == {SAMSUNG.key: Decimal("2")}
+    # 페이퍼·가상 증권사는 예전처럼 positions() 로.
+    assert await AccountGateway(group("a"), Venue()).read_venue_positions() == {}
+
+
+@pytest.mark.asyncio
+async def test_a_group_adopts_holdings_that_only_the_adapters_book_knows(tmp_path):
+    """시작 때 채택하지 못한 기존 보유는 첫 체결에서 "원장 1 · 증권사 0"
+    드리프트가 되어 그룹을 멈춥니다."""
+    class LiveLike(Venue):
+        def __init__(self):
+            super().__init__()
+            self.portfolio = Portfolio(100_000, "KRW")
+            self.portfolio.position(SAMSUNG).quantity = Decimal("3")
+
+        async def positions(self):
+            return {}
+
+    gt = GroupTrader(two_agents(), {"attack": config("a"), "defend": config("b")},
+                     str(tmp_path / "s.db"), venue=LiveLike())
+    try:
+        await gt.start()
+        assert gt.gateway.expected_venue_positions() == {SAMSUNG.key: Decimal("3")}
+        assert gt.gateway.halted is False
+    finally:
+        await gt.shutdown(wait=1.0)
 
 
 # ── ③ 종료 확인은 내 몫의 미결만 ────────────────────────────────────────
@@ -158,6 +197,36 @@ def test_shutdown_count_ignores_siblings_known_resting_orders():
     # 증권사가 0 이면 0.
     venue.remote = 0
     assert asyncio.run(mine.shutdown_remote_open_order_count()) == 0
+
+
+def test_shutdown_count_does_not_subtract_what_it_cannot_trust():
+    class Counting(RealAdapter):
+        remote = 2
+
+        async def shutdown_remote_open_order_count(self):
+            return self.remote
+
+    venue = adapter(cls=Counting)
+    gw = AccountGateway(group("a1", "a2"), venue, base_currency="KRW")
+    mine = SleeveBrokerage("a1", gw)
+
+    # 아직 증권사 번호가 없는(보내는 중인) 형제 주문은 증권사 목록에 없다 — 빼면 하나를 덜 센다.
+    in_flight = _resting("")
+    in_flight.broker_id = None
+    venue._orders[in_flight.id] = in_flight
+    gw._remember_order(in_flight.id, "a2", SAMSUNG.key)
+    assert asyncio.run(mine.shutdown_remote_open_order_count()) == 2
+
+    # 체결 수거가 실패하면 로컬의 "열림" 을 믿을 수 없다 — 빼지 않는다.
+    acked = _resting("v-9")
+    venue._orders[acked.id] = acked
+    gw._remember_order(acked.id, "a2", SAMSUNG.key)
+    assert asyncio.run(mine.shutdown_remote_open_order_count()) == 1
+
+    async def boom():
+        raise RuntimeError("fill poll down")
+    gw._drain_venue_fills = boom
+    assert asyncio.run(mine.shutdown_remote_open_order_count()) == 2
 
 
 # ── ④ 취소된 에이전트의 정리가 끝난 뒤에 계좌를 놓는다 ──────────────────

@@ -519,7 +519,7 @@ class AccountGateway:
         except Exception:  # noqa: BLE001 — 못 읽으면 마지막 값을 그대로 쓴다
             log.debug("계좌 자산 갱신 실패 — 마지막 값 유지")
         report = await self.venue.sync() or {}
-        venue_positions = await self.venue.positions()
+        venue_positions = await self.read_venue_positions()
         drift = self.check_invariant(venue_positions)
         return {**report, "requested_by": agent_id,
                 "sleeve_drift": drift, "halted": self.halted}
@@ -577,16 +577,22 @@ class AccountGateway:
         0 으로 계산되고, 계좌 거래대금 한도는 하루 종일 초록색인 채로 아무것도
         막지 않습니다 — 100만원 한도에 350만원이 통과하는 것을 재현했습니다.
 
-        주문 낸 에이전트의 장부에 값이 없을 때만(그 에이전트가 안 보는 종목의
-        수동 주문) 형제의 장부로 물러섭니다.
+        그런데 거꾸로도 성립합니다 — 보수형이 자기 어제 종가로 주문을 매기면
+        공격형이 든 오늘 시세보다 싸게 적힙니다. 장부에는 시각이 없어 "가장
+        최근" 을 고를 수 없으므로, **가장 높은 값** 을 씁니다. 이 가격이 하는
+        일은 한도를 세는 것뿐이라 넘치게 세는 쪽이 안전합니다(체결가는
+        증권사가 정합니다). `prefer` 는 같은 값일 때의 순서만 정합니다.
         """
         books = self._agent_books
         ordered = ([books[prefer]] if prefer in books else []) + [
             book for agent_id, book in books.items() if agent_id != prefer]
+        best = 0.0
         for book in ordered:
             price = book.position(symbol).last_price
-            if price > 0:
-                return price
+            if price > best:
+                best = price
+        if best > 0:
+            return best
         venue_book = getattr(self.venue, "portfolio", None)
         if venue_book is None:
             return 0.0
@@ -852,6 +858,24 @@ class AccountGateway:
                 return float(value)
         return cash
 
+    async def read_venue_positions(self) -> dict[str, Decimal]:
+        """증권사 합계 보유 — 불변식의 오른쪽이자 시작 때 채택하는 미귀속.
+
+        `positions()` 도 `balances()` 처럼 페이퍼의 계약입니다. 실제 어댑터는
+        기본 구현 `{}` 를 쓰고, 증권사 진실은 `sync()` 가 어댑터의 장부에
+        맞춰 둡니다("수량은 증권사가 언제나 옳다"). 그래서 `positions()` 가
+        비면 그 장부를 읽습니다. 안 그러면 실거래 그룹은 기존 보유를 채택하지
+        못하고, **첫 체결에서 "원장 1 · 증권사 0" 드리프트로 멈춥니다.**
+        """
+        got = await self.venue.positions()
+        if got:
+            return dict(got)
+        book = getattr(self.venue, "portfolio", None)
+        if book is None:
+            return {}
+        return {key: pos.quantity for key, pos in book.positions.items()
+                if pos.quantity != 0}
+
     def remote_open_order_counter(self, agent_id: str = ""):
         """증권사 쪽 미결 주문 수를 세는 함수, 어댑터가 제공할 때만.
 
@@ -877,15 +901,21 @@ class AccountGateway:
             # 에이전트가 멈출 때는 형제의 미결이 없으므로 계좌 전체를 봅니다.
             try:
                 await self._drain_venue_fills()
-            except Exception:  # noqa: BLE001 — 비우지 못해도 세는 것은 한다
-                log.debug("종료 확인 전 체결 수거 실패")
+            except Exception:  # noqa: BLE001
+                # 체결을 못 비우면 로컬의 "열림" 을 믿을 수 없습니다 — 방금
+                # 체결된 형제 주문을 빼면 내 미결 하나가 가려집니다. 이때는
+                # 빼지 않고 계좌 전체를 남은 것으로 칩니다(fail closed).
+                log.warning("종료 확인 전 체결 수거 실패 — 형제 미결을 빼지 않습니다")
+                return int(await counter())
             total = int(await counter())
             if total <= 0:
                 return 0
             siblings = 0
             local = getattr(self.venue, "_orders", None) or {}
             for order in list(local.values()):
-                if not order.status.is_open:
+                # 증권사가 번호를 준 주문만 뺍니다. 아직 보내는 중인 형제
+                # 주문은 증권사 목록에 없으므로 빼면 하나를 덜 셉니다.
+                if not order.status.is_open or not getattr(order, "broker_id", None):
                     continue
                 owner = self._order_agent.get(order.id, "")
                 if owner and owner != agent_id:

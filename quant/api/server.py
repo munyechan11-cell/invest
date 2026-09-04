@@ -1063,7 +1063,12 @@ def _focus_group_status(body: dict, agent_id: str) -> dict:
     agents = body.get("agents")
     if not isinstance(agents, list) or not agents:
         return body
-    entry = next((a for a in agents if a.get("agent_id") == agent_id), None) or agents[0]
+    entry = next((a for a in agents if a.get("agent_id") == agent_id), None)
+    if entry is None:
+        # 모르는 이름에 첫 에이전트를 슬쩍 끼우면, 사라진 에이전트를 보던
+        # 화면이 남의 장부를 자기 것인 양 그립니다. 그룹 상태만 돌려줍니다.
+        return {**body, "agent_id": None,
+                "message": f"에이전트 '{agent_id}' 는 이 그룹에 없습니다"}
     trader = entry.get("trader") if isinstance(entry.get("trader"), dict) else {}
     focused = {**trader, **body}
     focused["agent_id"] = entry.get("agent_id")

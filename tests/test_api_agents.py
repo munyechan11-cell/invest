@@ -315,3 +315,12 @@ def test_status_carries_the_focused_agents_book(client):
     body = client.get("/api/status").json()
     assert body["agent_id"] == "attack", "고르지 않으면 첫 에이전트"
     assert "portfolio" in body
+
+
+def test_status_for_an_unknown_agent_does_not_borrow_the_first_agents_book(client):
+    r = start_group(client, spec("attack", "attack"), spec("defend", "defend"))
+    assert r.status_code == 200, r.text
+    body = client.get("/api/status?agent_id=ghost").json()
+    assert body["agent_id"] is None and "portfolio" not in body
+    assert "ghost" in body["message"]
+    assert [a["agent_id"] for a in body["agents"]] == ["attack", "defend"]

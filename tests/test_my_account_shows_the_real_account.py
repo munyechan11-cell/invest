@@ -95,7 +95,11 @@ def _run_ui_js(functions: list[str], prelude: str, driver: str) -> dict:
     engine = _engine()
     assert engine, "JavaScript 엔진이 없습니다"
     path, args = engine
-    source = "\n".join(_whole_fn(SCRIPT, name) for name in functions)
+    # 상태 폴링은 고른 에이전트를 따라갑니다(`withAgent`). 하네스에도 그 함수와
+    # 그것이 읽는 `activeAgent` 를 실제 코드 그대로 넣습니다 — 고르지 않은
+    # 상태에서는 경로를 그대로 돌려주므로 아래 stub 들의 문자열 비교가 유지됩니다.
+    source = "var activeAgent = '';\n" + _whole_fn(SCRIPT, "withAgent") + "\n" + "\n".join(
+        _whole_fn(SCRIPT, name) for name in functions)
     common = r"""
 var write = (typeof console !== "undefined" && console.log) ? console.log : print;
 """
