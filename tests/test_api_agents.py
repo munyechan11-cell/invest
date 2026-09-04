@@ -295,3 +295,23 @@ def test_reads_without_an_agent_id_follow_the_strategy_name(client):
     r = client.get("/api/equity?agent_id=defend&strategy=attack")
     assert r.status_code == 200, r.text
     assert r.json()["agent_id"] == "defend", "명시한 에이전트가 이름보다 앞선다"
+
+
+def test_status_carries_the_focused_agents_book(client):
+    """머리말 표식·자산 요약·전략 이름은 최상위 `portfolio`/`strategy` 를 읽습니다.
+    그룹 응답에 그것이 없으면 그룹이 도는 내내 "미가동" 으로 보입니다."""
+    r = start_group(client, spec("attack", "attack"), spec("defend", "defend"))
+    assert r.status_code == 200, r.text
+
+    body = client.get("/api/status?agent_id=defend").json()
+    assert body["agent_id"] == "defend"
+    assert body["strategy"] == "defend-strat"
+    assert "portfolio" in body and "cash" in body["portfolio"]
+    assert body["agent_mode"] == "dry_run"
+    # 그룹의 키는 그대로 — 계좌 등급, 계좌 요약, 에이전트 목록.
+    assert body["mode"] == "dry_run" and body["running"] is True
+    assert "account" in body and [a["agent_id"] for a in body["agents"]] == ["attack", "defend"]
+
+    body = client.get("/api/status").json()
+    assert body["agent_id"] == "attack", "고르지 않으면 첫 에이전트"
+    assert "portfolio" in body

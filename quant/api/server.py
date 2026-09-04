@@ -1050,6 +1050,30 @@ def _template_config(name: str | None):
         return None
 
 
+def _focus_group_status(body: dict, agent_id: str) -> dict:
+    """그룹 상태에 **한 에이전트의 장부** 를 얹는다.
+
+    머리말 표식·자산 요약·전략 이름은 단일 봇 시절부터 최상위 `portfolio` 와
+    `strategy` 를 읽습니다. 그룹 응답에는 그 키가 없어서, 그룹이 도는 내내
+    표식은 "미가동", 자산 요약은 "조회값 없음" 이었습니다 — 돌고 있는데 안
+    도는 것처럼 보이는 화면입니다. 그룹의 키(`running`·`mode`·`account`·
+    `agents`)는 그대로 이깁니다: `mode` 는 계좌의 위험 등급(가장 위험한
+    에이전트)이고, 고른 에이전트의 것은 `agent_mode` 에 따로 둡니다.
+    """
+    agents = body.get("agents")
+    if not isinstance(agents, list) or not agents:
+        return body
+    entry = next((a for a in agents if a.get("agent_id") == agent_id), None) or agents[0]
+    trader = entry.get("trader") if isinstance(entry.get("trader"), dict) else {}
+    focused = {**trader, **body}
+    focused["agent_id"] = entry.get("agent_id")
+    focused["agent_mode"] = entry.get("mode")
+    focused["strategy"] = entry.get("strategy") or trader.get("strategy")
+    if "portfolio" not in focused and not entry.get("running"):
+        focused["message"] = entry.get("error") or "이 에이전트는 멈춰 있습니다"
+    return focused
+
+
 def _default_agent(seat, strategy: str | None) -> str:
     """조회가 볼 에이전트 — `Desk.default_agent_id` 가 없는 시험용 자리도 허용."""
     picker = getattr(seat, "default_agent_id", None)
@@ -1854,8 +1878,9 @@ def create_app(config: StrategyConfig | None = None,
         return _redact(json.loads(cfg.model_dump_json()), fields)
 
     @app.get("/api/status")
-    async def status(seat: Desk = Depends(desk)):
-        return _named_status(seat.status(), NameBook(seat.state_path))
+    async def status(agent_id: str = "", seat: Desk = Depends(desk)):
+        body = _focus_group_status(seat.status(), agent_id or _default_agent(seat, None))
+        return _named_status(body, NameBook(seat.state_path))
 
     # 조회 한도는 핸들러가 아니라 여기서 막습니다. `limit=99999999999999999999`
     # 하나면 sqlite 안에서 터져 500 이 되고, 그건 로그인한 아무나 누를 수 있는
