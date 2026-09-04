@@ -1050,6 +1050,12 @@ def _template_config(name: str | None):
         return None
 
 
+def _default_agent(seat, strategy: str | None) -> str:
+    """조회가 볼 에이전트 — `Desk.default_agent_id` 가 없는 시험용 자리도 허용."""
+    picker = getattr(seat, "default_agent_id", None)
+    return str(picker(strategy) or "") if callable(picker) else ""
+
+
 def _selected_read_config(seat: Desk, strategy: str | None,
                           agent_id: str = "") -> StrategyConfig | None:
     """Resolve one read-only screen without hiding an explicit bad selection."""
@@ -1302,6 +1308,16 @@ class Desk:
     def run_config(self, agent_id: str = "") -> StrategyConfig | None:
         raise NotImplementedError
 
+    def default_agent_id(self, strategy: str | None = None) -> str:
+        """그룹이 여럿을 돌리는데 `agent_id` 가 비었을 때 **조회** 가 볼 에이전트.
+
+        돈을 움직이는 경로는 `require_trader` 가 되묻지만, 조회는 답이 있어야
+        합니다. 아무것도 고르지 않으면 `run_config("")` 가 프로세스 기본
+        템플릿으로 물러서서, 그룹이 도는 동안 `/api/equity` 가 옛 단일 봇의
+        run 을 보여줍니다. 전략 이름이 맞는 에이전트, 없으면 첫 에이전트.
+        """
+        return ""
+
     def status(self) -> dict:
         raise NotImplementedError
 
@@ -1402,6 +1418,26 @@ class UserDesk(Desk):
         # 돌고 있으면 그 봇의 설정이 이 사람의 상태 DB 에 적힌 run 과 같은
         # 이름을 가집니다. 아니면 프로세스 기본 템플릿으로 물러섭니다.
         return trader.config if trader is not None else self.state.config
+
+    def default_agent_id(self, strategy: str | None = None) -> str:
+        group = self.registry.group(self.user.id)
+        if group is None:
+            return ""
+        ids = list(group.group.ids)
+        if len(ids) < 2:
+            return ""
+        if strategy:
+            # `strategy` 는 화면이 보내는 템플릿 id 입니다. 에이전트는 템플릿
+            # 경로로 만들어지지만 설정 이름은 그 안의 `name` 이라, 둘 다 봅니다.
+            for agent_id in ids:
+                spec = group.group.get(agent_id)
+                if spec is not None and spec.config_path == strategy:
+                    return agent_id
+            for agent_id in ids:
+                cfg = getattr(group.traders.get(agent_id), "config", None)
+                if cfg is not None and cfg.name == strategy:
+                    return agent_id
+        return ids[0]
 
     def status(self) -> dict:
         return self.registry.status(self.user.id)
@@ -1838,6 +1874,7 @@ def create_app(config: StrategyConfig | None = None,
             # ``run_config()``.  The chart must instead follow the strategy the
             # person selected, or a live Toss screen can quietly draw the demo
             # backtest curve underneath it.
+            agent_id = agent_id or _default_agent(seat, strategy)
             cfg = _selected_read_config(seat, strategy, agent_id)
             selected_mode = mode or (cfg.mode.value if cfg else None)
             if cfg and selected_mode:
@@ -2233,6 +2270,7 @@ def create_app(config: StrategyConfig | None = None,
                      seat: Desk = Depends(desk)):
         store = StateStore(seat.state_path)
         try:
+            agent_id = agent_id or _default_agent(seat, strategy)
             cfg = _selected_read_config(seat, strategy, agent_id)
             selected_mode = mode or (cfg.mode.value if cfg else None)
             if cfg and selected_mode:
@@ -2258,6 +2296,7 @@ def create_app(config: StrategyConfig | None = None,
         """
         store = StateStore(seat.state_path)
         try:
+            agent_id = agent_id or _default_agent(seat, strategy)
             return {"periods": store.pnl_by_period(strategy=strategy, mode=mode,
                                                    agent_id=agent_id or None),
                     # 모의로 번 돈은 실제로 번 돈이 아닙니다. 화면이 그 둘을

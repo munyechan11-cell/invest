@@ -36,12 +36,14 @@
   /* 바탕·면. 카드는 흰색, 화면 바탕은 아주 옅은 회색 — 테두리 없이도
      카드가 구분됩니다. */
   --bg:#f2f4f6; --panel:#ffffff; --plate:#f9fafb; --panel2:#ffffff;
-  --line:#e5e8eb; --rule:#eef0f3;
+  --line:#e5e8eb; --rule:#e5e8eb;
   /* 글자. muted 는 흰 바탕에서 4.5:1 을 지킵니다 — 작은 설명글도 이 색. */
-  --ink:#191f28; --muted:#6b7684; --dim:#4e5968; --faint:#8b95a1; --white:#fff;
+  --ink:#191f28; --muted:#6b7684; --dim:#4e5968; --faint:#7d8794; --white:#fff;
   /* 강조는 파랑 하나. 옛 이름 --gold 도 이제 이 파랑입니다. */
   --blue:#3182f6; --blue-dark:#1b64da; --blue-soft:#e8f3ff;
-  --gold:#3182f6; --gold-dim:#1b64da;
+  /* 두 번째 강조색(호박). 차트의 진입가·지정가선과 결정 카드의 "축소" 가
+     쓰며, 파랑(매도·하락)과 같은 값이면 그 선들이 전부 한 색이 됩니다. */
+  --gold:#d97b06; --gold-dim:#b86e00;
   /* 실거래 표식. 바탕색 글자가 이 위에서 4.5:1 이어야 합니다. */
   --red:#cc2f3b;
   /* 방향(등락) — 한국식: 오르면 빨강, 내리면 파랑. 여기 말고는 쓰지 않습니다. */
@@ -1003,6 +1005,15 @@ body[data-page="account"] #pageAccount{display:grid;grid-template-columns:minmax
   #rooms #seat-research_manager .bubble:after{left:34px;right:auto}
   #rooms #seat-bear .bubble:after,#rooms #seat-risk_conservative .bubble:after,
   #rooms #seat-trader .bubble:after{left:auto;right:30px}
+}
+
+/* 태블릿 폭: 봇이 돌아 잔고 알약이 보이면 한 줄에 다 들어가지 않습니다.
+   잔고를 둘째 줄로 내리고 전략 이름·서버 시각은 셋째 줄로. */
+@media(max-width:1100px){
+  .top-in{grid-template-rows:auto auto auto}
+  .top-in>.mini{grid-column:2/9;grid-row:2;justify-self:start}
+  .top-in>#strategy{grid-row:3}
+  .top-in>#serverSince{grid-row:3}
 }
 
 /* ── 휴대폰 ─────────────────────────────────────────────────────────

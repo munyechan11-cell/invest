@@ -282,7 +282,7 @@ class SleeveBrokerage(Brokerage):
         # 됩니다. 그래서 어댑터가 줄 때만 그대로 넘기고, 아니면 없는 척합니다.
         if name == "shutdown_remote_open_order_count":
             lookup = getattr(self.gateway, "remote_open_order_counter", None)
-            fn = lookup() if callable(lookup) else None
+            fn = lookup(self.agent_id) if callable(lookup) else None
             if fn is not None:
                 return fn
         raise AttributeError(name)

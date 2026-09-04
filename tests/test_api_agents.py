@@ -275,3 +275,23 @@ def test_health_reports_a_group_as_running(client):
         assert body.get("trader_running") is True
     finally:
         client.post("/api/trader/stop")
+
+
+def test_reads_without_an_agent_id_follow_the_strategy_name(client):
+    """`agent_id` 없이 부르는 조회는 그룹이 돌 때 **전략 이름이 맞는 에이전트**
+    를 봅니다. 아무것도 고르지 않으면 프로세스 기본 템플릿으로 물러서서, 옛
+    단일 봇의 run 을 이 그룹의 자산 곡선인 양 보여줬습니다."""
+    r = start_group(client, spec("attack", "attack"), spec("defend", "defend"))
+    assert r.status_code == 200, r.text
+
+    r = client.get("/api/equity?strategy=defend")
+    assert r.status_code == 200, r.text
+    assert r.json()["agent_id"] == "defend"
+
+    r = client.get("/api/equity")
+    assert r.status_code == 200, r.text
+    assert r.json()["agent_id"] == "attack", "고르지 않으면 첫 에이전트"
+
+    r = client.get("/api/equity?agent_id=defend&strategy=attack")
+    assert r.status_code == 200, r.text
+    assert r.json()["agent_id"] == "defend", "명시한 에이전트가 이름보다 앞선다"

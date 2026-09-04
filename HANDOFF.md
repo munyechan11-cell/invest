@@ -376,3 +376,22 @@ Pretendard, 테두리 대신 여백. 픽셀 서체·금색 판은 없습니다(�
 `.top-in>.pagetabs` 를 `position:fixed` 로 아래에 붙인 것이라, 머리말 격자
 계약(3행·`grid-row:3`)은 그대로 만족합니다. `tests/test_ui_readability.py` 가
 대비·닿는 높이·격자를 파싱해서 잽니다 — 색을 바꾸면 그 검사부터 돌리세요.
+
+### 2차 검토 (2026-09-04) 가 찾아 고친 것
+
+- **실제 어댑터(KIS·토스)에서는 그룹이 아예 켜지지 않았다.** 잔고를 `balances()`
+  로만 읽었는데 그쪽은 기본 구현 `{}` 다. 이제 `AccountGateway.read_account_cash()`
+  가 `balances()` → `_venue_capital()['cash']` → `_venue_cash()` 순으로 읽는다.
+  가짜 증권사에만 `balances()` 가 있어 테스트만 통과했던 것 — 새 어댑터 관련
+  테스트는 반드시 `LiveBrokerage` 를 부모로 두어라.
+- 시장가 주문 가격은 **주문 낸 에이전트의 장부** 부터 본다(`_last_price(symbol,
+  prefer)`). 형제의 어제 종가로 한도를 매기면 헐거워진다.
+- 종료 확인의 원격 미결 수는 **내 몫만** 센다 — 형제의 것으로 아는 미결을 뺀다.
+  증권사 응답에는 주인이 없으므로(토스는 clientOrderId 를 주지 않는다) 주인
+  모를 주문은 남은 것으로 친다. 그룹의 마지막 에이전트는 계좌 전체를 본다.
+- 그룹 정지는 취소된 에이전트의 `Engine.stop` 이 끝날 때까지
+  (`GroupTrader.CANCEL_FLUSH_SECONDS`) 기다린 뒤 계좌 연결과 DB를 놓는다.
+- `agent_id` 없는 조회는 `Desk.default_agent_id(strategy)` — 템플릿 id 가 맞는
+  에이전트, 없으면 첫 에이전트. 돈을 움직이는 경로는 여전히 `AgentRequired`.
+- 디자인: `--gold` 는 호박색(차트 진입가·지정가선, "축소"), 901~1100px 에서
+  잔고 알약은 둘째 줄, 차트 격자·축 글자 진하게, PWA 아이콘 새 팔레트.

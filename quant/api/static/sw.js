@@ -15,7 +15,7 @@
 const SHELL = 'quant-shell-v5';
 const FILES = [
   '/',
-  '/static/app.css?v=20260904-toss2',
+  '/static/app.css?v=20260904-toss3',
   '/static/chart.js',
   '/static/manifest.webmanifest',
   '/static/icons/icon-192.png',

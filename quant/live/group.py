@@ -210,11 +210,10 @@ class GroupTrader:
     async def _account_equity(self) -> float:
         """배분의 분모. 읽지 못하면 0 입니다 — 추정치로 주문을 내지 않습니다."""
         try:
-            balances = await self.gateway.venue.balances()
+            return await self.gateway.read_account_cash()
         except Exception as exc:  # noqa: BLE001 — 배분 전이라 주문은 아직 없다
             log.error("계좌 잔고를 읽지 못해 자본을 배분하지 못했습니다: %s", exc)
             return 0.0
-        return float(balances.get(self.gateway.base_currency, 0.0) or 0.0)
 
     def _finished(self, agent_id: str, task: asyncio.Task) -> None:
         """에이전트 하나가 끝났다 — 스스로 멈췄든, 죽었든.
@@ -234,6 +233,9 @@ class GroupTrader:
         self.errors[agent_id] = (
             text if speaks_korean else f"{type(exc).__name__}: {text}")
         log.error("에이전트 %s 중단: %s", agent_id, self.errors[agent_id])
+
+    #: 취소된 에이전트가 증권사 정리를 끝낼 때까지 기다리는 상한.
+    CANCEL_FLUSH_SECONDS = 30.0
 
     async def stop(self, wait: float = STOP_GRACE_SECONDS) -> dict:
         """전부에게 멈추라고 말한 뒤 **함께** 기다린다.
@@ -268,8 +270,17 @@ class GroupTrader:
             if not task.done():
                 log.warning("에이전트 %s 의 현재 사이클을 취소합니다", agent_id)
                 task.cancel()
+        # 취소는 끝이 아니라 시작입니다. `LiveTrader.run` 은 취소를 삼키고
+        # `Engine.stop` 을 돌립니다 — 증권사 주문 취소, 체결 수거, 마지막
+        # 스냅샷. 5초 뒤에 연결과 DB를 닫아 버리면 그 정리가 닫힌 세션에
+        # 부딪혀 "불안전 종료" 와 "회계 기록 실패" 로 적힙니다. 정리가 끝날
+        # 때까지 기다리고, 그래도 안 끝나면 그때 로그를 남기고 놓습니다.
         if self._tasks:
-            await asyncio.wait(set(self._tasks.values()), timeout=5.0)
+            _, pending = await asyncio.wait(
+                set(self._tasks.values()), timeout=self.CANCEL_FLUSH_SECONDS)
+            if pending:
+                log.error("에이전트 %d개가 %.0f초 안에 정리를 끝내지 못했습니다 — "
+                          "계좌 연결을 놓습니다", len(pending), self.CANCEL_FLUSH_SECONDS)
 
         with contextlib.suppress(Exception):
             await self.gateway.close()

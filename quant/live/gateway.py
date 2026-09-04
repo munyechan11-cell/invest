@@ -400,7 +400,7 @@ class AccountGateway:
         self._assert_running()
         self._assert_may_send_real_money(agent_id, order)
 
-        ok, reason = self._master_check(order)
+        ok, reason = self._master_check(order, agent_id)
         if not ok:
             order.status = OrderStatus.REJECTED
             # 어느 한도에 걸렸는지 화면이 구별할 수 있어야 합니다. 에이전트
@@ -419,7 +419,7 @@ class AccountGateway:
         # `LiveBrokerage._guard` 는 그 값으로 주문 금액을 매깁니다 — 시장가
         # 주문이 **전부** "가격을 알 수 없어" 거절됩니다. 긴급 청산까지.
         # 에이전트 장부는 매 봉 마크되므로 거기서 읽어 옮깁니다.
-        mark = self._last_price(order.symbol)
+        mark = self._last_price(order.symbol, agent_id)
         venue_book = getattr(self.venue, "portfolio", None)
         if mark > 0 and venue_book is not None:
             venue_book.mark(order.symbol, mark)
@@ -440,7 +440,7 @@ class AccountGateway:
                     "있습니다", agent_id, order.id)
             return submitted
 
-        self._master_record(submitted)
+        self._master_record(submitted, agent_id)
         if submitted.filled_qty > 0 and not self._venue_polls_fills:
             # 체결을 따로 알려 주지 않고 주문 응답에 실어 보내는 증권사입니다
             # (페이퍼·즉시 체결). 그 응답을 체결로 옮겨 적어 두지 않으면
@@ -513,8 +513,7 @@ class AccountGateway:
         # 분모가 영원히 그날 아침 값이고, 날짜가 바뀌어도 그 값으로 새 원장을
         # 만듭니다 — 20% 잃은 다음 날에도 "시작 자산" 이 잃기 전 금액입니다.
         try:
-            balances = await self.venue.balances()
-            equity = float((balances or {}).get(self.base_currency) or 0.0)
+            equity = await self.read_account_cash()
             if equity > 0:
                 self._account_equity = equity
         except Exception:  # noqa: BLE001 — 못 읽으면 마지막 값을 그대로 쓴다
@@ -533,21 +532,21 @@ class AccountGateway:
             symbol, current_quantity, target_quantity)
 
     # ── 계좌 단위 한도 ───────────────────────────────────────────────────
-    def _master_check(self, order: Order) -> tuple[bool, str]:
+    def _master_check(self, order: Order, agent_id: str = "") -> tuple[bool, str]:
         if not self.master_budget.configured:
             return True, ""
         price = order.limit_price or 0.0
         if price <= 0:
-            price = self._last_price(order.symbol)
+            price = self._last_price(order.symbol, agent_id)
         return self.master_budget.check(
             order, price, self._reduces_account_position(order),
             equity=self._account_equity,
         )
 
-    def _master_record(self, order: Order) -> None:
+    def _master_record(self, order: Order, agent_id: str = "") -> None:
         price = order.limit_price or 0.0
         if price <= 0:
-            price = self._last_price(order.symbol)
+            price = self._last_price(order.symbol, agent_id)
         self.master_budget.record_order(order, price)
 
     def _reduces_account_position(self, order: Order) -> bool:
@@ -563,8 +562,14 @@ class AccountGateway:
         from quant.core.types import OrderSide
         return (held > 0) == (order.side is OrderSide.SELL)
 
-    def _last_price(self, symbol: Symbol) -> float:
-        """계좌 한도가 시장가 주문에 매길 가격.
+    def _last_price(self, symbol: Symbol, prefer: str = "") -> float:
+        """계좌 한도가 시장가 주문에 매길 가격 — **주문 낸 에이전트의 장부부터.**
+
+        같은 종목이라도 장부마다 시세의 나이가 다릅니다. 일봉 보수형은 어제
+        종가를, 단기 공격형은 방금 봉을 들고 있습니다. 먼저 붙은 장부를 쓰면
+        공격형의 시장가 주문이 보수형의 어제 종가로 계산되어 계좌 거래대금
+        한도와 어댑터의 주문 금액 상한을 헐겁게 통과합니다 — 108만원 주문이
+        90만원으로 적히고 100만원 한도를 지나는 것을 재현했습니다.
 
         **증권사 어댑터의 장부를 믿을 수 없습니다.** 그 장부는 계좌 진실 전용
         으로 만들어져 어떤 봉도 마크하지 않고 어떤 체결도 적용받지 않으므로,
@@ -572,10 +577,13 @@ class AccountGateway:
         0 으로 계산되고, 계좌 거래대금 한도는 하루 종일 초록색인 채로 아무것도
         막지 않습니다 — 100만원 한도에 350만원이 통과하는 것을 재현했습니다.
 
-        에이전트 장부는 매 봉 마크됩니다. 그중 값이 있는 아무거나 쓰면 됩니다 —
-        같은 종목의 같은 시세이므로 누구 것인지는 중요하지 않습니다.
+        주문 낸 에이전트의 장부에 값이 없을 때만(그 에이전트가 안 보는 종목의
+        수동 주문) 형제의 장부로 물러섭니다.
         """
-        for book in self._agent_books.values():
+        books = self._agent_books
+        ordered = ([books[prefer]] if prefer in books else []) + [
+            book for agent_id, book in books.items() if agent_id != prefer]
+        for book in ordered:
             price = book.position(symbol).last_price
             if price > 0:
                 return price
@@ -813,14 +821,77 @@ class AccountGateway:
         return bool(getattr(self.venue, "uses_venue_capital", False)
                     and getattr(self.venue, "live", False))
 
-    def remote_open_order_counter(self):
+    async def read_account_cash(self) -> float:
+        """배분의 분모이자 비율 손실 한도의 기준 — 계좌의 기준 통화 현금.
+
+        `balances()` 는 페이퍼·가상 증권사의 계약입니다. 실제 어댑터(KIS·토스)는
+        기본 구현 `{}` 를 그대로 쓰고, 현금은 `LiveBrokerage` 계약인
+        `_venue_capital()['cash']`(계좌 진실 어댑터) 또는 `_venue_cash()` 에
+        있습니다. 둘을 보지 않으면 **실제 증권사에서는 그룹이 영영 켜지지
+        않습니다** — 가짜 증권사에만 `balances()` 가 있어 테스트만 통과했습니다.
+        읽지 못하면 예외를 그대로 올립니다. 추정치로 주문을 내지 않습니다.
+        """
+        balances = await self.venue.balances()
+        cash = float((balances or {}).get(self.base_currency) or 0.0)
+        if cash > 0:
+            return cash
+        capital = getattr(self.venue, "_venue_capital", None)
+        if callable(capital):
+            snapshot = await capital()
+            if isinstance(snapshot, dict) and snapshot.get("cash") is not None:
+                currency = str(snapshot.get("currency") or self.base_currency)
+                if currency != self.base_currency:
+                    raise GroupHalted(
+                        f"계좌 통화가 {currency} 인데 그룹은 {self.base_currency} 로 "
+                        "배분합니다 — 설정의 base_currency 를 확인하세요")
+                return float(snapshot["cash"])
+        venue_cash = getattr(self.venue, "_venue_cash", None)
+        if callable(venue_cash):
+            value = await venue_cash()
+            if value is not None:
+                return float(value)
+        return cash
+
+    def remote_open_order_counter(self, agent_id: str = ""):
         """증권사 쪽 미결 주문 수를 세는 함수, 어댑터가 제공할 때만.
 
         제공하지 않는 어댑터(페이퍼)에 0 을 지어내 돌려주면 `Engine.stop` 이
         "확인됨" 으로 읽습니다 — 확인한 적 없는 것을 확인했다고 적는 셈입니다.
         그래서 있을 때만 함수를, 없을 때는 None 을 돌려줍니다.
+
+        `agent_id` 를 주면 **그 에이전트 몫** 만 셉니다. 증권사는 계좌 하나의
+        미결을 통째로 돌려주므로, 그대로 쓰면 공격형이 멈출 때 보수형의 정상적인
+        지정가 주문이 "남은 미결" 로 읽혀 격리가 걸리고 다음 실거래 시작이
+        막힙니다 — 형제가 주문 하나만 걸어 둬도 모든 정지가 "불안전" 이 됩니다.
         """
-        return getattr(self.venue, "shutdown_remote_open_order_count", None)
+        counter = getattr(self.venue, "shutdown_remote_open_order_count", None)
+        if counter is None or not agent_id:
+            return counter
+
+        async def count_for_agent() -> int:
+            # 증권사 응답에는 어느 봇의 주문인지 없습니다(토스는 clientOrderId
+            # 를 주지 않습니다). 그래서 **형제의 것으로 알고 있는 미결** 을 뺍니다.
+            # 체결을 먼저 비워, 방금 체결된 형제 주문이 아직 열린 것으로 남아
+            # 내 미결 하나를 가리는 일을 줄입니다. 주인을 모르는 주문은 빼지
+            # 않습니다 — 확인 못 한 것은 남은 것으로 칩니다. 그룹의 마지막
+            # 에이전트가 멈출 때는 형제의 미결이 없으므로 계좌 전체를 봅니다.
+            try:
+                await self._drain_venue_fills()
+            except Exception:  # noqa: BLE001 — 비우지 못해도 세는 것은 한다
+                log.debug("종료 확인 전 체결 수거 실패")
+            total = int(await counter())
+            if total <= 0:
+                return 0
+            siblings = 0
+            local = getattr(self.venue, "_orders", None) or {}
+            for order in list(local.values()):
+                if not order.status.is_open:
+                    continue
+                owner = self._order_agent.get(order.id, "")
+                if owner and owner != agent_id:
+                    siblings += 1
+            return max(total - siblings, 0)
+        return count_for_agent
 
     def status(self) -> dict[str, Any]:
         return {
