@@ -124,14 +124,29 @@ async def test_market_orders_are_priced_with_the_highest_mark_any_agent_holds():
 
 # ── ②′ 증권사 보유도 어댑터 계약으로 ─────────────────────────────────────
 @pytest.mark.asyncio
-async def test_venue_positions_fall_back_to_the_adapters_book():
+async def test_venue_positions_come_from_the_adapters_venue_contract():
     """`positions()` 는 `balances()` 의 쌍둥이 — 실제 어댑터는 `{}` 를 돌려주고
-    증권사 진실은 `sync()` 가 맞춰 둔 어댑터 장부에 있습니다."""
-    venue = adapter()
-    venue.portfolio.position(SAMSUNG).quantity = Decimal("2")
+    증권사 진실은 `_venue_positions()` 에 있습니다(`read_account_cash` 가
+    `_venue_capital` 을 읽는 것과 같은 계약).
+
+    어댑터의 **장부** 로 물러서면 안 됩니다. 그 장부는 어댑터가 이름을 아는
+    종목만 적으므로(장부의 포지션 + 자기 주문), 갓 세운 계좌 장부는 사용자가
+    앱에서 산 보유를 모릅니다 — 채택이 빈손으로 끝나고 첫 동기화가 그 보유를
+    드리프트로 읽습니다."""
+    class Holding(RealAdapter):
+        async def _venue_positions(self):
+            return {SAMSUNG.key: Decimal("2")}
+
+    venue = adapter(cls=Holding)
     gw = AccountGateway(group("a"), venue, base_currency="KRW")
     assert await venue.positions() == {}
+    assert venue.portfolio.quantity(SAMSUNG) == 0, "장부는 아직 모르는 종목"
     assert await gw.read_venue_positions() == {SAMSUNG.key: Decimal("2")}
+
+    # 장부에만 있고 증권사에는 없는 수량은 진실이 아닙니다.
+    stale = adapter()
+    stale.portfolio.position(SAMSUNG).quantity = Decimal("2")
+    assert await AccountGateway(group("a"), stale).read_venue_positions() == {}
     # 페이퍼·가상 증권사는 예전처럼 positions() 로.
     assert await AccountGateway(group("a"), Venue()).read_venue_positions() == {}
 

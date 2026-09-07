@@ -404,6 +404,25 @@ class StateStore:
         #: 그룹의 에이전트 시점만 여기 등록한다. 단일 봇은 등록하지 않으므로
         #: 실패한 시작이 남긴 격리가 다음 시도를 막는 기존 동작이 그대로다.
         self._group_run_ids: set[int] = set()
+        #: 지금 도는 그룹에 **속한** 에이전트 id 들. `GroupTrader.__init__` 이
+        #: 저장소를 연 직후 `set(group.ids)` 로 넣습니다. 단일 봇과 웹 registry 의
+        #: 읽기 전용 조회는 비워 둡니다.
+        #:
+        #: 위의 `_group_run_ids` 가 "이 프로세스가 방금 연 실행" 이라 새 프로세스
+        #: 에서는 비어 있는 것과 달리, 이것은 **재시작을 가로질러** 형제를 알아보는
+        #: 근거입니다. 계좌 게이트는 사용된 `day_budget` 행 가운데 내가 재개할
+        #: run 이 아닌 것을 전부 "전략을 바꿔 당일 한도를 우회하려는 시도" 로
+        #: 읽는데, 형제가 자기 run 으로 쓴 허용치는 그 해석이 틀립니다 — 형제는
+        #: 자기 `prepare_toss_live_run` 에서 그 run 을 정확히 재개하거나 거부되고,
+        #: 계좌 한도는 `restore_account_budget` 이 계좌 단위로 따로 잇습니다.
+        #: 남으로 보면 형제 하나가 오늘 거래한 순간 장중 재시작이 나머지 전원을
+        #: `LiveTrader.start()` 에서 죽이고, 보유는 그날 남은 시간 동안 아무도
+        #: 관리하지 않습니다.
+        #:
+        #: 여기 없는 agent_id 의 행(그룹에서 뺀 에이전트, 에이전트 개념이 없던
+        #: 단일 봇의 빈 문자열)은 여전히 남입니다 — 그룹 구성을 바꾸는 것으로
+        #: 당일 한도를 우회할 수 없습니다.
+        self.group_agent_ids: set[str] = set()
         # Set only by ``restore_positions`` from the durable run_state source.
         # LiveTrader passes this explicit fact to the broker before its first
         # account sync; inferring a restart from a cash number would confuse a
@@ -1081,6 +1100,10 @@ class StateStore:
                 # 하루 한도 계산(`active_budgets`)에는 이 예외를 적용하지
                 # 않는다 — 형제들이 쓴 허용치는 같은 계좌의 것이므로 반드시
                 # 합쳐서 보여야 하고, 빼는 순간 방어선이 봇 수만큼 곱해진다.
+                # (재시작을 가로지르는 형제 판정은 `group_agent_ids` 로 아래
+                # `conflicting_usage` 에서만 합니다 — 원장 행은 그대로 두고,
+                # 이 호출자의 재개를 막을지만 정합니다. 계좌 한도 자체는
+                # `account_budget` 에 따로 있습니다.)
                 required.append(row)
             pair = (row["strategy"], row["mode"])
             if pair in seen:
@@ -1116,7 +1139,8 @@ class StateStore:
             else None
         )
         budget_rows = self.conn.execute(
-            "SELECT r.id, r.strategy, r.config_json, d.day, d.notional, "
+            "SELECT r.id, r.strategy, r.agent_id, r.config_json, d.day, "
+            "d.notional, "
             "d.orders, d.realized_pnl, d.fees, d.starting_equity, d.blocked, "
             "d.halt_reason, "
             "d.tz_offset_hours, d.updated_at FROM runs r "
@@ -1215,8 +1239,8 @@ class StateStore:
                 )
 
         event_rows = self.conn.execute(
-            "SELECT r.id, r.strategy, r.config_json, e.ts, e.type, e.payload "
-            "FROM runs r JOIN events e ON e.run_id=r.id "
+            "SELECT r.id, r.strategy, r.agent_id, r.config_json, e.ts, e.type, "
+            "e.payload FROM runs r JOIN events e ON e.run_id=r.id "
             "WHERE r.mode='live' AND e.type IN "
             "('order_submitted','order_filled','trade_closed') "
             "ORDER BY e.id DESC"
@@ -1386,13 +1410,48 @@ class StateStore:
                 # it with a fresh allowance; wait for the account-day boundary.
                 resumable_run_id = None
 
+        # 형제 — 지금 그룹에 속한 **다른** 에이전트의 실행. 형제가 자기 run 으로
+        # 쓴 허용치와 그 run 의 애매한 체결 증거는 이 호출자의 판정에서 뺍니다.
+        # 그 형제의 `prepare_toss_live_run` 이 자기 실행을 정확히 재개하거나
+        # 거부하므로 허용치가 사라지지 않고, 계좌 한도는 `restore_account_budget`
+        # 이 계좌 단위로 잇습니다. 빼지 않으면 형제 하나가 오늘 거래한 순간
+        # 장중 재시작이 나머지 전원을 `daily_budget_strategy_switch_blocked` 로
+        # 죽입니다.
+        #
+        # 면제의 조건은 전부 fail closed 쪽입니다: 호출자가 그룹의 에이전트로
+        # 식별되고(`resume_agent_id`), 행의 agent_id 가 비어 있지 않고, 둘 다
+        # 지금 그룹에 있고, 서로 다를 때만. 그룹을 선언하지 않은 저장소
+        # (`group_agent_ids` 가 빈 단일 봇·registry 조회), 에이전트 개념이 없던
+        # 빈 문자열 행, 그룹에서 뺀 에이전트의 행은 전과 똑같이 남입니다.
+        # `required`(격리) 판정에는 적용하지 않습니다 — 지난 프로세스에서 죽은
+        # 형제의 격리는 증권사 상태가 불확실하다는 진짜 증거입니다.
+        caller_agent_id = str(resume_agent_id or "")
+        group_agent_ids = {
+            str(agent_id) for agent_id in self.group_agent_ids
+            if str(agent_id or "")
+        }
+
+        def is_sibling(row: sqlite3.Row) -> bool:
+            row_agent_id = str(row["agent_id"] or "")
+            return bool(
+                caller_agent_id
+                and row_agent_id
+                and row_agent_id != caller_agent_id
+                and caller_agent_id in group_agent_ids
+                and row_agent_id in group_agent_ids
+            )
+
         conflicting_usage = [
             item for item in active_budgets
-            if resumable_run_id is None or int(item[0]["id"]) != resumable_run_id
+            if (resumable_run_id is None
+                or int(item[0]["id"]) != resumable_run_id)
+            and not is_sibling(item[0])
         ]
         conflicting_usage.extend(
             item for item in ambiguous_events
-            if resumable_run_id is None or int(item[0]["id"]) != resumable_run_id
+            if (resumable_run_id is None
+                or int(item[0]["id"]) != resumable_run_id)
+            and not is_sibling(item[0])
         )
 
         blocking = required[0] if required else None
@@ -1466,14 +1525,31 @@ class StateStore:
 
     def reconciliation_run(self, strategy: str, mode: str,
                            *, now: datetime | None = None) -> dict | None:
-        """Return the lifecycle head for exactly one strategy/mode pair."""
-        row = self.conn.execute(
+        """복구 카드가 보여 줄 실행 — 남은 격리 실행이 먼저, 없으면 head.
+
+        head 하나만 보면 같은 템플릿을 쓰는 두 에이전트가 함께 죽었을 때
+        (run 1 = a, run 2 = b, 둘 다 격리) 2 를 보관한 뒤 카드는 "복구할 것
+        없음" 이 되는데, 계좌 게이트는 1 을 `blocking_run_id` 로 계속 들고
+        시작을 거절합니다 — DB 를 직접 고치기 전에는 빠져나갈 수 없는 화면.
+        a 가 죽고 b 가 정상 종료한 경우도 같습니다(head 는 깨끗한데 계좌는
+        격리). 그래서 보관되지 않은 격리 실행이 있으면 그중 최신 것을 돌려
+        주어, 카드가 남은 실행을 차례로 보여 주고 게이트가 막는 실행과 같은
+        것을 가리키게 합니다(게이트도 최신 격리 실행을 `required[0]` 으로 듭니다).
+        """
+        columns = (
             "SELECT id, strategy, mode, started_at, stopped_at, "
             "requires_reconciliation, archived_at, archive_reason, archived_by, "
-            "config_json "
-            "FROM runs WHERE strategy=? AND mode=? ORDER BY id DESC LIMIT 1",
+            "config_json FROM runs WHERE strategy=? AND mode=? "
+        )
+        row = self.conn.execute(
+            columns + "AND requires_reconciliation=1 AND archived_at IS NULL "
+            "ORDER BY id DESC LIMIT 1",
             (strategy, mode),
         ).fetchone()
+        if row is None:
+            row = self.conn.execute(
+                columns + "ORDER BY id DESC LIMIT 1", (strategy, mode),
+            ).fetchone()
         if row is None:
             return None
         out = dict(row)
@@ -1610,7 +1686,11 @@ class StateStore:
             self, *, run_id: int, strategy: str, mode: str, operator: str,
             reason: str, confirmations: dict[str, str],
             acknowledgement: str, now: datetime | None = None) -> dict:
-        """Archive one exact quarantined Toss-live lifecycle head atomically.
+        """Archive one exact quarantined Toss-live run atomically.
+
+        The run is addressed by its id, not by being the strategy's newest
+        row: two agents on one template can leave two quarantined runs, and
+        the older one must remain archivable after the newer one is retired.
 
         No trading object is built here. The evidence is a human comparison in
         Toss, not a reconstructed fill, so the existing ledger remains intact
@@ -1634,16 +1714,22 @@ class StateStore:
         self._claim()
         try:
             self.conn.execute("BEGIN IMMEDIATE")
+            # 요청한 run 을 **id 로** 찾습니다. 전략의 head 여야 한다는 조건은
+            # 같은 템플릿을 쓰는 두 에이전트의 격리 실행 중 오래된 쪽을 영원히
+            # 보관할 수 없게 만들었습니다(head 를 보관하고 나면 나머지는 늘
+            # "최신 실행과 다릅니다"). 그 뒤의 검사 — 같은 전략·모드, Toss
+            # 실거래 저장 설정, 격리 표시, 미보관(또는 같은 증거의 재시도) — 는
+            # 전부 그대로이므로, id 로 찾는다고 아무 실행이나 보관되지 않습니다.
             row = self.conn.execute(
                 "SELECT id, strategy, mode, requires_reconciliation, archived_at, "
                 "archive_reason, archived_by, config_json FROM runs "
-                "WHERE strategy=? AND mode=? ORDER BY id DESC LIMIT 1",
-                (strategy, mode),
+                "WHERE id=?",
+                (int(run_id),),
             ).fetchone()
-            if row is None or int(row["id"]) != int(run_id):
+            if row is None or row["strategy"] != strategy or row["mode"] != mode:
                 raise RecoveryArchiveError(
                     "reconciliation_run_changed",
-                    "복구 대상으로 확인한 실행이 최신 실행과 다릅니다. 상태를 다시 조회하세요.",
+                    "복구 대상으로 확인한 실행이 이 전략의 실행이 아닙니다. 상태를 다시 조회하세요.",
                 )
             if not self._stored_toss_live_config(row["config_json"], strategy):
                 raise RecoveryArchiveError(
@@ -2824,6 +2910,21 @@ class AgentStateView(StateStore):
     def _group_run_ids(self) -> set:
         """형제 목록은 그룹의 것입니다 — 시점마다 따로 두면 서로를 못 봅니다."""
         return self.owner._group_run_ids
+
+    @property
+    def group_agent_ids(self) -> set[str]:
+        """그룹의 에이전트 목록도 그룹의 것입니다.
+
+        `__init__` 을 부르지 않으므로 프록시가 없으면 시점에는 이 속성이 아예
+        없고, 계좌 게이트가 시점에서 AttributeError 로 죽습니다. 시점마다 따로
+        두면 `GroupTrader` 가 저장소에 넣은 목록을 아무 시점도 보지 못해
+        장중 재시작이 전과 똑같이 형제에게 막힙니다.
+        """
+        return self.owner.group_agent_ids
+
+    @group_agent_ids.setter
+    def group_agent_ids(self, value: set[str]) -> None:
+        self.owner.group_agent_ids = value
 
     # ── 에이전트 실행의 시작/재개 ────────────────────────────────────────
     def _remember_sibling(self, run_id):

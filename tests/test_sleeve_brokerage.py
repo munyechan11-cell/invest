@@ -132,10 +132,13 @@ async def test_selling_less_than_held_is_untouched():
 @pytest.mark.asyncio
 async def test_selling_with_nothing_held_is_refused_not_silently_zeroed():
     """0주짜리 주문을 내려보내면 증권사가 거절하고, 그 거절은 이유를 설명하지
-    못합니다. 여기서 문장으로 끝냅니다."""
+    못합니다. 여기서 문장으로 끝냅니다 — 예외가 아니라 REJECTED 로. 예외로
+    끝내면 엔진의 `_submit` 이 같은 묶음의 다음 주문(형제 종목의 손절)을 보내지
+    못합니다."""
     broker, gateway = sleeve("attack", held=0)
-    with pytest.raises(BrokerageError, match="다른 에이전트 물량은 팔 수 없습니다"):
-        await broker.submit(sell(10))
+    out = await broker.submit(sell(10))
+    assert out.status is OrderStatus.REJECTED
+    assert "다른 에이전트 물량은 팔 수 없습니다" in (out.reject_reason or "")
     assert gateway.submitted == [], "거절해야 할 주문이 증권사로 갔습니다"
 
 

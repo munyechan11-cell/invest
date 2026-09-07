@@ -253,7 +253,16 @@ def test_live_trader_start_creates_a_new_run_after_archive(tmp_path):
         trader.state.close()
 
 
-def test_only_the_latest_exact_run_can_be_archived(tmp_path):
+def test_a_clean_older_run_cannot_be_archived_in_place_of_the_quarantined_one(
+        tmp_path):
+    """보관은 요청한 run id 를 그대로 봅니다 — 격리된 실행이 아니면 거절.
+
+    예전에는 "head 가 아니다" 로 거절됐는데, 그 규칙은 같은 템플릿을 쓰는 두
+    에이전트의 격리 실행 중 오래된 쪽을 영원히 보관할 수 없게 했습니다
+    (`tests/test_reconciliation_archive_same_template.py`). 지금은 id 로 찾되
+    그 실행이 격리돼 있어야 하므로, 안전 종료한 옛 실행은 `reconciliation_not_required`
+    입니다 — 안전 종료한 head 와 같은 답입니다.
+    """
     path = tmp_path / "state.db"
     config = toss_live_config()
     first = seed_run(path, config, quarantined=False)
@@ -265,7 +274,10 @@ def test_only_the_latest_exact_run_can_be_archived(tmp_path):
         store.mark_reconciliation_required()
         with pytest.raises(RecoveryArchiveError) as exc:
             archive(store, first, config)
-        assert exc.value.code == "reconciliation_run_changed"
+        assert exc.value.code == "reconciliation_not_required"
+        assert store.conn.execute(
+            "SELECT archived_at FROM runs WHERE id=?", (first,)
+        ).fetchone()["archived_at"] is None
         assert store.conn.execute(
             "SELECT archived_at FROM runs WHERE id=?", (second,)
         ).fetchone()["archived_at"] is None

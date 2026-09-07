@@ -81,6 +81,11 @@ class GroupTrader:
         # 상태 저장소는 **그룹이** 엽니다. 여기서 소유권 주장(flock + db_owner)이
         # 한 번 일어나고, 트레이더들은 그 위의 시점만 받습니다.
         self.state = StateStore(state_path)
+        # 토스 계좌 게이트가 형제와 남을 구분하는 근거. 형제의 당일 원장은
+        # "전략을 바꿔 한도를 우회하려는 남" 이 아니라 자기 실행을 정확히
+        # 재개할 같은 그룹의 에이전트입니다. 이것이 없으면 장중 재시작마다
+        # 이미 거래한 형제 때문에 모든 에이전트가 시작을 거부당합니다.
+        self.state.group_agent_ids = set(group.ids)
         self.gateway = AccountGateway(
             group, venue, master_budget=master_budget,
             base_currency=base_currency, allocation_quantum=allocation_quantum,
@@ -91,7 +96,13 @@ class GroupTrader:
         self._tasks: dict[str, asyncio.Task] = {}
         self.errors: dict[str, str] = {}
         self.started_at: datetime | None = None
+        self.stopped_at: datetime | None = None
         self._stopped = False
+        #: `start()` 가 증권사에 연결하고 자본을 나누는 동안 참. 그 사이에는
+        #: 아직 task 가 없어 `alive` 가 거짓이었고, 두 번째 시작 요청이 그 창을
+        #: 지나 레지스트리의 자리를 덮어썼습니다 — 먼저 시작한 그룹은 실거래를
+        #: 계속하는데 API 에서는 사라져 멈출 방법이 없었습니다.
+        self._starting = False
 
         profile_paths = profile_paths or {}
         meters = meters or {}
@@ -135,7 +146,18 @@ class GroupTrader:
         에이전트도 주문을 내기 전에** 끝나야 합니다 — 배분 전에 사이징하면
         에이전트는 자기 몫이 0 인 줄 알고, 미귀속 채택 전에 불변식을 보면
         사용자가 앱에서 직접 산 주식이 드리프트로 읽혀 그룹이 즉사합니다.
+
+        준비하는 동안 `alive` 는 참입니다. 그래야 같은 사용자의 두 번째 시작
+        요청이 "이미 돌고 있다" 로 거절되지, 아직 task 가 없는 이 그룹을 죽은
+        것으로 보고 자리를 덮어쓰지 않습니다.
         """
+        self._starting = True
+        try:
+            return await self._start()
+        finally:
+            self._starting = False
+
+    async def _start(self) -> dict:
         # 계좌 원장을 **어느 에이전트도 주문을 내기 전에** 되살립니다. 이것이
         # 없으면 재시작이 계좌에 새 허용치를 줍니다 — 하루 손실 한도가 걸려
         # 멈춘 계좌를 재배포 한 번이 풀어 주는데, 그건 한도가 아니라 한도와
@@ -226,17 +248,24 @@ class GroupTrader:
         자기가 멈춘 줄 압니다. 워밍업 실패나 인증 거절은 아무도 모르는 채로
         지나갑니다.
         """
-        if task.cancelled():
-            self.errors[agent_id] = "취소됨"
-            return
-        exc = task.exception()
-        if exc is None:
-            return
-        text = str(exc)[:300]
-        speaks_korean = any("가" <= ch <= "힣" for ch in text[:40])
-        self.errors[agent_id] = (
-            text if speaks_korean else f"{type(exc).__name__}: {text}")
-        log.error("에이전트 %s 중단: %s", agent_id, self.errors[agent_id])
+        try:
+            if task.cancelled():
+                self.errors[agent_id] = "취소됨"
+                return
+            exc = task.exception()
+            if exc is None:
+                return
+            text = str(exc)[:300]
+            speaks_korean = any("가" <= ch <= "힣" for ch in text[:40])
+            self.errors[agent_id] = (
+                text if speaks_korean else f"{type(exc).__name__}: {text}")
+            log.error("에이전트 %s 중단: %s", agent_id, self.errors[agent_id])
+        finally:
+            # 마지막 에이전트가 끝난 시각. `/api/health` 는 `stopped_at` 이나
+            # `error` 가 있어야 "봇이 멈췄습니다" 를 띄웁니다 — 없으면 그룹은
+            # 죽어도 화면이 조용합니다.
+            if self._tasks and all(t.done() for t in self._tasks.values()):
+                self.stopped_at = datetime.now(UTC)
 
     #: 취소된 에이전트가 증권사 정리를 끝낼 때까지 기다리는 상한.
     CANCEL_FLUSH_SECONDS = 30.0
@@ -301,7 +330,18 @@ class GroupTrader:
     # ── 조회 ─────────────────────────────────────────────────────────────
     @property
     def alive(self) -> bool:
-        return any(not t.done() for t in self._tasks.values())
+        return self._starting or any(not t.done() for t in self._tasks.values())
+
+    @property
+    def error(self) -> str:
+        """죽은 에이전트들의 이유를 한 줄로. 사용자가 멈춘 것(취소)은 오류가
+        아닙니다."""
+        parts = []
+        for spec in self.group.agents:
+            reason = self.errors.get(spec.agent_id, "")
+            if reason and reason != "취소됨":
+                parts.append(f"{spec.label}: {reason}")
+        return "; ".join(parts)
 
     def trader(self, agent_id: str) -> LiveTrader | None:
         task = self._tasks.get(agent_id)
@@ -332,9 +372,15 @@ class GroupTrader:
                 with contextlib.suppress(Exception):
                     row["trader"] = trader.status()
             agents.append(row)
+        alive = self.alive
         return {
-            "running": self.alive,
+            "running": alive,
             "started_at": self.started_at.isoformat() if self.started_at else None,
+            # 단일 봇 상태와 같은 키입니다. `/api/health` 가 이 둘로 "봇이
+            # 멈췄습니다 — 이유" 를 띄우고, 없으면 죽은 그룹은 조용합니다.
+            "stopped_at": (self.stopped_at.isoformat()
+                           if self.stopped_at and not alive else None),
+            "error": self.error if not alive else "",
             # 계좌의 위험 등급 — **가장 위험한 에이전트가 정합니다.** 넷 중
             # 하나만 실거래여도 이 계좌에서는 진짜 주문이 나갑니다.
             #

@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import logging
 from decimal import Decimal
 from typing import Any
@@ -94,6 +95,21 @@ class AccountGateway:
         }
         #: 봇이 만들지 않은 보유. 어느 에이전트도 팔 수 없습니다.
         self._unassigned: dict[str, Decimal] = {}
+        #: 지금 그룹에 **없는** 에이전트의 슬리브 원장. 소유자 이름을 그대로
+        #: 들고 있습니다.
+        #:
+        #: 예전에는 이것을 미귀속에 접어 넣고 그 에이전트의 행을 저장에서
+        #: 지웠습니다. 그런데 `quant/live/agents.py` 의 안내는 "쓰지 않을
+        #: 에이전트는 목록에서 빼세요" 입니다 — 그 안내를 따르면 그 에이전트의
+        #: 보유가 영구히 미귀속이 되고, 다시 넣어도 슬리브는 비어 있는데 장부는
+        #: `positions` 에서 복원되므로 화면에는 포지션이 보이고 손절은
+        #: `min(장부, 원장)` 이 0 을 골라 거절합니다. 합계 불변식은 그 상태를
+        #: 정상으로 읽습니다.
+        #:
+        #: 이름을 지키면 다시 넣었을 때 그대로 돌려줄 수 있습니다. 빠져 있는
+        #: 동안은 미귀속과 같습니다 — 아무도 팔 수 없지만 계좌에는 있으므로
+        #: 불변식이 알아야 합니다.
+        self._retired: dict[str, dict[str, Decimal]] = {}
         #: agent_id → 배분된 현금
         self._allocations: dict[str, float] = dict.fromkeys(group.ids, 0.0)
         #: order.id → agent_id. 체결이 돌아왔을 때 누구 것인지 아는 유일한 길.
@@ -119,6 +135,10 @@ class AccountGateway:
         #: agent_id → 그 에이전트의 장부. 계좌 한도가 시장가 주문에 매길
         #: 가격을 여기서 읽습니다 — 증권사 어댑터의 장부는 마크되지 않습니다.
         self._agent_books: dict[str, Any] = {}
+        #: agent_id → 그 에이전트의 `Context`. 유니버스에서 **종목 객체** 를
+        #: 얻는 자리입니다 — `connect()` 가 계좌 장부에 미리 등록합니다.
+        #: 이유는 `_register_account_symbols` 에 적었습니다.
+        self._agent_contexts: dict[str, Any] = {}
 
         self._halted_reason = ""
         self._halt_drift: dict = {}
@@ -191,26 +211,40 @@ class AccountGateway:
                 "원장과 계좌의 차이가 조용히 사라집니다."
             )
 
-        assigned = self.aggregate_sleeves()
-        # 이미 복원된 미귀속도 우리 것입니다. 빼지 않으면 그만큼이 "봇이 만들지
-        # 않은 보유" 로 한 번 더 계산됩니다.
-        for key, qty in self._unassigned.items():
-            assigned[key] = assigned.get(key, Decimal("0")) + qty
+        # 우리 원장은 세 갈래입니다. 부족분을 어디서 깎을 수 있는지가 다릅니다.
+        bot_owned = self.aggregate_sleeves()          # 에이전트가 산 것
+        for key, qty in self.retired_positions().items():
+            bot_owned[key] = bot_owned.get(key, Decimal("0")) + qty
+        mine = dict(self._unassigned)                 # 사용자가 산 것
         adopted: dict[str, Decimal] = {}
+        released: dict[str, Decimal] = {}
         short: dict[str, dict] = {}
-        for key in sorted(set(venue_positions) | set(assigned)):
+        for key in sorted(set(venue_positions) | set(bot_owned) | set(mine)):
             observed = Decimal(str(venue_positions.get(key, 0)))
-            leftover = observed - assigned.get(key, Decimal("0"))
+            held_by_bots = bot_owned.get(key, Decimal("0"))
+            held_by_user = max(mine.get(key, Decimal("0")), Decimal("0"))
+            leftover = observed - held_by_bots - held_by_user
             if leftover > 0:
                 adopted[key] = leftover
             elif leftover < 0:
-                # **음수 잔여는 미귀속이 아닙니다.** 우리 원장이 주장하는 수량이
-                # 계좌에 있는 것보다 많다는 뜻이고, 그것은 "봇이 만들지 않은
-                # 보유" 가 아니라 사라진 보유입니다. 여기서 음수를 받아 적으면
-                # 합계는 맞아떨어지고 도난은 지워집니다 — 불변식이 잡으라고
-                # 있는 단 하나의 사건이 채택 단계에서 소멸합니다.
-                short[key] = {"원장": str(assigned.get(key, Decimal("0"))),
-                              "증권사": str(observed), "부족": str(-leftover)}
+                # 부족분을 **먼저 미귀속에서** 깎습니다. 미귀속은 정의상 사용자가
+                # 자기 뜻대로 사고파는 물량이라, 그것이 줄어든 것은 사고가
+                # 아니라 사용자가 판 것입니다. 예전에는 이 경우도 정지로 읽어
+                # **이후 모든 시작이 영구히 거부** 됐습니다 — 저장된 미귀속은
+                # 그대로 남아 있어서 다시 시도해도 같은 결과였고, 원장을
+                # 되돌릴 화면도 API 도 없었습니다.
+                absorbed = min(held_by_user, -leftover)
+                if absorbed > 0:
+                    released[key] = absorbed
+                    mine[key] = held_by_user - absorbed
+                still_short = -leftover - absorbed
+                if still_short > 0:
+                    # 여기서부터는 **봇이 산 물량** 이 사라진 것입니다. 그것이
+                    # 불변식이 잡으라고 있는 단 하나의 사건이라, 조용히 받아
+                    # 적으면 합계는 맞아떨어지고 사고는 지워집니다.
+                    short[key] = {"원장": str(held_by_bots),
+                                  "증권사": str(observed),
+                                  "부족": str(still_short)}
 
         if short:
             detail = "; ".join(f"{k} 원장 {v['원장']} · 증권사 {v['증권사']}"
@@ -223,10 +257,17 @@ class AccountGateway:
             )
             raise GroupHalted(self._halted_reason, short)
 
+        # 사용자가 판 만큼 줄인 뒤, 새로 보인 만큼 더합니다.
+        self._unassigned = {k: v for k, v in mine.items() if v != 0}
         for key, qty in adopted.items():
             self._unassigned[key] = self._unassigned.get(key, Decimal("0")) + qty
         self._unassigned_adopted = True
         self._persist_sleeves()
+        if released:
+            log.warning(
+                "미귀속 보유가 줄어 원장을 계좌에 맞췄습니다 — 사용자가 앱에서 "
+                "판 것으로 봅니다(봇이 산 물량은 그대로): %s",
+                {k: str(v) for k, v in released.items()})
         if self._unassigned:
             log.info("봇이 만들지 않은 보유를 미귀속으로 둡니다 (매도 대상 아님): %s",
                      {k: str(v) for k, v in self._unassigned.items()})
@@ -240,11 +281,20 @@ class AccountGateway:
                 total[key] = total.get(key, Decimal("0")) + qty
         return {key: qty for key, qty in total.items() if qty != 0}
 
+    def retired_positions(self) -> dict[str, Decimal]:
+        """빠진 에이전트들이 들고 있던 수량의 합. 미귀속과 같은 무게입니다."""
+        total: dict[str, Decimal] = {}
+        for book in self._retired.values():
+            for key, qty in book.items():
+                total[key] = total.get(key, Decimal("0")) + qty
+        return {key: qty for key, qty in total.items() if qty != 0}
+
     def expected_venue_positions(self) -> dict[str, Decimal]:
-        """우리 원장이 예상하는 증권사 합계 = Σ 슬리브 + 미귀속."""
+        """우리 원장이 예상하는 증권사 합계 = Σ 슬리브 + 미귀속 + 빠진 에이전트."""
         total = self.aggregate_sleeves()
-        for key, qty in self._unassigned.items():
-            total[key] = total.get(key, Decimal("0")) + qty
+        for source in (self._unassigned, self.retired_positions()):
+            for key, qty in source.items():
+                total[key] = total.get(key, Decimal("0")) + qty
         return {key: qty for key, qty in total.items() if qty != 0}
 
     def apply_fill(self, agent_id: str, symbol: Symbol,
@@ -283,6 +333,9 @@ class AccountGateway:
             return
         try:
             self.store.save_sleeves({
+                # 빠진 에이전트의 원장도 **이름을 지켜** 저장합니다. 지우면
+                # 다시 넣었을 때 돌려줄 수 없고, 그 보유는 영영 미귀속입니다.
+                **{a: dict(b) for a, b in self._retired.items() if b},
                 **{a: dict(b) for a, b in self._sleeves.items()},
                 _UNASSIGNED: dict(self._unassigned),
             })
@@ -304,15 +357,18 @@ class AccountGateway:
                 self._unassigned = {k: v for k, v in book.items() if v != 0}
                 continue
             if agent_id not in self._sleeves:
-                # 지금 그룹에 없는 에이전트의 보유입니다. 미귀속으로 둡니다 —
-                # 아무도 팔 수 없지만 계좌에는 분명히 있으므로 불변식이 알아야
-                # 합니다.
-                for key, qty in book.items():
-                    self._unassigned[key] = (
-                        self._unassigned.get(key, Decimal("0")) + qty)
-                log.warning("지금 그룹에 없는 에이전트 %s 의 보유를 미귀속으로 "
-                            "둡니다: %s", agent_id,
-                            {k: str(v) for k, v in book.items()})
+                # 지금 그룹에 없는 에이전트의 보유입니다. **이름을 지운 채로**
+                # 미귀속에 접지 않습니다 — 접으면 그 에이전트를 다시 넣어도
+                # 슬리브가 비어 있어 손절이 "보유는 0" 으로 거절됩니다.
+                # 빠져 있는 동안은 미귀속과 같은 무게이지만(아무도 못 팜),
+                # 다시 들어오면 그대로 돌려받습니다.
+                kept = {k: Decimal(str(v)) for k, v in book.items() if v != 0}
+                if kept:
+                    self._retired[agent_id] = kept
+                    log.warning(
+                        "지금 그룹에 없는 에이전트 %s 의 보유를 그 이름으로 "
+                        "보관합니다 (매도 대상 아님, 다시 넣으면 돌려받습니다): %s",
+                        agent_id, {k: str(v) for k, v in kept.items()})
                 continue
             self._sleeves[agent_id] = {k: Decimal(str(v)) for k, v in book.items()
                                        if v != 0}
@@ -496,7 +552,11 @@ class AccountGateway:
         orders = await self.venue.open_orders()
         return [o for o in orders if self._order_agent.get(o.id) == agent_id]
 
-    async def sync_for(self, agent_id: str) -> dict:
+    async def sync_for(
+        self, agent_id: str, *,
+        expected_positions: dict[str, Decimal] | None = None,
+        independent_position_keys: set[str] | None = None,
+    ) -> dict:
         """계좌를 재조정하고 불변식을 확인한다.
 
         어느 에이전트가 불렀든 하는 일은 같습니다 — 계좌는 하나이므로 확인할
@@ -507,6 +567,13 @@ class AccountGateway:
         보면 정상 체결이 드리프트로 읽히고, 그 오판이 그룹을 멈춥니다 — 그리고
         멈춘 그룹은 **나가는 주문도 못 냅니다.** 이 저장소가 반복해서 적어 둔
         규칙("빠져나오지 못하게 하는 것은 안전장치가 아니다")을 정면으로 어깁니다.
+
+        `expected_positions` 와 `independent_position_keys` 는 `LiveTrader` 가
+        봉 사이 손절 직전에 넘기는 인자입니다(`LiveBrokerage.sync` 의 계약).
+        슬리브가 이것을 받지 못하면 **손절 경로가 TypeError 로 죽습니다** —
+        유지보수 루프에서는 에이전트 자체가 끝나고 포지션은 열린 채 남습니다.
+        에이전트의 기대 수량은 자기 장부 기준이므로 계좌 기준(형제 슬리브와
+        미귀속을 더한 값)으로 옮겨서 넘깁니다.
         """
         await self._drain_venue_fills()
         # 계좌 자산을 새로 읽습니다. 시작 때 한 번만 읽으면 비율 손실 한도의
@@ -516,13 +583,110 @@ class AccountGateway:
             equity = await self.read_account_cash()
             if equity > 0:
                 self._account_equity = equity
-        except Exception:  # noqa: BLE001 — 못 읽으면 마지막 값을 그대로 쓴다
-            log.debug("계좌 자산 갱신 실패 — 마지막 값 유지")
-        report = await self.venue.sync() or {}
-        venue_positions = await self.read_venue_positions()
-        drift = self.check_invariant(venue_positions)
+        except Exception as exc:  # noqa: BLE001 — 못 읽으면 마지막 값을 그대로 쓴다
+            # 비율 손실 한도의 분모가 낡아 가는 것이라 debug 로 묻으면 안 됩니다.
+            log.warning("계좌 자산 갱신 실패 — 마지막 값 유지: %s", exc)
+        kwargs: dict[str, Any] = {}
+        if expected_positions:
+            kwargs["expected_positions"] = self._expected_at_venue(
+                agent_id, expected_positions)
+        if independent_position_keys:
+            kwargs["independent_position_keys"] = set(independent_position_keys)
+        if kwargs and self._venue_sync_accepts(kwargs):
+            report = await self.venue.sync(**kwargs) or {}
+        else:
+            report = await self.venue.sync() or {}
+        drift: dict | None = None
+        venue_positions = await self._venue_positions_for_invariant(report)
+        if venue_positions is None:
+            # 증권사 스냅샷이 없으면 확인하지 않습니다. 실패한 동기화 뒤에
+            # 남은 낡은 장부로 불변식을 보면 정상 체결이 드리프트로 읽히고,
+            # 그 정지는 나가는 주문까지 막습니다. 다음 동기화가 다시 봅니다.
+            log.warning("계좌 보유가 아직 정산되지 않아 이번 동기화의 불변식 "
+                        "확인을 건너뜁니다 (%s): %s",
+                        report.get("transient") or "스냅샷 없음",
+                        report.get("error") or "사유 없음")
+        elif self._has_open_venue_orders():
+            # 미결 주문이 있는 동안은 체결 하나가 "체결 비우기" 와 "보유 조회"
+            # 사이에 떨어질 수 있고, 그 한 건이 드리프트로 읽힙니다. 주문이
+            # 모두 끝난 다음 동기화에서 봅니다.
+            log.info("미결 주문이 있어 불변식 확인을 다음 동기화로 미룹니다")
+        else:
+            drift = self.check_invariant(venue_positions)
         return {**report, "requested_by": agent_id,
                 "sleeve_drift": drift, "halted": self.halted}
+
+    def _expected_at_venue(self, agent_id: str,
+                           expected: dict[str, Decimal]) -> dict[str, Decimal]:
+        """에이전트 장부 기준 기대 수량을 계좌(증권사) 기준으로 옮긴다.
+
+        증권사는 종목별 합계 하나만 압니다. 이 에이전트가 "005930 은 이제 0 이어야
+        한다" 고 해도, 형제가 10주를 들고 있으면 증권사에는 10 이 남는 것이
+        정상입니다. 옮기지 않으면 어댑터가 그 10 을 "아직 반영 안 된 체결" 로
+        읽어 계좌 자본 확인을 실패시킵니다.
+        """
+        account = self.expected_venue_positions()
+        mine = self.sleeve_positions(agent_id)
+        out: dict[str, Decimal] = {}
+        for key, qty in expected.items():
+            others = (account.get(key, Decimal("0"))
+                      - mine.get(key, Decimal("0")))
+            out[key] = Decimal(str(qty)) + others
+        return out
+
+    def _venue_sync_accepts(self, kwargs: dict[str, Any]) -> bool:
+        """어댑터의 `sync()` 가 이 키워드를 받는가. 실제 어댑터(`LiveBrokerage`)는
+        받고, 페이퍼·시험용 대역은 인자 없는 `sync()` 뿐입니다. 못 받는 쪽에
+        넘기면 손절 경로가 TypeError 로 끝납니다."""
+        try:
+            params = inspect.signature(self.venue.sync).parameters
+        except (TypeError, ValueError):
+            return False
+        if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            return True
+        return all(name in params for name in kwargs)
+
+    async def _venue_positions_for_invariant(
+            self, report: dict) -> dict[str, Decimal] | None:
+        """불변식의 오른쪽 — 방금 동기화가 본 증권사 보유.
+
+        실제 어댑터는 `sync()` 보고서에 `venue_positions` 를 실어 보냅니다. 그것이
+        곧 이번 동기화의 증권사 스냅샷이라 다시 조회하지 않습니다(토스는 요청마다
+        1초 간격이 걸립니다). 보고서에 없으면 동기화가 실패한 것이고, 그때는
+        `None` 을 돌려 확인을 건너뛰게 합니다 — 낡은 장부를 진실로 읽지
+        않으려는 것입니다. 실제 어댑터가 아니면(`_venue_positions` 없음)
+        페이퍼의 `positions()` 를 씁니다.
+
+        **`ok: False` 인 보고서의 스냅샷도 쓰지 않습니다.** 어댑터는 체결이
+        주문 상세에는 보이는데 보유 조회에는 아직 안 잡히는 구간을 명시적으로
+        전제하고, 그때 `transient`(`terminal_order_settlement`,
+        `position_settlement`, `open_orders`, `capital_unavailable` …)를 달아
+        "이번 동기화는 정산이 끝나지 않았다" 고 말합니다. 그런데 그 보고서에도
+        `venue_positions` 는 그대로 실려 있어서, 예전에는 그 **뒤처진** 스냅샷으로
+        불변식을 봤습니다. 방금 슬리브에 +5 를 적은 직후라면 "원장 5 · 증권사 0"
+        드리프트가 되고, 정지는 sticky 라 보유가 따라잡아도 안 풀리며, 정지된
+        그룹은 **손절도 못 냅니다.**
+
+        건너뛰는 쪽이 안전한 이유: 확인을 미루면 다음 동기화가 다시 보지만,
+        틀린 정지는 사람이 풀기 전까지 빠져나갈 길을 막습니다. `ok` 키가 아예
+        없는 보고서(페이퍼·시험용 대역)는 예전대로 확인합니다 — 그쪽은 정산
+        지연이라는 개념 자체가 없습니다.
+        """
+        if isinstance(report, dict) and report.get("ok") is False:
+            return None
+        snapshot = report.get("venue_positions") if isinstance(report, dict) else None
+        if isinstance(snapshot, dict):
+            return {key: Decimal(str(qty)) for key, qty in snapshot.items()}
+        if callable(getattr(self.venue, "_venue_positions", None)):
+            return None
+        return await self.read_venue_positions()
+
+    def _has_open_venue_orders(self) -> bool:
+        """실제 어댑터가 아직 열린 것으로 아는 봇 주문이 있는가."""
+        local = getattr(self.venue, "_orders", None)
+        if not isinstance(local, dict):
+            return False
+        return any(getattr(o.status, "is_open", False) for o in local.values())
 
     def exact_flatten_order_type_for(
         self, symbol: Symbol, current_quantity: Decimal,
@@ -627,6 +791,7 @@ class AccountGateway:
         """
         by_agent: dict[str, list[Fill]] = {}
         for fill in fills or []:
+            self._book_account_fill(fill)
             agent_id = self._order_agent.get(fill.order_id)
             if agent_id is None:
                 signed = fill.quantity * fill.side.sign
@@ -640,6 +805,33 @@ class AccountGateway:
             self._record_fill(agent_id, fill)
             by_agent.setdefault(agent_id, []).append(fill)
         return by_agent
+
+    def _book_account_fill(self, fill: Fill) -> None:
+        """실제 어댑터의 **계좌 장부** 에도 체결을 적는다.
+
+        단일 봇에서는 어댑터의 장부가 곧 엔진의 장부라 엔진이 체결을 적어 줍니다.
+        그룹에서는 어댑터가 전용 장부(`registry.build_account_venue`)를 받고,
+        엔진들은 각자 자기 장부에만 적으므로 **계좌 장부에는 아무도 적지 않았습니다.**
+        그 결과 셋이 한꺼번에 무너집니다.
+
+        - 토스의 계좌 자본 확인(`_sync_once` 의 체결 증명)이 "체결이 장부에
+          반영되지 않았다" 로 영원히 실패해 신규 매수가 전부 막힙니다.
+        - 토스의 매도 보유 검사(`_assert_sell_within_holdings`)가 보유 0 을 보고
+          **모든 매도를 공매도로 거절** 합니다 — 손절이 한 번도 나가지 못합니다.
+        - 어댑터가 종목을 모르니(`_known_symbols`) 증권사 보유를 채택하지 못하고,
+          불변식은 "원장 N · 증권사 0" 을 읽어 그룹을 멈춥니다.
+
+        페이퍼 증권사는 자기 장부를 스스로 적으므로 여기서 또 적으면 두 번이
+        됩니다. 실제 어댑터의 계약(`_venue_positions`)이 있는 쪽만 적습니다.
+        """
+        book = getattr(self.venue, "portfolio", None)
+        if book is None or not callable(getattr(self.venue, "_venue_positions", None)):
+            return
+        try:
+            book.apply_fill(fill)
+        except Exception:  # noqa: BLE001 — 장부 기록 실패가 귀속을 막지는 않는다
+            log.exception("계좌 장부에 체결을 적지 못했습니다: %s %s",
+                          fill.symbol, fill.quantity)
 
     # ── 체결 채널 ────────────────────────────────────────────────────────
     #
@@ -741,6 +933,8 @@ class AccountGateway:
         book = getattr(engine.ctx, "portfolio", None)
         if book is not None:
             self._agent_books[agent_id] = book
+        # 유니버스는 `connect()` 가 계좌 장부에 종목을 등록할 때 읽습니다.
+        self._agent_contexts[agent_id] = engine.ctx
 
     def _remember_order(self, order_id: str, agent_id: str,
                         symbol_key: str = "") -> None:
@@ -752,6 +946,12 @@ class AccountGateway:
         except Exception:  # noqa: BLE001 — 기록 실패가 주문을 막지는 않는다
             log.exception("주문 귀속을 저장하지 못했습니다: %s → %s",
                           order_id, agent_id)
+            # 귀속을 잃은 주문의 체결은 재시작 뒤 미귀속으로 떨어지고, 미귀속은
+            # 아무도 팔 수 없습니다. 슬리브 원장 저장 실패와 같은 등급의 사고라
+            # 같은 표식을 남겨 종료를 "정상" 으로 확정하지 못하게 합니다.
+            mark = getattr(self.store, "mark_accounting_persistence_failed", None)
+            if mark is not None:
+                mark()
 
     def _forget_order(self, order_id: str) -> None:
         self._order_agent.pop(order_id, None)
@@ -798,8 +998,55 @@ class AccountGateway:
         """증권사 연결은 계좌에 하나. 그룹 시작 시 한 번만 겁니다."""
         if self._connected:
             return
+        self._register_account_symbols()
         await self.venue.connect()
         self._connected = True
+
+    def _register_account_symbols(self) -> int:
+        """계좌 장부가 이 그룹의 종목을 **알게** 한다. 연결보다 먼저.
+
+        `LiveBrokerage._known_symbols()` 는 자기 장부의 포지션과 자기 주문
+        표에서만 종목을 압니다. 단일 봇은 워밍업이 `ctx.portfolio.mark()` 로
+        유니버스를 장부에 적어 두므로 그것이 채워져 있지만, 그룹의 계좌 장부는
+        `registry.build_account_venue` 가 만든 **빈** `Portfolio` 이고 아무도
+        마크하지 않습니다(엔진들은 각자 자기 장부에만 적습니다).
+
+        그래서 계좌 진실 어댑터(토스 실거래)의 첫 `sync()` 는 증권사 보유를
+        전부 "symbol is not mapped in this strategy" 로 읽고 `_capital_failed`
+        → `connect()` 가 예외를 냅니다. **계좌에 보유가 하나라도 있으면 그룹이
+        아예 켜지지 않는다** 는 뜻이고, 어제 그룹이 산 주식도 마찬가지라
+        포지션이 생긴 다음에는 재시작이 불가능했습니다 — 그 포지션은 손절도
+        청산도 닿지 않는 채로 남습니다.
+
+        수량은 넣지 않습니다. 여기서 하는 일은 "이 키가 어떤 종목인지" 를
+        장부에 알려 주는 것뿐이고, 실제 수량·원가는 곧 이어지는 `sync()` 가
+        증권사에서 받아 채웁니다. 수량 0 인 항목은 `open_positions` 에서
+        빠지므로 평가액·노출·불변식 어디에도 섞이지 않습니다.
+
+        **언제 이게 안 통하는가.** 어느 에이전트의 유니버스에도 없는 보유(사용자가
+        앱에서 산 종목)는 여전히 매핑되지 않습니다. 그 경우의 정책은 어댑터에
+        있고 이 함수가 바꾸지 않습니다 — 여기서는 "우리가 아는 종목인데 장부가
+        모르는" 경우만 없앱니다.
+        """
+        book = getattr(self.venue, "portfolio", None)
+        if book is None or not hasattr(book, "position"):
+            return 0
+        seen = 0
+        for ctx in self._agent_contexts.values():
+            symbols = list(getattr(ctx, "universe", ()) or ())
+            # 재개하는 실행의 보유는 아직 복원 전(`LiveTrader.start`)이라
+            # 여기서는 유니버스가 전부입니다. 그래서 설정에 적힌 종목을
+            # 남김없이 등록합니다 — 워밍업이 나중에 걸러 내더라도.
+            for symbol in symbols:
+                key = getattr(symbol, "key", None)
+                if not key or key in book.positions:
+                    continue
+                book.position(symbol)     # 수량 0 인 자리만 만든다
+                seen += 1
+        if seen:
+            log.info("계좌 장부에 종목 %d개를 등록했습니다 — 증권사 보유를 "
+                     "전략 장부에 연결하는 데 필요합니다", seen)
+        return seen
 
     async def close(self) -> None:
         if not self._connected:
@@ -862,11 +1109,27 @@ class AccountGateway:
         """증권사 합계 보유 — 불변식의 오른쪽이자 시작 때 채택하는 미귀속.
 
         `positions()` 도 `balances()` 처럼 페이퍼의 계약입니다. 실제 어댑터는
-        기본 구현 `{}` 를 쓰고, 증권사 진실은 `sync()` 가 어댑터의 장부에
-        맞춰 둡니다("수량은 증권사가 언제나 옳다"). 그래서 `positions()` 가
-        비면 그 장부를 읽습니다. 안 그러면 실거래 그룹은 기존 보유를 채택하지
-        못하고, **첫 체결에서 "원장 1 · 증권사 0" 드리프트로 멈춥니다.**
+        기본 구현 `{}` 를 쓰고, 증권사 진실은 `_venue_positions()` 에 있습니다
+        (`read_account_cash` 가 `_venue_capital` 을 읽는 것과 같은 계약).
+        그것을 직접 읽습니다. 어댑터의 장부로 물러서면 안 되는 이유: 그 장부는
+        어댑터가 **이름을 아는 종목만** 적습니다(`_known_symbols` = 장부의 포지션
+        + 자기 주문). 갓 세운 계좌 장부는 아무 종목도 모르므로 사용자가 앱에서
+        산 보유는 거기 없고, 그러면 미귀속 채택이 빈손으로 끝난 뒤 첫 동기화가
+        그 보유를 드리프트로 읽어 그룹을 멈춥니다.
+
+        읽지 못하면 시작하지 않습니다 — 모르는 보유를 채택하지 않은 채로 시작한
+        그룹은 첫 불변식 확인에서 어차피 멈추고, 그때는 나가는 주문도 막힙니다.
         """
+        fetch = getattr(self.venue, "_venue_positions", None)
+        if callable(fetch):
+            try:
+                got = await fetch()
+            except Exception as exc:  # noqa: BLE001 — 사유를 그대로 전한다
+                raise GroupHalted(
+                    f"증권사 보유를 읽지 못해 미귀속을 채택할 수 없습니다: {exc}"
+                ) from exc
+            return {key: Decimal(str(qty)) for key, qty in (got or {}).items()
+                    if Decimal(str(qty)) != 0}
         got = await self.venue.positions()
         if got:
             return dict(got)
@@ -935,6 +1198,11 @@ class AccountGateway:
                 for agent_id, book in self._sleeves.items()
             },
             "unassigned": {k: str(v) for k, v in self.unassigned_positions().items()},
+            # 빠진 에이전트의 보유. 미귀속처럼 아무도 팔 수 없지만 이름이
+            # 남아 있어 그 에이전트를 다시 넣으면 돌려받습니다 — 화면이 그
+            # 사실을 말할 수 있어야 사용자가 왜 못 파는지 압니다.
+            "retired": {agent_id: {k: str(v) for k, v in book.items() if v != 0}
+                        for agent_id, book in self._retired.items() if book},
             "master_budget": self.master_budget.status(),
             "mode": (RunMode.LIVE.value if self.group.has_live
                      else RunMode.DRY_RUN.value),

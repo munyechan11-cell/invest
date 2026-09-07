@@ -553,9 +553,14 @@ def test_a_stored_attribution_for_a_departed_agent_is_dropped(path):
         store.close()
 
 
-def test_a_departed_agents_holdings_become_unassigned(path):
+def test_a_departed_agents_holdings_are_still_counted_and_unsellable(path):
     """지금 그룹에 없는 에이전트의 보유는 계좌에 분명히 있습니다 — 아무도 팔 수
-    없지만 불변식은 그것을 알아야 합니다."""
+    없지만 불변식은 그것을 알아야 합니다.
+
+    미귀속으로 **접지는** 않습니다. 접으면 이름이 사라져서 그 에이전트를 다시
+    넣어도 돌려줄 수 없고, 그 보유는 영영 팔 수 없게 됩니다 — 문서가 안내하는
+    "잠시 뺐다가 다시 넣기" 가 곧 사고가 됩니다(`test_sleeve_ledger_survives_the_user`).
+    """
     first = StateStore(path)
     gw = _gw(first, ids=("attack", "gone"))
     gw.apply_fill("gone", SAMSUNG, Decimal("7"))
@@ -565,8 +570,14 @@ def test_a_departed_agents_holdings_become_unassigned(path):
     try:
         gw2 = _gw(again, ids=("attack", "defend"))
         gw2.adopt_sleeves(again.restore_sleeves())
-        assert gw2.unassigned_positions() == {"toss:005930": Decimal("7")}
+        # 계좌에 있으므로 불변식이 알아야 합니다.
+        assert gw2.expected_venue_positions() == {"toss:005930": Decimal("7")}
         assert gw2.check_invariant({"toss:005930": Decimal("7")}) == {}
+        # 지금 그룹의 어느 에이전트도 그것을 팔 수 없습니다.
+        assert gw2.sleeve_positions("attack") == {}
+        assert gw2.sleeve_positions("defend") == {}
+        # 그리고 이름은 남아 있습니다.
+        assert gw2.retired_positions() == {"toss:005930": Decimal("7")}
     finally:
         again.close()
 

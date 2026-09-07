@@ -44,6 +44,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 from quant.brokerage.base import Brokerage, BrokerageError
 from quant.core.types import Fill, Order, OrderSide, OrderStatus, RunMode, utcnow
 
+# 계층으로는 거꾸로 보이지만 순환은 없습니다 — `gateway` 는 `sleeve` 를 모르고,
+# 슬리브는 이미 게이트웨이를 생성자로 받습니다. 정지를 **거절** 로 접으려면
+# 그 예외 형을 이름으로 알아야 합니다(`except` 는 늦은 import 를 못 씁니다).
+from quant.live.gateway import GroupHalted
+
 if TYPE_CHECKING:  # pragma: no cover - 순환 임포트를 피하기 위한 타입 전용
     from quant.core.types import OrderType, Symbol
 
@@ -293,8 +298,20 @@ class SleeveBrokerage(Brokerage):
 
     # ── Brokerage 인터페이스 ─────────────────────────────────────────────
     async def submit(self, order: Order) -> Order:
-        self.validate(order)
-        order, _ = self.clamp_to_sleeve(order)
+        try:
+            self.validate(order)
+            order, _ = self.clamp_to_sleeve(order)
+        except BrokerageError as exc:
+            # 예외로 끝내지 않고 REJECTED 로 돌려줍니다 — `LiveBrokerage.submit`
+            # 과 같은 계약입니다. 엔진의 `_submit` 은 주문 묶음을 순서대로
+            # 보내며 예외를 잡지 않으므로, 여기서 던지면 **같은 묶음의 형제
+            # 손절까지 나가지 못합니다.** 원장에 없는 종목 하나를 팔려던 실수가
+            # 다른 종목의 열린 포지션을 그대로 남기는 결과가 됩니다.
+            order.status = OrderStatus.REJECTED
+            order.reject_reason = str(exc)
+            order.updated_at = utcnow()
+            log.warning("%s: 주문을 슬리브에서 거절했습니다: %s", self.agent_id, exc)
+            return order
         blocked = self._submission_guard_error(order)
         if blocked:
             order.status = OrderStatus.REJECTED
@@ -310,7 +327,22 @@ class SleeveBrokerage(Brokerage):
             order.reject_reason = reason
             order.updated_at = utcnow()
             return order
-        submitted = await self.gateway.submit_for(self.agent_id, order)
+        try:
+            submitted = await self.gateway.submit_for(self.agent_id, order)
+        except GroupHalted as exc:
+            # 정지된 그룹이 주문을 받지 않는 것은 설계대로입니다. 하지만 그것을
+            # **예외로** 알리면 `Engine._submit` 이 잡지 않아 손절 묶음이 통째로
+            # 터지고, 그 예외가 `_maintenance_cycle` 을 지나 `run()` 까지 올라가
+            # **에이전트 자체가 끝납니다.** 그러면 상태를 보고할 주체도, 사람이
+            # ■정지 를 눌러 깨끗이 내릴 손잡이도 사라집니다 — 정지 사유는
+            # `status.account.halt_reason` 으로 화면에 이미 나가고 있습니다.
+            # 거절로 돌려주면 트레이더는 살아서 그 사유를 계속 알립니다.
+            order.status = OrderStatus.REJECTED
+            order.reject_reason = str(exc)
+            order.updated_at = utcnow()
+            log.warning("%s: 계좌가 정지되어 주문을 거절했습니다: %s",
+                        self.agent_id, exc)
+            return order
         if submitted.status is not OrderStatus.REJECTED:
             self._budget_record(submitted)
         return submitted
@@ -344,7 +376,16 @@ class SleeveBrokerage(Brokerage):
     async def balances(self) -> dict[str, float]:
         return self.gateway.sleeve_balances(self.agent_id)
 
-    async def sync(self) -> dict:
+    async def sync(self, **kwargs) -> dict:
+        """`LiveBrokerage.sync` 와 같은 서명이어야 합니다.
+
+        `LiveTrader` 는 봉 사이 손절 직전에 `expected_positions` 와
+        `independent_position_keys` 를 넘깁니다(`venue_backed` 인 브로커 전부).
+        인자를 받지 않으면 그 호출이 TypeError 로 끝나고, 유지보수 루프는 그
+        예외를 잡지 않아 **에이전트가 죽고 손절은 나가지 않습니다.**
+        """
+        if kwargs:
+            return await self.gateway.sync_for(self.agent_id, **kwargs)
         return await self.gateway.sync_for(self.agent_id)
 
     async def connect(self) -> None:
