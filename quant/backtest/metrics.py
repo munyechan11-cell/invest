@@ -246,8 +246,14 @@ def analyze(
         tail = ordered[:idx + 1]
         rep.cvar_95 = statistics.fmean(tail) if tail else 0.0
         upper = sorted(rets, reverse=True)[:max(idx + 1, 1)]
+        # 분모가 정확히 0 일 수 있습니다 — 거래가 드문 전략에서는 하위 5% 봉이
+        # 전부 수익률 0 인 날들입니다. `_safe` 는 inf·nan 을 걸러 주지만 나눗셈
+        # **자체** 가 먼저 터지므로 여기서 막아야 합니다. 예전에는 이 한 줄이
+        # 백테스트 전체를 예외로 끝냈습니다 — 성적표 한 칸 때문에 결과를 통째로
+        # 잃는 것은 어느 쪽으로도 이득이 아닙니다.
+        lower_mean = statistics.fmean(tail) if tail else 0.0
         rep.tail_ratio = _safe(
-            abs(statistics.fmean(upper) / statistics.fmean(tail)) if tail else 0.0
+            abs(statistics.fmean(upper) / lower_mean) if lower_mean else 0.0
         )
         rep.psr = probabilistic_sharpe(rep.sharpe / math.sqrt(ppy), len(rets),
                                        rep.skew, rep.kurtosis)

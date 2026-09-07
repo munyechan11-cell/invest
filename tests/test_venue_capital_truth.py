@@ -323,6 +323,12 @@ async def test_verified_fill_is_booked_once_even_when_another_order_poll_fails()
 
 
 async def test_later_sync_preserves_the_real_starting_baseline_and_high_water():
+    """폴링마다 기준선을 다시 잡으면 안 된다 — 그러면 수익률이 언제나 0 입니다.
+
+    시세 변동만으로 검사합니다. 거래 없이 **현금** 이 움직이는 것은 성과가
+    아니라 입출금이고, 그 경우는 기준선을 함께 옮깁니다 — 그쪽 성질은
+    `tests/test_transfers_are_not_performance.py` 가 따로 봅니다.
+    """
     pf = Portfolio(800_000.0, "KRW")
     pf.mark(SYM, 100.0)
     broker = VenueCapitalBroker(pf)
@@ -331,13 +337,13 @@ async def test_later_sync_preserves_the_real_starting_baseline_and_high_water():
     broker.remote_costs = {SYM.key: 80.0}
     await broker.sync()
 
-    broker.capital = {"cash": 130_000, "holdings_value": 350_000}
+    broker.capital = {"cash": 120_000, "holdings_value": 350_000}
     await broker.sync()
 
     assert pf.performance_baseline == pytest.approx(420_000.0)
-    assert pf.equity == pytest.approx(480_000.0)
-    assert pf.high_water_mark == pytest.approx(480_000.0)
-    assert pf.total_return == pytest.approx(480_000 / 420_000 - 1)
+    assert pf.equity == pytest.approx(470_000.0)
+    assert pf.high_water_mark == pytest.approx(470_000.0)
+    assert pf.total_return == pytest.approx(470_000 / 420_000 - 1)
 
 
 async def test_capital_failure_is_atomic_and_blocks_new_exposure():

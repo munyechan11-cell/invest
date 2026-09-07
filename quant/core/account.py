@@ -61,6 +61,9 @@ class Portfolio:
         self._venue_holdings_value: float | None = None
         self._venue_gross_exposure: float | None = None
         self._venue_net_exposure: float | None = None
+        #: 입출금으로 옮긴 기준선의 누계. 전략 성과가 아니라 **사람이 계좌에
+        #: 넣거나 뺀 돈** 이라, 수익률·낙폭에서 빼 두고 화면에는 따로 보입니다.
+        self.external_flow_total = 0.0
         # entry context kept per symbol so a round trip can be reconstructed
         self._entry: dict[str, tuple[datetime, float, str]] = {}
         # entry-side fees owed by the quantity still held, charged to each
@@ -141,6 +144,7 @@ class Portfolio:
         holdings_value: float,
         gross_exposure: float | None = None,
         net_exposure: float | None = None,
+        external_cash_flow: float = 0.0,
     ) -> bool:
         """Adopt one already-validated account snapshot atomically.
 
@@ -168,8 +172,31 @@ class Portfolio:
         if first:
             self.performance_baseline = equity
             self.high_water_mark = equity
-        else:
-            self.high_water_mark = max(self.high_water_mark, equity)
+            return first
+        if external_cash_flow:
+            # 입출금은 성과가 아닙니다. 기준선과 최고점을 같은 금액만큼 함께
+            # 옮기면 수익률과 낙폭이 그 이동에 반응하지 않습니다.
+            #
+            # 옮기지 않으면 어떻게 되는가: 100만원 계좌에서 20만원을 빼는 순간
+            # 자산이 20% 줄고, `drawdown` 은 최고점 대비 20% 를 답합니다.
+            # `max_dd_portfolio`(국내 설정 0.18)가 그것을 전략의 손실로 읽고
+            # 3초 뒤 유지 주기에서 **보유 전체를 시장가로 청산** 한 뒤 열흘을
+            # 쉽니다. 사용자는 자기 돈을 옮겼을 뿐인데 봇이 계좌를 비웁니다.
+            # 반대로 입금은 최고점만 끌어올려, 이후의 정상적인 등락이 낙폭으로
+            # 잡히게 만듭니다.
+            #
+            # 부르는 쪽이 "이 차이는 거래로 설명되지 않는다" 를 증명한 뒤에만
+            # 넘깁니다(`LiveBrokerage._sync_once`) — 미체결 주문도, 미증명
+            # 체결도, 끊긴 체결 채널도 없을 때. 그 조건이 아니면 0 입니다.
+            self.performance_baseline += external_cash_flow
+            self.high_water_mark += external_cash_flow
+            self.external_flow_total += external_cash_flow
+            # 기준선이 음수가 되면 수익률의 부호가 뒤집힙니다. 계좌를 통째로
+            # 비운 경우라 성과를 말할 수 있는 상태가 아닙니다 — 0 으로 두면
+            # `total_return` 이 0 을 답합니다(정의상 "말할 수 없음").
+            self.performance_baseline = max(0.0, self.performance_baseline)
+            self.high_water_mark = max(0.0, self.high_water_mark)
+        self.high_water_mark = max(self.high_water_mark, equity)
         return first
 
     def restore_capital_state(self, source: str, performance_baseline: float) -> None:

@@ -340,15 +340,32 @@ class Engine:
             was = proposed.get(t.symbol.key, held)
             if was == 0:
                 continue
-            if t.quantity == 0 or abs(t.quantity) < abs(was):
+            # 기준은 **지금 들고 있는 수량** 입니다. 제안치와 비교하면 "더 사지
+            # 말라" 가 "리스크가 줄였다" 로 읽힙니다 — `TradingLockGate` 는
+            # 잠금 중 증액 요청을 현재 수량으로 낮춰 돌려주는데(`add blocked`),
+            # 그것을 축소로 읽으면 인사이트가 지워지고 다음 봉의 목표가 0 이
+            # 되어 **멀쩡한 보유가 통째로 청산** 됩니다. `stoploss_guard` 는
+            # 기본이 전 종목 잠금이라 모든 실거래 설정이 이 경로를 지납니다.
+            # 재발신하지 않는 알파(`ema_cross`·`xs_momentum`)에서는 그 청산을
+            # 되돌릴 신호도 오지 않습니다.
+            #
+            # 노출이 실제로 줄어든 경우 — 청산(0)이거나 보유보다 작아진 경우 —
+            # 에만 지웁니다. 그래야 손절이 판 것을 다음 봉이 다시 사지 않습니다.
+            if t.quantity == was:
+                continue
+            reduced = t.quantity == 0 or abs(t.quantity) < abs(held)
+            if reduced:
                 self.insights.clear(t.symbol)
-                await self.bus.publish(EventType.RISK_ACTION, {
-                    "symbol": t.symbol.ticker,
-                    "proposed": float(was),
-                    "allowed": float(t.quantity),
-                    "reason": t.tag,
-                    "insights_cancelled": True,
-                })
+            # 알림은 **깎인 모든 경우** 에 냅니다. 인사이트를 지우지 않게 된
+            # 김에 알림까지 끊으면, 사용자는 봇이 왜 안 샀는지 알 방법이
+            # 없어집니다("조용히 실패하지 마세요"). 지웠는지는 값으로 말합니다.
+            await self.bus.publish(EventType.RISK_ACTION, {
+                "symbol": t.symbol.ticker,
+                "proposed": float(was),
+                "allowed": float(t.quantity),
+                "reason": t.tag,
+                "insights_cancelled": reduced,
+            })
 
         for t in targets:
             await self.bus.publish(EventType.TARGET, _target_dict(t))
