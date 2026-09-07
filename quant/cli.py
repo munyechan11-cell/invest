@@ -193,7 +193,19 @@ async def cmd_serve(args) -> int:
     config = _load(args.config) if args.config else None
     app = create_app(config, state_path=args.state)
     server = uvicorn.Server(uvicorn.Config(
-        app, host=args.host, port=args.port, log_level=args.log_level.lower()
+        app, host=args.host, port=args.port, log_level=args.log_level.lower(),
+        # **이 값이 없으면 uvicorn 은 진행 중인 요청을 무기한 기다립니다.**
+        # 그리고 그 기다림이 끝나야 lifespan shutdown — 즉 봇들의 마지막 상태
+        # 저장(`registry.shutdown`)이 시작됩니다. `/api/evaluate` 는 데스크
+        # 심의라 120초를 쓸 수 있으므로, 그 요청 하나가 systemd 의
+        # `TimeoutStopSec=90` 을 통째로 먹고 SIGKILL 을 부릅니다. 그러면
+        # `LiveTrader.shutdown` 의 `stop_run`·스냅샷이 돌지 않아 토스 실거래
+        # run 이 격리되고, 다음 시작은 사람이 다섯 항목을 손으로 대조해야
+        # 열립니다.
+        #
+        # 5초는 "봇을 내릴 시간을 남긴다" 는 뜻입니다. 남은 예산은
+        # `registry.shutdown` 이 씁니다(단일 봇 20+5, 그룹 20+30, 병렬).
+        timeout_graceful_shutdown=5,
     ))
     await server.serve()
     return 0

@@ -90,3 +90,31 @@ def test_the_guide_explains_why_not_a_paas():
 def test_the_secret_key_warning_is_present():
     """이 값을 잃으면 저장된 증권사 키를 되살릴 방법이 없습니다."""
     assert "되살릴 수 없" in GUIDE
+
+
+def test_the_stop_budget_exceeds_what_the_code_actually_takes():
+    """유닛의 종료 예산이 코드의 예산보다 작으면 SIGKILL 이 먼저 옵니다.
+
+    그러면 봇들이 마지막 상태를 적지 못하고, 토스 실거래 run 은 "정상 종료를
+    증명하지 못함" 으로 격리됩니다 — 다음 시작은 사람이 다섯 항목을 손으로
+    대조해야 열립니다. 숫자를 문서에 적어 두는 대신 **코드에서 읽어** 비교합니다.
+    """
+    import re
+
+    from quant.live.group import STOP_GRACE_SECONDS as GROUP_GRACE
+    from quant.live.group import GroupTrader
+    from quant.webapp.registry import STOP_GRACE_SECONDS as BOT_GRACE
+
+    cli = Path("quant/cli.py").read_text(encoding="utf-8")
+    m = re.search(r"timeout_graceful_shutdown\s*=\s*(\d+)", cli)
+    assert m, "uvicorn 이 진행 중 요청을 무기한 기다립니다 — 그 뒤에야 봇이 내려갑니다"
+    request_wait = int(m.group(1))
+
+    # 단일 봇: 정지 대기 + 취소 뒤 대기(5초). 그룹: 정지 대기 + 취소 flush.
+    needed = request_wait + (BOT_GRACE + 5) + (GROUP_GRACE
+                                               + GroupTrader.CANCEL_FLUSH_SECONDS)
+    stop = next(int(line.split("=")[1]) for line in UNIT.splitlines()
+                if line.startswith("TimeoutStopSec="))
+
+    assert stop > needed, (
+        f"TimeoutStopSec={stop} 인데 코드는 최악 {needed:.0f}초를 씁니다")

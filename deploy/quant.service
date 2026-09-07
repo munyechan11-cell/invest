@@ -23,9 +23,19 @@ ExecStart=/home/quant/app/.venv/bin/python -m quant serve configs/demo.yaml \
     --host 127.0.0.1 --port 8000 --state ${DB_PATH}
 
 # SIGTERM 을 받으면 현재 사이클을 끝내고 상태를 저장한 뒤 종료합니다.
-# 그 시간을 주지 않으면 봉 하나를 처리하다 만 채로 죽습니다.
+# 그 시간을 주지 않으면 봇들이 마지막 상태를 적지 못한 채 SIGKILL 로 죽고,
+# 토스 실거래 run 은 "정상 종료를 증명하지 못함" 으로 격리됩니다 — 다음 시작은
+# 사람이 다섯 항목을 손으로 대조해야 열립니다.
+#
+# 이 값은 코드가 쓰는 예산보다 커야 합니다. 현재 최악치:
+#   uvicorn 진행 중 요청 대기        5초  (cli.py timeout_graceful_shutdown)
+#   단일 봇 정지 대기 + 취소 대기    25초  (registry.STOP_GRACE_SECONDS + 5)
+#   그룹 정지 + 취소 flush           50초  (group.STOP_GRACE + CANCEL_FLUSH)
+#                                   ─────
+#                                    80초
+# 그 위에 여유를 둡니다. 셋 중 하나라도 늘리면 여기도 함께 늘리세요.
 KillSignal=SIGTERM
-TimeoutStopSec=90
+TimeoutStopSec=150
 
 Restart=always
 RestartSec=5
