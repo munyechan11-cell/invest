@@ -83,6 +83,19 @@ def test_an_unlimited_cap_can_still_be_tightened():
     assert budget.max_orders > 0
 
 
+def test_the_two_entry_points_share_one_rule():
+    """서버와 레지스트리가 같은 함수를 부르는가 — 복제가 갈라진 것이 원인이었습니다."""
+    import inspect
+
+    from quant.api.server import _apply_profile_live
+    from quant.webapp.registry import UserRegistry
+
+    for fn in (_apply_profile_live, UserRegistry.apply_profile_live):
+        src = inspect.getsource(fn)
+        assert "apply_profile_to_engine" in src
+        assert "max_loss_pct" not in src, "규칙이 다시 복제됐습니다"
+
+
 def test_the_kis_token_lock_does_not_need_a_loop_at_import_time():
     """모듈 로드가 이벤트 루프를 요구하면 봇 시작이 import 에서 죽습니다."""
     from quant.core.aio import LazyLock

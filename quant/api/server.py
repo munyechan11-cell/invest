@@ -81,7 +81,12 @@ from quant.live.credentials import (
     rejection_reason,
     venue_catalog,
 )
-from quant.live.profile import ProfileStore, questionnaire, score_answers
+from quant.live.profile import (
+    ProfileStore,
+    apply_profile_to_engine,
+    questionnaire,
+    score_answers,
+)
 from quant.live.state import StateStore
 from quant.strategy import glossary
 from quant.webapp.accounts import AccountError, Accounts, SecretKeyMissing, User
@@ -107,12 +112,36 @@ class Hub:
     것은 조작만큼이나 이 서비스가 존재하면 안 되는 이유입니다.
     """
 
+    #: 한 화면이 밀렸을 때 버리기 시작하는 지점. 이 숫자가 존재하는 이유는
+    #: 아래 `publish` 에 있습니다.
+    QUEUE_MAX = 128
+
     def __init__(self, ring_size: int = 500):
         self.clients: set[WebSocket] = set()
         self.ring: list[dict] = []
         self.ring_size = ring_size
+        #: 화면마다 하나. 보내는 일은 이 큐를 비우는 태스크가 합니다.
+        self._queues: dict[WebSocket, asyncio.Queue] = {}
+        self._senders: dict[WebSocket, asyncio.Task] = {}
 
     async def publish(self, event: Event) -> None:
+        """엔진 이벤트를 화면들에 흘린다. **기다리지 않는다.**
+
+        예전에는 여기서 화면마다 `await ws.send_text(...)` 를 했습니다. 그런데
+        이 함수를 부르는 것은 `EventBus.emit` 이고, 그것을 부르는 것은 봉을
+        처리하는 엔진입니다 — 즉 **소켓 하나가 막히면 그 사용자의 봉 처리와
+        봉 사이 손절이 함께 멈췄습니다.** 화면을 끈 채 잠긴 폰, 끊어진 TCP
+        경로(재전송 타임아웃 수 분) 하나면 충분하고, 그룹이면 엔진 넷이 함께
+        섭니다. 심의 이벤트는 토론 전문을 담아 수십 KB 라 송신 버퍼가 금방
+        찹니다.
+
+        그래서 여기서는 **큐에 넣기만** 합니다. 화면마다 전용 태스크가 그
+        큐를 비우므로 순서는 화면별로 그대로 유지되고, 느린 화면은 자기
+        큐에서만 밀립니다. 큐가 차면 **가장 오래된 것부터 버립니다** — 밀린
+        화면에 옛 이벤트를 마저 보내는 것보다 최신 상태를 보여 주는 편이
+        낫고, 무엇보다 그것 때문에 엔진이 기다려서는 안 됩니다. 놓친 이벤트는
+        화면이 다음 폴링에서 상태를 통째로 다시 받아 메웁니다.
+        """
         payload = {
             "type": event.type.value,
             "ts": event.ts.isoformat(),
@@ -126,10 +155,41 @@ class Hub:
             return
         text = json.dumps(finite(payload), ensure_ascii=False, default=str)
         for ws in list(self.clients):
-            try:
+            queue = self._queues.get(ws)
+            if queue is None:
+                continue
+            while queue.qsize() >= self.QUEUE_MAX:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:      # pragma: no cover - 경쟁 방어
+                    break
+            queue.put_nowait(text)
+
+    def attach(self, ws: WebSocket) -> None:
+        """이 화면에 큐와 송신 태스크를 붙인다."""
+        self.clients.add(ws)
+        queue: asyncio.Queue = asyncio.Queue()
+        self._queues[ws] = queue
+        self._senders[ws] = asyncio.create_task(self._drain(ws, queue))
+
+    def detach(self, ws: WebSocket) -> None:
+        self.clients.discard(ws)
+        self._queues.pop(ws, None)
+        task = self._senders.pop(ws, None)
+        if task is not None:
+            task.cancel()
+
+    async def _drain(self, ws: WebSocket, queue: asyncio.Queue) -> None:
+        """한 화면의 큐를 비운다. 여기서 막히는 것은 그 화면뿐입니다."""
+        try:
+            while True:
+                text = await queue.get()
                 await ws.send_text(text)
-            except Exception:
-                self.clients.discard(ws)
+        except asyncio.CancelledError:
+            raise
+        except Exception:      # noqa: BLE001 — 끊긴 화면은 조용히 놓아 준다
+            self.clients.discard(ws)
+            self._queues.pop(ws, None)
 
     def recent(self, limit: int = 100, types: set[str] | None = None) -> list[dict]:
         items = self.ring if types is None else [e for e in self.ring if e["type"] in types]
@@ -1063,7 +1123,14 @@ def _focus_group_status(body: dict, agent_id: str) -> dict:
     agents = body.get("agents")
     if not isinstance(agents, list) or not agents:
         return body
-    entry = next((a for a in agents if a.get("agent_id") == agent_id), None)
+    if not agent_id:
+        # 빈 이름은 "아무 선호 없음" 입니다 — 첫 에이전트를 봅니다. 에이전트가
+        # 하나뿐인 그룹은 `default_agent_id` 가 "" 를 돌려주므로, 빈 이름을
+        # 모르는 이름처럼 거절하면 첫 폴링마다 "에이전트 '' 는 이 그룹에
+        # 없습니다" 가 떴습니다. 거절은 **적어 넣었는데 없는 이름** 에만 합니다.
+        entry = agents[0]
+    else:
+        entry = next((a for a in agents if a.get("agent_id") == agent_id), None)
     if entry is None:
         # 모르는 이름에 첫 에이전트를 슬쩍 끼우면, 사라진 에이전트를 보던
         # 화면이 남의 장부를 자기 것인 양 그립니다. 그룹 상태만 돌려줍니다.
@@ -1085,9 +1152,39 @@ def _default_agent(seat, strategy: str | None) -> str:
     return str(picker(strategy) or "") if callable(picker) else ""
 
 
+def _last_stop(status: dict) -> tuple[str, str | None, str | None]:
+    """멈춘 봇의 (사유, 전략, 멈춘 시각). 단일 봇과 그룹의 모양이 다릅니다.
+
+    단일 봇 상태는 최상위 `error`·`strategy`·`stopped_at` 를 답합니다. 그룹
+    상태는 에이전트별 배열이라 최상위 `strategy` 가 없고, `error`·`stopped_at`
+    는 그룹이 죽은 뒤에야 답습니다. 그 둘이 비어 있는데 에이전트 행에 사유가
+    남아 있으면 그것을 잇습니다 — 안 그러면 실거래 그룹이 워밍업에서 죽어도
+    `/api/health` 에 `last_error` 가 한 번도 실리지 않고, 화면은 "시작됨" 뒤에
+    조용히 정지 상태로 돌아갑니다.
+    """
+    rows = status.get("agents")
+    rows = [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+    error = str(status.get("error") or "")
+    if not error and rows:
+        # "취소됨" 은 사람이 멈춘 흔적이지 죽은 이유가 아닙니다. 그것까지 잇으면
+        # 정지 버튼을 누른 뒤에도 "봇이 멈췄습니다 — 취소됨" 이 붉게 뜹니다.
+        error = "; ".join(f"{r.get('agent_id')}: {r.get('error')}"
+                          for r in rows
+                          if r.get("error") and r.get("error") != "취소됨")
+    strategy = status.get("strategy") or ", ".join(
+        str(r.get("strategy")) for r in rows if r.get("strategy")) or None
+    return error, strategy, status.get("stopped_at")
+
+
 def _selected_read_config(seat: Desk, strategy: str | None,
                           agent_id: str = "") -> StrategyConfig | None:
     """Resolve one read-only screen without hiding an explicit bad selection."""
+    # 에이전트가 둘 이상이면 `run_config("")` 는 `trader("")` 가 None 이라
+    # **프로세스 기본 템플릿**(운영 배포에서는 데모)으로 물러섭니다 — 그룹이
+    # 도는 동안 봉·호가·검색·계좌 조회가 전부 데모 전략의 종목을 봤습니다.
+    # 조회는 되물을 수 없으니 전략 이름이 맞는 에이전트, 없으면 첫 에이전트를
+    # 봅니다. 돈이 움직이는 경로는 여기를 지나지 않습니다(`require_trader`).
+    agent_id = agent_id or _default_agent(seat, strategy)
     if seat.running(agent_id) or (not agent_id and seat.running()):
         picked = seat.run_config(agent_id)
         if picked is not None:
@@ -1221,35 +1318,16 @@ def _assert_window_bounded(config: StrategyConfig) -> None:
 def _apply_profile_live(trader, profile) -> dict | None:
     """실행 중인 봇에 즉시 반영할 수 있는 것만 반영한다 (1인용 경로).
 
-    사이즈·손절·한도는 바로 바뀌지만 봉 주기나 알파 구성은 바뀌지 않습니다 —
-    그건 엔진을 다시 세워야 하는 일이라, 반쯤 바뀐 상태로 돌리는 것보다
-    재시작이 필요하다고 말하는 편이 정직합니다.
+    사이즈는 바로 바뀌고 **한도와 손절은 조이는 방향만** 반영됩니다. 봉 주기나
+    알파 구성은 바뀌지 않습니다 — 그건 엔진을 다시 세워야 하는 일이라, 반쯤
+    바뀐 상태로 돌리는 것보다 재시작이 필요하다고 말하는 편이 정직합니다.
+
+    규칙 자체는 `quant.live.profile` 한 곳에 있습니다. 예전에는 같은 본문이
+    여기와 `webapp/registry.py` 에 복제돼 있었고, 두 사본이 갈라졌습니다.
     """
     if trader is None:
         return None
-    settings = profile.settings()
-    engine = trader.engine
-    pm = engine.portfolio_model
-    pm.max_position_weight = settings["max_position_weight"]
-    pm.max_gross_leverage = settings["max_gross_leverage"]
-    pm.cash_reserve_pct = settings["cash_reserve_pct"]
-    if hasattr(pm, "target_vol"):
-        pm.target_vol = settings["target_annual_vol"]
-    budget = engine.budget
-    budget.max_loss_pct = settings["max_daily_loss_pct"]
-    budget.max_orders = settings["max_daily_orders"]
-    for model in engine.risk.models:
-        if model.name == "max_dd_per_security":
-            model.atr_multiple = settings["stop_atr_multiple"]
-            model.limit = settings["stop_ceiling_pct"]
-        elif model.name == "trailing_stop":
-            model.atr_multiple = settings["trailing_atr_multiple"]
-        elif model.name == "max_positions":
-            model.max_positions = settings["max_positions"]
-    return {
-        "sizing_and_risk": "즉시 적용됨",
-        "needs_restart": ["봉 주기", "알파 모델 구성", "AI 데스크 사용 여부"],
-    }
+    return apply_profile_to_engine(trader.engine, profile)
 
 
 # ── 요청 하나가 만질 수 있는 전부 ────────────────────────────────────────
@@ -1664,6 +1742,39 @@ class UserDesk(Desk):
         self.accounts.record(self.user.id, action, detail)
 
 
+def _effective_limits(seat: Desk, cfg: StrategyConfig) -> dict:
+    """이 전략을 지금 시작하면 **실제로 걸릴** 하루 한도.
+
+    설정 파일의 값과 사용자가 설정 화면에 저장한 값 중 저장값이 이깁니다
+    (`UserRegistry.prepare` 의 `_effective`; 0 은 "한도 없음" 이 아니라
+    "안 적었음"). 화면의 실거래 확인 창·상단 띠·안전 라벨이 전부 이 값을
+    읽으므로, 여기서 템플릿 원값을 주면 사람이 읽는 숫자와 봇이 지키는 숫자가
+    갈립니다.
+
+    전략 목록 한 번에 설정 파일 전부를 도는 자리라 `prepare()` 를 통째로
+    부르지는 않습니다 — 저장된 한도만 겹칩니다(성향은 사이징이라 이 창과
+    무관합니다).
+    """
+    from quant.webapp.registry import LIMIT_KEYS, _effective
+
+    try:
+        saved = seat.registry.limits(seat.user.id)
+    except Exception:                       # noqa: BLE001 — 목록이 죽으면 안 된다
+        saved = {}
+    out = {}
+    for key in LIMIT_KEYS:                  # max_daily_notional → daily_notional
+        configured = float(getattr(cfg.limits, key, 0.0) or 0.0)
+        value = _effective(configured, float(saved.get(key) or 0.0))
+        out[key[len("max_"):]] = value or None
+    return {
+        "daily_notional": out.get("daily_notional"),
+        "daily_orders": int(out["daily_orders"]) if out.get("daily_orders") else None,
+        "daily_loss": out.get("daily_loss"),
+        "daily_loss_pct": out.get("daily_loss_pct"),
+        "per_order": cfg.broker.max_order_notional or None,
+    }
+
+
 def _resolve(trader, ticker: str):
     ctx = trader.engine.ctx
     wanted = ticker.strip().upper()
@@ -1858,10 +1969,13 @@ def create_app(config: StrategyConfig | None = None,
                 st = seat.status()
             except Exception:                    # noqa: BLE001 — 상태 조회 실패로
                 st = {}                          # health 가 죽으면 안 됩니다
-            if st.get("error") or st.get("stopped_at"):
-                out["last_error"] = st.get("error")
-                out["last_strategy"] = st.get("strategy")
-                out["stopped_at"] = st.get("stopped_at")
+            # 그룹은 최상위 `strategy` 가 없고 사유가 에이전트 행에 있을 수
+            # 있습니다 — 두 모양을 한 자리에서 읽습니다.
+            error, strategy, stopped_at = _last_stop(st)
+            if error or stopped_at:
+                out["last_error"] = error or None
+                out["last_strategy"] = strategy
+                out["stopped_at"] = stopped_at
         return out
 
     @app.get("/api/config")
@@ -2461,7 +2575,15 @@ def create_app(config: StrategyConfig | None = None,
         # 이어집니다). 꺼져 있으면 사용자가 고른 전략으로 — `run_config()` 는
         # 봇이 없을 때 프로세스 기본 템플릿으로 물러서므로, 그 값을 그대로
         # 쓰면 사용자가 무엇을 골랐든 데모 전략으로 심의하게 됩니다.
-        cfg = (seat.run_config() if seat.running()
+        #
+        # 그룹이 둘 이상을 돌리면 `run_config("")`·`desk_model("")` 도 같은
+        # 자리로 물러섭니다(`trader("")` 가 되묻는 규칙으로 None). 그러면 봇이
+        # 도는데도 데모 전략으로 심의하고, 돌고 있는 데스크의 기억을 잇지
+        # 못합니다. 조회와 같은 규칙으로 고릅니다 — 전략 이름이 맞는 에이전트,
+        # 없으면 첫 에이전트. 이 호출은 주문을 내지 않으므로 기본값이 안전합니다.
+        running = seat.running()
+        agent_id = _default_agent(seat, req.strategy) if running else ""
+        cfg = (seat.run_config(agent_id) if running
                else (_template_config(req.strategy) or seat.run_config()))
         if cfg is None:
             raise HTTPException(
@@ -2478,7 +2600,7 @@ def create_app(config: StrategyConfig | None = None,
         # 사람이 상한을 없애면서 정작 심의는 운영자 키로 나갑니다 — 상한도
         # 없고 운영자 집계에도 안 잡히는 조합입니다. 데스크가 **실제로 들고
         # 있는 키**가 그 사람 것인지로 봅니다.
-        model = seat.desk_model()
+        model = seat.desk_model(agent_id)
         if model is not None:
             # 돌고 있는 봇의 데스크를 그대로 씁니다 — 기억과 이력이 이어집니다.
             # 자기 키로 도는지는 따로 물어야 합니다: 안 넣은 사람의 봇도
@@ -2581,14 +2703,18 @@ def create_app(config: StrategyConfig | None = None,
 
     @app.get("/api/desk")
     async def desk_status(limit: int = Query(20, ge=1, le=200),
+                          agent_id: str = "",
                           seat: Desk = Depends(desk)):
         """Desk status plus recent deliberations, newest first.
 
         This is what the trading-floor view renders: one entry per full
         ten-seat deliberation, including every seat's own output so the debate
         can be replayed rather than just summarised.
+
+        `agent_id` 를 비우면 그룹의 첫 에이전트 — 둘 이상일 때 `desk_model("")`
+        은 None 이라, 데스크가 심의를 쌓는데도 화면은 "데스크 없음" 이었습니다.
         """
-        model = seat.desk_model()
+        model = seat.desk_model(agent_id or _default_agent(seat, None))
         if model is None:
             return {"enabled": False,
                     "message": "no desk configured — add an alpha of type 'desk'",
@@ -2602,8 +2728,9 @@ def create_app(config: StrategyConfig | None = None,
         return payload
 
     @app.get("/api/desk/{ticker}")
-    async def desk_symbol(ticker: str, seat: Desk = Depends(desk)):
-        model = seat.desk_model()
+    async def desk_symbol(ticker: str, agent_id: str = "",
+                          seat: Desk = Depends(desk)):
+        model = seat.desk_model(agent_id or _default_agent(seat, None))
         if model is None:
             raise HTTPException(404, "no desk configured")
         for decision in reversed(model.history):
@@ -2617,12 +2744,16 @@ def create_app(config: StrategyConfig | None = None,
     async def flow(symbol: str | None = Query(None, max_length=64),
                    window: int = Query(20, ge=1, le=500),
                    sessions: int = Query(30, ge=1, le=500),
+                   agent_id: str = "",
                    seat: Desk = Depends(desk)):
         """투자자별 수급 — foreign / institution / retail net buying."""
         # 여기 `message` 는 로그가 아니라 화면 빈 칸에 그대로 찍힙니다. 영어로
         # 적으면 읽는 사람이 못 읽고, `flow.provider` 같은 설정 키를 가리키면
         # 화면에서 손댈 수 없는 곳을 가리키게 됩니다.
-        trader = seat.trader()
+        #
+        # 그룹이 둘 이상이면 `trader("")` 는 None 이라, 봇이 도는데 "자동매매가
+        # 돌고 있지 않습니다" 를 찍었습니다. 조회이므로 첫 에이전트를 봅니다.
+        trader = seat.trader(agent_id or _default_agent(seat, None))
         if trader is None:
             return {"available": False,
                     "message": "자동매매가 돌고 있지 않습니다 — 수급은 봇이 도는 "
@@ -2983,13 +3114,14 @@ def create_app(config: StrategyConfig | None = None,
                 # 실거래를 켜기 전에 사람이 읽어야 하는 숫자입니다. 화면이
                 # 확인 창에서 이 값을 그대로 보여줍니다 — "얼마까지 잃어도
                 # 되는가" 를 모르는 채로 켜는 일이 없어야 합니다.
-                "limits": {
-                    "daily_notional": cfg.limits.max_daily_notional or None,
-                    "daily_orders": cfg.limits.max_daily_orders or None,
-                    "daily_loss": cfg.limits.max_daily_loss or None,
-                    "daily_loss_pct": cfg.limits.max_daily_loss_pct or None,
-                    "per_order": cfg.broker.max_order_notional or None,
-                },
+                #
+                # **템플릿 원값이 아니라 실제로 걸릴 값** 입니다. 사용자가 설정
+                # 화면에서 저장한 한도가 시작할 때 이깁니다(`registry.prepare`
+                # 의 `_effective`). 예전에는 여기서 파일의 원값을 보여 줘서,
+                # 확인 창은 50만원이라 말하는데 봇은 사용자가 적은 값으로
+                # 도는 상태가 됐습니다 — 이 창이 존재하는 이유를 정면으로
+                # 어깁니다.
+                "limits": _effective_limits(seat, cfg),
             })
         return {"strategies": out}
 
@@ -3216,8 +3348,10 @@ def create_app(config: StrategyConfig | None = None,
         return seat.archive_reconciliation(req)
 
     @app.post("/api/trader/sync")
-    async def sync_positions(seat: Desk = Depends(desk)):
-        return await seat.sync()
+    async def sync_positions(agent_id: str = "", seat: Desk = Depends(desk)):
+        # 돈이 움직이는 경로처럼 되묻습니다(`require_trader`) — 다만 되물은 뒤
+        # 이름을 적어 보낼 자리가 없으면 그룹에서는 영영 400 입니다.
+        return await seat.sync(agent_id)
 
     # ── stream ───────────────────────────────────────────────────────────
     @app.websocket("/ws")
@@ -3234,7 +3368,7 @@ def create_app(config: StrategyConfig | None = None,
             return
         hub = seat.hub
         await ws.accept()
-        hub.clients.add(ws)
+        hub.attach(ws)
         try:
             for item in hub.recent(50):
                 await ws.send_text(json.dumps(finite(item), default=str))
@@ -3245,7 +3379,7 @@ def create_app(config: StrategyConfig | None = None,
         except Exception:
             pass
         finally:
-            hub.clients.discard(ws)
+            hub.detach(ws)
 
     # ── dashboard ────────────────────────────────────────────────────────
     if STATIC_DIR.exists():

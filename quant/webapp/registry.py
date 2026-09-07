@@ -55,7 +55,12 @@ from quant.live.credentials import VENUES_BY_ID
 from quant.live.group import STOP_GRACE_SECONDS as GROUP_STOP_GRACE
 from quant.live.group import GroupTrader
 from quant.live.limits import TradingBudget
-from quant.live.profile import InvestorProfile, ProfileStore, apply_profile
+from quant.live.profile import (
+    InvestorProfile,
+    ProfileStore,
+    apply_profile,
+    apply_profile_to_engine,
+)
 from quant.live.spend import SpendMeter
 from quant.live.state import (
     RECOVERY_ACKNOWLEDGEMENT_PHRASE,
@@ -639,7 +644,10 @@ class UserRegistry:
         return {
             "required": bool(run and run["required"]),
             "run": run,
-            "bot_running": self.trader(uid) is not None,
+            # `trader(uid)` 는 에이전트가 둘 이상인 그룹에서 **되묻기 규칙**
+            # 때문에 None 입니다. 그것을 "안 돌고 있다" 로 읽으면 복구 카드가
+            # 실행 중인 그룹 위에서 보관 버튼을 열어 줍니다.
+            "bot_running": self._anything_running(uid),
             "account_reconciliation_required": account_required,
             "blocking_run_id": account_gate["blocking_run_id"],
             "blocking_strategy": account_gate["blocking_strategy"],
@@ -717,7 +725,7 @@ class UserRegistry:
         """Retire an exact quarantined run without constructing a broker."""
         uid = self._uid(user_id)
         self._assert_toss_live_recovery_config(config)
-        if self.trader(uid) is not None:
+        if self._anything_running(uid):
             raise ReconciliationProblem(
                 "reconciliation_bot_running",
                 "봇이 실행 중입니다. 안전하게 완전히 정지한 뒤 다시 확인하세요.",
@@ -795,26 +803,10 @@ class UserRegistry:
         trader = self.trader(user_id, agent_id)
         if trader is None:
             return None
-        settings = profile.settings()
-        engine = trader.engine
-        pm = engine.portfolio_model
-        pm.max_position_weight = settings["max_position_weight"]
-        pm.max_gross_leverage = settings["max_gross_leverage"]
-        pm.cash_reserve_pct = settings["cash_reserve_pct"]
-        if hasattr(pm, "target_vol"):
-            pm.target_vol = settings["target_annual_vol"]
-        engine.budget.max_loss_pct = settings["max_daily_loss_pct"]
-        engine.budget.max_orders = settings["max_daily_orders"]
-        for model in engine.risk.models:
-            if model.name == "max_dd_per_security":
-                model.atr_multiple = settings["stop_atr_multiple"]
-                model.limit = settings["stop_ceiling_pct"]
-            elif model.name == "trailing_stop":
-                model.atr_multiple = settings["trailing_atr_multiple"]
-            elif model.name == "max_positions":
-                model.max_positions = settings["max_positions"]
-        return {"sizing_and_risk": "즉시 적용됨",
-                "needs_restart": ["봉 주기", "알파 모델 구성", "AI 데스크 사용 여부"]}
+        # 규칙은 한 곳에만 있습니다. 예전에는 이 본문이 `api/server.py` 에도
+        # 복제돼 있었고, 두 사본이 갈라지면 같은 요청이 경로에 따라 다르게
+        # 동작합니다.
+        return apply_profile_to_engine(trader.engine, profile)
 
     # ── 하루 한도 ────────────────────────────────────────────────────────
     def limits(self, user_id: int, agent_id: str = "") -> dict[str, float]:
@@ -1261,6 +1253,21 @@ class UserRegistry:
         except Exception:       # pragma: no cover - 계정 DB 가 닫힌 경우 등
             log.warning("감사 기록 실패: user=%s action=%s", uid, action)
 
+    def _anything_running(self, user_id: int) -> bool:
+        """이 계좌에서 봇이 돌고 있는가 — 단일이든 그룹이든.
+
+        `trader(uid)` 로 물으면 안 됩니다. 에이전트가 둘 이상인 그룹에서는
+        "어느 것인지" 를 되묻기 위해 None 을 돌려주는데, 그것을 "안 돌고 있다"
+        로 읽으면 복구 카드가 **실행 중인 그룹 위에서** 보관 절차를 열어 줍니다.
+        실제로는 상태 DB 의 파일 잠금에 막혀 실패하지만, 그때 나오는 문장은
+        "다른 프로세스가 사용 중" 이라 지금 상황을 전혀 설명하지 못합니다.
+        """
+        uid = self._uid(user_id)
+        if self.group(uid) is not None:
+            return True
+        bot = self._bots.get(uid)
+        return bot is not None and bot.alive
+
     def group(self, user_id: int) -> GroupTrader | None:
         """돌고 있는 에이전트 그룹, 없으면 None."""
         group = self._groups.get(self._uid(user_id))
@@ -1304,11 +1311,23 @@ class UserRegistry:
     def status(self, user_id: int) -> dict:
         uid = self._uid(user_id)
         running_group = self._groups.get(uid)
+        bot = self._bots.get(uid)
+        if running_group is not None and not running_group.alive and (
+                bot is not None and bot.alive):
+            # 죽은 그룹이 **살아 있는 단일 봇** 을 가리면 안 됩니다.
+            #
+            # `stop_group` 은 죽은 에이전트의 사유를 화면이 읽도록 그룹 객체를
+            # 남겨 둡니다. 그 뒤 같은 사람이 단일 봇을 시작하면 여기서 그룹이
+            # 먼저 걸려 `running: False` 와 죽은 `agents` 배열이 나갔습니다.
+            # 화면은 그것을 보고 ■정지 버튼을 감추고, `adoptAgents` 가 죽은
+            # 에이전트 id 를 골라 **모든 돈 경로에** 그 이름을 붙입니다 —
+            # 매도·청산·일시정지가 전부 404 가 되어, 실거래 봇이 도는데
+            # 화면에서 멈출 방법이 사라집니다.
+            running_group = None
         if running_group is not None:
             # 그룹 상태는 에이전트별 배열과 계좌 요약을 함께 답니다. 기존 화면이
             # 읽던 평평한 키(`running`)는 그대로 둡니다.
             return running_group.status()
-        bot = self._bots.get(uid)
         if bot is None:
             return {"running": False, "message": "봇이 실행 중이 아닙니다"}
         if not bot.alive:
@@ -1485,7 +1504,14 @@ class UserRegistry:
             # 그대로 두면 사용자가 자격증명을 고치고 다시 눌러도 "이 프로세스가
             # 이미 이 상태 파일로 트레이더를 돌리고 있습니다" 로 막히고, 그
             # 문장은 지금 상황을 설명하지 못합니다.
-            self._groups.pop(uid, None)
+            #
+            # **내 것일 때만** 비웁니다. 위 `alive` 검사가 시작 중인 그룹도
+            # 살아 있는 것으로 보므로 지금은 다른 그룹이 이 자리에 있을 수
+            # 없지만, 그 규칙이 느슨해지는 순간 여기서 남의 실거래 그룹을
+            # 레지스트리에서 지우게 됩니다 — 돌고 있는데 멈출 손잡이가 없는
+            # 그룹이 그렇게 생깁니다.
+            if self._groups.get(uid) is trader_group:
+                self._groups.pop(uid, None)
             with contextlib.suppress(Exception):
                 await trader_group.shutdown(wait=1.0)
             raise

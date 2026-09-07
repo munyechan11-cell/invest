@@ -2073,17 +2073,34 @@ def test_api_rejects_bot_running_wrong_template_and_incomplete_body(
         "/api/trader/reconciliation/archive", json=missing
     ).status_code == 422
 
-    monkeypatch.setattr(app.state.registry, "trader",
-                        lambda _uid, agent_id="": object())
-    status = client.get(
-        "/api/trader/reconciliation", params={"config_path": "recover_toss"}
-    )
-    assert status.json()["bot_running"]
-    running = client.post(
-        "/api/trader/reconciliation/archive", json=api_payload(run_id)
-    )
-    assert running.status_code == 409
-    assert running.json()["code"] == "reconciliation_bot_running"
+    # 실행 중인 봇을 흉내 냅니다. 예전에는 `registry.trader` 를 몽키패치했지만,
+    # 그 함수는 에이전트가 둘 이상인 그룹에서 되묻기 위해 None 을 돌려주므로
+    # "돌고 있는가" 의 근거로 쓸 수 없습니다. 레지스트리의 실제 슬롯을 채워
+    # 판정이 그것을 보는지 검사합니다.
+    from datetime import datetime
+
+    from quant.core.types import UTC
+    from quant.webapp.registry import _Bot
+
+    registry = app.state.registry
+    uid = registry._uid(owner_id)
+    registry._bots[uid] = _Bot(
+        trader=SimpleNamespace(request_stop=lambda: None),
+        task=SimpleNamespace(done=lambda: False),
+        strategy="recover_toss", started_at=datetime.now(UTC))
+    try:
+        status = client.get(
+            "/api/trader/reconciliation", params={"config_path": "recover_toss"}
+        )
+        assert status.json()["bot_running"]
+        running = client.post(
+            "/api/trader/reconciliation/archive", json=api_payload(run_id)
+        )
+        assert running.status_code == 409
+        assert running.json()["code"] == "reconciliation_bot_running"
+    finally:
+        # 가짜 봇을 남겨 두면 앱 종료 절차가 그것을 진짜로 알고 멈추려 듭니다.
+        registry._bots.pop(uid, None)
 
 
 def test_registry_rejects_a_database_owned_by_another_worker(recovery_api):

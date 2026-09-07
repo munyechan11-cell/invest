@@ -1432,6 +1432,19 @@ function renderHud(p) {
    바로 아래에서는 현재 실잔고로 오인될 수 있습니다. */
 function clearBotBook(reason) {
   renderMini(null);
+  //: 머리말 배지도 함께 내립니다. 예전에는 여기서 장부만 비우고 `#mode` 와
+  //: `#strategy` 는 마지막 값에 굳어, 봇이 멈춘 뒤에도 붉은 "실거래" 알약과
+  //: 전략 이름이 그대로 서 있었습니다. 바로 아래 안전 라벨은 "자동매매 정지"
+  //: 라 화면이 두 말을 동시에 했고, 사용자는 봇이 도는 줄 알았습니다.
+  const badge = $("#mode");
+  if (badge) {
+    const off = MODE_BADGE.offline;
+    if (badge.textContent !== off) badge.textContent = off;
+    badge.title = "";
+    badge.className = "mode px backtest";
+  }
+  const name = $("#strategy");
+  if (name) name.textContent = "—";
   const bookTitle = setBotBookSource(null);
   $("#hudEquity").textContent = "—";
   $("#hudChange").textContent = "—";
@@ -1666,7 +1679,9 @@ async function refresh() {
     if (generation !== refreshGeneration) return;
   }
   try {
-    const flow = await api("/api/flow");
+    // 수급과 데스크도 고른 에이전트의 것입니다. 맨손으로 부르면 서버가 첫
+    // 에이전트를 골라, 탭은 보수형인데 심의는 공격형의 것이 재생됩니다.
+    const flow = await api(withAgent("/api/flow"));
     if (generation !== refreshGeneration) return;
     renderFlow(flow);
   } catch {
@@ -1677,7 +1692,7 @@ async function refresh() {
   if (generation !== refreshGeneration) return;
   const deskGeneration = ++deskRequestGeneration;
   try {
-    const d = await api("/api/desk?limit=1");
+    const d = await api(withAgent("/api/desk?limit=1"));
     if (generation !== refreshGeneration ||
         deskGeneration !== deskRequestGeneration) return;
     deskState = d;
@@ -2917,6 +2932,9 @@ let marketBarsFetchedAt = 0;
 let marketPollAfterMs = 5000;
 //: 같은 실패를 폴링마다 다시 띄우지 않기 위한 표시.
 let lastBotError = "";
+//: 마지막으로 화면에 띄운 계좌 정지 사유. 같은 사유를 폴링마다 다시 띄우면
+//: 읽히지 않고, 사유가 바뀌었는데 안 띄우면 첫 사유만 남습니다.
+let lastHaltReason = "";
 
 function showTab(which) {
   const login = which !== "register";
@@ -3126,6 +3144,7 @@ function resetIdentityBoundState(reason) {
   runningStrategy = "";
   lastShown = null;
   lastBotError = "";
+  lastHaltReason = "";
   drawEquity();
   clearIdentityBoundUi(reason);
 }
@@ -5336,21 +5355,59 @@ function renderRunSummary(running) {
       `주문 ${l.daily_orders ?? "—"}건 · 실현손실 ${fmtNum(l.daily_loss)}. ` +
       `한도에 닿으면 신규 진입만 멈추고 청산은 계속됩니다.`;
   }
+  // 계좌 합계 불변식(Σ슬리브 + 미귀속 == 증권사)이 어긋나면 게이트웨이가
+  // **그룹 전체** 를 멈추고 모든 주문을 거절합니다. 서버는 그 사유를
+  // `status.account.halt_reason` 에 실어 매 폴링마다 보내는데, 화면이 읽지
+  // 않으면 머리말은 "실거래" 그대로고 사용자는 봇이 돌고 있다고 믿은 채
+  // 기다립니다 — 주문은 한 건도 안 나가는데. 실행 중일 때만 봅니다: 멈춘
+  // 그룹의 옛 정지 사유를 "지금 정지됨" 으로 읽으면 안 됩니다.
+  //: `botState.running` 까지 봅니다. 인자 `running` 은 부르는 쪽이 "지금
+  //: 시작했다" 고 알려 준 값이라, 방금 시작한 봇에 **옛 응답의** 정지 사유가
+  //: 붙었습니다 — 시작 확인 문구가 곧바로 붉은 "계좌 대조 실패" 로 덮였습니다.
+  const account = (botState && botState.running && botState.account) || null;
+  const halted = !!(running && account && account.halted);
+  const haltReason = halted ? String(account.halt_reason || "사유 없음") : "";
+  if (haltReason !== lastHaltReason) {
+    if (haltReason) {
+      note("#runMsg", "자동매매가 정지됐습니다 — 계좌 대조 실패: " + haltReason, "err");
+    } else if (running) {
+      // 돌고 있는데 사유가 사라졌으면 정지가 풀린 것입니다. 조용히 지우면
+      // 화면은 여전히 정지됐다고 말합니다.
+      note("#runMsg", "계좌 정지가 풀렸습니다 — 주문이 다시 나갑니다", "ok");
+    }
+    lastHaltReason = haltReason;
+  }
   const safety = $("#runSafety");
   const safetyLabel = $("#runSafetyLabel");
   const safetyText = $("#runSafetyText");
   const rail = $("#railAuto");
-  if (safety) safety.dataset.state = !running ? "off" : live ? "live" : "dry";
+  //: 3초 유지 주기가 실패하고 있으면 **손절이 평가되지 않고 있다** 는 뜻입니다.
+  //: 봇은 살아 있으므로 라벨은 "실행 중" 이고, 이것을 읽지 않으면 화면
+  //: 어디에도 그 사실이 없습니다.
+  const upkeep = (running && botState && botState.running
+                  && botState.maintenance_error) || "";
+  if (safety) safety.dataset.state = !running ? "off"
+    : (halted || upkeep) ? "error"
+    : live ? "live" : "dry";
   if (safetyLabel) safetyLabel.textContent = !running ? "자동매매 정지"
+    : halted ? (live ? "실거래 자동매매 정지됨 (계좌 대조 실패)"
+                     : "모의 자동매매 정지됨 (계좌 대조 실패)")
     : live ? "실거래 자동매매 실행 중" : "모의 자동매매 실행 중";
   if (safetyText) {
     const limits = (st && st.limits) || {};
-    safetyText.textContent = running && st
+    safetyText.textContent = halted
+      ? `모든 주문을 거절하고 있습니다 — ${haltReason} ` +
+        `정지한 뒤 증권사 앱에서 보유와 체결을 확인하고 다시 시작하세요.`
+      : upkeep
+      ? `점검 주기가 실패하고 있습니다 — ${upkeep}. 손절과 수동 주문이 ` +
+        `늦어질 수 있습니다. 계속되면 정지한 뒤 증권사 연동을 확인하세요.`
+      : running && st
       ? `${stLabel(st)} · 하루 주문 ${limits.daily_orders ?? "—"}건 · ` +
         `거래대금 ${fmtNum(limits.daily_notional)} · 손실 ${fmtNum(limits.daily_loss)} 한도`
       : "계좌를 확인한 뒤 전략과 하루 한도를 검토하세요.";
   }
-  if (rail) rail.textContent = !running ? "정지됨" : live ? "실거래 실행" : "모의 실행";
+  if (rail) rail.textContent = !running ? "정지됨" : halted ? "정지됨 (계좌 대조 실패)"
+    : live ? "실거래 실행" : "모의 실행";
   $("#runSum").textContent = running && st
     ? `${stLabel(st)} · ${st.mode_ko || st.mode} · ${st.broker_ko || st.broker} — 돌고 있습니다.`
     : "";
