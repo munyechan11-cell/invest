@@ -8,12 +8,14 @@ graceful shutdown — lives here so the strategy layer stays identical.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 import signal
 import time
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from quant.brokerage.live_base import LiveBrokerage
 from quant.config.schema import StrategyConfig
@@ -87,6 +89,14 @@ class LiveTrader:
         # 이 봇이 쓴 LLM 을 누구 앞으로 다는가. 단일 사용자 배포에서는 셀
         # 사람이 없으므로 None 입니다.
         self.meter = meter
+        # 데스크에도 같은 계량기를 겁니다. **봉마다 도는 심의** 가 그쪽을
+        # 지나는데, 예전에는 계량이 `_deliberate_now` 와 `/api/evaluate` 에만
+        # 있어서 정작 돈이 되는 경로가 요금제를 묻지도 사용량을 적지도
+        # 않았습니다 — 사용자가 자기 키를 안 넣었으면 운영자 키로 나가고
+        # 집계에도 잡히지 않습니다. 계량은 이제 데스크 한 곳에서만 합니다.
+        desk = self.desk()
+        if desk is not None:
+            desk.meter = meter
         # 휴장 중 심의 주기. 데스크 설정에서 읽고, 없으면 한 시간에 한 번입니다.
         # 매번 돌면 밤새 열일곱 번이라 비용이 봉당 심의보다 커집니다.
         spec = next((m for m in config.alpha if m.type in ("desk", "council")), None)
@@ -97,6 +107,11 @@ class LiveTrader:
         # 놓고 아무것도 안 뜨면 그건 거짓말입니다 — 안 된 이유를 남겨야
         # 그 자리에 대신 쓸 말이 생깁니다.
         self.desk_note: str = ""
+        #: 3초 유지 주기의 마지막 실패 사유. 이 주기가 봉 사이 손절을 돌리므로,
+        #: 여기 값이 남아 있는 동안은 **손절이 평가되지 않고 있다**는 뜻입니다.
+        #: 성공한 주기가 지우고, `status()` 가 화면으로 내보냅니다.
+        self.maintenance_error: str = ""
+        self._maintenance_failures = 0
         self.notifier = TelegramNotifier(
             config.notify.telegram_bot_token, config.notify.telegram_chat_id,
             config.notify.on_events,
@@ -430,17 +445,9 @@ class LiveTrader:
         if desk is None:
             self.desk_note = "이 전략에는 AI 데스크가 없습니다"
             return
-        # 이 심의는 사람이 ▶ 시작 을 누를 때마다 한 번씩 나갑니다. 껐다 켜기를
-        # 반복하면 그만큼 반복되고, 데스크의 `cost_limit_usd` 는 봇을 새로
-        # 세울 때마다 0 부터 다시 세므로 그것으로는 막히지 않습니다. 요금제
-        # 한도를 여기서도 물어봅니다 — 다중 사용자 서비스에서 계량되지 않는
-        # LLM 호출 경로는 결국 운영자 카드로 청구됩니다.
-        if self.meter is not None:
-            allowed, why = self.meter.allow()
-            if not allowed:
-                log.info("%s 심의 건너뜀 — %s", reason, why)
-                self.desk_note = f"심의를 쉬는 중 — {why}"
-                return
+        # 요금제는 `TradingDesk.update()` 가 묻고 적습니다 — 봉마다 도는 심의와
+        # **같은 자리** 여야 합니다. 여기서 또 물으면 같은 호출이 두 번
+        # 청구되고, 두 곳의 규칙이 갈라지면 경로에 따라 다르게 동작합니다.
         ctx = self.engine.ctx
         # 워밍업이 남긴 마지막 봉. 없으면 심의할 재료가 없는 것이고, 그건
         # 유니버스가 비었다는 뜻이라 여기서 할 말이 없습니다.
@@ -479,20 +486,15 @@ class LiveTrader:
             await ctx.bus.publish(EventType.ERROR,
                                   {"error": f"{reason} 심의 실패: {exc}"})
         finally:
-            # 실패했어도 부른 만큼은 청구됩니다. 성공만 계량하면 실패한 호출의
-            # 비용이 아무 계정에도 잡히지 않습니다.
             after_calls = desk.status()["llm_calls"]
             if after_calls == before[0] and not self.desk_note:
-                # 호출이 한 번도 안 나갔습니다. 데스크는 살아 있는데 이번
-                # 봉에서는 아무 종목도 새로 볼 것이 없었다는 뜻입니다
-                # (같은 봉은 한 번만 심의합니다).
-                self.desk_note = ("이 봉은 이미 심의했습니다 — 다음 봉이 "
-                                  "닫히면 다시 봅니다")
-            if self.meter is not None:
-                calls = max(0, after_calls - before[0])
-                spent = max(0.0, desk.estimated_cost_usd - before[1])
-                if calls:
-                    self.meter.record(calls, spent)
+                # 호출이 한 번도 안 나갔습니다. 요금제 때문에 쉰 것이면 그
+                # 사유를, 아니면 "이번 봉에는 새로 볼 것이 없었다" 를 말합니다 —
+                # 조용한 데스크와 고장 난 데스크는 화면에서 구별되지 않습니다.
+                metered = desk.status().get("metered_note") or ""
+                self.desk_note = (
+                    f"심의를 쉬는 중 — {metered}" if metered else
+                    "이 봉은 이미 심의했습니다 — 다음 봉이 닫히면 다시 봅니다")
 
     # ── stopping ─────────────────────────────────────────────────────────
     @property
@@ -758,6 +760,22 @@ class LiveTrader:
             self._next_fill_poll_at = 0.0
             self._fill_poll_backoff_s = self.FILL_POLL_S
             if not cached:
+                if not getattr(brokerage, "fill_channel_ok", True):
+                    # 채널이 잠긴 채로 추적할 주문이 하나도 없는 상태입니다.
+                    # 여기서 그냥 돌아가면 어댑터는 채널을 올릴 기회를 영영
+                    # 갖지 못합니다 — `fill_channel_up()` 은 주문을 하나라도
+                    # 조회했을 때만 불리기 때문입니다. 그 조합이 실제로
+                    # 일어납니다: 토스 주문 POST 가 두 번 애매하게 실패하면
+                    # 채널을 잠그는데, 그 주문은 로컬에 남지 않습니다. 그러면
+                    # `_guard` 가 **손절까지** 거절한 채로 재시작 전까지
+                    # 풀리지 않습니다. 어댑터에게 물어볼 기회를 줍니다.
+                    try:
+                        recovered = await brokerage.poll_fills()
+                    except Exception as exc:  # noqa: BLE001 — 잠금 유지가 기본
+                        log.warning("체결 채널 잠금 해제 시도 실패: %s", exc)
+                        return []
+                    if recovered:
+                        return await self.engine._book_fills(recovered)
                 return []
             booked = await self.engine._book_fills(cached)
             # A cancel/reap path can make the order terminal before the engine
@@ -993,41 +1011,143 @@ class LiveTrader:
         if reducing:
             await self.engine._submit(reducing)
 
-    async def _maintenance_cycle(self) -> None:
-        """Short, rate-safe work that must not wait for the next strategy bar."""
-        market_open = self._market_is_open()
-        missing: dict[str, str] = {}
-        if market_open and getattr(self.engine.brokerage, "venue_backed", False):
-            _, missing = await self._refresh_quotes()
-        await self._poll_live_fills()
+    async def _guarded(self, label: str, coro,
+                       failures: list[str]) -> tuple[bool, Any]:
+        """유지 주기의 한 단계. 실패해도 **루프를 끝내지 않는다.**
 
-        # Every provider/poll above can straddle the bell. Permission from the
-        # beginning of the cycle is not permission to submit now.
-        if not self._market_is_open():
-            return
-        if (getattr(self.engine.brokerage, "venue_backed", False)
-                and self.engine.ctx.portfolio.open_positions):
-            # Stops and drawdown cuts are safety decisions, not alpha decisions.
-            # Re-evaluate them on the current mark instead of waiting up to one
-            # daily candle. _run_exit_safety filters the output to reductions.
-            await self._run_exit_safety()
-        if getattr(self, "_quote_blocked_decision", False) and not missing:
-            # A scheduled decision that failed closed gets another chance within
-            # seconds, not at tomorrow's candle boundary. _seen was not advanced.
-            await self._tick()
-            missing = dict(getattr(self, "_quote_failures", {}))
-        if not self._market_is_open():
-            return
+        여기가 왜 있는가: 이 주기는 3초마다 호가 갱신·체결 폴링·**봉 사이
+        손절**·수동 주문을 돌립니다. 예전에는 수동 주문만 감싸져 있어서, 토스가
+        주문 상세를 한 번 못 읽거나(`settle_live_fills` 는 그 실패를 일부러
+        다시 던집니다) 계좌가 정지된 뒤 첫 손절이 예외를 내면 그 예외가
+        `_sleep_serving_manual` 을 지나 `run()` 까지 올라갔습니다. `run()` 의
+        `finally` 는 `shutdown()` 이라, **나가려던 손절은 나가지 않은 채 봇이
+        꺼지고** 실거래면 대개 종료가 "안전하지 않음" 으로 기록돼 격리까지
+        갑니다. 일시적인 조회 실패 하나가 포지션을 관리하는 손을 통째로
+        없애는 것입니다.
+
+        그래서 실패는 삼키되 **조용히 삼키지는 않습니다** — 로그, ERROR 이벤트,
+        그리고 `status()` 가 읽는 `maintenance_error` 에 남깁니다. 다음 주기가
+        3초 뒤에 다시 시도합니다.
+
+        사유는 `failures` 에 **모으기만** 합니다. 여기서 바로
+        `maintenance_error` 를 쓰면 같은 주기의 다음 단계가 성공하는 순간 앞
+        단계의 실패가 지워집니다 — 호가가 죽었는데 체결 폴링이 성공하면 화면은
+        아무 문제 없다고 말하게 됩니다. 확정은 주기가 끝날 때 한 번 합니다.
+        """
         try:
-            sent = await self._flush_manual_quote_safe(missing)
-            if sent:
-                log.info("수동 주문 %d건 즉시 제출", sent)
+            result = await coro
         except asyncio.CancelledError:
             raise
-        except Exception as exc:      # noqa: BLE001 — maintenance loop survives
-            log.warning("수동 주문 제출 실패: %s", exc)
-            await self.engine.ctx.bus.publish(
-                EventType.ERROR, {"error": f"수동 주문 제출 실패: {exc}"})
+        except Exception as exc:      # noqa: BLE001 — 루프는 살아남아야 한다
+            failures.append(f"{label} 실패: {exc}")
+            log.exception("유지 주기 단계 실패 (%s) — 다음 주기에 다시 시도합니다",
+                          label)
+            with contextlib.suppress(Exception):
+                await self.engine.ctx.bus.publish(
+                    EventType.ERROR, {"error": failures[-1]})
+            return False, None
+        return True, result
+
+    async def _flush_aged_orders(self) -> int:
+        """노화 정책이 "빼라" 고 한 주문을 실제로 증권사에서 뺀다.
+
+        `ExecutionModel.review_orders` 는 오래 매달린 주문에 판정을 내리고
+        `pending_cancellations` 에 담아 둡니다. 그런데 **그 목록을 읽는 코드가
+        어디에도 없었습니다.** 정책은 매 봉 돌면서 아무 일도 하지 않았고,
+        취소·재가격·시장가 전환은 전부 죽은 경로였습니다.
+
+        토스·한투는 DAY 주문이라 장 마감이 대신 치워 줍니다. ccxt 는 아닙니다 —
+        `timeInForce` 를 보내지 않아 GTC 로 남고, 8bp 아래 매수 지정가가 며칠
+        뒤 시장이 그 가격을 뚫고 내려올 때 **낡은 판단으로** 체결됩니다.
+        그동안 그 종목에는 새 주문도 나가지 않습니다(정책이 stand-down 시킴).
+
+        취소/체결 경쟁은 어댑터가 이미 다룹니다 — `cancel()` 이 경쟁 체결을
+        큐로 되돌리고 `_reap` 이 그것을 장부화합니다(`tests/test_cancel_race.py`).
+        """
+        model = getattr(self.engine, "execution_model", None)
+        review = getattr(model, "review_orders", None)
+        if review is None:
+            return 0
+        # 봉 단위로 게이트되어 있어 유지 주기에서 불러도 두 번 늙지 않습니다.
+        review(self.engine.ctx)
+        pending = list(getattr(model, "pending_cancellations", ()) or ())
+        if not pending:
+            return 0
+        removed = 0
+        for order in pending:
+            try:
+                if await self.engine.brokerage.cancel(order):
+                    removed += 1
+            except Exception as exc:  # noqa: BLE001 — 다음 주기가 다시 시도한다
+                log.warning("노화한 주문 %s 취소 실패: %s",
+                            getattr(order, "broker_id", None) or order.id, exc)
+        if removed:
+            log.info("오래 매달린 주문 %d건을 거래소에서 뺐습니다", removed)
+            # 취소와 체결이 겹쳤을 수 있습니다. 그 체결을 먼저 장부에 넣어야
+            # 다음 판단이 있지도 않은 수량을 팔지 않습니다.
+            await self.engine.settle_live_fills()
+        return removed
+
+    async def _maintenance_cycle(self) -> None:
+        """Short, rate-safe work that must not wait for the next strategy bar.
+
+        모든 단계는 `_guarded` 를 지납니다. 한 단계의 실패가 뒤 단계를 막지
+        않아야 하는 이유는 순서에 있습니다 — 호가 갱신이 실패해도 **손절은
+        나가야** 하고, 손절이 실패해도 사람이 누른 수동 매도는 나가야 합니다.
+        """
+        failures: list[str] = []
+        try:
+            market_open = self._market_is_open()
+            missing: dict[str, str] = {}
+            if market_open and getattr(self.engine.brokerage, "venue_backed", False):
+                ok, result = await self._guarded(
+                    "호가 갱신", self._refresh_quotes(), failures)
+                if ok:
+                    _, missing = result
+                else:
+                    # 호가를 모르는 채로 수동 주문을 내보내지 않습니다. 이 dict 는
+                    # 아래 `_flush_manual_quote_safe` 가 "이 종목은 호가가 없다" 로
+                    # 읽는 값이라, 비워 두면 실패를 성공으로 착각합니다.
+                    missing = {s.key: "호가 갱신 실패"
+                               for s in self._watched_symbols()}
+            await self._guarded("체결 폴링", self._poll_live_fills(), failures)
+
+            # Every provider/poll above can straddle the bell. Permission from
+            # the beginning of the cycle is not permission to submit now.
+            if not self._market_is_open():
+                return
+            if (getattr(self.engine.brokerage, "venue_backed", False)
+                    and self.engine.ctx.portfolio.open_positions):
+                # Stops and drawdown cuts are safety decisions, not alpha
+                # decisions. Re-evaluate them on the current mark instead of
+                # waiting up to one daily candle. _run_exit_safety filters the
+                # output to reductions.
+                await self._guarded("봉 사이 손절", self._run_exit_safety(), failures)
+            if getattr(self.engine.brokerage, "venue_backed", False):
+                # 노화 정책이 빼라고 한 주문을 실제로 뺍니다. 손절 뒤에 두는
+                # 이유: 손절은 자기가 필요한 주문을 먼저 취소하므로 순서를
+                # 다투지 않고, 여기서 취소가 실패해도 손절은 이미 나갔습니다.
+                await self._guarded("노화 주문 정리", self._flush_aged_orders(),
+                                    failures)
+            if getattr(self, "_quote_blocked_decision", False) and not missing:
+                # A scheduled decision that failed closed gets another chance
+                # within seconds, not at tomorrow's candle boundary. _seen was
+                # not advanced. `_tick` 은 자기 예외를 스스로 세므로 여기서 또
+                # 감싸지 않습니다.
+                await self._tick()
+                missing = dict(getattr(self, "_quote_failures", {}))
+            if not self._market_is_open():
+                return
+            ok, sent = await self._guarded(
+                "수동 주문 제출", self._flush_manual_quote_safe(missing), failures)
+            if ok and sent:
+                log.info("수동 주문 %d건 즉시 제출", sent)
+        finally:
+            # 사유 확정은 주기 끝에서 한 번 — 앞 단계의 실패를 뒤 단계의 성공이
+            # 지우지 않게. 깨끗한 주기가 지웁니다.
+            self.maintenance_error = " / ".join(failures)
+            self._maintenance_failures = (
+                self._maintenance_failures + 1 if failures else 0)
 
     async def _wait_for_market(self) -> bool:
         """Sleep until the venue opens. Returns True if we slept.
@@ -1423,6 +1543,11 @@ class LiveTrader:
             "queued": self._queued(),
             # 마지막 심의 시도가 왜 아무것도 못 남겼는지. 잘 돌았으면 빈 문자열.
             "desk_note": self.desk_note,
+            # 3초 유지 주기(호가·체결·봉 사이 손절·수동 주문)의 마지막 실패.
+            # 이 값이 계속 차 있으면 손절이 평가되지 않고 있다는 뜻이라,
+            # 화면이 반드시 읽어야 하는 자리입니다. 잘 돌면 빈 문자열입니다.
+            "maintenance_error": self.maintenance_error,
+            "maintenance_failures": self._maintenance_failures,
             "market": {
                 "calendar": getattr(self.calendar, "name", None),
                 "open": self.calendar.is_open(datetime.now(UTC)) if self.calendar else None,

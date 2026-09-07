@@ -589,7 +589,29 @@ class TradingDesk(AlphaModel):
         self.history: list[DeskDecision] = []
         self.warmup_bars = 210
         self._sets: dict[str, IndicatorSet] = {}
+        #: symbol.key → 지표에 마지막으로 넣은 봉의 시각.
+        #:
+        #: 데스크는 `on_bars` 말고도 불립니다 — 시작 직후(`_opening_deliberation`)와
+        #: **휴장 중 `closed_cadence_minutes` 마다**(`_closed_market_deliberation`).
+        #: 그때 넘어오는 봉은 새 봉이 아니라 `ctx.history()[-1]`, 즉 이미 넣은
+        #: 바로 그 봉입니다. 확인 없이 다시 넣으면 같은 종가가 SMA·RSI·ATR·
+        #: 변동성 창에 몇 번이고 쌓여, 주말이 지나면 20봉 수익률과 변동성이
+        #: 0 에 수렴한 채로 다음 실제 봉의 브리프가 만들어집니다. 브리프는
+        #: 좌석들에게 "사실로 간주하라" 고 말하는 자리라 그 숫자가 곧 주문이
+        #: 됩니다. LLM 은 캐시라 한 번도 안 불리므로 비용·로그에도 안 남습니다.
+        self._ingested: dict[str, datetime] = {}
         self._disabled = ""
+        #: 이 데스크가 쓴 LLM 을 누구 앞으로 다는가 (`quant.live.spend.SpendMeter`).
+        #: `LiveTrader` 가 붙입니다. 단일 사용자 배포에는 셀 사람이 없어 `None`.
+        #:
+        #: **봉마다 도는 심의가 여기를 지나야 합니다.** 예전에는 계량이
+        #: `_deliberate_now`(시작·휴장 중)와 `/api/evaluate` 에만 있어서, 정작
+        #: 돈이 되는 경로 — `on_bars` → `update()` → `deliberate()` — 는 요금제를
+        #: 묻지도 사용량을 적지도 않았습니다. 사용자가 자기 키를 넣지 않았으면
+        #: 그 호출은 운영자 키로 나가고 집계에도 잡히지 않습니다.
+        self.meter = None
+        #: 이번 봉에 심의를 쉰 이유(요금제). 비어 있으면 정상입니다.
+        self.meter_note = ""
 
     # ── lifecycle ────────────────────────────────────────────────────────
     async def on_start(self, ctx: Context) -> None:
@@ -660,6 +682,34 @@ class TradingDesk(AlphaModel):
         except Exception as exc:                      # pragma: no cover - defensive
             return f"LLM 사전 점검 실패: {type(exc).__name__}: {exc}"
         return ""
+
+    def _record_spend(self, before_calls: int, before_cost: float) -> None:
+        """이번 심의가 쓴 만큼 계량기에 적는다. 기록 실패가 매매를 막지 않게."""
+        if self.meter is None:
+            return
+        calls = max(0, self._calls() - before_calls)
+        if not calls:
+            return
+        spent = max(0.0, self.estimated_cost_usd - before_cost)
+        try:
+            self.meter.record(calls, spent)
+        except Exception:  # noqa: BLE001 — 청구 기록 실패로 봇을 세우지 않는다
+            log.exception("데스크 사용량을 기록하지 못했습니다 (호출 %d, $%.4f)",
+                          calls, spent)
+
+    def _fresh_bars(self, bars: dict[str, Bar]) -> dict[str, Bar]:
+        """아직 지표에 넣지 않은 봉만 추린다.
+
+        같은 시각은 물론 **더 오래된** 봉도 거릅니다. 스트리밍 지표는 되감을
+        수 없어서, 뒤늦게 도착한 옛 봉 하나가 창을 영구히 어긋나게 합니다.
+        """
+        out: dict[str, Bar] = {}
+        for key, bar in bars.items():
+            seen = self._ingested.get(bar.symbol.key)
+            if seen is not None and bar.ts <= seen:
+                continue
+            out[key] = bar
+        return out
 
     # ── the shared brief ─────────────────────────────────────────────────
     def _indicators(self, ctx: Context, symbol: Symbol) -> IndicatorSet:
@@ -1085,8 +1135,19 @@ class TradingDesk(AlphaModel):
     async def update(self, ctx: Context, bars: dict[str, Bar]) -> list[Insight]:
         if self._disabled:
             return []
+        # 이미 넣은 봉은 여기서 걸러 냅니다 — 이유는 `_ingested` 에.
+        bars = self._fresh_bars(bars)
+        if not bars:
+            # 새 봉이 하나도 없으면 **아무것도 하지 않습니다.** 그냥 지표만
+            # 건너뛰면 안 됩니다: 아래에서 `_bar_count` 가 올라가 cadence 가
+            # 어긋나고, 캐시된 결정이 history·memory·이벤트로 다시 흘러
+            # 회고 장부의 적중률과 알파 귀속이 같은 판단을 여러 건으로 셉니다.
+            # 부르는 쪽(`_deliberate_now`)은 LLM 호출이 0 인 것을 보고
+            # "이 봉은 이미 심의했습니다" 를 화면에 띄웁니다.
+            return []
         for bar in bars.values():
             self._indicators(ctx, bar.symbol).update(bar)
+            self._ingested[bar.symbol.key] = bar.ts
 
         if self.memory is not None:
             for lesson in self.memory.settle(ctx):
@@ -1104,6 +1165,19 @@ class TradingDesk(AlphaModel):
         if self.cost_limit_usd and self.estimated_cost_usd >= self.cost_limit_usd:
             log.warning("데스크 비용 한도 $%.2f 도달 — 심의 중단", self.cost_limit_usd)
             return []
+        # 요금제를 **여기서** 묻습니다. 이 경로가 봉마다 도는, 돈이 되는
+        # 경로입니다. 거절되면 데스크만 쉬고 규칙 기반 알파는 그대로 돕니다
+        # (거절 문구가 사용자에게 그렇게 약속합니다). 출하되는 데스크 설정은
+        # 전부 규칙 알파를 함께 두고 있어 이 약속이 참입니다 — 데스크만 있는
+        # 설정을 새로 만들면 그때는 심의가 멎는 것이 곧 청산이 됩니다.
+        if self.meter is not None:
+            allowed, why = self.meter.allow()
+            if not allowed:
+                if self.meter_note != why:
+                    log.warning("데스크 심의를 쉽니다 — %s", why)
+                self.meter_note = why
+                return []
+        self.meter_note = ""
 
         if self.flow_feed is not None:
             await self.flow_feed.refresh([b.symbol for b in bars.values()])
@@ -1112,9 +1186,16 @@ class TradingDesk(AlphaModel):
         if not targets:
             return []
 
-        results = await asyncio.gather(
-            *(self._deliberate_cached(ctx, s) for s in targets), return_exceptions=True
-        )
+        before_calls, before_cost = self._calls(), self.estimated_cost_usd
+        try:
+            results = await asyncio.gather(
+                *(self._deliberate_cached(ctx, s) for s in targets),
+                return_exceptions=True,
+            )
+        finally:
+            # 실패한 호출도 청구됩니다. 성공만 적으면 그 비용이 아무 계정에도
+            # 잡히지 않고 운영자 카드로 갑니다.
+            self._record_spend(before_calls, before_cost)
 
         insights: list[Insight] = []
         for symbol, decision in zip(targets, results):
@@ -1231,5 +1312,9 @@ class TradingDesk(AlphaModel):
             "llm_calls": self._calls(),
             "estimated_cost_usd": round(self.estimated_cost_usd, 3),
             "cost_limit_usd": self.cost_limit_usd or None,
+            # 요금제 때문에 쉬는 중이면 그 사유. 화면이 "데스크가 조용한 이유" 를
+            # 말할 수 있어야 합니다 — 조용한 데스크와 고장 난 데스크는 화면에서
+            # 구별되지 않습니다.
+            "metered_note": self.meter_note,
             "memory": self.memory.stats if self.memory else None,
         }

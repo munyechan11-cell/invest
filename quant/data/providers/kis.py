@@ -27,7 +27,15 @@ REAL_HOST = "https://openapi.koreainvestment.com:9443"
 MOCK_HOST = "https://openapivts.koreainvestment.com:29443"
 
 _TOKENS: dict[bytes, tuple[str, float]] = {}
-_TOKEN_LOCK = asyncio.Lock()
+#: `LazyLock` 이어야 합니다. 이 줄은 **모듈을 import 하는 순간** 실행되는데,
+#: 그 시점에 도는 이벤트 루프가 있다는 보장이 없습니다. 맨 `asyncio.Lock()` 은
+#: 그때 루프를 붙잡으려 하고, 없으면 `RuntimeError: There is no current event
+#: loop` 로 **import 자체가 실패** 합니다 — 봇을 세우는 `build_engine` 안에서
+#: 터지므로 사용자에게는 "시작이 안 된다" 로만 보입니다. 있더라도 나중에 실제로
+#: 도는 루프와 다른 루프에 묶이면 잠금이 아무것도 지키지 못합니다.
+#: `quant/core/aio.py` 가 존재하는 이유가 이것이고, 토스 어댑터는 같은 자리에서
+#: 이미 `LazyLock` 을 씁니다.
+_TOKEN_LOCK = LazyLock()
 
 
 def kis_host(paper: bool) -> str:

@@ -383,6 +383,78 @@ class ProfileStore:
         log.info("투자 성향 저장: %s (%s)", profile.name, profile.code)
 
 
+def apply_profile_to_engine(engine, profile: InvestorProfile) -> dict:
+    """돌고 있는 엔진에 성향을 반영한다. **한도는 절대 느슨해지지 않는다.**
+
+    사이징(비중·레버리지·현금 보유·목표 변동성)은 그대로 밀어 넣습니다. 그것은
+    "다음 주문을 얼마로 낼 것인가" 이고, 사용자가 방금 고른 값이 맞습니다.
+
+    하루 한도와 손절 폭은 다릅니다. 예전에는 이 함수의 옛 사본 둘이(서버와
+    레지스트리에 복제돼 있었습니다) 무조건 대입했습니다. 그래서 설문 한 번이
+    설정 파일에 **명시된** 하루 손실 한도 1% 를 5% 로, 손절 상한 8% 를 30% 로
+    바꿨습니다. 시작 시점에 도는 `apply_profile` 은 정반대 규칙 — "설정에 적힌
+    값이 언제나 우선" — 이라, 같은 성향이 언제 저장됐느냐에 따라 봇이 다르게
+    돌았습니다.
+
+    그래서 런타임에서는 **조이는 방향만** 허용합니다. 조이는 변경은 사용자가
+    이미 받아들인 노출보다 커질 수 없습니다. 풀려면 설정 화면의 하루 한도로
+    가야 하고, 그쪽은 이미 "0 은 한도 없음이 아니라 안 적었음" 이라는 규칙과
+    감사 기록을 갖고 있습니다.
+
+    돌려주는 `loosened_blocked` 는 화면이 "왜 안 바뀌었는지" 를 말할 수 있게
+    하려는 것입니다 — 조용히 무시하면 사용자는 적용된 줄 압니다.
+    """
+    s = profile.settings()
+    pm = engine.portfolio_model
+    pm.max_position_weight = s["max_position_weight"]
+    pm.max_gross_leverage = s["max_gross_leverage"]
+    pm.cash_reserve_pct = s["cash_reserve_pct"]
+    if hasattr(pm, "target_vol"):
+        pm.target_vol = s["target_annual_vol"]
+
+    blocked: list[str] = []
+
+    def tighten(obj, attr: str, wanted, label: str, *, zero_is_unlimited=False):
+        """더 조이는 값만 반영한다. 0 은 "한도 없음" 이라 가장 느슨한 값이다."""
+        current = getattr(obj, attr, None)
+        if current is None:
+            return
+        if zero_is_unlimited and not current:
+            setattr(obj, attr, wanted)       # 무제한이었으면 무엇이든 조인다
+            return
+        if not wanted:
+            blocked.append(label)            # 무제한으로 푸는 요청
+            return
+        if wanted < current:
+            setattr(obj, attr, wanted)
+        elif wanted > current:
+            blocked.append(label)
+
+    budget = getattr(engine, "budget", None)
+    if budget is not None:
+        tighten(budget, "max_loss_pct", s["max_daily_loss_pct"],
+                "하루 손실 한도", zero_is_unlimited=True)
+        tighten(budget, "max_orders", s["max_daily_orders"],
+                "하루 주문 건수", zero_is_unlimited=True)
+
+    for model in getattr(getattr(engine, "risk", None), "models", []) or []:
+        if model.name == "max_dd_per_security":
+            tighten(model, "atr_multiple", s["stop_atr_multiple"], "손절 ATR 배수")
+            tighten(model, "limit", s["stop_ceiling_pct"], "손절 상한")
+        elif model.name == "trailing_stop":
+            tighten(model, "atr_multiple", s["trailing_atr_multiple"],
+                    "트레일링 ATR 배수")
+        elif model.name == "max_positions":
+            tighten(model, "max_positions", s["max_positions"], "최대 종목 수")
+
+    return {
+        "sizing_and_risk": "즉시 적용됨",
+        "needs_restart": ["봉 주기", "알파 모델 구성", "AI 데스크 사용 여부"],
+        # 느슨해지는 변경은 돌고 있는 봇에 반영하지 않습니다 — 이유는 위에.
+        "loosened_blocked": sorted(set(blocked)),
+    }
+
+
 def apply_profile(config, profile: InvestorProfile):
     """프로필을 설정에 반영한 **복사본**을 돌려준다.
 
