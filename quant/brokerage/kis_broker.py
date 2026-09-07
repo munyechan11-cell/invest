@@ -63,8 +63,27 @@ _CCLD_KEYS = {
 }
 
 
+def _ambiguous_submit(exc: BaseException) -> bool:
+    """이 실패에서 "주문이 안 나갔다" 를 단정할 수 있는가.
+
+    단정할 수 있는 것은 서버가 **읽고 거절한** 경우뿐입니다(4xx). 전송 오류·
+    타임아웃·5xx·깨진 응답은 요청이 이미 처리됐을 수도 있습니다.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    if isinstance(exc, httpx.TransportError):
+        return True
+    # 2xx 인데 JSON 이 아닌 경우 등 — 응답을 해석하지 못한 것도 애매합니다.
+    return isinstance(exc, ValueError)
+
+
 class KisBrokerage(LiveBrokerage):
     name = "kis"
+
+    #: 목록 조회에서 따라갈 페이지 수의 상한. 한 장에 수십 행이 오므로 이
+    #: 정도면 현실적인 계좌를 전부 덮습니다. 넘으면 **부분 결과를 돌려주지 않고**
+    #: 예외로 끝냅니다 — 절반만 아는 잔고는 없는 종목을 청산으로 읽습니다.
+    MAX_QUERY_PAGES = 20
 
     def __init__(self, portfolio, app_key: str = "", app_secret: str = "",
                  account_no: str = "", product_code: str = "01",
@@ -171,11 +190,34 @@ class KisBrokerage(LiveBrokerage):
 
         headers = await self._headers(tr_id, body)
         self._enforce_submission_guard(order)
-        r = await self._client.post(
-            f"{kis_host(self.paper)}{path}", headers=headers, json=body,
-        )
-        r.raise_for_status()
-        data = r.json()
+        try:
+            r = await self._client.post(
+                f"{kis_host(self.paper)}{path}", headers=headers, json=body,
+            )
+            r.raise_for_status()
+            data = r.json()
+        except Exception as exc:
+            # **응답을 못 받은 것은 "주문이 안 나갔다" 가 아닙니다.** 전송 오류나
+            # 5xx 뒤에도 KIS 는 주문을 접수했을 수 있는데, 여기서 그냥 예외로
+            # 끝내면 상위 층은 REJECTED 로 적고 로컬 주문 표에는 아무것도 남지
+            # 않습니다. 그러면 다음 봉이 같은 목표를 다시 diff 해서 **같은 주문을
+            # 또 보냅니다.** 시장가는 그 사이 `sync()` 가 잔고에서 체결을 채택해
+            # 막아 주지만, 지정가는 잔고에 안 잡히므로 둘 다 살아 체결되면 노출이
+            # 두 배가 됩니다. KIS 는 취소가 구현돼 있지 않아 되돌릴 수도 없습니다.
+            #
+            # 토스에는 `clientOrderId` 재시도와 채널 잠금이 있는데 KIS 에는
+            # 대응물이 없습니다. 최소한 **눈을 감았다는 사실** 은 남깁니다 —
+            # 채널이 내려가면 `_guard` 가 다음 주문을 막고, 사람이 체결 내역을
+            # 확인할 때까지 자동으로 재시도하지 않습니다.
+            if _ambiguous_submit(exc):
+                reason = (
+                    f"KIS 주문 응답을 받지 못했습니다 ({type(exc).__name__}: {exc}) — "
+                    "접수됐는지 알 수 없어 중복 주문을 막기 위해 체결 조회 채널을 "
+                    "잠급니다. 증권사 앱에서 미체결·당일 체결을 확인하세요"
+                )
+                self.fill_channel_down(reason)
+                raise BrokerageError(reason) from exc
+            raise
         if str(data.get("rt_cd", "1")) != "0":
             raise BrokerageError(f"KIS order rejected: {data.get('msg1') or data}")
         return str((data.get("output") or {}).get("ODNO") or "")
@@ -238,19 +280,70 @@ class KisBrokerage(LiveBrokerage):
             ))
         return rows
 
+    async def _paged(self, path: str, tr_id: str, params: dict,
+                     *, ctx_suffix: str, what: str):
+        """KIS 목록 조회를 **끝까지** 읽는다. 한 페이지만 읽으면 안 된다.
+
+        KIS 는 목록을 나눠 주고 이어받기 키를 `ctx_area_fk###`/`nk###` 로,
+        "다음 장이 있음" 을 응답 헤더 `tr_cont`(F/M)로 알립니다. 예전에는 그
+        둘을 무시하고 빈 키로 첫 장만 읽었습니다.
+
+        그것이 왜 위험한가: 둘째 장의 보유 종목은 `_venue_positions()` 에
+        없으므로 `_sync_once` 가 "외부에서 청산됐다" 로 읽고 로컬 수량을 0 으로
+        만든 뒤 **원가만큼 현금을 지어냅니다.** 엔진은 그 종목이 비었고 현금이
+        늘었다고 믿어 다시 사고, 사라진 수량에는 손절이 걸리지 않습니다.
+        체결 조회도 같아서, 뒤 장의 체결은 아무 표시 없이 장부에 오르지
+        않습니다.
+
+        그래서 이 함수는 **부분 결과를 돌려주지 않습니다.** 페이지 상한에
+        닿거나 이어받기 키가 이상하면 예외로 끝냅니다 — 모르는 채로 절반만
+        아는 것보다 조회 실패가 낫습니다(`sync` 가 그것을 실패로 다룹니다).
+        """
+        fk = nk = ""
+        tr_cont = ""
+        for _page in range(self.MAX_QUERY_PAGES):
+            headers = await self._headers(tr_id)
+            if tr_cont:
+                headers["tr_cont"] = tr_cont
+            r = await self._client.get(
+                f"{kis_host(self.paper)}{path}",
+                headers=headers,
+                params={"CANO": self.account_no[:8],
+                        "ACNT_PRDT_CD": self.product_code, **params,
+                        f"CTX_AREA_FK{ctx_suffix}": fk,
+                        f"CTX_AREA_NK{ctx_suffix}": nk},
+            )
+            r.raise_for_status()
+            data = r.json()
+            if str(data.get("rt_cd", "0")) != "0":
+                raise BrokerageError(f"KIS {what} 거부: {data.get('msg1') or data}")
+            yield data
+            more = (r.headers.get("tr_cont") or "").strip().upper()
+            if more not in ("F", "M"):
+                return
+            fk = str(data.get(f"ctx_area_fk{ctx_suffix}") or "").strip()
+            nk = str(data.get(f"ctx_area_nk{ctx_suffix}") or "").strip()
+            if not nk:
+                raise BrokerageError(
+                    f"KIS {what}: 다음 장이 있다고 하는데 이어받기 키가 없습니다 — "
+                    "일부만 읽고 전체인 척하지 않습니다"
+                )
+            tr_cont = "N"
+        raise BrokerageError(
+            f"KIS {what}: {self.MAX_QUERY_PAGES}장을 넘겨도 끝이 나오지 "
+            "않았습니다 — 일부만 읽고 전체인 척하지 않습니다"
+        )
+
     async def _query_executions(self, path: str, tr_id: str, output: str,
                                 params: dict) -> list[dict]:
-        r = await self._client.get(
-            f"{kis_host(self.paper)}{path}",
-            headers=await self._headers(tr_id),
-            params={"CANO": self.account_no[:8],
-                    "ACNT_PRDT_CD": self.product_code, **params},
-        )
-        r.raise_for_status()
-        data = r.json()
-        if str(data.get("rt_cd", "0")) != "0":
-            raise BrokerageError(f"KIS 체결 조회 거부: {data.get('msg1') or data}")
-        return list(data.get(output) or [])
+        suffix = "200" if "CTX_AREA_FK200" in params else "100"
+        params = {k: v for k, v in params.items()
+                  if not k.startswith("CTX_AREA_")}
+        rows: list[dict] = []
+        async for data in self._paged(path, tr_id, params,
+                                      ctx_suffix=suffix, what="체결 조회"):
+            rows.extend(list(data.get(output) or []))
+        return rows
 
     def _sell_tax_bps(self, when: datetime | None = None) -> float:
         """그 체결에 실제로 물린 증권거래세율.
@@ -288,17 +381,27 @@ class KisBrokerage(LiveBrokerage):
             by_id = {_field(row, "order_id"): row for row in rows
                      if _field(row, "order_id")}
             unpriced: list[str] = []
+            unreadable: list[str] = []
             for order in list(self._orders.values()):
                 if not order.status.is_open or not order.broker_id:
                     continue
                 row = by_id.get(order.broker_id)
                 if row is None:
                     continue
-                total = _number(row, "filled_qty")
-                newly = total - order.filled_qty
-                if newly <= 0:
+                try:
+                    # 체결 수량은 필수입니다. 없거나 못 읽는 값을 0 으로 치면
+                    # `newly <= 0` 으로 조용히 건너뛰어, 계좌에는 있는 체결이
+                    # 장부에는 영영 없습니다 — 그 포지션엔 손절도 사이징도
+                    # 안 걸립니다. 단가 없는 체결(`unpriced`)과 같은 결로
+                    # 채널을 내립니다.
+                    total = _number(row, "filled_qty", required=True)
+                    newly = total - order.filled_qty
+                    if newly <= 0:
+                        continue
+                    price = _delta_price(row, order, total, newly)
+                except BrokerageError as exc:
+                    unreadable.append(f"{order.broker_id}: {exc}")
                     continue
-                price = _delta_price(row, order, total, newly)
                 if price <= 0:
                     # Booking a fill at 0 is worse than not booking it: it puts
                     # the shares in the book with no basis and no cash paid.
@@ -316,14 +419,23 @@ class KisBrokerage(LiveBrokerage):
                 )
                 order.apply_fill(fill)
                 self._pending_fills.append(fill)
+            problems: list[str] = []
+            if unreadable:
+                problems.append(
+                    "체결 row 를 읽을 수 없습니다 — " + "; ".join(unreadable[:3]))
             if unpriced:
-                self.fill_channel_down(
+                problems.append(
                     f"주문 {', '.join(unpriced)} 의 체결단가를 읽을 수 없습니다")
+            if problems:
+                self.fill_channel_down(" / ".join(problems))
             else:
                 self.fill_channel_up()
         return await super().poll_fills()
 
     async def _venue_open_orders(self):
+        # `_remaining` 이 못 읽는 row 에서 올리는 오류를 그대로 전파합니다.
+        # 종료 직전의 미결 주문 수는 "확인 못 한 것은 남은 것" 이어야 하는데,
+        # 못 읽는 row 를 0 으로 쳐서 빼면 계좌에 걸린 주문이 셈에서 빠집니다.
         return [row for row in await self._venue_executions() if _remaining(row) > 0]
 
     async def _venue_costs(self) -> dict[str, float]:
@@ -367,58 +479,50 @@ class KisBrokerage(LiveBrokerage):
         return out
 
     async def _domestic_balance(self) -> tuple[dict[str, Decimal], dict[str, float]]:
-        r = await self._client.get(
-            f"{kis_host(self.paper)}/uapi/domestic-stock/v1/trading/inquire-balance",
-            headers=await self._headers(TR_BALANCE[not self.paper]),
-            params={
-                "CANO": self.account_no[:8], "ACNT_PRDT_CD": self.product_code,
-                "AFHR_FLPR_YN": "N", "OFL_YN": "", "INQR_DVSN": "02",
-                "UNPR_DVSN": "01", "FUND_STTL_ICLD_YN": "N",
-                "FNCG_AMT_AUTO_RDPT_YN": "N", "PRCS_DVSN": "00",
-                "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
-            },
-        )
-        r.raise_for_status()
-        data = r.json()
         out: dict[str, Decimal] = {}
         costs: dict[str, float] = {}
-        for row in data.get("output1") or []:
-            qty = Decimal(str(row.get("hldg_qty") or 0))
-            if qty:
-                key = f"kis:{row.get('pdno')}"
-                out[key] = qty
-                # 매입평균가. Without it an adopted position is born at basis 0
-                # and every P&L number downstream is the market value.
-                costs[key] = float(row.get("pchs_avg_pric") or 0)
-        summary = data.get("output2") or []
-        if isinstance(summary, dict):
-            summary = [summary]
-        deposit = summary[0].get("dnca_tot_amt") if summary else None
-        self._venue_deposit = (float(deposit)
-                               if deposit not in (None, "") else None)
+        deposit = None
+        async for data in self._paged(
+            "/uapi/domestic-stock/v1/trading/inquire-balance",
+            TR_BALANCE[not self.paper],
+            {"AFHR_FLPR_YN": "N", "OFL_YN": "", "INQR_DVSN": "02",
+             "UNPR_DVSN": "01", "FUND_STTL_ICLD_YN": "N",
+             "FNCG_AMT_AUTO_RDPT_YN": "N", "PRCS_DVSN": "00"},
+            ctx_suffix="100", what="잔고 조회",
+        ):
+            for row in data.get("output1") or []:
+                qty = Decimal(str(row.get("hldg_qty") or 0))
+                if qty:
+                    key = f"kis:{row.get('pdno')}"
+                    out[key] = qty
+                    # 매입평균가. Without it an adopted position is born at
+                    # basis 0 and every P&L number downstream is the market value.
+                    costs[key] = float(row.get("pchs_avg_pric") or 0)
+            summary = data.get("output2") or []
+            if isinstance(summary, dict):
+                summary = [summary]
+            if summary and summary[0].get("dnca_tot_amt") not in (None, ""):
+                # 예수금은 계좌 합계라 어느 장에 실려 와도 같은 값입니다.
+                deposit = summary[0].get("dnca_tot_amt")
+        self._venue_deposit = float(deposit) if deposit is not None else None
         return out, costs
 
     async def _overseas_balance(self) -> tuple[dict[str, Decimal], dict[str, float]]:
-        r = await self._client.get(
-            f"{kis_host(self.paper)}/uapi/overseas-stock/v1/trading/inquire-balance",
-            headers=await self._headers(TR_OVERSEAS_BALANCE[not self.paper]),
-            params={
-                "CANO": self.account_no[:8], "ACNT_PRDT_CD": self.product_code,
-                "OVRS_EXCG_CD": self.overseas_exchange,
-                "TR_CRCY_CD": EXCHANGE_CURRENCY.get(self.overseas_exchange, "USD"),
-                "CTX_AREA_FK200": "", "CTX_AREA_NK200": "",
-            },
-        )
-        r.raise_for_status()
-        data = r.json()
         out: dict[str, Decimal] = {}
         costs: dict[str, float] = {}
-        for row in data.get("output1") or []:
-            qty = Decimal(str(row.get("ovrs_cblc_qty") or 0))
-            if qty:
-                key = f"kis:{row.get('ovrs_pdno')}"
-                out[key] = qty
-                costs[key] = float(row.get("pchs_avg_pric") or 0)
+        async for data in self._paged(
+            "/uapi/overseas-stock/v1/trading/inquire-balance",
+            TR_OVERSEAS_BALANCE[not self.paper],
+            {"OVRS_EXCG_CD": self.overseas_exchange,
+             "TR_CRCY_CD": EXCHANGE_CURRENCY.get(self.overseas_exchange, "USD")},
+            ctx_suffix="200", what="해외 잔고 조회",
+        ):
+            for row in data.get("output1") or []:
+                qty = Decimal(str(row.get("ovrs_cblc_qty") or 0))
+                if qty:
+                    key = f"kis:{row.get('ovrs_pdno')}"
+                    out[key] = qty
+                    costs[key] = float(row.get("pchs_avg_pric") or 0)
         return out, costs
 
     async def close(self):
@@ -434,18 +538,42 @@ def _field(row: dict, name: str) -> str:
     return ""
 
 
-def _number(row: dict, name: str) -> Decimal:
+def _number(row: dict, name: str, *, required: bool = False) -> Decimal:
+    """체결 row 의 숫자 하나. 못 읽는 값은 0 이 아니라 오류입니다.
+
+    0 은 "없음" 이지 "모름" 이 아닙니다. 못 읽는 `tot_ccld_qty` 를 0 으로
+    돌려주면 `poll_fills` 는 새 체결이 없다고 믿고 넘어가고, 못 읽는
+    `rmn_qty` 를 0 으로 돌려주면 종료 직전 미결 주문 수에서 그 주문이
+    빠집니다 — 둘 다 아무 표시 없이 조용히 틀립니다.
+
+    비어 있는 값은 `required` 일 때만 오류입니다. 평균가·체결금액처럼 없을 수
+    있는 자리(미체결 row)는 0 으로 두고, 호출자가 "단가 없음" 으로 다룹니다.
+    """
     raw = _field(row, name).replace(",", "")
-    try:
-        return Decimal(raw) if raw else Decimal("0")
-    except (ArithmeticError, ValueError):
+    if not raw:
+        if required:
+            raise BrokerageError(
+                f"KIS 체결 row 에 {name} 값이 없습니다 ({'/'.join(_CCLD_KEYS[name])})"
+            )
         return Decimal("0")
+    try:
+        value = Decimal(raw)
+    except (ArithmeticError, ValueError) as exc:
+        raise BrokerageError(
+            f"KIS 체결 row 의 {name} 값을 숫자로 읽을 수 없습니다: {raw!r}"
+        ) from exc
+    if not value.is_finite():
+        raise BrokerageError(f"KIS 체결 row 의 {name} 값이 유한한 숫자가 아닙니다: {raw!r}")
+    return value
 
 
 def _remaining(row: dict) -> Decimal:
     if _field(row, "remaining"):
         return _number(row, "remaining")
-    return _number(row, "order_qty") - _number(row, "filled_qty")
+    # 잔량 필드가 없으면 주문수량과 체결수량 둘 다 있어야 셈이 됩니다. 하나라도
+    # 없는 row 를 0 으로 계산하면 걸려 있는 주문이 "다 체결됨" 으로 빠집니다.
+    return (_number(row, "order_qty", required=True)
+            - _number(row, "filled_qty", required=True))
 
 
 def _row_avg_price(row: dict, filled: Decimal) -> float:

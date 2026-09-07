@@ -6,7 +6,7 @@ import logging
 from decimal import Decimal
 
 from quant.brokerage.live_base import LiveBrokerage
-from quant.core.types import Fill, Order, OrderType, Symbol, utcnow
+from quant.core.types import Fill, Order, OrderStatus, OrderType, Symbol, utcnow
 
 log = logging.getLogger("quant.brokerage.ccxt")
 
@@ -101,6 +101,19 @@ class CcxtBrokerage(LiveBrokerage):
                         ts=utcnow(), liquidity="maker",
                     ))
                     order.apply_fill(self._pending_fills[-1])
+                # 거래소가 이미 끝낸 주문을 로컬에서 열린 채로 두면 `projected
+                # quantity` 가 없는 주문을 계속 세고, 실행 모델은 그 종목에
+                # 아무것도 새로 내보내지 않습니다 — 죽은 주문 하나가 그 종목의
+                # 매매를 조용히 멈춥니다. ccxt 는 상태를 문자열로 줍니다.
+                status = str(remote.get("status") or "").lower()
+                if order.status.is_open and status in ("canceled", "cancelled",
+                                                       "expired", "rejected"):
+                    order.status = (OrderStatus.FILLED
+                                    if order.filled_qty >= order.quantity
+                                    else OrderStatus.CANCELED)
+                    order.updated_at = utcnow()
+                    log.info("거래소가 주문 %s 를 %s 로 끝냈습니다 — 로컬에서도 "
+                             "닫습니다", order.broker_id, status)
         return await super().poll_fills()
 
     async def close(self):

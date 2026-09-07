@@ -12,7 +12,7 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from quant.brokerage.base import Brokerage, BrokerageError
 from quant.core.account import Portfolio
@@ -27,6 +27,32 @@ from quant.core.types import (
 )
 
 log = logging.getLogger("quant.brokerage.live")
+
+#: 증권사가 체결 비용(수수료·세금)을 알려주지 않아 **설정의 비용 모델로 추정해**
+#: 장부화한 주문이 `order.meta` 에 남기는 표식입니다. 어댑터(toss_broker)가 쓰고
+#: 이 층의 현금 증명이 읽습니다. 추정치는 실제 청구액과 몇 원 어긋날 수 있는데,
+#: 현금 증명이 그 오차를 "장부에 없는 체결" 로 오인하면 다음 매수가 재시작 전까지
+#: 영영 막힙니다. 그래서 증명의 허용폭을 이 합계만큼 넓힙니다.
+FEE_ESTIMATED_META = "fee_estimated"
+#: 그 주문에서 추정으로 장부화한 비용의 누계. 소수 문자열로 저장합니다 —
+#: float 로 두면 저장·복원을 오가며 값이 미세하게 달라집니다.
+FEE_ESTIMATED_TOTAL_META = "fee_estimated_total"
+
+
+def _estimated_fee_total(order: Order) -> float:
+    """이 주문에서 추정으로 장부화한 비용의 합. 표식이 없거나 못 읽으면 0.
+
+    못 읽는 값을 0 으로 치는 것은 **허용폭을 넓히지 않는** 쪽이라 fail-closed
+    입니다 — 증명이 더 엄격해질 뿐, 장부에 없는 체결을 놓치는 방향은 아닙니다.
+    """
+    raw = order.meta.get(FEE_ESTIMATED_TOTAL_META)
+    if raw in (None, ""):
+        return 0.0
+    try:
+        value = float(Decimal(str(raw)))
+    except (InvalidOperation, ValueError, TypeError):
+        return 0.0
+    return value if math.isfinite(value) and value > 0 else 0.0
 
 
 @dataclass(frozen=True)
@@ -118,6 +144,13 @@ class LiveBrokerage(Brokerage):
         #: network timeout from becoming a second real position
         self._dedupe: dict[tuple, float] = {}
         self._pending_fills: list[Fill] = []
+        # 마지막 동기화에서 증권사 보유분을 장부에 연결하지 못한 종목 → 이유.
+        # 매핑이 없거나 원가를 몰라 수량을 들이지 않은 자리입니다. 여기 있는
+        # 종목에는 신규 진입을 보내지 않습니다 — 계좌에는 있는데 장부에는 없는
+        # 포지션 위에 또 사면, 손절도 사이징도 하루 한도도 모르는 노출이 커집니다.
+        # 줄이는 주문은 막지 않습니다. 동기화가 실패하면 이전 값을 그대로 둡니다
+        # (모르는 동안은 막힌 채로).
+        self._uncorrected_positions: dict[str, str] = {}
         # LiveTrader installs the venue-session/accounting quarantine here.
         # The base layer checks it after adapter preflight; every concrete
         # adapter must also call ``_enforce_submission_guard`` after its own
@@ -261,13 +294,38 @@ class LiveBrokerage(Brokerage):
             self._capital_terminal_observed.add(order.id)
 
     def _same_symbol_capital_pending(self, order: Order) -> bool:
-        """Whether this symbol already has an un-reconciled truth-mode order."""
+        """이 종목에 아직 정산되지 않은, **경쟁하는** 주문이 있는가.
+
+        직렬화가 막으려는 사고는 하나입니다: 같은 보유 수량을 두고 두 주문이
+        각자 사이징해서 합치면 불가능한 목표가 되는 것(초과 매도). 그래서
+        경쟁의 기준은 "같은 종목" 이 아니라 **"같은 자원을 소비하는가"** 입니다.
+
+        줄이는 주문(손절·청산)이 소비하는 자원은 **보유 수량** 이고, 그것을
+        함께 소비하는 것은 같은 방향의 다른 주문뿐입니다. 반대 방향의 미결
+        매수는 수량을 **더합니다** — 그것 때문에 매도를 막으면 초과 매도를
+        막는 것이 아니라 빠져나갈 길을 막는 것입니다.
+
+        이 구분이 없을 때 실제로 벌어진 일: 그룹에서 형제 에이전트가 같은
+        종목에 먼 지정가 매수를 하루 종일 걸어 두면, 내 손절이 매 유지 주기마다
+        거절됐습니다. 게이트웨이는 남의 주문을 보여 주지도(`open_orders_for`)
+        취소하지도(`cancel_for`) 않으므로 빠져나갈 방법이 없었습니다.
+
+        신규 노출은 예전 그대로 전부와 직렬화합니다 — 그쪽이 소비하는 자원은
+        매수 가능 금액이고, 조회 지연 중에 두 번 쓰면 계좌가 거절합니다.
+        """
         key = order.symbol.key
+        reducing = self._reduces_position(order)
+
+        def competes(other: Order) -> bool:
+            if other.symbol.key != key:
+                return False
+            return other.side is order.side if reducing else True
+
         return any(
-            checkpoint.order.symbol.key == key
+            competes(checkpoint.order)
             for checkpoint in self._capital_order_checkpoints.values()
         ) or any(
-            tracked.symbol.key == key and tracked.status.is_open
+            tracked.status.is_open and competes(tracked)
             for tracked in self._orders.values()
         )
 
@@ -344,6 +402,14 @@ class LiveBrokerage(Brokerage):
             )
         notional = abs(float(order.quantity)) * price * float(order.symbol.multiplier)
         increasing = not self._reduces_position(order)
+        if increasing:
+            unresolved = self._uncorrected_positions.get(order.symbol.key)
+            if unresolved:
+                raise BrokerageError(
+                    f"{order.symbol.ticker} 의 증권사 보유분을 장부에 연결하지 못했습니다 "
+                    f"({unresolved}) — 수량이나 원가를 모르는 종목에는 신규 진입을 "
+                    "보내지 않습니다. 줄이는 주문은 막지 않습니다"
+                )
         if self.uses_venue_capital and increasing:
             if not self._capital_ready:
                 detail = self._capital_error or "아직 실제 계좌 자산을 확인하지 못했습니다"
@@ -357,7 +423,13 @@ class LiveBrokerage(Brokerage):
                     f"주문 금액 {notional:,.2f} 이 증권사 매수 가능 금액 "
                     f"{self._venue_buying_power:,.2f} 을 넘습니다"
                 )
-        if notional > self.max_order_notional:
+        # 주문 한 건의 상한은 **신규 노출** 에만 겁니다. 줄이는 주문에도 걸면
+        # 상한보다 커진 포지션(가격이 오른 보유분, 외부에서 들어온 보유분)을
+        # 손절할 길이 없어집니다 — 한도의 목적은 위험을 더 쌓지 않는 것이지
+        # 위험을 줄이는 주문을 가두는 것이 아닙니다. 초과 매도(보유보다 큰
+        # 수량)는 `_reduces_position` 이 줄이는 주문으로 보지 않으므로 여전히
+        # 상한에 걸립니다.
+        if increasing and notional > self.max_order_notional:
             raise BrokerageError(
                 f"order notional {notional:,.2f} exceeds the "
                 f"{self.max_order_notional:,.2f} per-order limit — refusing to send"
@@ -981,12 +1053,27 @@ class LiveBrokerage(Brokerage):
             # checking the BUY against its old cash ceiling and the SELL against
             # its old cash floor makes both look stale even when the final account
             # is exact.  ``portfolio.cash`` already contains every verified fill
-            # exactly once, including its official fees. Compare that aggregate
-            # ledger with the account snapshot only after every per-symbol
-            # quantity proof passes.
+            # exactly once, including its fees. Compare that aggregate ledger
+            # with the account snapshot only after every per-symbol quantity
+            # proof passes.
+            #
+            # 비용을 증권사가 안 알려줘서 추정으로 장부화한 주문이 있으면 그 오차
+            # 만큼 허용폭을 넓힙니다. 이 증명이 잡으려는 것은 **장부에 없는 체결**
+            # (한 주 이상의 금액)이지 수수료 한두 원의 반올림이 아닙니다. 넓히지
+            # 않으면 추정이 1원만 어긋나도 증명이 재시작 전까지 영영 실패해 모든
+            # 새 매수가 막힙니다. 증명이 통과하면 아래 `adopt_venue_capital` 이
+            # 장부를 실제 현금으로 되돌리므로 오차가 쌓이지는 않습니다. 언제 안
+            # 통하는가: 한 주 값이 추정 비용의 두 배보다 싼 종목(동전주)에서는
+            # 한 주 미체결을 이 폭이 가릴 수 있습니다.
             quantity_failed = any(proof["reason"] for proof in proofs.values())
             expected_cash = self.portfolio.cash
-            cash_tolerance = max(0.01, abs(expected_cash) * 1e-9)
+            estimated_fees = sum(
+                _estimated_fee_total(checkpoint.order)
+                for checkpoint in self._capital_order_checkpoints.values()
+            )
+            cash_tolerance = max(
+                0.01, abs(expected_cash) * 1e-9, 2.0 * estimated_fees,
+            )
             cash_matches = (
                 not quantity_failed
                 and abs(capital["cash"] - expected_cash) <= cash_tolerance
@@ -1068,6 +1155,7 @@ class LiveBrokerage(Brokerage):
                 reason = ("증권사 보유 종목을 전략 장부에 안전하게 연결할 수 없습니다: "
                           + ", ".join(sorted(uncorrected)))
                 self._capital_failed(reason)
+                self._remember_uncorrected(uncorrected)
                 log.error("UNCORRECTED position drift — refusing new exposure: %s",
                           sorted(uncorrected))
                 return {
@@ -1097,10 +1185,27 @@ class LiveBrokerage(Brokerage):
                 if symbol is None:
                     uncorrected[key] = entry
                     continue
-                local = self.portfolio.position(symbol)
             avg = float(costs.get(key) or 0.0)
-            if avg <= 0:
+            if avg <= 0 and local is not None:
                 avg = local.avg_price
+            if qty != 0 and avg <= 0:
+                # 원가를 모르는 수량을 들이면 avg_price 0 인 포지션이 생깁니다.
+                # 그 위에서는 평가액이 통째로 이익으로 잡혀 자본이 부풀고, 퍼센트
+                # 손절은 기준가 0 으로 계산돼 영영 안 걸립니다. 실계좌 진실
+                # 분기는 이미 같은 이유로 거부합니다 — 여기서 들이면 두 분기의
+                # 장부가 같은 계좌를 두고 다른 말을 합니다. KIS 는 `pchs_avg_pric`
+                # 이 비어 있으면 원가 0 을 보냅니다(예: 당일 이체 입고분).
+                entry["reason"] = "venue average cost is unavailable"
+                uncorrected[key] = entry
+                log.error(
+                    "UNCORRECTED position drift — %s holds %s of %s but reports no "
+                    "average cost; the quantity was not adopted and new exposure "
+                    "on it is refused until a basis is available",
+                    self.name, qty, key,
+                )
+                continue
+            if local is None:
+                local = self.portfolio.position(symbol)
             adopted = qty - local_qty
             local.quantity = qty
             if avg > 0:
@@ -1129,12 +1234,22 @@ class LiveBrokerage(Brokerage):
 
         if self.uses_venue_capital:
             assert capital is not None
+            flow = self._external_cash_flow(capital["cash"])
             first = self.portfolio.adopt_venue_capital(
                 cash=capital["cash"],
                 holdings_value=capital["holdings_value"],
                 gross_exposure=capital.get("gross_exposure"),
                 net_exposure=capital.get("net_exposure"),
+                external_cash_flow=flow,
             )
+            if flow:
+                log.warning(
+                    "계좌 현금이 장부보다 %.2f 만큼 다릅니다 — 거래로 설명되지 "
+                    "않으므로 입출금으로 보고 수익률·낙폭 기준선을 함께 "
+                    "옮깁니다 (누계 %.2f)",
+                    flow, self.portfolio.external_flow_total,
+                )
+                report["external_cash_flow"] = flow
             fresh_buying_power = capital["cash"]
             if (self._capital_reservations
                     and self._venue_buying_power is not None):
@@ -1172,9 +1287,60 @@ class LiveBrokerage(Brokerage):
                 "These are held at %s but map to no symbol in this run.",
                 sorted(uncorrected), self.name,
             )
+        self._remember_uncorrected(uncorrected)
         report.update({"drift": {**corrected, **uncorrected},
                        "corrected": corrected, "uncorrected": uncorrected})
         return report
+
+    def _external_cash_flow(self, venue_cash: float) -> float:
+        """거래로 설명되지 않는 현금 차이 — 즉 입출금으로 볼 수 있는 금액.
+
+        `portfolio.cash` 는 장부화한 모든 체결과 비용을 이미 반영합니다. 그러니
+        증권사 현금과의 차이는 (a) 아직 장부에 없는 체결, (b) 추정한 비용의
+        오차, (c) 사람이 넣거나 뺀 돈 셋 중 하나입니다. 여기서는 (a)와 (b)를
+        **배제할 수 있을 때만** (c)로 읽습니다:
+
+        · 미결 주문이 있으면 배제할 수 없습니다. 다만 `_sync_once` 는 그 경우
+          자본을 아예 채택하지 않고 먼저 돌아가므로 여기까지 오지 않습니다.
+        · 증명이 끝나지 않은 주문(`_capital_order_checkpoints`)이 남아 있으면
+          그 차액이 곧 체결분입니다 — 0 을 돌려줍니다.
+        · 체결 조회 채널이 끊겨 있으면 우리가 못 본 체결이 있을 수 있습니다.
+          그 손실을 입출금으로 읽으면 낙폭 킬스위치가 눈을 감습니다 — 이 함수가
+          만들 수 있는 **가장 나쁜 오류** 라 명시적으로 막습니다.
+        · 추정 비용의 오차만큼은 허용폭 안이라 0 으로 봅니다.
+
+        첫 채택은 기준선을 새로 세우는 자리라 여기서 셀 것이 없습니다.
+
+        **언제 이게 안 통하는가.** 주식을 직접 입출고하면 현금이 아니라 수량이
+        움직이므로 이 함수가 잡지 못합니다. 그쪽은 드리프트로 따로 보고되지만
+        기준선은 옮기지 않습니다.
+        """
+        if self.portfolio.capital_source != "venue":
+            return 0.0                      # 첫 채택 — 기준선을 새로 세운다
+        if self._capital_order_checkpoints:
+            return 0.0                      # 그 차액은 체결분이다
+        if not self.fill_channel_ok:
+            return 0.0                      # 못 본 체결일 수 있다 — 세지 않는다
+        if any(order.status.is_open for order in self._orders.values()):
+            return 0.0
+        expected = self.portfolio.cash
+        if not math.isfinite(expected) or not math.isfinite(venue_cash):
+            return 0.0
+        delta = float(venue_cash) - float(expected)
+        tolerance = max(0.01, abs(expected) * 1e-9)
+        return delta if abs(delta) > tolerance else 0.0
+
+    def _remember_uncorrected(self, uncorrected: dict[str, dict]) -> None:
+        """`_guard` 가 신규 진입을 막을 종목을 이번 동기화 결과로 갈아 끼웁니다.
+
+        통째로 바꾸므로, 다음 동기화에서 원가가 들어오거나 매핑이 생겨 보정된
+        종목은 자연히 풀립니다. 동기화가 중간에 실패해 여기까지 못 오면 이전
+        목록이 남습니다 — 모르는 동안은 막힌 채로 두는 쪽이 맞습니다.
+        """
+        self._uncorrected_positions = {
+            key: str(entry.get("reason") or "symbol is not mapped in this strategy")
+            for key, entry in uncorrected.items()
+        }
 
     async def connect(self) -> None:
         report = None

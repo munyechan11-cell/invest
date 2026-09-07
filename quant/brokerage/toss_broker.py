@@ -36,7 +36,11 @@ from urllib.parse import quote, quote_plus
 import httpx
 
 from quant.brokerage.base import BrokerageError
-from quant.brokerage.live_base import LiveBrokerage
+from quant.brokerage.live_base import (
+    FEE_ESTIMATED_META,
+    FEE_ESTIMATED_TOTAL_META,
+    LiveBrokerage,
+)
 from quant.core.aio import LazyLock
 from quant.core.types import (
     UTC,
@@ -1573,11 +1577,13 @@ class TossBrokerage(LiveBrokerage):
 
         **언제 이게 안 통하는가.** 이 값은 설정의 비용 모델이 말하는 *예상*
         청구액이지 토스가 실제로 청구한 금액이 아닙니다. 우대 요율 계좌나
-        수수료 면제 이벤트가 걸려 있으면 그만큼 어긋납니다. 토스 공식 스펙은
-        주문 조회 응답의 `execution.commission` / `execution.tax` 로 실제
-        청구액을 주지만, 그 블록은 이 어댑터가 체결 수량조차 최상위에서 찾고
-        있어(`_FIELDS["filled_qty"]`) 같이 손대야 읽을 수 있습니다 — 이 결함의
-        범위 밖이라 두었습니다.
+        수수료 면제 이벤트가 걸려 있으면 그만큼 어긋납니다. 그래서 체결 장부의
+        1순위는 주문 상세 응답의 `execution.commission` / `execution.tax`
+        (실제 청구액, `_apply_order_snapshot`)이고, 이 추정은 토스가 그 둘 중
+        하나라도 `null` 로 보냈을 때 — 즉 "0원" 이 아니라 "모름" 일 때 — 의
+        대체 경로입니다. 추정으로 장부화한 주문은 `order.meta` 에
+        `FEE_ESTIMATED_META` 표식과 누계를 남겨, 실계좌 현금 증명이 그 오차를
+        미체결로 오인하지 않게 합니다.
         """
         model = self._fee_model_for(order.symbol, order.side)
         # 토스에 **실제로 나간** 호가 유형으로 maker/taker 를 가릅니다.
@@ -2271,12 +2277,21 @@ class TossBrokerage(LiveBrokerage):
             raise BrokerageError(
                 "토스 체결 수량은 있지만 금액·평균가·최종 체결시각이 완전하지 않습니다"
             )
-        commission = _nonnegative_decimal(
-            execution.get(_FIELDS["commission"]),
-            "execution.commission", nullable=True,
+        # 비용은 `null` 과 "0" 을 구분해야 합니다. "0" 은 실제로 0원(매수엔
+        # 거래세가 없고, 무료 수수료 이벤트도 있습니다)이지만 `null` 은 토스가
+        # 아직 모르거나 안 준 것입니다. 예전엔 둘 다 0 으로 읽어 체결이 공짜로
+        # 장부화됐고, 일일 손실 한도·실현손익·현금 장부가 수수료만큼씩 실제보다
+        # 좋게 어긋났습니다. `None` 은 `_apply_order_snapshot` 에서 설정의 비용
+        # 모델로 추정합니다.
+        commission_raw = execution.get(_FIELDS["commission"])
+        commission = (
+            None if commission_raw is None
+            else _nonnegative_decimal(commission_raw, "execution.commission")
         )
-        tax = _nonnegative_decimal(
-            execution.get(_FIELDS["tax"]), "execution.tax", nullable=True,
+        tax_raw = execution.get(_FIELDS["tax"])
+        tax = (
+            None if tax_raw is None
+            else _nonnegative_decimal(tax_raw, "execution.tax")
         )
 
         if status == "PENDING" and filled_qty != 0:
@@ -2310,36 +2325,74 @@ class TossBrokerage(LiveBrokerage):
         previous_amount = self._previous_cumulative(
             order, _TOSS_CUM_AMOUNT, "기존 filledAmount"
         )
-        previous_commission = self._previous_cumulative(
-            order, _TOSS_CUM_COMMISSION, "기존 commission"
-        )
-        previous_tax = self._previous_cumulative(order, _TOSS_CUM_TAX, "기존 tax")
         total_amount = snapshot["filled_amount"]
-        total_commission = snapshot["commission"]
-        total_tax = snapshot["tax"]
+        # 비용을 한 번이라도 추정으로 장부화한 주문은 끝까지 추정으로 갑니다.
+        # 앞 체결분을 추정으로 넣어 놓고 뒤 체결분을 증권사 누적값의 차이로
+        # 넣으면, 그 차이에는 앞 체결분의 실제 비용이 섞여 있어 같은 돈이 두 번
+        # 잡힙니다. 그래서 추정 중인 주문에서는 증권사 비용 필드를 아예 읽지
+        # 않습니다 — 나중에 값이 들어와도 기준값이 없어 분리할 수 없습니다.
+        estimating = bool(order.meta.get(FEE_ESTIMATED_META))
+        if estimating:
+            previous_commission = previous_tax = None
+            total_commission = total_tax = None
+        else:
+            previous_commission = self._previous_cumulative(
+                order, _TOSS_CUM_COMMISSION, "기존 commission"
+            )
+            previous_tax = self._previous_cumulative(order, _TOSS_CUM_TAX, "기존 tax")
+            total_commission = snapshot["commission"]
+            total_tax = snapshot["tax"]
         if total_qty < previous_qty:
             raise BrokerageError("토스 누적 체결 수량이 이전 조회보다 줄었습니다")
         if total_amount < previous_amount:
             raise BrokerageError("토스 누적 체결 금액이 이전 조회보다 줄었습니다")
-        if total_commission < previous_commission or total_tax < previous_tax:
+        # 비용이 `null`(모름) 이면 비교할 것이 없을 뿐, 수량·금액 검사는 위에서
+        # 그대로 돕니다. 값이 있을 때 줄어드는 것은 여전히 결함 신호입니다.
+        commission_delta = (
+            None if total_commission is None
+            else total_commission - previous_commission
+        )
+        tax_delta = None if total_tax is None else total_tax - previous_tax
+        if any(delta is not None and delta < 0 for delta in (commission_delta, tax_delta)):
             raise BrokerageError("토스 누적 수수료/세금이 이전 조회보다 줄었습니다")
 
         newly = total_qty - previous_qty
         amount_delta = total_amount - previous_amount
-        commission_delta = total_commission - previous_commission
-        tax_delta = total_tax - previous_tax
-        if newly == 0 and any(v != 0 for v in (amount_delta, commission_delta, tax_delta)):
+        if newly == 0 and any(
+            delta is not None and delta != 0
+            for delta in (amount_delta, commission_delta, tax_delta)
+        ):
             raise BrokerageError("새 체결 없이 누적 체결금액·비용만 바뀌어 정확히 장부화할 수 없습니다")
         if newly > 0:
             if amount_delta <= 0 or snapshot["filled_at"] is None:
                 raise BrokerageError("새 체결 수량에 대응하는 체결금액·시각이 없습니다")
+            price = float(amount_delta / newly)
+            if commission_delta is not None and tax_delta is not None:
+                fee = float(commission_delta + tax_delta)
+            else:
+                # 수수료나 세금 중 하나라도 `null` 이면 이 체결분의 비용 전체를
+                # 설정의 비용 모델로 추정합니다. 0 으로 넣는 것은 "공짜" 라고
+                # 믿는 것이라, 일일 손실 한도가 수수료만큼 늦게 걸리고 실현손익이
+                # 실제보다 좋아 보입니다. 추정은 우대 요율·면제 이벤트만큼
+                # 어긋날 수 있으므로 표식과 누계를 남겨, 실계좌 현금 증명이
+                # (`LiveBrokerage._sync_once`) 그 오차를 미체결로 오인하지 않게
+                # 합니다.
+                fee = self._fill_fee(order, newly, price, snapshot["filled_at"])
+                already = Decimal(str(order.meta.get(FEE_ESTIMATED_TOTAL_META) or "0"))
+                order.meta[FEE_ESTIMATED_META] = True
+                order.meta[FEE_ESTIMATED_TOTAL_META] = str(already + Decimal(str(fee)))
+                log.warning(
+                    "토스 주문 %s (%s %s): execution.commission/tax 가 없어 체결 %s주의 "
+                    "비용 %.2f 을 설정의 비용 모델로 추정해 장부화했습니다",
+                    order.broker_id, order.side.value, order.symbol.ticker, newly, fee,
+                )
             fill = Fill(
                 order_id=order.id,
                 symbol=order.symbol,
                 side=order.side,
                 quantity=newly,
-                price=float(amount_delta / newly),
-                fee=float(commission_delta + tax_delta),
+                price=price,
+                fee=fee,
                 ts=snapshot["filled_at"],
                 tag=order.tag,
             )
@@ -2347,8 +2400,12 @@ class TossBrokerage(LiveBrokerage):
             self._pending_fills.append(fill)
 
         order.meta[_TOSS_CUM_AMOUNT] = str(total_amount)
-        order.meta[_TOSS_CUM_COMMISSION] = str(total_commission)
-        order.meta[_TOSS_CUM_TAX] = str(total_tax)
+        # 기준값은 증권사가 실제로 준 값만 남깁니다. `null` 을 "0" 으로 적어 두면
+        # 다음 폴링에 값이 들어왔을 때 그 전체가 새 체결분의 비용으로 잡힙니다.
+        if total_commission is not None:
+            order.meta[_TOSS_CUM_COMMISSION] = str(total_commission)
+        if total_tax is not None:
+            order.meta[_TOSS_CUM_TAX] = str(total_tax)
         status = snapshot["status"]
         # Cumulative quantity is the exposure truth even if the broker's status
         # transition lags by one read (for example PENDING_CANCEL at the instant
@@ -2394,7 +2451,41 @@ class TossBrokerage(LiveBrokerage):
             raise BrokerageError(reason)
         if observed:
             self.fill_channel_up()
+        elif self.live and not self.fill_channel_ok:
+            await self._try_recover_fill_channel()
         return await super().poll_fills()
+
+    async def _try_recover_fill_channel(self) -> None:
+        """추적할 주문이 없을 때, 잠금을 풀어도 되는지 증권사에 묻는다.
+
+        잠금이 걸리는 경로 가운데 하나는 **로컬에 주문을 남기지 않습니다** —
+        주문 POST 가 두 번 애매하게 실패하면(전송 오류·5xx·깨진 2xx) 같은
+        `clientOrderId` 가 접수됐을 수도 있어 채널을 잠그는데, 우리 주문 표에는
+        아무것도 없습니다. 그러면 `poll_fills` 가 조회할 주문이 없어
+        `fill_channel_up()` 이 영영 안 불리고, `_guard` 는 방향을 가리지 않으므로
+        **손절까지** 거절됩니다. 재시작해도 종료가 깨끗하지 않아 격리로 갑니다.
+
+        잠금이 답하려는 질문은 "내가 모르는 주문이 계좌에 걸려 있는가" 입니다.
+        그 질문에 정확히 답하는 검사가 이미 있습니다(`_assert_owned_remote_open_orders`)
+        — 미결 목록에 우리가 모르는 주문이 없으면 유령 주문은 쉬고 있지 않다는
+        뜻이고, 그때는 잠금을 풀어도 됩니다.
+
+        **언제 이게 안 통하는가.** 유령 주문이 접수된 뒤 이미 체결까지 됐다면
+        미결 목록에 없으므로 이 검사를 통과합니다. 그 경우는 잠금이 아니라
+        계좌 자본 증명(`_sync_once`)과 그룹의 합계 불변식이 잡습니다 — 둘 다
+        수량·현금을 실제로 대조하므로 이 잠금보다 정확하고, 무엇보다 **줄이는
+        주문은 막지 않습니다.** 아무것도 증명하지 못하는 영구 잠금보다 그쪽에
+        맡기는 편이 낫습니다.
+        """
+        try:
+            await self._assert_owned_remote_open_orders()
+        except Exception as exc:  # noqa: BLE001 — 못 밝히면 잠근 채로 둔다
+            log.warning("체결 채널 잠금을 유지합니다 — 계좌의 미결 주문을 "
+                        "확인하지 못했습니다: %s", exc)
+            return
+        log.warning("계좌에 확인되지 않은 미결 주문이 없어 체결 조회 채널 잠금을 "
+                    "풉니다 (이전 사유: %s)", self.fill_channel_error)
+        self.fill_channel_up()
 
     async def close(self):
         await self.client.close()
