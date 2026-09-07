@@ -130,3 +130,88 @@ def test_explicit_names_resolve():
     assert isinstance(create_calendar("crypto"), AlwaysOpen)
     with pytest.raises(KeyError):
         create_calendar("nonexistent")
+
+
+# ── 휴장일 표에 없는 날이 들어가 있지 않은가 ─────────────────────────────
+#
+# 표에 잘못 들어간 날은 조용합니다. 그날 봇은 `_wait_for_market` 에서 자고,
+# `_maintenance_cycle` 은 `market_open` 이 거짓이라 **손절 재평가와 수동 주문
+# flush 를 건너뜁니다.** 사람이 누른 매도도 다음 개장까지 대기합니다. 그래서
+# 이 검사는 "휴장일이 맞는가" 가 아니라 **"거래일을 휴장으로 적지 않았는가"**
+# 를 봅니다 — 그쪽이 돈이 걸린 방향입니다.
+#
+# 규칙을 날짜로 고정합니다(관공서의 공휴일에 관한 규정 제3조):
+#   · 현충일·신정은 대체공휴일이 없다
+#   · 설날·추석 연휴는 **일요일** 겹침만 대체 사유다 (토요일은 아니다)
+#   · 국경일·어린이날·부처님오신날·성탄절은 토·일 겹침 모두 대체 사유다
+
+def test_memorial_day_has_no_substitute_holiday():
+    """2026-06-06 현충일은 토요일. 다음 월요일은 **거래일**이다.
+
+    현충일을 대체공휴일 대상으로 착각해 06-08 을 휴장으로 적어 두었었고,
+    그날 코스피는 실제로 열렸습니다.
+    """
+    cal = KrxCalendar()
+    assert cal.is_open(kst(2026, 6, 8, 11, 0)), "현충일에는 대체공휴일이 없다"
+
+
+def test_chuseok_saturday_overlap_creates_no_substitute():
+    """2026 추석 연휴는 목·금·토. 일요일과 겹치지 않으므로 대체가 없다.
+
+    9/28(월)을 휴장으로 적어 두면 추석 직후 첫 거래일에 손절이 평가되지
+    않습니다 — 연휴 뒤 갭이 가장 큰 날입니다.
+    """
+    cal = KrxCalendar()
+    assert not cal.is_open(kst(2026, 9, 24, 11, 0))
+    assert not cal.is_open(kst(2026, 9, 25, 11, 0))
+    assert cal.is_open(kst(2026, 9, 28, 11, 0)), "설·추석은 일요일 겹침만 대체"
+
+
+def test_lunar_new_year_sunday_overlap_creates_exactly_one_substitute():
+    """2027 설 연휴는 토·일·월. 일요일 겹침 하나 → 대체 하루(화)뿐이다."""
+    cal = KrxCalendar()
+    assert not cal.is_open(kst(2027, 2, 8, 11, 0))     # 설날 다음날 (월)
+    assert not cal.is_open(kst(2027, 2, 9, 11, 0))     # 대체공휴일 (화)
+    assert cal.is_open(kst(2027, 2, 10, 11, 0)), "대체는 겹친 일요일 수만큼"
+
+
+def test_national_holiday_weekend_overlap_does_create_a_substitute():
+    """국경일은 현충일과 달리 토요일 겹침에도 대체가 붙는다 — 규칙의 반대편."""
+    cal = KrxCalendar()
+    assert not cal.is_open(kst(2026, 8, 17, 11, 0))    # 광복절(토) → 월 대체
+    assert not cal.is_open(kst(2026, 10, 5, 11, 0))    # 개천절(토) → 월 대체
+
+
+def test_constitution_day_is_a_holiday_again_from_2026():
+    """제헌절이 공휴일로 되살아났고 KRX 도 휴장을 공표했습니다."""
+    assert not KrxCalendar().is_open(kst(2026, 7, 17, 11, 0))
+
+
+def test_the_published_2026_holiday_count_matches():
+    """거래소가 공표한 2026 휴장일은 17일입니다.
+
+    개수 하나가 표 전체의 오탈자를 잡습니다 — 날짜를 하나 잘못 넣으면
+    다른 하나를 빼지 않는 한 개수가 어긋납니다.
+    """
+    from quant.data.calendar import KRX_HOLIDAYS
+
+    assert len(KRX_HOLIDAYS[2026]) == 17
+    assert len(set(KRX_HOLIDAYS[2026])) == 17, "중복된 날짜"
+
+
+def test_us_early_close_only_when_the_eve_is_itself_a_session():
+    """2027 독립기념일은 일요일이라 월요일이 휴장 — 그 전 금요일은 정규장이다.
+
+    조기폐장을 잘못 적으면 오후 3시간 동안 손절이 평가되지 않습니다.
+    """
+    from zoneinfo import ZoneInfo
+
+    from quant.data.calendar import UsEquityCalendar
+
+    cal = UsEquityCalendar()
+    et = ZoneInfo("America/New_York")
+    assert not cal.is_open(datetime(2027, 7, 5, 11, 0, tzinfo=et))   # 대체 휴장
+    assert cal.is_open(datetime(2027, 7, 2, 14, 0, tzinfo=et)), "조기폐장 아님"
+    # 추수감사절 다음 날은 실제 조기폐장이라 13:00 이후가 닫혀 있어야 합니다.
+    assert cal.is_open(datetime(2027, 11, 26, 12, 0, tzinfo=et))
+    assert not cal.is_open(datetime(2027, 11, 26, 14, 0, tzinfo=et))
