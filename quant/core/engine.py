@@ -564,10 +564,35 @@ class Engine:
             if closed is not None:
                 self.budget.record_trade(closed.pnl)
                 self.risk.on_trade_closed(self.ctx, closed)
+                self._release_pin_if_flat(fill)
             await self.bus.publish(EventType.ORDER_FILLED, _fill_dict(fill))
             if closed is not None:
                 await self.bus.publish(EventType.TRADE_CLOSED, _trade_dict(closed))
         return fills
+
+    def _release_pin_if_flat(self, fill: Fill) -> None:
+        """보유가 사라지면 핀도 사라집니다.
+
+        핀은 "전략이 내가 산 것을 되팔지 못하게 하라" 는 뜻입니다
+        (`ManualControl._build_one`). 되팔 물량이 없으면 그 뜻이 남을 자리가
+        없는데, 지금까지는 **사람이 직접 청산한 경우에만** 풀렸습니다
+        (`manual._exit_order`). 손절·트레일링·킬스위치가 대신 팔고 나가면 핀은
+        그대로 남고, 포트폴리오 모델은 `if ctx.is_pinned(symbol): continue` 라
+        그 종목을 **영원히 건너뜁니다** — 유니버스가 서너 종목인 설정에서는
+        전략의 3분의 1이 조용히 사라지는 것입니다. 핀은 SQLite 에 저장되므로
+        재시작해도 돌아오지 않습니다.
+
+        `closed` 가 있고(= 열려 있던 포지션을 줄인 체결) **그 뒤 평탄** 인
+        경우에만 풉니다. 아직 안 붙은 수동 매수 — 핀은 발주 때 찍히고 체결은
+        나중입니다 — 는 `closed` 를 만들지 않으므로 건드려지지 않습니다.
+        """
+        if not self.ctx.is_pinned(fill.symbol):
+            return
+        if self.ctx.portfolio.quantity(fill.symbol) != 0:
+            return
+        self.ctx.unpin(fill.symbol)
+        log.info("%s 보유가 0이 되어 고정을 풉니다 — 다시 전략이 관리합니다",
+                 fill.symbol.ticker)
 
     # ── reporting ────────────────────────────────────────────────────────
     def summary(self) -> dict:

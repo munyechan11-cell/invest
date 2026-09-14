@@ -73,12 +73,64 @@ class ManualRequest:
     status: str = "pending"
     detail: str = ""
 
+    @property
+    def _side(self) -> OrderSide | None:
+        if self.action == "buy":
+            return OrderSide.BUY
+        if self.action == "sell":
+            return OrderSide.SELL
+        return None                      # close/close_all 은 항상 시장가입니다
+
+    def effective(self) -> tuple[float | None, float | None, str]:
+        """브로커가 **실제로 받게 될** (수량, 지정가)와 그 이유.
+
+        `_build_one` 은 보내기 직전에 수량을 lot 격자로, 지정가를 호가 격자로
+        스냅합니다(`round_qty`·`round_price`). 접수한 원값을 그대로 화면에
+        띄우면, 이 줄은 "이걸 정말 낼 것인가" 를 묻는 자리인데 **실행되지 않을
+        숫자로** 답하게 됩니다.
+
+        실측(000660, 호가 사다리): 1000.7주를 71,234 에 매도 접수하면 실제
+        주문은 `1000주 @ 71,300` 입니다. 운영자는 71,234 에 걸린 줄 알고
+        기다리는데 호가가 71,300 을 찍고 돌아서면, 본인은 청산됐다고 믿지만
+        주문은 그대로 남아 있습니다.
+
+        **알 수 없는 것은 손대지 않습니다.** 금액(`notional`)으로 낸 주문의
+        수량은 발주 시점 시세로 정해지고, 매도가 보유 수량까지 줄어드는 것은
+        그때의 장부가 정합니다 — 둘 다 여기서는 알 수 없으므로 `None` 과
+        `detail` 로 남깁니다. 모르는 자리에 지어낸 숫자를 넣는 것이 원래
+        문제였습니다.
+        """
+        qty = float(self.quantity) if self.quantity is not None else None
+        price = self.limit_price
+        if self.symbol is None:
+            return qty, price, ""
+        notes: list[str] = []
+        if self.quantity is not None:
+            snapped = float(self.symbol.round_qty(self.quantity))
+            if snapped != qty:
+                notes.append(f"수량 {qty:g} → {snapped:g} (최소 주문 단위)")
+            qty = snapped
+        side = self._side
+        if price is not None and side is not None:
+            snapped_price = float(self.symbol.round_price(price, side))
+            if snapped_price != price:
+                notes.append(f"지정가 {price:,g} → {snapped_price:,g} (호가단위)")
+            price = snapped_price
+        return qty, price, " · ".join(notes)
+
     def to_dict(self) -> dict:
+        quantity, limit_price, adjusted = self.effective()
         return {
             "id": self.id, "action": self.action,
             "symbol": self.symbol.ticker if self.symbol else None,
-            "quantity": float(self.quantity) if self.quantity is not None else None,
-            "notional": self.notional, "limit_price": self.limit_price,
+            # 접수한 값이 아니라 **브로커가 받게 될 값** 입니다. 다르면
+            # `adjusted` 가 어디서 얼마나 움직였는지 말합니다.
+            "quantity": quantity,
+            "notional": self.notional, "limit_price": limit_price,
+            "requested_quantity": (float(self.quantity)
+                                   if self.quantity is not None else None),
+            "requested_limit_price": self.limit_price,
+            "adjusted": adjusted,
             "manage": self.manage, "note": self.note,
             "requested_at": self.requested_at.isoformat(),
             "status": self.status, "detail": self.detail,

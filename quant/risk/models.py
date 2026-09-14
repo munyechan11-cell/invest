@@ -80,24 +80,57 @@ class TrailingStopRiskModel(RiskManagementModel):
 
     name = "trailing_stop"
 
+    #: ATR 스케일링이 만들 수 있는 트레일의 천장.
+    #:
+    #: 이게 없으면 `atr_multiple * ATR/price` 가 1.0 을 넘을 수 있고, 그러면
+    #: 롱의 발동 조건 `price <= peak * (1 - trail)` 의 우변이 **0 이하** 가
+    #: 되어 어떤 가격에서도 참이 되지 않습니다. 트레일링 스톱이 예외도 로그도
+    #: 없이 사라지는 것이고, 하필 **변동성이 치솟은 순간** — 그게 필요한 바로
+    #: 그때 — 사라집니다. 실측: `atr_multiple=5.0`(출하 설정 전부)에서 봉
+    #: 변동폭이 ±10% 면 trail=1.00, 고점 대비 -50% 인 보유가 청산되지
+    #: 않습니다. 숏은 `1 + trail` 이라 안 깨지는 대신 조용히 4배 느슨해집니다.
+    #:
+    #: 0.95 인 이유는 **지금 동작하는 값을 하나도 바꾸지 않기 위해서** 입니다.
+    #: 더 조이면(예: trail_pct 를 천장으로) 멀쩡히 걸리던 손절이 훨씬 자주
+    #: 걸리게 되고, 그건 안전 수정이 아니라 전략 변경입니다.
+    MAX_TRAIL = 0.95
+
     def __init__(self, trail_pct: float = 0.06, activate_at_pct: float = 0.0,
                  atr_multiple: float | None = None, atr_period: int = 14):
         self.trail = abs(trail_pct)
         self.activate_at = activate_at_pct
         self.atr_multiple = atr_multiple
         self.atr_period = atr_period
+        #: 천장에 닿았다고 이미 말한 종목. 봉마다 같은 줄을 찍으면 아무도
+        #: 안 읽습니다.
+        self._warned: set[str] = set()
 
     def _trail_for(self, ctx: Context, symbol) -> float:
         if not self.atr_multiple:
-            return self.trail
+            return min(self.trail, self.MAX_TRAIL)
         bars = ctx.history(symbol, self.atr_period + 1)
         if len(bars) < 3:
-            return self.trail
+            return min(self.trail, self.MAX_TRAIL)
         trs = [max(b.high - b.low, abs(b.high - p.close), abs(b.low - p.close))
                for p, b in zip(bars, bars[1:])]
         atr = statistics.fmean(trs[-self.atr_period:])
         price = bars[-1].close
-        return max(atr * self.atr_multiple / price, 0.005) if price > 0 else self.trail
+        if price <= 0:
+            return min(self.trail, self.MAX_TRAIL)
+        scaled = max(atr * self.atr_multiple / price, 0.005)
+        if scaled > self.MAX_TRAIL:
+            if symbol.key not in self._warned:
+                self._warned.add(symbol.key)
+                log.warning(
+                    "%s: atr_multiple %.1f × ATR/가격 = 트레일 %.0f%% 로 "
+                    "천장 %.0f%% 를 넘었습니다 — 그대로 두면 트레일링 스톱이 "
+                    "어떤 가격에서도 발동하지 않습니다. 이 종목에는 "
+                    "atr_multiple 이 너무 큽니다",
+                    symbol.ticker, self.atr_multiple, scaled * 100,
+                    self.MAX_TRAIL * 100,
+                )
+            return self.MAX_TRAIL
+        return scaled
 
     def manage(self, ctx, targets):
         by_key = {t.symbol.key: t for t in targets}
