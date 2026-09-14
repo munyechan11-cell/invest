@@ -855,6 +855,11 @@ table.acct td:first-child{font-variant-numeric:normal;font-weight:600}
 .run-safety[data-state="live"] b{color:var(--red)}
 .run-safety[data-state="dry"]{background:var(--ok-soft)}
 .run-safety[data-state="error"]{background:var(--bad-soft)}
+/* 신규 진입이 못 나가는 상태. error 가 아닌 이유는 손절과 청산은 그대로
+   나가기 때문입니다 — 붉게 칠하면 "지금 포지션에 갇혔다" 로 읽힙니다.
+   `b` 는 --ink 그대로 둡니다: --warn 은 이 바탕에서 4.22:1 이라 본문
+   대비 기준(4.5:1)에 못 미칩니다. */
+.run-safety[data-state="warn"]{background:var(--warn-soft)}
 
 .state-dot{display:inline-block;width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:var(--faint)}
 .freshness{display:inline-flex;align-items:center;gap:7px;min-height:28px;

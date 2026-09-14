@@ -44,6 +44,46 @@ def entry_window(config: StrategyConfig) -> tuple[float, float] | None:
     return floor / weight, ceiling / weight
 
 
+def sizing_alarm(config: StrategyConfig, equity: float) -> str | None:
+    """이 잔고에서 신규 진입이 한 건도 못 나가면 그 사실을, 아니면 None.
+
+    `preflight_warnings` 는 설정만 보고 구간을 말합니다. 이건 봇이 증권사에
+    연결한 **뒤** 에, 진짜 평가액을 손에 쥐고 다시 봅니다 — 그 둘이 다른
+    질문이기 때문입니다. 설정은 어제 적혔고 잔고는 오늘 것입니다.
+
+    말만 하고 아무것도 막지 않습니다. 막으면 이 검사 자체가 새로운 정지
+    사유가 되고, 그건 고치려던 것보다 나쁩니다.
+    """
+    window = entry_window(config)
+    if window is None or not equity or equity <= 0:
+        return None
+    low, high = window
+    if low <= equity <= high:
+        return None
+
+    money = config.portfolio.base_currency or ""
+    weight = config.portfolio.max_position_weight
+    order = equity * weight * (1.0 - config.portfolio.cash_reserve_pct)
+    head = (f"계좌 평가액 {equity:,.0f} {money} 에서 한 종목 최대 비중 "
+            f"{weight:.0%} 는 주문 {order:,.0f} 입니다")
+    # 청산·손절은 두 상한 어느 쪽에도 걸리지 않습니다. 그 사실을 같이 말하지
+    # 않으면 이 문장이 "지금 포지션에 갇혔다" 로 읽힙니다.
+    tail = "청산과 손절은 그대로 나갑니다"
+    if equity < low:
+        return (
+            f"신규 진입이 나가지 않습니다 — {head}. 최소 주문금액 "
+            f"{config.execution.min_order_notional:,.0f} 에 못 미쳐 건너뜁니다. "
+            f"{tail}. 약 {low:,.0f} 이상이 필요하거나 "
+            f"execution.min_order_notional 을 낮추세요"
+        )
+    return (
+        f"신규 진입이 전부 거절됩니다 — {head}. 주문당 상한 "
+        f"{config.broker.max_order_notional:,.0f} 를 넘습니다. {tail}. "
+        f"broker.max_order_notional 을 올리거나 portfolio.max_position_weight "
+        f"를 낮추세요"
+    )
+
+
 def _worth_saying(config: StrategyConfig, window: tuple[float, float]) -> bool:
     """이 구간을 사람에게 말할 가치가 있는가.
 

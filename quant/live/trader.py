@@ -18,6 +18,7 @@ from decimal import Decimal
 from typing import Any
 
 from quant.brokerage.live_base import LiveBrokerage
+from quant.config.preflight import sizing_alarm
 from quant.config.schema import StrategyConfig
 from quant.core.clock import RealClock, next_candle_close
 from quant.core.context import QUOTE_FUTURE_TOLERANCE
@@ -112,6 +113,10 @@ class LiveTrader:
         #: 성공한 주기가 지우고, `status()` 가 화면으로 내보냅니다.
         self.maintenance_error: str = ""
         self._maintenance_failures = 0
+        #: 시작할 때 실계좌 평가액으로 다시 잰 사이징 경고, 또는 None.
+        #: 값이 있으면 **신규 진입이 한 건도 못 나간다**는 뜻입니다(청산·손절은
+        #: 그대로). 화면이 그 자리에 "대기 중" 대신 쓸 말입니다.
+        self.sizing_alarm: str | None = None
         self.notifier = TelegramNotifier(
             config.notify.telegram_bot_token, config.notify.telegram_chat_id,
             config.notify.on_events,
@@ -384,6 +389,16 @@ class LiveTrader:
             if stale:
                 log.warning(stale)
                 await self.notifier.send("⚠️ " + stale)
+
+        # 사이징은 설정에 적힌 `starting_cash` 가 아니라 방금 증권사에서 읽은
+        # 진짜 평가액으로 돕니다. 그 둘이 어긋나면 봇은 예외 없이, 로그 없이,
+        # 그냥 아무것도 사지 않거나 전부 거절당합니다 — 화면에는 "대기 중" 만
+        # 뜨고, 그게 조용한 장인지 고장인지 구분할 방법이 없습니다.
+        # `validate` 도 같은 산수를 하지만 거기서는 잔고를 모릅니다.
+        self.sizing_alarm = sizing_alarm(cfg, portfolio.equity)
+        if self.sizing_alarm:
+            log.warning(self.sizing_alarm)
+            await self.notifier.send("⚠️ " + self.sizing_alarm)
 
         banner = (f"{'🔴 LIVE' if cfg.mode is RunMode.LIVE else '🧪 DRY RUN'} "
                   f"{cfg.name} · {len(self.engine.ctx.universe)} symbols · "
@@ -1548,6 +1563,10 @@ class LiveTrader:
             # 화면이 반드시 읽어야 하는 자리입니다. 잘 돌면 빈 문자열입니다.
             "maintenance_error": self.maintenance_error,
             "maintenance_failures": self._maintenance_failures,
+            # 실계좌 평가액으로 다시 잰 사이징. 값이 있으면 신규 진입이 한
+            # 건도 못 나간다는 뜻입니다(청산·손절은 그대로) — 화면이 그 자리에
+            # "대기 중" 대신 써야 하는 말입니다. 잘 맞으면 null.
+            "sizing_alarm": self.sizing_alarm,
             "market": {
                 "calendar": getattr(self.calendar, "name", None),
                 "open": self.calendar.is_open(datetime.now(UTC)) if self.calendar else None,

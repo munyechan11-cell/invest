@@ -5386,12 +5386,23 @@ function renderRunSummary(running) {
   //: 어디에도 그 사실이 없습니다.
   const upkeep = (running && botState && botState.running
                   && botState.maintenance_error) || "";
+  //: 실계좌 평가액으로 다시 잰 사이징. 값이 있으면 **신규 진입이 한 건도
+  //: 못 나갑니다** — 봇은 멀쩡히 돌고, 오류도 없고, 그냥 아무것도 안 삽니다.
+  //: 이걸 읽지 않으면 화면에는 "실행 중" 만 뜨고 사용자는 조용한 장이라고
+  //: 생각하며 하루를 기다립니다. 정지(halt)·유지주기 실패보다 아래 순위인
+  //: 것은 그 둘이 더 급해서이고, error 가 아닌 것은 **손절과 청산은 그대로
+  //: 나가기** 때문입니다.
+  const sizing = (running && botState && botState.running
+                  && botState.sizing_alarm) || "";
   if (safety) safety.dataset.state = !running ? "off"
     : (halted || upkeep) ? "error"
+    : sizing ? "warn"
     : live ? "live" : "dry";
   if (safetyLabel) safetyLabel.textContent = !running ? "자동매매 정지"
     : halted ? (live ? "실거래 자동매매 정지됨 (계좌 대조 실패)"
                      : "모의 자동매매 정지됨 (계좌 대조 실패)")
+    : sizing ? (live ? "실거래 실행 중 — 신규 진입 안 나감"
+                     : "모의 실행 중 — 신규 진입 안 나감")
     : live ? "실거래 자동매매 실행 중" : "모의 자동매매 실행 중";
   if (safetyText) {
     const limits = (st && st.limits) || {};
@@ -5401,6 +5412,8 @@ function renderRunSummary(running) {
       : upkeep
       ? `점검 주기가 실패하고 있습니다 — ${upkeep}. 손절과 수동 주문이 ` +
         `늦어질 수 있습니다. 계속되면 정지한 뒤 증권사 연동을 확인하세요.`
+      : sizing
+      ? sizing
       : running && st
       ? `${stLabel(st)} · 하루 주문 ${limits.daily_orders ?? "—"}건 · ` +
         `거래대금 ${fmtNum(limits.daily_notional)} · 손실 ${fmtNum(limits.daily_loss)} 한도`
