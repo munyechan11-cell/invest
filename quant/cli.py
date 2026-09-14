@@ -198,7 +198,7 @@ async def cmd_serve(args) -> int:
         # 그리고 그 기다림이 끝나야 lifespan shutdown — 즉 봇들의 마지막 상태
         # 저장(`registry.shutdown`)이 시작됩니다. `/api/evaluate` 는 데스크
         # 심의라 120초를 쓸 수 있으므로, 그 요청 하나가 systemd 의
-        # `TimeoutStopSec=90` 을 통째로 먹고 SIGKILL 을 부릅니다. 그러면
+        # `TimeoutStopSec` 을 통째로 먹고 SIGKILL 을 부릅니다. 그러면
         # `LiveTrader.shutdown` 의 `stop_run`·스냅샷이 돌지 않아 토스 실거래
         # run 이 격리되고, 다음 시작은 사람이 다섯 항목을 손으로 대조해야
         # 열립니다.
@@ -240,6 +240,12 @@ async def cmd_validate(args) -> int:
     if warmup_needed > config.data.warmup_bars:
         print(f"\n  ⚠ alpha needs {warmup_needed} warm-up bars but data.warmup_bars "
               f"is {config.data.warmup_bars} — early signals will be unreliable")
+    # 사이징·한도의 산수는 돌려보기 전에 알 수 있습니다. 이걸 말하지 않으면
+    # 사람은 그 사실을 "왜 아무것도 안 사지" 로 하루 뒤에 알게 됩니다.
+    from quant.config.preflight import preflight_warnings
+
+    for note in preflight_warnings(config):
+        print(f"\n  ⚠ {note}")
     await provider.close()
     return 0
 

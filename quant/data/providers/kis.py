@@ -18,7 +18,7 @@ from decimal import Decimal
 import httpx
 
 from quant.core.aio import LazyLock
-from quant.core.types import UTC, AssetClass, Bar, Quote, Symbol
+from quant.core.types import UTC, AssetClass, Bar, Quote, Symbol, krx_tick_size
 from quant.data.provider import DataProvider, register_provider
 
 log = logging.getLogger("quant.data.kis")
@@ -201,6 +201,8 @@ class KisProvider(DataProvider):
         return Symbol(
             code, venue="kis", asset_class=AssetClass.EQUITY, quote_currency="KRW",
             lot_size=1, tick_size=korean_tick_size(probe.mid),
+            # 한 번 잰 틱을 고정하지 않습니다 — 가격대가 바뀌면 격자도 바뀝니다.
+            tick_ladder="krx",
         )
 
     async def describe(self, ticker: str) -> dict | None:
@@ -244,13 +246,10 @@ class KisProvider(DataProvider):
 
 
 def korean_tick_size(price: float) -> Decimal:
-    """KRX tick ladder (2023 revision). Orders off the ladder are rejected."""
-    from decimal import Decimal
+    """KRX tick ladder (2023 revision). Orders off the ladder are rejected.
 
-    for threshold, tick in (
-        (2_000, "1"), (5_000, "5"), (20_000, "10"), (50_000, "50"),
-        (200_000, "100"), (500_000, "500"),
-    ):
-        if price < threshold:
-            return Decimal(tick)
-    return Decimal("1000")
+    표는 `quant.core.types` 한 곳에 있습니다 — 주문 격자(`Symbol.round_price`)와
+    화면에 뜨는 호가단위가 다른 표를 읽으면, 화면은 맞는데 주문만 거절되는
+    상태가 되고 그 둘이 다르다는 사실은 아무 데도 나타나지 않습니다.
+    """
+    return krx_tick_size(price)

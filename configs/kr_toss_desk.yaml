@@ -42,11 +42,17 @@ flow:
   history_sessions: 120
 
 universe:
+  # `tick_ladder: krx` — 국내 호가단위는 가격대마다 달라집니다(2만/5만/20만/50만
+  # 원이 경계). 고정 `tick_size` 하나만 적어 두면 종목이 그 경계를 넘는 순간
+  # 격자 밖 지정가가 되고 거래소가 거절합니다 — 진입만이 아니라 **손절도
+  # 지정가로 나가므로** 그 종목은 매 봉 거절만 반복하고 포지션에 갇힙니다.
+  # 아래 `tick_size` 는 이제 비용 추정과 유니버스 필터가 쓰는 대표값이고,
+  # 주문 격자는 사다리가 가격에서 계산합니다.
   symbols:
-    - {ticker: "005930", venue: toss, quote_currency: KRW, tick_size: 100, lot_size: 1}
-    - {ticker: "000660", venue: toss, quote_currency: KRW, tick_size: 500, lot_size: 1}
-    - {ticker: "035420", venue: toss, quote_currency: KRW, tick_size: 100, lot_size: 1}
-    - {ticker: "005380", venue: toss, quote_currency: KRW, tick_size: 500, lot_size: 1}
+    - {ticker: "005930", venue: toss, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    - {ticker: "000660", venue: toss, quote_currency: KRW, tick_size: 500, lot_size: 1, tick_ladder: krx}
+    - {ticker: "035420", venue: toss, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    - {ticker: "005380", venue: toss, quote_currency: KRW, tick_size: 500, lot_size: 1, tick_ladder: krx}
   refresh_every_bars: 21
   filters:
     - {type: age, params: {min_bars: 200}}

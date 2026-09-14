@@ -43,12 +43,24 @@ universe:
   filters:
     - {type: age, params: {min_bars: 250}}
     - {type: volatility, params: {lookback_bars: 60, min_annual_vol: 0.15, max_annual_vol: 0.9}}
-    - {type: limit, params: {max_symbols: 4}}
+    # `limit` 은 **후보 목록을 앞에서부터 자릅니다** (`LimitFilter` 는 순위가
+    # 아니라 위치로 자릅니다). 4 로 두면 파일에 적힌 앞 네 종목만 남고, 뒤
+    # 넷은 한 번도 후보가 되지 못합니다. 그러면 `xs_momentum` 이 "고를 것"
+    # 자체가 없어집니다 — 넷 중 넷을 고르는 순위는 순위가 아니고, 게다가
+    # 후보가 `min_universe` 아래면 이 알파는 **아무 인사이트도 내지 않습니다.**
+    # 그 침묵은 로그에도 화면에도 안 나옵니다. 상한은 종목을 더 추가했을 때를
+    # 위한 천장으로만 남깁니다. 실제 보유 종목 수는 risk.max_positions 가 셉니다.
+    - {type: limit, params: {max_symbols: 8}}
 
 alpha:
   # 순위를 사는 방식입니다 — 개별 종목을 고르는 게 아니라, 같은 후보 중
   # 지난 여섯 달 가장 많이 오른 넷만 들고 한 달에 한 번 갈아탑니다.
-  - {type: xs_momentum, params: {lookback: 126, skip: 21, top_n: 4, rebalance_every: 21, vol_adjust: true}}
+  # min_universe 를 명시해 둡니다. 기본값(6)은 보이지 않는 숫자인데, 필터가
+  # 후보를 그 아래로 깎으면 이 알파는 조용히 발화를 멈춥니다 — 순위를 매길
+  # 만한 후보가 없는데 매기는 것이 더 나쁘기 때문입니다. 숫자를 여기 적어
+  # 두면 유니버스 필터를 손댈 때 같이 보입니다.
+  - {type: xs_momentum, params: {lookback: 126, skip: 21, top_n: 4, rebalance_every: 21,
+                                 vol_adjust: true, min_universe: 6}}
   - {type: ema_cross, params: {fast: 20, slow: 60, adx_min: 20, hold_bars: 20}}
   - {type: regime_filter, params: {period: 200, max_annual_vol: 0.9}}
   # ── AI 데스크 ────────────────────────────────────────────────────────
@@ -131,3 +143,7 @@ limits:
 notify:
   telegram_bot_token: "${TELEGRAM_BOT_TOKEN}"
   telegram_chat_id: "${TELEGRAM_CHAT_ID}"
+  # `order_rejected` 와 `state` 가 빠지면 하루 손실 한도로 멈추거나 주문이
+  # 거절돼도 텔레그램이 조용합니다. 미국장은 한국시간 22:30~05:00 이라
+  # 자는 동안 도는 봇이고, 그때 화면을 보고 있을 사람이 없습니다.
+  on_events: [order_filled, trade_closed, protection, order_rejected, error, state]

@@ -103,6 +103,37 @@ class RunMode(str, Enum):
 # ─────────────────────────────────────────────────────────────────────────────
 # Instruments
 # ─────────────────────────────────────────────────────────────────────────────
+#: KRX 호가단위 사다리 (2023년 개편). `(미만 가격, 틱)` 오름차순.
+#:
+#: 국내 주식의 호가단위는 **가격에 따라 달라집니다.** 설정에 고정 틱 하나를
+#: 적어 두면 그 종목이 가격대를 넘어가는 순간 격자 밖 지정가가 되고, 거래소는
+#: 그 주문을 거절합니다 — 진입만이 아니라 **손절도 지정가로 나가므로** 그
+#: 종목은 매 봉 거절만 반복하고 포지션에 갇힙니다.
+#:
+#: 사다리는 중첩되어 있습니다: 굵은 틱은 항상 그보다 가는 틱의 배수이고,
+#: 경계값(2,000·5,000·20,000·50,000·200,000·500,000)도 전부 다음 칸 틱의
+#: 배수입니다. 그래서 한 칸 올림이 경계를 넘어가도 결과는 여전히 격자 위입니다
+#: — `tests/test_krx_tick_ladder.py` 가 그 성질을 검사합니다.
+KRX_TICK_LADDER: tuple[tuple[int, str], ...] = (
+    (2_000, "1"), (5_000, "5"), (20_000, "10"),
+    (50_000, "50"), (200_000, "100"), (500_000, "500"),
+)
+KRX_TICK_TOP = "1000"
+
+
+def krx_tick_size(price: Decimal | float) -> Decimal:
+    """`price` 에서 유효한 KRX 호가단위. 격자 밖 주문은 거래소가 거절합니다."""
+    p = Decimal(str(price))
+    for threshold, tick in KRX_TICK_LADDER:
+        if p < threshold:
+            return Decimal(tick)
+    return Decimal(KRX_TICK_TOP)
+
+
+#: `Symbol.tick_ladder` 에 쓸 수 있는 이름들. 빈 값이면 `tick_size` 고정입니다.
+TICK_LADDERS = {"krx": krx_tick_size}
+
+
 @dataclass(frozen=True)
 class Symbol:
     """A tradable instrument, unique across venues.
@@ -119,6 +150,11 @@ class Symbol:
     tick_size: Decimal = Decimal("0.01")      # min price increment
     min_notional: Decimal = Decimal("0")
     multiplier: Decimal = Decimal("1")        # contract multiplier (futures)
+    #: 가격에 따라 호가단위가 달라지는 시장의 사다리 이름 ("krx"). 비면
+    #: `tick_size` 고정입니다. 설정에서 켭니다 — 통화나 거래소 이름으로
+    #: 추측하지 않습니다. 고정 틱을 일부러 적어 둔 설정이 어느 날 조용히
+    #: 다른 격자로 주문하기 시작하면, 그건 고쳐 준 게 아니라 바꿔치기입니다.
+    tick_ladder: str = ""
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return f"{self.ticker}@{self.venue}"
@@ -140,18 +176,34 @@ class Symbol:
         steps = (q.copy_abs() / self.lot_size).to_integral_value(rounding="ROUND_FLOOR")
         return (steps * self.lot_size).copy_sign(q)
 
+    def tick_at(self, price: Decimal | float) -> Decimal:
+        """이 가격에서 실제로 유효한 호가단위.
+
+        모르는 사다리 이름은 `tick_size` 로 물러섭니다 — 오타 하나가 주문
+        격자를 바꾸는 것보다 설정값 그대로 쓰는 편이 안전하고, 이름 자체는
+        설정 단계에서 거절됩니다(`SymbolSpec`).
+        """
+        ladder = TICK_LADDERS.get(self.tick_ladder.strip().lower())
+        return ladder(price) if ladder is not None else self.tick_size
+
     def round_price(self, price: Decimal | float, side: OrderSide | None = None) -> Decimal:
         """Snap a price onto the tick grid, biased *away* from crossing the book
-        when a side is given (buy rounds down, sell rounds up)."""
+        when a side is given (buy rounds down, sell rounds up).
+
+        `tick_ladder` 가 켜져 있으면 격자는 **이 가격에서의** 틱입니다. 고정
+        틱은 종목이 가격대를 넘어가는 순간 거래소가 거절하는 지정가가 되고,
+        손절도 지정가로 나가기 때문에 그 포지션은 빠져나갈 길이 없어집니다.
+        """
         p = Decimal(str(price))
-        if self.tick_size <= 0:
+        tick = self.tick_at(p)
+        if tick <= 0:
             return p
         mode = "ROUND_HALF_EVEN"
         if side is OrderSide.BUY:
             mode = "ROUND_FLOOR"
         elif side is OrderSide.SELL:
             mode = "ROUND_CEILING"
-        return (p / self.tick_size).to_integral_value(rounding=mode) * self.tick_size
+        return (p / tick).to_integral_value(rounding=mode) * tick
 
 
 # ─────────────────────────────────────────────────────────────────────────────

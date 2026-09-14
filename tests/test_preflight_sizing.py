@@ -1,0 +1,115 @@
+"""`quant validate` 가 돌려보기 전에 말해 주는 산수.
+
+실거래 사이징은 `starting_cash` 가 아니라 증권사가 말하는 **실제 평가액** 을
+읽습니다. 그래서 설정에 적힌 세 숫자 — 종목당 비중, 최소 주문금액, 주문당
+상한 — 가 진짜 잔고와 어긋나면 신규 진입이 전부 건너뛰어지거나 전부
+거절됩니다. 예외도 로그도 없이, 화면에는 "대기 중" 만 남습니다.
+
+이 검사는 아무것도 막지 않습니다. 하루를 잃기 전에 말해 줄 뿐입니다.
+"""
+import pytest
+
+from quant.cli import _load
+from quant.config.preflight import entry_window, preflight_warnings
+from quant.config.schema import StrategyConfig
+
+LIVE = ("configs/kr_toss.yaml", "configs/kr_toss_desk.yaml",
+        "configs/us_toss.yaml", "configs/us_toss_desk.yaml",
+        "configs/kr_desk_gemini.yaml", "configs/live_crypto.yaml")
+BACKTEST = ("configs/demo.yaml", "configs/us_equity.yaml", "configs/kr_equity.yaml")
+
+
+@pytest.fixture
+def env(monkeypatch):
+    for var in ("TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET", "TOSS_ACCOUNT_NO",
+                "KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO",
+                "BINANCE_KEY", "BINANCE_SECRET", "TELEGRAM_BOT_TOKEN",
+                "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY"):
+        monkeypatch.setenv(var, "x")
+
+
+def cfg(**kw) -> StrategyConfig:
+    base = {
+        "name": "t", "mode": "live",
+        "portfolio": {"max_position_weight": 0.30, "cash_reserve_pct": 0.05,
+                      "starting_cash": 1_000},
+        "execution": {"min_order_notional": 200},
+        "broker": {"type": "toss", "max_order_notional": 300,
+                   "live_trading_confirmed": True},
+        "limits": {"max_daily_notional": 500, "max_daily_orders": 10},
+    }
+    for section, values in kw.items():
+        base.setdefault(section, {})
+        base[section] = {**base[section], **values} if isinstance(base[section], dict) else values
+    return StrategyConfig(**base)
+
+
+# ── 구간 자체 ────────────────────────────────────────────────────────────
+def test_the_window_is_the_two_caps_divided_by_the_weight():
+    low, high = entry_window(cfg())
+    assert round(low) == 702        # 200 / (0.30 * 0.95)
+    assert round(high) == 1_053     # 300 / (0.30 * 0.95)
+
+
+def test_an_impossible_window_is_named_as_one():
+    notes = preflight_warnings(cfg(execution={"min_order_notional": 400}))
+    assert any("구간이 없습니다" in n for n in notes)
+
+
+def test_a_narrow_window_says_it_is_narrow():
+    notes = preflight_warnings(cfg())
+    assert any("두 배도 안 돼서" in n for n in notes)
+
+
+def test_a_roomy_window_does_not_say_that():
+    notes = preflight_warnings(cfg(broker={"max_order_notional": 10_000}))
+    assert not any("두 배도 안 돼서" in n for n in notes)
+
+
+# ── 하루 한도끼리의 모순 ─────────────────────────────────────────────────
+def test_an_unreachable_order_count_cap_is_reported_with_the_real_number():
+    notes = preflight_warnings(cfg())
+    hit = [n for n in notes if "주문 건수 한도" in n]
+    assert hit and "최대 2건" in hit[0]
+
+
+def test_a_consistent_pair_of_caps_is_silent():
+    notes = preflight_warnings(cfg(limits={"max_daily_notional": 5_000,
+                                           "max_daily_orders": 10}))
+    assert not any("주문 건수 한도" in n for n in notes)
+
+
+def test_exits_consuming_turnover_is_said_out_loud_on_live_only():
+    assert any("사용량에는 기록" in n for n in preflight_warnings(cfg()))
+    assert not any("사용량에는 기록" in n
+                   for n in preflight_warnings(cfg(mode="dry_run",
+                                          broker={"live_trading_confirmed": False})))
+
+
+# ── 출하되는 설정 ────────────────────────────────────────────────────────
+@pytest.mark.parametrize("path", LIVE)
+def test_no_shipped_live_config_has_an_impossible_entry_window(path, env):
+    low, high = entry_window(_load(path))
+    assert low < high, f"{path} 는 어떤 잔고에서도 신규 진입을 낼 수 없습니다"
+
+
+@pytest.mark.parametrize("path", LIVE)
+def test_every_live_config_tells_the_operator_its_window(path, env):
+    """실거래는 구간이 넓든 좁든 말해야 합니다 — 그 숫자를 아는 것이
+    시작 전에 할 일입니다."""
+    assert any("계좌 평가액" in n for n in preflight_warnings(_load(path)))
+
+
+@pytest.mark.parametrize("path", BACKTEST)
+def test_a_backtest_with_a_roomy_window_stays_quiet(path, env):
+    """경고가 늘 켜져 있으면 아무도 안 읽습니다."""
+    assert preflight_warnings(_load(path)) == []
+
+
+def test_the_paper_broker_has_no_per_order_ceiling_to_warn_about():
+    """`max_order_notional` 은 `LiveBrokerage._guard` 에만 있습니다. 페이퍼는
+    그 값을 받지도 않으므로, 설정에 남은 기본값을 천장으로 읽으면 있지도 않은
+    벽을 경고하게 됩니다 — kr_equity.yaml 이 그 경우였습니다."""
+    assert entry_window(cfg(mode="backtest",
+                            broker={"type": "paper",
+                                    "live_trading_confirmed": False})) is None

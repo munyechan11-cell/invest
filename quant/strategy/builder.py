@@ -92,6 +92,7 @@ def build_symbol(spec: SymbolSpec) -> Symbol:
         tick_size=Decimal(str(spec.tick_size)),
         min_notional=Decimal(str(spec.min_notional)),
         multiplier=Decimal(str(spec.multiplier)),
+        tick_ladder=spec.tick_ladder,
     )
 
 

@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from quant.core.types import RunMode, timeframe_seconds
+from quant.core.types import TICK_LADDERS, RunMode, timeframe_seconds
 
 
 class ConfigBlock(BaseModel):
@@ -62,6 +62,21 @@ class SymbolSpec(ConfigBlock):
     tick_size: float = 0.01
     min_notional: float = 0.0
     multiplier: float = 1.0
+    #: 가격대마다 호가단위가 달라지는 시장이면 사다리 이름 ("krx"). 국내
+    #: 주식은 이걸 켜세요 — 고정 `tick_size` 는 종목이 가격대를 넘는 순간
+    #: 격자 밖 지정가가 되고, 손절도 지정가라 포지션이 갇힙니다.
+    tick_ladder: str = ""
+
+    @field_validator("tick_ladder")
+    @classmethod
+    def _known_ladder(cls, value: str) -> str:
+        name = (value or "").strip().lower()
+        if name and name not in TICK_LADDERS:
+            raise ValueError(
+                f"tick_ladder '{value}' 를 모릅니다. 쓸 수 있는 것: "
+                f"{', '.join(sorted(TICK_LADDERS))} (또는 비워서 tick_size 고정)"
+            )
+        return name
 
 
 class DataConfig(ConfigBlock):

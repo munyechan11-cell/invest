@@ -1205,7 +1205,10 @@ class TossProvider(DataProvider):
             code, venue="toss", asset_class=AssetClass.EQUITY,
             quote_currency="KRW" if krx else "USD",
             lot_size=Decimal("1"),
+            # 국내는 사다리를 켭니다. 여기서 잰 한 번의 틱을 고정해 두면
+            # 그 종목이 가격대를 넘어가는 순간 격자 밖 주문이 됩니다.
             tick_size=korean_tick_size(price) if krx else Decimal("0.01"),
+            tick_ladder="krx" if krx else "",
         )
 
     async def describe(self, ticker: str) -> dict | None:

@@ -27,10 +27,16 @@ flow:
   history_sessions: 120
 
 universe:
+  # `tick_ladder: krx` — 국내 호가단위는 가격대마다 달라집니다(2만/5만/20만/50만
+  # 원이 경계). 고정 `tick_size` 하나만 적어 두면 종목이 그 경계를 넘는 순간
+  # 격자 밖 지정가가 되고 거래소가 거절합니다 — 진입만이 아니라 **손절도
+  # 지정가로 나가므로** 그 종목은 매 봉 거절만 반복하고 포지션에 갇힙니다.
+  # 아래 `tick_size` 는 이제 비용 추정과 유니버스 필터가 쓰는 대표값이고,
+  # 주문 격자는 사다리가 가격에서 계산합니다.
   symbols:
-    - {ticker: "005930", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1}
-    - {ticker: "000660", venue: kis, quote_currency: KRW, tick_size: 500, lot_size: 1}
-    - {ticker: "035420", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1}
+    - {ticker: "005930", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    - {ticker: "000660", venue: kis, quote_currency: KRW, tick_size: 500, lot_size: 1, tick_ladder: krx}
+    - {ticker: "035420", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
   refresh_every_bars: 21
 
 alpha:
@@ -93,3 +99,10 @@ limits:
   max_daily_loss_pct: 0.01        # 또는 자산의 1%
   timezone_offset_hours: 9
   halt_until_next_day: true
+
+notify:
+  telegram_bot_token: "${TELEGRAM_BOT_TOKEN}"
+  telegram_chat_id: "${TELEGRAM_CHAT_ID}"
+  # 실거래 설정에 notify 블록이 아예 없었습니다 — 체결도 거절도 한도
+  # 도달도 알리지 않는 실거래 봇이었습니다.
+  on_events: [order_filled, trade_closed, protection, order_rejected, error, state]
