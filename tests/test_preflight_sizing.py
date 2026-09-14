@@ -100,6 +100,39 @@ def test_every_live_config_tells_the_operator_its_window(path, env):
     assert any("계좌 평가액" in n for n in preflight_warnings(_load(path)))
 
 
+@pytest.mark.parametrize("path", LIVE)
+def test_no_shipped_live_config_has_caps_that_contradict_each_other(path, env):
+    """두 한도가 서로 모르면 적어 둔 건수는 장식입니다.
+
+    최소 주문금액이 `거래대금 ÷ 건수` 보다 크면 건수 한도에는 영원히 닿지
+    못합니다 — 언제나 거래대금이 먼저 막습니다. 화면과 확인창은 "하루 10건"
+    이라고 말하는데 실제로는 2건이고, 그 차이는 어디에도 안 나옵니다.
+
+    고치는 방향은 **최소 주문금액을 내리는 쪽** 입니다. 그건 비용 통제지
+    안전 천장이 아닙니다. 거래대금·건수·주문당 상한을 올려서 맞추면 한도를
+    푸는 것이고, 그건 운영자의 결정이지 정합성 수정이 아닙니다.
+    """
+    config = _load(path)
+    lim, floor = config.limits, config.execution.min_order_notional
+    if not (lim.max_daily_notional and lim.max_daily_orders and floor):
+        return
+    assert floor <= lim.max_daily_notional / lim.max_daily_orders + 1e-9, (
+        f"{path}: 최소 주문 {floor:,.0f} 이면 거래대금 한도 "
+        f"{lim.max_daily_notional:,.0f} 안에서 최대 "
+        f"{int(lim.max_daily_notional // floor)}건인데 건수 한도는 "
+        f"{lim.max_daily_orders}건으로 적혀 있습니다"
+    )
+
+
+@pytest.mark.parametrize("path", LIVE)
+def test_no_shipped_live_config_has_a_window_too_narrow_to_survive_drift(path, env):
+    """구간이 두 배도 안 되면 계좌가 30% 만 움직여도 벗어납니다 — 그리고
+    벗어난 날 봇은 조용히 아무것도 안 삽니다."""
+    assert not any("두 배도 안 돼서" in note
+                   for note in preflight_warnings(_load(path))), (
+        f"{path} 의 진입 구간이 너무 좁습니다")
+
+
 @pytest.mark.parametrize("path", BACKTEST)
 def test_a_backtest_with_a_roomy_window_stays_quiet(path, env):
     """경고가 늘 켜져 있으면 아무도 안 읽습니다."""
