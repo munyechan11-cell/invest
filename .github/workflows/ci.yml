@@ -25,8 +25,19 @@ jobs:
         run: pytest -q
       - name: Configs assemble
         run: |
-          python -m quant validate configs/demo.yaml
-          python -m quant validate configs/us_equity.yaml
+          # 출하되는 것 전부 — 이름을 박아 두면 설정 하나를 옮길 때마다 CI 가
+          # 없는 파일을 찾다가 빨개집니다. 자격증명은 형식만 맞으면 됩니다
+          # (validate 는 조립만 하고 네트워크에 닿지 않습니다).
+          for cfg in configs/*.yaml; do
+            case "$cfg" in *space.yaml) continue;; esac
+            echo "── $cfg"
+            TOSS_CLIENT_ID=x TOSS_CLIENT_SECRET=y TOSS_ACCOUNT_NO=12345678 \
+            KIS_APP_KEY=x KIS_APP_SECRET=y KIS_ACCOUNT_NO=12345678 \
+            KIS_PAPER_APP_KEY=x KIS_PAPER_APP_SECRET=y \
+            KIS_PAPER_ACCOUNT_NO=12345678 KIS_PAPER_ACCOUNT_PRD_CD=01 \
+            TELEGRAM_BOT_TOKEN=t TELEGRAM_CHAT_ID=c GOOGLE_API_KEY=g \
+              python -m quant validate "$cfg" > /dev/null
+          done
       - name: Backtest smoke test
         # Synthetic data, no network — must stay deterministic and green.
         run: python -m quant backtest configs/demo.yaml --quiet --out /tmp/result.json
