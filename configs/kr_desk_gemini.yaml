@@ -7,8 +7,8 @@
 # 크레딧/쿼터가 없으면 매 봉 19번씩 실패하는 대신 그 자리에서 이유를 말하고
 # 비활성화됩니다.
 # 🔴 **실거래입니다.** 이 설정으로 시작하면 진짜 주문이 나가고 진짜 돈이
-#    움직입니다. 연습하려면 `mode: dry_run` 으로 바꾸세요 — KIS 는 모의투자
-#    환경이 따로 있어서 `data.params.paper: true` 로도 연습할 수 있습니다.
+#    움직입니다. 연습하려면 이 파일을 고치지 말고 **`kr_kis_paper`** 를
+#    쓰세요 — 모의투자 계좌로 진짜 주문이 나가는 설정이 따로 있습니다.
 name: kr-desk-gemini
 label_ko: "국내 · AI 자동매매 (한투)"
 description: 16석 AI 데스크 + 수급 알파. 판정 좌석만 더 큰 모델을 씁니다.
@@ -16,14 +16,16 @@ mode: live
 
 data:
   provider: kis
-  params: {app_key: "${KIS_APP_KEY}", app_secret: "${KIS_APP_SECRET}", paper: true}
+  # `paper: true` 였습니다 — **실계좌 키를 모의투자 호스트로** 보내는
+  # 조합이라 토큰 발급부터 실패합니다. 한투는 환경마다 키가 다릅니다.
+  params: {app_key: "${KIS_APP_KEY}", app_secret: "${KIS_APP_SECRET}", paper: false}
   timeframe: 1d
   warmup_bars: 260
   calendar: krx
 
 flow:
   provider: kis
-  params: {app_key: "${KIS_APP_KEY}", app_secret: "${KIS_APP_SECRET}", paper: true}
+  params: {app_key: "${KIS_APP_KEY}", app_secret: "${KIS_APP_SECRET}", paper: false}
   history_sessions: 120
 
 universe:
@@ -91,7 +93,20 @@ costs: {preset: kr_equity}
 broker:
   type: kis
   params: {product_code: "01"}
-  max_order_notional: 300000
+  # 주문 한 건의 상한. **하루 거래대금 한도와 같은 값입니다** — 하루 예산보다
+  # 큰 주문은 어차피 하루 한도에서 거절되므로, 그보다 크게 잡는 것은 의미가
+  # 없고 작게 잡으면 **계좌가 자랄 때 먼저 닿는 벽** 이 됩니다.
+  #
+  # 예전에는 `starting_cash × 비중 × (1-예비)` 바로 위로 잡혀 있었습니다.
+  # 의도는 맞지만 그 숫자는 계좌가 자라면 따라 오르지 않아서, 자산이 5%
+  # 만 늘어도 신규 진입이 전부 거절됐습니다 — 그리고 그 벽에 닿는 날은
+  # 계좌가 잘 되고 있는 날입니다.
+  #
+  # **하루 총 노출은 이 변경으로 바뀌지 않습니다.** 오늘 나갈 수 있는 주문
+  # 크기는 여전히 `평가액 × 0.30 × 0.95` 이고(포트폴리오가 정합니다), 하루 총량은
+  # 그대로 500,000 입니다. 바뀐 것은 자산이 약 1.75배가 될 때까지 이 칸이
+  # 침묵한다는 것뿐입니다.
+  max_order_notional: 500000
   live_trading_confirmed: true
 
 # 실거래 첫 주는 작게 둡니다. "고장나면 얼마까지 잃어도 되는가" 입니다.

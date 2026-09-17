@@ -836,14 +836,39 @@ async def _verify_kis(values: dict[str, str], *, paper: bool = False) -> dict:
         steps.append({"step": "현재가 조회 (삼성전자)", "ok": True,
                       "detail": f"{quote.mid:,.0f}원"})
 
+        # **일봉은 예외를 밖으로 내보내면 안 됩니다.** 여기서 안 잡으면
+        # 바깥 핸들러가 `HTTPStatusError: Server error '500 …' for url '…'`
+        # 을 그대로 화면에 씁니다 — 200자에서 잘려 URL 이 깨진 채로요.
+        # 그 문장을 읽고 할 수 있는 일은 없습니다.
         end = datetime.now(UTC)
-        bars = await provider.history(sample, "1d", end - timedelta(days=90), end)
+        why = ""
+        try:
+            bars = await provider.history(sample, "1d", end - timedelta(days=90), end)
+        except Exception as exc:
+            bars, why = [], _short(exc)
         if len(bars) < 10:
             steps.append({"step": "일봉 조회 (90일)", "ok": False,
-                          "detail": f"{len(bars)}개만 왔습니다"})
+                          "detail": why or f"{len(bars)}개만 왔습니다"})
+            if paper:
+                # **모의투자 호스트는 과거 일봉을 주지 않습니다.** 키는
+                # 멀쩡한데 이 창구가 없는 것이고, 그래서 여기서 "실패" 라고
+                # 하면 사람은 멀쩡한 키를 다시 발급받으러 갑니다.
+                return {
+                    "ok": True, "steps": steps, "environment": env_name,
+                    "detail": "모의투자 키는 정상입니다 — 토큰과 현재가까지 "
+                              "확인했습니다. 주문은 이 키로 나갑니다.",
+                    "warning": "모의투자 환경은 **과거 일봉을 주지 않습니다**"
+                               f"({why or '빈 응답'}). 키 문제가 아닙니다. 봇은 "
+                               "워밍업에 과거 일봉이 필요하므로 **시세는 실계좌 "
+                               "키로 받습니다** — 아래 「한국투자증권 실계좌」 "
+                               "카드에도 키를 넣어 주세요. 실계좌 키는 시세를 "
+                               "읽는 데만 쓰이고, 주문은 그대로 모의투자 "
+                               "계좌로 나갑니다.",
+                }
             return {"ok": False, "steps": steps, "environment": env_name,
                     "error": "현재가는 오는데 과거 일봉이 부족합니다. 봇은 워밍업에 "
-                             "최소 10봉이 필요해서 이 상태로는 시작하지 못합니다."}
+                             "최소 10봉이 필요해서 이 상태로는 시작하지 못합니다."
+                             + (f" 증권사가 말한 것: {why}" if why else "")}
         steps.append({"step": "일봉 조회 (90일)", "ok": True,
                       "detail": f"{len(bars)}봉, 마지막 {bars[-1].ts.date()}"})
     finally:

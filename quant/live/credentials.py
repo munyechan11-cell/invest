@@ -114,11 +114,20 @@ VENUES: list[VenueSpec] = [
         fields=[
             ("KIS_APP_KEY", "실계좌 앱 키", True),
             ("KIS_APP_SECRET", "실계좌 앱 시크릿", True),
-            ("KIS_ACCOUNT_NO", "실계좌 계좌번호 (앞 8자리)", True),
+            # 계좌번호는 **주문할 때** 필요합니다. 시세만 쓰는 사람(모의투자로
+            # 연습하는 사람이 그렇습니다)에게까지 요구하면, 실계좌가 없는
+            # 사람은 연습조차 시작하지 못합니다. 실거래 전략을 고르는 순간
+            # `required_secrets` 가 이 값을 다시 요구하고, 없으면 시작이
+            # 거절되며 무엇이 없는지 이름으로 말합니다.
+            ("KIS_ACCOUNT_NO", "실계좌 계좌번호 (앞 8자리, 실거래할 때만)", False),
             ("KIS_ACCOUNT_PRD_CD", "상품코드 (보통 01)", False),
         ],
-        note_ko="진짜 돈이 움직이는 계좌입니다. 모의투자에서 충분히 돌려 본 뒤에 "
-                "넣으세요. https://apiportal.koreainvestment.com 에서 발급.",
+        note_ko="⚠️ 모의투자로 연습할 때도 **시세는 이 키로 받습니다** — 모의투자 "
+                "호스트가 과거 일봉을 주지 않기 때문입니다. 앱 키·시크릿만 넣으면 "
+                "시세용으로 충분하고, 주문은 그대로 모의투자 계좌로 나갑니다. "
+                "계좌번호까지 넣으면 그때부터 진짜 돈이 움직일 수 있습니다 — "
+                "모의투자에서 충분히 돌려 본 뒤에 넣으세요. "
+                "https://apiportal.koreainvestment.com 에서 발급.",
         paper_supported=False,
     ),
     VenueSpec(

@@ -2592,10 +2592,15 @@ function renderVenues() {
              — 이 증권사의 허용 IP 목록에 <b>이 값</b>이 있어야 합니다.
              내 컴퓨터 IP 가 아니라 이 서버의 IP 입니다.</div>`
           : "";
+        // 성공인데 **할 일이 남은** 경우가 있습니다. 모의투자 키는 정상인데
+        // 그 환경이 과거 일봉을 안 줘서 시세용 실계좌 키가 따로 필요한 것이
+        // 그렇습니다. ✅ 하나로 끝내면 사람은 다 됐다고 믿고 나갑니다.
+        const warnRow = res.warning
+          ? `<div class="vsum warn">⚠️ ${esc(res.warning)}</div>` : "";
         out.innerHTML = steps +
           `<div class="vsum ${res.ok ? "ok" : "bad"}">` +
           `${res.ok ? "✅ " + esc(res.detail || "정상") : "❌ " + esc(res.error || "실패")}` +
-          `</div>` + ipRow;
+          `</div>` + warnRow + ipRow;
         out.className = "status " + (res.ok ? "up" : "down");
       } catch (e) {
         out.textContent = "❌ " + e.message;

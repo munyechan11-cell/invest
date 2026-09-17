@@ -31,16 +31,24 @@ SECRET = "registry-test-secret-key-0123456789abcdef"
 
 #: 이 값들이 응답·설정·환경변수 어디에도 나타나면 안 됩니다.
 #:
-#: 아래 `kis_config()` 는 `mode: dry_run` 이라 **모의투자 호스트** 를 봅니다.
-#: 한투는 환경마다 앱 키가 따로 발급되므로 배선도 그 환경의 이름을 채웁니다 —
-#: 실계좌 이름을 넣어 두면 이 파일은 "키가 안 간다" 로 실패하는데, 실제로는
-#: 없는 키를 찾고 있는 것입니다.
+#: 아래 `kis_config()` 는 `mode: dry_run` 이라 **주문은 모의투자 호스트** 로
+#: 나갑니다. 한투는 환경마다 앱 키가 따로 발급되므로 배선도 그 환경의 이름을
+#: 채웁니다 — 실계좌 이름을 넣어 두면 이 파일은 "키가 안 간다" 로 실패하는데,
+#: 실제로는 없는 키를 찾고 있는 것입니다.
+#:
+#: **시세와 수급은 다릅니다.** 모의투자 호스트는 과거 일봉을 주지 않아서
+#: (`inquire-daily-itemchartprice` 가 500), 그 둘은 실계좌 키로 읽습니다.
+#: 그래서 연습하는 사람도 두 벌을 다 넣습니다 — 주문용과 시세용.
 A_KEYS = {"KIS_PAPER_APP_KEY": "AAAA-app-key-aaaa",
           "KIS_PAPER_APP_SECRET": "AAAA-secret-aaaa",
-          "KIS_PAPER_ACCOUNT_NO": "11112222"}
+          "KIS_PAPER_ACCOUNT_NO": "11112222",
+          "KIS_APP_KEY": "AAAA-quote-key-aaaa",
+          "KIS_APP_SECRET": "AAAA-quote-secret-aaaa"}
 B_KEYS = {"KIS_PAPER_APP_KEY": "BBBB-app-key-bbbb",
           "KIS_PAPER_APP_SECRET": "BBBB-secret-bbbb",
-          "KIS_PAPER_ACCOUNT_NO": "33334444"}
+          "KIS_PAPER_ACCOUNT_NO": "33334444",
+          "KIS_APP_KEY": "BBBB-quote-key-bbbb",
+          "KIS_APP_SECRET": "BBBB-quote-secret-bbbb"}
 
 _PROCESS_WIDE = (
     "KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO", "KIS_ACCOUNT_PRD_CD",
@@ -200,7 +208,9 @@ def test_starting_without_credentials_says_what_to_register(registry, accounts):
 
 
 def test_a_partly_configured_user_is_told_only_what_is_left(registry, accounts):
-    person = user(accounts, secrets={"KIS_PAPER_APP_KEY": "k", "KIS_PAPER_APP_SECRET": "s"})
+    have = dict(A_KEYS)
+    have.pop("KIS_PAPER_ACCOUNT_NO")
+    person = user(accounts, secrets=have)
     report = registry.readiness(person.id, kis_config())
     assert report["ready"] is False
     assert [item["name"] for item in report["missing"]] == ["KIS_PAPER_ACCOUNT_NO"]
@@ -212,9 +222,17 @@ def test_a_configured_user_is_ready(registry, accounts):
 
 
 def test_required_secrets_tells_the_setup_screen_what_a_strategy_needs():
-    """화면이 "이 전략을 쓰려면 무엇이 필요한지" 를 미리 물어볼 수 있어야 합니다."""
+    """화면이 "이 전략을 쓰려면 무엇이 필요한지" 를 미리 물어볼 수 있어야 합니다.
+
+    연습용 전략도 **두 벌** 이 필요합니다: 주문은 모의투자 키로, 시세와 수급은
+    실계좌 키로. 모의투자 호스트가 과거 일봉을 주지 않기 때문입니다. 계좌번호는
+    모의투자 것만 있으면 됩니다 — 주문이 나가는 곳이 거기뿐이라서입니다.
+    """
     needed = required_secrets(kis_config(flow={"provider": "kis"}))
-    assert set(needed) == {"KIS_PAPER_APP_KEY", "KIS_PAPER_APP_SECRET", "KIS_PAPER_ACCOUNT_NO"}
+    assert set(needed) == {"KIS_PAPER_APP_KEY", "KIS_PAPER_APP_SECRET",
+                           "KIS_PAPER_ACCOUNT_NO", "KIS_APP_KEY", "KIS_APP_SECRET"}
+    assert "KIS_ACCOUNT_NO" not in needed, (
+        "연습에 실계좌 계좌번호까지 요구하면 실계좌가 없는 사람은 못 시작합니다")
     assert required_secrets(paper_config()) == []
 
 
@@ -233,8 +251,10 @@ def test_the_keys_reach_the_adapters_as_constructor_arguments(registry, accounts
     assert broker.app_key == A_KEYS["KIS_PAPER_APP_KEY"]
     assert broker.app_secret == A_KEYS["KIS_PAPER_APP_SECRET"]
     assert broker.account_no == A_KEYS["KIS_PAPER_ACCOUNT_NO"]
-    assert trader.provider.inner.app_key == A_KEYS["KIS_PAPER_APP_KEY"]
-    assert trader.engine.flow_feed.provider.app_key == A_KEYS["KIS_PAPER_APP_KEY"]
+    # 시세·수급은 실계좌 키입니다 — 모의투자 호스트에 일봉이 없기 때문입니다.
+    # 주문은 위에서 본 대로 모의투자 키로 나갑니다.
+    assert trader.provider.inner.app_key == A_KEYS["KIS_APP_KEY"]
+    assert trader.engine.flow_feed.provider.app_key == A_KEYS["KIS_APP_KEY"]
 
 
 def test_no_credential_is_ever_written_to_the_environment(registry, accounts, build):

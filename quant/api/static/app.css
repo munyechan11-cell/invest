@@ -99,7 +99,7 @@ button{cursor:pointer}
 .vstep{font-size:14px;line-height:1.7;color:var(--dim)}
 .vstep.ok{color:var(--ok)} .vstep.bad{color:var(--bad)}
 .vsum{margin-top:6px;font-size:14px;line-height:1.7;overflow-wrap:anywhere}
-.vsum.ok{color:var(--ok)} .vsum.bad{color:var(--bad)}
+.vsum.ok{color:var(--ok)} .vsum.bad{color:var(--bad)} .vsum.warn{color:var(--warn)}
 [data-vres]{display:block;max-width:100%}
 
 /* ── 종목 찾기 ─────────────────────────────────────────────────────── */

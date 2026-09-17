@@ -332,15 +332,26 @@ def _broker_wiring(config: StrategyConfig) -> _Wiring | None:
     return None                      # paper — 아무 계좌에도 닿지 않습니다
 
 
+#: **시세·수급은 언제나 실계좌 키입니다.** 주문만 환경을 가릅니다.
+#:
+#: 예전에는 주문과 같은 환경의 키를 썼습니다 — "시세와 주문이 같은 곳을
+#: 봐야 한다" 는 맞는 원칙이었는데, 한투에서는 그게 성립하지 않습니다:
+#: 모의투자 호스트는 **과거 일봉을 주지 않습니다**(`inquire-daily-itemchartprice`
+#: 가 500). 현재가만 옵니다. 봇은 워밍업에 수백 봉이 필요하므로 모의투자
+#: 키만으로는 시작조차 못 합니다.
+#:
+#: 실계좌 키로 시세를 읽어도 **주문은 그대로 모의투자 계좌로 나갑니다** —
+#: 시세 제공자는 주문을 낼 수 있는 물건이 아니고, 어댑터는 따로 배선됩니다.
+#: 그리고 같은 거래소·같은 가격이라 "연습에선 됐는데" 가 생기지 않습니다.
+_KIS_QUOTES = _Wiring("kis",
+                      {"app_key": "KIS_APP_KEY", "app_secret": "KIS_APP_SECRET"},
+                      ("KIS_APP_KEY", "KIS_APP_SECRET"))
+
+
 def _data_wiring(config: StrategyConfig) -> _Wiring | None:
     provider = config.data.provider
     if provider == "kis":
-        # 시세도 환경마다 호스트가 다릅니다 — 주문과 같은 쪽을 봐야 합니다.
-        wiring = _kis_wiring(config)
-        return _Wiring(wiring.venue,
-                       {"app_key": wiring.args["app_key"],
-                        "app_secret": wiring.args["app_secret"]},
-                       (wiring.args["app_key"], wiring.args["app_secret"]))
+        return _KIS_QUOTES
     if provider == "toss":
         return _Wiring("toss",
                        {"client_id": "TOSS_CLIENT_ID",
@@ -356,13 +367,7 @@ def _data_wiring(config: StrategyConfig) -> _Wiring | None:
 
 def _flow_wiring(config: StrategyConfig) -> _Wiring | None:
     if config.flow.provider == "kis":
-        # 수급도 같은 환경의 키로 읽습니다 — 시세·주문과 다른 쪽을 보면
-        # 그 전략은 두 계좌를 섞어 판단하게 됩니다.
-        wiring = _kis_wiring(config)
-        return _Wiring(wiring.venue,
-                       {"app_key": wiring.args["app_key"],
-                        "app_secret": wiring.args["app_secret"]},
-                       (wiring.args["app_key"], wiring.args["app_secret"]))
+        return _KIS_QUOTES         # 수급도 시세와 같은 창구입니다
     if config.flow.provider == "toss":
         # 수급은 읽기만 하므로 계좌번호는 필요 없습니다. 여기에 TOSS_ACCOUNT_NO
         # 까지 적으면 계좌를 열지 않은 사람이 수급 전략 앞에서 막힙니다.

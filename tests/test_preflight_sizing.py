@@ -253,3 +253,51 @@ def test_every_shipped_live_config_says_where_its_wall_is(env):
         notes = preflight_warnings(config)
         assert any("천장의" in n or "바닥에서" in n for n in notes), (
             f"{path} 은 벽 바로 앞에서 시작하는데 아무 말도 하지 않습니다")
+
+
+# ── 주문 상한은 하루 예산에서 옵니다 ─────────────────────────────────────
+#
+# 예전에는 `starting_cash × 비중 × (1-예비)` 바로 위로 잡혀 있었습니다.
+# 그러면 계좌가 5% 만 자라도 신규 진입이 전부 거절됩니다 — 그리고 그 벽에
+# 닿는 날은 계좌가 잘 되고 있는 날입니다.
+#
+# 이제 **하루 거래대금 한도와 같은 값** 입니다. 하루 예산보다 큰 주문은
+# 어차피 하루 한도에서 거절되므로 그보다 크게 잡는 것은 의미가 없고, 작게
+# 잡으면 계좌가 자랄 때 먼저 닿는 두 번째 벽이 됩니다.
+#
+# **하루 총 노출은 이 규칙으로 바뀌지 않습니다.** 오늘 나갈 수 있는 주문
+# 크기는 여전히 포트폴리오의 비중이 정하고, 하루 총량은 하루 한도가 정합니다.
+
+@pytest.mark.parametrize("path", LIVE)
+def test_the_per_order_cap_is_not_a_second_tighter_wall(path, env):
+    config = _load(path)
+    cap = config.broker.max_order_notional
+    daily = config.limits.max_daily_notional
+    if not cap or not daily:
+        return
+    assert cap >= daily, (
+        f"{path}: 주문 상한 {cap:,.0f} 이 하루 한도 {daily:,.0f} 보다 낮습니다 — "
+        "계좌가 자라면 하루 예산을 다 쓰기 전에 이 칸이 먼저 막습니다")
+
+
+@pytest.mark.parametrize("path", LIVE)
+def test_a_shipped_config_can_grow_by_half_before_it_hits_the_wall(path, env):
+    """출하 설정이 천장 바로 아래에서 시작하면, 계좌가 조금만 잘 돼도
+    그날로 신규 진입이 멈춥니다."""
+    config = _load(path)
+    window = entry_window(config)
+    if window is None:
+        return
+    _low, high = window
+    assumed = config.portfolio.starting_cash
+    assert high >= assumed * 1.5, (
+        f"{path}: 시작 자본 {assumed:,.0f} 에서 천장 {high:,.0f} 까지 "
+        f"{high / assumed:.2f}배뿐입니다")
+
+
+def test_raising_the_cap_did_not_touch_the_floor():
+    """바닥(최소 주문금액)은 비용 통제입니다 — 천장을 올린다고 같이
+    올리면 작은 계좌가 아무것도 못 삽니다."""
+    config = _load("configs/kr_kis_paper.yaml")
+    assert config.execution.min_order_notional == 5_000_000
+    assert entry_window(config)[0] == pytest.approx(5_000_000 / (0.35 * 0.95))
