@@ -194,3 +194,62 @@ def test_the_warning_matches_what_the_adapter_actually_does():
             f"{currency}: 어댑터는 잔고를 "
             f"{'읽는데' if reads_balance else '못 읽는데'} 경고는 "
             f"{'있습니다' if warned else '없습니다'}")
+
+
+# ── 구간의 폭이 아니라 남은 여유 ─────────────────────────────────────────
+#
+# 출하 설정 전부가 천장에서 5~20% 아래에서 시작합니다. `max_order_notional`
+# 을 `starting_cash × 비중 × (1-예비)` 바로 위로 잡아 둔 결과인데, 그 의도는
+# 맞아도 **계좌가 자라면 그 의도가 벽이 됩니다.** 그리고 그 벽에 닿는 날은
+# 계좌가 잘 되고 있는 날입니다.
+#
+# 캡을 올려서 예행연습만 편하게 만들지는 않습니다 — 예행연습이 실거래와 같은
+# 벽을 만나야 예행연습입니다(하루 한도를 모의투자에도 거는 것과 같은 이유).
+# 대신 시작하기 전에 그 거리를 말합니다.
+
+def test_starting_just_under_the_ceiling_is_said_out_loud():
+    # 1,000 × 0.30 × 0.95 = 285, 캡 300 → 천장 1,053. 시작 1,000 은 95% 지점.
+    notes = preflight_warnings(cfg(mode="dry_run"))
+    assert any("천장의 95%" in n for n in notes), notes
+    assert any("5% 만 늘어도" in n for n in notes)
+
+
+def test_it_says_which_two_knobs_move_the_wall():
+    note = [n for n in preflight_warnings(cfg(mode="dry_run")) if "천장의" in n][0]
+    assert "max_order_notional" in note and "max_position_weight" in note
+
+
+def test_the_warning_says_exits_still_go_out():
+    """이 문장이 "지금 포지션에 갇힌다" 로 읽히면 안 됩니다."""
+    note = [n for n in preflight_warnings(cfg(mode="dry_run")) if "천장의" in n][0]
+    assert "청산과 손절은 그대로 나갑니다" in note
+
+
+def test_starting_just_above_the_floor_is_said_too():
+    notes = preflight_warnings(cfg(mode="dry_run",
+                                   portfolio={"starting_cash": 750}))
+    assert any("바닥에서" in n for n in notes), notes
+
+
+def test_a_comfortable_start_says_nothing_about_walls():
+    """늘 켜져 있는 경고는 아무도 안 읽습니다."""
+    notes = preflight_warnings(cfg(mode="dry_run",
+                                   broker={"max_order_notional": 3_000},
+                                   portfolio={"starting_cash": 2_000}))
+    assert not any("천장의" in n or "바닥에서" in n for n in notes), notes
+
+
+def test_every_shipped_live_config_says_where_its_wall_is(env):
+    """출하 설정이 이 사실을 말하지 않고 나가면, 계좌가 5% 늘어난 날
+    처음으로 알게 됩니다."""
+    for path in LIVE:
+        config = _load(path)
+        if entry_window(config) is None:
+            continue
+        assumed = config.portfolio.starting_cash
+        low, high = entry_window(config)
+        if not (high < assumed * 1.25 or assumed < low * 1.25):
+            continue
+        notes = preflight_warnings(config)
+        assert any("천장의" in n or "바닥에서" in n for n in notes), (
+            f"{path} 은 벽 바로 앞에서 시작하는데 아무 말도 하지 않습니다")

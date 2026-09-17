@@ -144,3 +144,46 @@ def test_the_failures_dict_is_optional():
     out = asyncio.run(gather_history(_Provider({"AAA"}), [Symbol("AAA", venue="SIM")],
                                      "1d", end - timedelta(days=90), end))
     assert out == {"SIM:AAA": []}
+
+
+# ── 통과했지만 신호를 낼 수 없는 종목 ────────────────────────────────────
+#
+# 워밍업 문턱은 10봉인데 알파가 필요로 하는 것은 보통 200봉대입니다. 그
+# 사이에 있는 종목은 후보 목록에 이름이 올라오고 화면에도 보이는데, 영영
+# 아무 신호도 내지 않습니다. 상장한 지 얼마 안 된 종목이 대표적이고,
+# 화면에서 그건 "아직 살 때가 아닌가 보다" 와 구별되지 않습니다.
+
+def short_warmup(bars, tmp_path):
+    trader = LiveTrader(live_config(), state_path=str(tmp_path / "s.db"))
+    trader.provider = _Provider(set(), bars=bars)
+    seen: list[dict] = []
+    trader.engine.ctx.bus.on(EventType.ERROR, lambda e: seen.append(e.payload))
+    asyncio.run(trader.warmup())
+    needed = int(getattr(trader.engine.alpha, "warmup_bars", 0) or 0)
+    return [e for e in seen if "봉에 못 미칩니다" in str(e.get("error", ""))], needed
+
+
+def test_a_symbol_that_cannot_signal_yet_is_named(tmp_path):
+    said, needed = short_warmup(12, tmp_path)
+    assert needed > 12, "이 시나리오가 성립하려면 알파가 12봉보다 많이 필요합니다"
+    assert said, "후보에는 넣어 두고 아무 말도 하지 않았습니다"
+    assert said[0]["alpha_needs_bars"] == needed
+    assert said[0]["short_history"][TICKERS[0]] == 12
+
+
+def test_it_says_a_newly_listed_name_will_stay_that_way(tmp_path):
+    said, _ = short_warmup(12, tmp_path)
+    assert "상장한 지 얼마 안 된" in said[0]["error"]
+
+
+def test_a_short_symbol_is_not_silently_dropped(tmp_path):
+    """빼면 지금 동작이 바뀝니다 — 말하는 것과 빼는 것은 다른 결정입니다."""
+    trader = LiveTrader(live_config(), state_path=str(tmp_path / "k.db"))
+    trader.provider = _Provider(set(), bars=12)
+    asyncio.run(trader.warmup())
+    assert len(trader.engine.ctx.universe) == len(TICKERS)
+
+
+def test_enough_history_says_nothing(tmp_path):
+    said, _ = short_warmup(400, tmp_path)
+    assert not said

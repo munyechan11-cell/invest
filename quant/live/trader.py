@@ -278,6 +278,30 @@ class LiveTrader:
         # 사람은 로그를 읽지 않습니다. 후보가 조용히 줄면 상대강도 알파가
         # `min_universe` 아래로 떨어져 발화를 멈추는데, 그건 화면에서
         # "대기 중" 과 구별되지 않습니다.
+        # **통과했지만 신호를 낼 수 없는 종목.** 문턱은 10봉인데 알파가
+        # 필요로 하는 것은 그보다 훨씬 많습니다(보통 200봉대). 그 사이에
+        # 있는 종목은 후보 목록에 이름이 올라오고, 화면에도 보이고, 그런데
+        # 영영 아무 신호도 내지 않습니다 — 상장한 지 얼마 안 된 종목이
+        # 대표적입니다. 빼지는 않습니다(빼면 지금 동작이 바뀝니다). 다만
+        # "이 종목은 왜 한 번도 안 사지" 를 하루 뒤에 알게 두지 않습니다.
+        needed = int(getattr(self.engine.alpha, "warmup_bars", 0) or 0)
+        short = [(s, len(series.get(s.key, []))) for s in usable
+                 if len(series.get(s.key, [])) < needed]
+        if short:
+            names = ", ".join(f"{s.ticker}({n}봉)" for s, n in short[:6])
+            message = (
+                f"{len(short)}종목은 과거 데이터가 알파가 필요로 하는 "
+                f"{needed}봉에 못 미칩니다 ({names}). 후보에는 있지만 그만큼 "
+                f"쌓이기 전까지 신호를 내지 않습니다 — 상장한 지 얼마 안 된 "
+                f"종목이면 계속 그렇습니다"
+            )
+            log.warning(message)
+            await ctx.bus.publish(EventType.ERROR, {
+                "error": message,
+                "short_history": {s.ticker: n for s, n in short},
+                "alpha_needs_bars": needed,
+            })
+
         dropped = [s for s in symbols if s not in usable]
         if dropped:
             names = ", ".join(s.ticker for s in dropped[:6])

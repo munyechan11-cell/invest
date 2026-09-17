@@ -25,6 +25,11 @@ from __future__ import annotations
 from quant.config.schema import StrategyConfig
 from quant.core.types import RunMode
 
+#: 시작 자본이 구간의 끝에서 이 배수 안쪽이면 "벽에 붙어 있다" 로 봅니다.
+#: 25% 는 하루 이틀의 변동이 아니라 **한 계절** 의 폭입니다 — 그 안에 들면
+#: 시작하기 전에 알아야 하는 숫자입니다.
+EDGE = 1.25
+
 
 def entry_window(config: StrategyConfig) -> tuple[float, float] | None:
     """신규 진입이 실제로 나가는 계좌 평가액 구간 `(하한, 상한)`.
@@ -101,7 +106,12 @@ def _worth_saying(config: StrategyConfig, window: tuple[float, float]) -> bool:
     if config.mode is RunMode.LIVE or low >= high:
         return True
     assumed = config.portfolio.starting_cash
-    return not (low <= assumed <= high) or high < low * 3
+    if not (low <= assumed <= high) or high < low * 3:
+        return True
+    # 구간이 넓어도 **시작점이 벽에 붙어 있으면** 말해야 합니다. 구간의 폭과
+    # 남은 여유는 다른 숫자입니다 — 7배짜리 구간의 천장 바로 아래에서
+    # 시작하면, 그 사람에게 남은 것은 7배가 아니라 5% 입니다.
+    return high < assumed * EDGE or assumed < low * EDGE
 
 
 def preflight_warnings(config: StrategyConfig) -> list[str]:
@@ -129,6 +139,25 @@ def preflight_warnings(config: StrategyConfig) -> list[str]:
             )
             if high < low * 2:
                 note += ". 구간이 두 배도 안 돼서 잔고가 조금만 움직여도 벗어납니다"
+            # **구간의 폭보다 남은 여유가 중요합니다.** 7배짜리 구간이어도
+            # 천장 바로 아래에서 시작하면 남은 것은 7배가 아니라 5% 입니다.
+            # 그리고 그 벽에 닿는 날은 계좌가 잘 되고 있는 날입니다.
+            assumed = config.portfolio.starting_cash
+            if assumed and high < assumed * EDGE:
+                note += (
+                    f". ⚠️ 지금 적힌 시작 자본 {assumed:,.0f} 은 그 천장의 "
+                    f"{assumed / high:.0%} 지점입니다 — 계좌가 "
+                    f"{high / assumed - 1:.0%} 만 늘어도 신규 진입이 전부 "
+                    f"거절됩니다(청산과 손절은 그대로 나갑니다). 캡을 올리려면 "
+                    f"broker.max_order_notional, 주문을 줄이려면 "
+                    f"portfolio.max_position_weight 입니다"
+                )
+            elif assumed and assumed < low * EDGE:
+                note += (
+                    f". ⚠️ 지금 적힌 시작 자본 {assumed:,.0f} 은 바닥에서 "
+                    f"{assumed / low - 1:.0%} 위입니다 — 계좌가 조금만 줄어도 "
+                    f"신규 진입이 최소 주문금액에 못 미쳐 건너뜁니다"
+                )
             out.append(note)
 
     limits = config.limits
