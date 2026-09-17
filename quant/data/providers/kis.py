@@ -1,9 +1,25 @@
-"""Korea Investment & Securities (KIS) Open API — KOSPI/KOSDAQ market data.
+"""Korea Investment & Securities (KIS) Open API — 국내 + 해외 시세.
 
 Shares one OAuth token cache with `quant.brokerage.kis` so a session that both
 reads prices and places orders authenticates once. KIS issues short-lived
 tokens and rate-limits token requests aggressively, so the cache is mandatory,
 not an optimisation.
+
+**국내와 해외는 다른 엔드포인트입니다.** 예전에는 `domestic-stock` 만 불렀고,
+그래서 주문 어댑터가 해외 모의투자까지 지원하는데도 미국 종목은 시세를 받을
+길이 없었습니다 — 한투 키 하나로 미국을 돌리려면 토스나 야후 시세를 따로
+붙여야 했고, 야후는 15분 지연이라 "연습에선 됐는데" 를 만드는 자리였습니다.
+
+종목이 **6자리 숫자면 국내, 아니면 해외** 로 봅니다(토스 어댑터와 같은 규칙).
+
+거래소 코드가 **주문 쪽과 시세 쪽이 다릅니다** — 주문은 `NASD/NYSE/AMEX`,
+시세는 `NAS/NYS/AMS`. 한 글자 차이라 섞어 쓰면 "없는 종목" 으로 돌아오고,
+그 답은 티커가 틀린 것과 구별되지 않습니다.
+
+⚠️ **모의투자 도메인이 해외 시세를 주는지는 실호출로 확인해야 합니다.**
+한투는 환경마다 제공 범위가 다르고, 저장소 안에서는 확인할 수 없습니다.
+못 주면 여기서 `RuntimeError` 가 나며 그 사실을 말합니다 — 조용히 0 을
+돌려주지 않습니다.
 """
 from __future__ import annotations
 
@@ -22,6 +38,13 @@ from quant.core.types import UTC, AssetClass, Bar, Quote, Symbol, krx_tick_size
 from quant.data.provider import DataProvider, register_provider
 
 log = logging.getLogger("quant.data.kis")
+
+#: 시세용 거래소 코드 ← 주문용 코드. 한 글자씩 다릅니다.
+OVERSEAS_QUOTE_EXCHANGE = {"NASD": "NAS", "NAS": "NAS", "NYSE": "NYS",
+                           "NYS": "NYS", "AMEX": "AMS", "AMS": "AMS"}
+#: 종목이 어느 거래소인지 응답이 말해 주지 않으므로 순서대로 물어봅니다.
+#: 한 번 맞은 곳은 기억합니다 — 종목마다 매번 세 번 부를 이유가 없습니다.
+OVERSEAS_SEARCH_ORDER = ("NAS", "NYS", "AMS")
 
 REAL_HOST = "https://openapi.koreainvestment.com:9443"
 MOCK_HOST = "https://openapivts.koreainvestment.com:29443"
@@ -74,7 +97,7 @@ async def kis_token(app_key: str, app_secret: str, paper: bool) -> str:
 
 @register_provider("kis")
 class KisProvider(DataProvider):
-    """Daily/weekly/monthly candles and L1 quotes for Korean equities."""
+    """일·주봉과 L1 호가 — 국내(KOSPI/KOSDAQ)와 해외(미국) 둘 다."""
 
     name = "kis"
 
@@ -86,6 +109,7 @@ class KisProvider(DataProvider):
         app_secret: str = "",
         paper: bool = True,
         requests_per_second: float = 8.0,
+        overseas_exchange: str = "NASD",
         allow_env_credentials: bool = True,
     ):
         self.app_key = (app_key or os.environ.get("KIS_APP_KEY", "")
@@ -93,6 +117,14 @@ class KisProvider(DataProvider):
         self.app_secret = (app_secret or os.environ.get("KIS_APP_SECRET", "")
                            if allow_env_credentials else app_secret)
         self.paper = paper
+        #: 해외 종목을 어느 거래소부터 찾아볼 것인가. 주문 어댑터의
+        #: `overseas_exchange` 와 같은 값을 넣으면 시세와 주문이 같은 곳을
+        #: 봅니다 — 다른 곳을 보면 "없는 종목" 과 "티커 오타" 가 구별되지
+        #: 않습니다.
+        self.overseas_exchange = OVERSEAS_QUOTE_EXCHANGE.get(
+            str(overseas_exchange or "NASD").upper(), "NAS")
+        #: 티커 → 맞았던 거래소. 종목마다 매번 세 번 부를 이유가 없습니다.
+        self._exchange_of: dict[str, str] = {}
         self._client = httpx.AsyncClient(timeout=20)
         self._gap = 1.0 / requests_per_second
         self._next_at = 0.0
@@ -125,7 +157,79 @@ class KisProvider(DataProvider):
             raise RuntimeError(f"KIS {path} error: {data.get('msg1') or data}")
         return data
 
+    # ── 국내인가 해외인가 ────────────────────────────────────────────
+    @staticmethod
+    def _domestic_code(ticker: str) -> str:
+        """국내 종목코드, 해외면 빈 문자열.
+
+        6자리 숫자면 국내입니다(토스 어댑터와 같은 규칙). 예전에는 어떤
+        문자열이든 숫자만 뽑아 `zfill(6)` 했는데, 그러면 `AAPL` 이 `000000`
+        이 되어 **없는 국내 종목을 조회** 하고 "그런 종목 없음" 으로 끝납니다.
+        답은 맞지만 이유가 틀렸고, 그 이유는 화면에 안 나옵니다.
+        """
+        code = str(ticker or "").strip().upper()
+        return code if code.isdigit() and len(code) == 6 else ""
+
+    async def _overseas(self, path: str, tr_id: str, ticker: str,
+                        extra: dict | None = None) -> tuple[dict, str]:
+        """해외 조회 한 번. `(응답, 맞았던 거래소)`.
+
+        어느 거래소인지 응답이 말해 주지 않으므로 순서대로 물어봅니다. 한 번
+        맞은 곳은 기억해서 다음부터 바로 갑니다 — 종목마다 매번 세 번 부르면
+        초당 호출 한도를 그것만으로 씁니다.
+        """
+        first = self._exchange_of.get(ticker) or self.overseas_exchange
+        order = [first] + [x for x in OVERSEAS_SEARCH_ORDER if x != first]
+        last: Exception | None = None
+        for exchange in order:
+            params = {"AUTH": "", "EXCD": exchange, "SYMB": ticker}
+            params.update(extra or {})
+            try:
+                data = await self._get(path, tr_id, params)
+            except Exception as exc:          # noqa: BLE001 — 다음 거래소를 봅니다
+                last = exc
+                continue
+            if self._overseas_has_rows(data):
+                self._exchange_of[ticker] = exchange
+                return data, exchange
+        if last is not None:
+            # 기억해 둔 거래소가 오류를 내면 그 기억은 더 이상 맞지 않습니다.
+            # 남겨 두면 다음 호출도 같은 곳부터 갑니다.
+            self._exchange_of.pop(ticker, None)
+            # 전부 오류면 종목 문제가 아니라 **창구 문제** 입니다. 모의투자
+            # 도메인이 해외 시세를 안 주는 경우가 여기로 옵니다.
+            raise RuntimeError(
+                f"KIS 해외 시세를 읽지 못했습니다 ({ticker}, {path}): {last}. "
+                f"모의투자 환경(paper={self.paper})이 해외 시세를 제공하는지 "
+                "확인이 필요합니다"
+            ) from last
+        return {}, ""
+
+    @staticmethod
+    def _overseas_has_rows(data: dict) -> bool:
+        out = data.get("output") or {}
+        if isinstance(out, dict) and str(out.get("last") or "").strip() not in ("", "0"):
+            return True
+        return bool(data.get("output2"))
+
+    @staticmethod
+    def _num(row: dict, key: str) -> float | None:
+        """숫자 하나. 못 읽으면 **0 이 아니라 None** 입니다.
+
+        0 은 "없음" 이지 "모름" 이 아닙니다. 못 읽은 종가를 0 으로 돌려주면
+        그 봉이 지표에 들어가 전략이 폭락으로 읽습니다.
+        """
+        raw = row.get(key)
+        if raw in (None, ""):
+            return None
+        try:
+            return float(str(raw).replace(",", ""))
+        except (TypeError, ValueError):
+            return None
+
     async def history(self, symbol, timeframe, start, end):
+        if not self._domestic_code(symbol.ticker):
+            return await self._overseas_history(symbol, timeframe, start, end)
         period = self._PERIOD.get(timeframe)
         if period is None:
             raise ValueError(f"KIS provider serves {sorted(self._PERIOD)} only, got {timeframe!r}")
@@ -171,6 +275,8 @@ class KisProvider(DataProvider):
         return [uniq[k] for k in sorted(uniq)]
 
     async def quote(self, symbol):
+        if not self._domestic_code(symbol.ticker):
+            return await self._overseas_quote(symbol)
         try:
             data = await self._get(
                 "/uapi/domestic-stock/v1/quotations/inquire-price",
@@ -188,10 +294,85 @@ class KisProvider(DataProvider):
         tick = float(korean_tick_size(price))
         return Quote(symbol, datetime.now(UTC), price - tick, price + tick)
 
-    async def resolve(self, ticker: str):
-        code = "".join(ch for ch in ticker if ch.isdigit()).zfill(6)
-        if len(code) != 6:
+    # ── 해외 ─────────────────────────────────────────────────────────
+    _OVERSEAS_PERIOD = {"1d": "0", "1w": "1"}
+
+    async def _overseas_history(self, symbol, timeframe, start, end):
+        """해외 기간별시세. 한 번에 ~100행이라 뒤로 넘기며 읽습니다."""
+        period = self._OVERSEAS_PERIOD.get(timeframe)
+        if period is None:
+            raise ValueError(
+                f"KIS 해외 시세는 {sorted(self._OVERSEAS_PERIOD)} 만 됩니다 "
+                f"(받은 값: {timeframe!r})"
+            )
+        bars: list[Bar] = []
+        cursor = end
+        seen: set[str] = set()
+        while cursor > start:
+            try:
+                data, _exchange = await self._overseas(
+                    "/uapi/overseas-price/v1/quotations/dailyprice",
+                    "HHDFS76240000", symbol.ticker,
+                    {"GUBN": period, "BYMD": cursor.strftime("%Y%m%d"), "MODP": "1"},
+                )
+            except RuntimeError:
+                # **첫 장이 실패하면 말하고, 뒤로 넘기다 실패하면 거기까지.**
+                # 상장일 이전을 물으면 창구가 오류로 답할 수 있는데, 그건
+                # 그 종목의 역사가 끝난 지점이지 고장이 아닙니다. 반대로 한
+                # 줄도 못 읽었으면 그건 "거래가 없었다" 가 아닙니다.
+                if not bars:
+                    raise
+                log.debug("kis 해외 일봉 페이지 중단 %s @%s", symbol.ticker, cursor)
+                break
+            rows = data.get("output2") or []
+            if not rows:
+                break
+            oldest = cursor
+            fresh = 0
+            for row in rows:
+                day = str(row.get("xymd") or "").strip()
+                if not day or day in seen:
+                    continue
+                values = [self._num(row, k) for k in ("open", "high", "low", "clos")]
+                if any(v is None or v <= 0 for v in values):
+                    # 못 읽은 값을 0 으로 채우면 그 봉이 폭락으로 보입니다.
+                    continue
+                try:
+                    ts = datetime.strptime(day, "%Y%m%d").replace(tzinfo=UTC)
+                except ValueError:
+                    continue
+                seen.add(day)
+                fresh += 1
+                oldest = min(oldest, ts)
+                bars.append(Bar(symbol, ts, *values,
+                                self._num(row, "tvol") or 0.0, timeframe))
+            if not fresh:
+                break            # 같은 장만 되돌아오면 무한히 돕니다
+            cursor = oldest - timedelta(days=1)
+        uniq = {b.ts: b for b in bars if start <= b.ts and b.end_ts <= end}
+        return [uniq[k] for k in sorted(uniq)]
+
+    async def _overseas_quote(self, symbol):
+        try:
+            data, _exchange = await self._overseas(
+                "/uapi/overseas-price/v1/quotations/price",
+                "HHDFS00000300", symbol.ticker,
+            )
+        except Exception as exc:
+            log.debug("kis 해외 호가 실패 %s: %s", symbol.ticker, exc)
             return None
+        out = data.get("output") or {}
+        price = self._num(out, "last")
+        if not price or price <= 0:
+            return None
+        # 미국 주식의 호가단위는 가격과 무관하게 $0.01 입니다.
+        tick = 0.01
+        return Quote(symbol, datetime.now(UTC), price - tick, price + tick)
+
+    async def resolve(self, ticker: str):
+        code = self._domestic_code(ticker)
+        if not code:
+            return await self._resolve_overseas(ticker)
         try:
             probe = await self.quote(Symbol(code, venue="kis"))
         except Exception:
@@ -205,6 +386,23 @@ class KisProvider(DataProvider):
             tick_ladder="krx",
         )
 
+    async def _resolve_overseas(self, ticker: str):
+        code = str(ticker or "").strip().upper()
+        if not code or not code.replace(".", "").replace("-", "").isalnum():
+            return None
+        try:
+            probe = await self.quote(Symbol(code, venue="kis", quote_currency="USD"))
+        except Exception:
+            probe = None
+        if probe is None:
+            return None
+        # 미국 주식은 가격과 무관하게 $0.01 이고 상하한가가 없습니다 —
+        # 사다리를 켜면 국내 격자가 미국 종목에 걸립니다.
+        return Symbol(
+            code, venue="kis", asset_class=AssetClass.EQUITY, quote_currency="USD",
+            lot_size=1, tick_size=Decimal("0.01"),
+        )
+
     async def describe(self, ticker: str) -> dict | None:
         """종목코드 하나를 사람이 읽을 수 있는 것으로 바꿉니다.
 
@@ -212,9 +410,9 @@ class KisProvider(DataProvider):
         버리고 있었을 뿐입니다. 화면에 "005930" 만 띄우면 그게 무슨 회사인지
         외운 사람만 쓸 수 있고, 잘못 고르면 다른 회사를 삽니다.
         """
-        code = "".join(ch for ch in ticker if ch.isdigit()).zfill(6)
-        if len(code) != 6:
-            return None
+        code = self._domestic_code(ticker)
+        if not code:
+            return await self._describe_overseas(ticker)
         try:
             data = await self._get(
                 "/uapi/domestic-stock/v1/quotations/inquire-price",
@@ -239,6 +437,40 @@ class KisProvider(DataProvider):
             "upper_limit": float(out.get("stck_mxpr") or 0) or None,
             "lower_limit": float(out.get("stck_llam") or 0) or None,
             "tick_size": float(korean_tick_size(price)),
+        }
+
+    async def _describe_overseas(self, ticker: str) -> dict | None:
+        code = str(ticker or "").strip().upper()
+        if not code:
+            return None
+        try:
+            data, exchange = await self._overseas(
+                "/uapi/overseas-price/v1/quotations/price",
+                "HHDFS00000300", code,
+            )
+        except Exception as exc:
+            log.debug("kis 해외 종목정보 실패 %s: %s", code, exc)
+            return None
+        out = data.get("output") or {}
+        price = self._num(out, "last")
+        if not price or price <= 0:
+            return None
+        return {
+            "ticker": code,
+            # 해외 현재가 응답에는 종목명이 없습니다. 티커를 이름 자리에
+            # 넣으면 "증권사가 이 종목의 이름을 이렇게 준다" 는 뜻이 되므로
+            # 비워 두고, 부르는 쪽이 자기 표로 물러설 수 있게 합니다.
+            "name": "",
+            "price": price,
+            "change_pct": self._num(out, "rate") or 0.0,
+            "venue": "kis",
+            "currency": "USD",
+            "market": exchange,
+            # 미국은 상하한가가 없습니다. 0 을 넣으면 화면이 "상한가 0원" 을
+            # 그립니다 — 없는 것과 0 은 다릅니다.
+            "upper_limit": None,
+            "lower_limit": None,
+            "tick_size": 0.01,
         }
 
     async def close(self):
