@@ -1,19 +1,25 @@
 """Korea Investment & Securities order adapter (domestic + overseas equities).
 
-KIS separates *paper* (모의투자) and *live* into different hosts and different
-transaction ids, so `live=False` never reaches the real account even with
-production credentials.
+KIS separates *paper* (모의투자) and *live* into different hosts, different
+transaction ids **and different app keys** — the two are separate accounts that
+happen to belong to the same person.
 
-Which environment is a separate question from whether orders are sent at all:
+세 축이 서로 다릅니다. 예전에는 둘을 한 값으로 묶어 두었고, 그래서 조회
+전용으로 모드를 낮춘 화면이 읽는 **계좌까지** 바뀌었습니다.
 
-  · `mode: dry_run`                              — reads 모의투자, sends nothing
-  · `mode: dry_run` + `broker.params.paper_trading: true`
-                                                 — sends real orders to 모의투자
-  · `mode: live`                                 — real money, real host
+  1. `environment` — 어느 호스트·tr_id·키를 쓰는가 (paper | live)
+  2. `sends_orders` — 주문이 네트워크로 나가는가 (`live` 또는 `paper_trading`)
+  3. `RunMode.LIVE` — 진짜 돈인가
 
-Only the last one reports `RunMode.LIVE`. 모의투자 is where a strategy is meant
-to be validated first, so it has to be an environment the engine can actually
-submit into, not a host it merely reads balances from.
+  · `mode: dry_run`                              — 모의투자를 읽고, 아무것도 안 보냄
+  · `mode: dry_run` + `paper_trading: true`      — 모의투자에 **진짜 주문**
+  · `mode: dry_run` + `environment: live`        — 실계좌를 **읽기만** 함
+  · `mode: live`                                 — 진짜 돈, 실계좌 호스트
+
+`environment` 를 비워 두면 예전처럼 `not live` 로 추론합니다.
+
+**키도 환경마다 다릅니다.** 설정 화면은 한국투자증권을 두 칸으로 나눠 받고
+(`kis` 실계좌 / `kis_paper` 모의투자), 배선이 환경에 맞는 쪽을 넣습니다.
 """
 from __future__ import annotations
 
@@ -88,6 +94,7 @@ class KisBrokerage(LiveBrokerage):
     def __init__(self, portfolio, app_key: str = "", app_secret: str = "",
                  account_no: str = "", product_code: str = "01",
                  overseas_exchange: str = "NASD", paper_trading: bool = False,
+                 environment: str = "",
                  commission_bps: float = 1.5, sell_tax_bps: float | None = None,
                  overseas_commission_bps: float = 25.0,
                  allow_env_credentials: bool = True, **kwargs):
@@ -95,6 +102,17 @@ class KisBrokerage(LiveBrokerage):
             raise BrokerageError(
                 "broker.params.paper_trading: true 와 mode: live 는 함께 쓸 수 "
                 "없습니다 — 모의투자와 실계좌 중 하나만 고르세요"
+            )
+        environment = (environment or "").strip().lower()
+        if environment not in ("", "paper", "live"):
+            raise BrokerageError(
+                f"broker.params.environment 는 'paper' 또는 'live' 입니다 "
+                f"(받은 값: {environment!r})"
+            )
+        if environment == "paper" and kwargs.get("live"):
+            raise BrokerageError(
+                "environment: paper 와 mode: live 는 함께 쓸 수 없습니다 — "
+                "모의투자 호스트로 실거래를 돌 수는 없습니다"
             )
         super().__init__(portfolio, paper_venue=paper_trading, **kwargs)
         self.app_key = (app_key or os.environ.get("KIS_APP_KEY", "")
@@ -105,9 +123,20 @@ class KisBrokerage(LiveBrokerage):
                            if allow_env_credentials else account_no)
         self.product_code = product_code
         self.overseas_exchange = overseas_exchange
-        #: which KIS environment this session talks to — hosts and tr_ids.
-        #: Independent of `sends_orders`: a dry run still reads 모의투자.
-        self.paper = not self.live
+        #: 이 세션이 말을 거는 KIS **환경** — 호스트와 tr_id 를 함께 고릅니다.
+        #:
+        #: **"주문을 보내는가" 와는 다른 축입니다.** 그 둘을 한 값으로 묶어
+        #: 두었더니(`not self.live`), 조회 전용으로 모드를 낮춘 경로가 읽는
+        #: 계좌까지 바꿔 버렸습니다 — 실계좌를 보려고 연 화면이 모의투자
+        #: 잔고를 그렸고, 같은 앱 키라도 그 둘은 **다른 계좌** 입니다.
+        #:
+        #:   environment="live"  + live=False → 실계좌를 **읽기만** 합니다
+        #:   environment="paper" + live=False → 모의투자 (예전 기본값)
+        #:   environment=""                   → 예전 그대로 `not live` 로 추론
+        #:
+        #: 주문이 나가는지는 여전히 `sends_orders` 가 정합니다. 여기서 실계좌를
+        #: 골라도 `live=False` 면 `submit` 은 네트워크에 닿지 않습니다.
+        self.paper = (environment == "paper") if environment else not self.live
         # 체결 조회 returns quantities and prices but no commission, and a fee
         # of 0.0 is a number the accounting layer believes. Charge the KRX
         # retail schedule the backtest already assumes instead.

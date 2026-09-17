@@ -30,13 +30,22 @@ from quant.webapp.registry import (
 SECRET = "registry-test-secret-key-0123456789abcdef"
 
 #: 이 값들이 응답·설정·환경변수 어디에도 나타나면 안 됩니다.
-A_KEYS = {"KIS_APP_KEY": "AAAA-app-key-aaaa", "KIS_APP_SECRET": "AAAA-secret-aaaa",
-          "KIS_ACCOUNT_NO": "11112222"}
-B_KEYS = {"KIS_APP_KEY": "BBBB-app-key-bbbb", "KIS_APP_SECRET": "BBBB-secret-bbbb",
-          "KIS_ACCOUNT_NO": "33334444"}
+#:
+#: 아래 `kis_config()` 는 `mode: dry_run` 이라 **모의투자 호스트** 를 봅니다.
+#: 한투는 환경마다 앱 키가 따로 발급되므로 배선도 그 환경의 이름을 채웁니다 —
+#: 실계좌 이름을 넣어 두면 이 파일은 "키가 안 간다" 로 실패하는데, 실제로는
+#: 없는 키를 찾고 있는 것입니다.
+A_KEYS = {"KIS_PAPER_APP_KEY": "AAAA-app-key-aaaa",
+          "KIS_PAPER_APP_SECRET": "AAAA-secret-aaaa",
+          "KIS_PAPER_ACCOUNT_NO": "11112222"}
+B_KEYS = {"KIS_PAPER_APP_KEY": "BBBB-app-key-bbbb",
+          "KIS_PAPER_APP_SECRET": "BBBB-secret-bbbb",
+          "KIS_PAPER_ACCOUNT_NO": "33334444"}
 
 _PROCESS_WIDE = (
     "KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO", "KIS_ACCOUNT_PRD_CD",
+    "KIS_PAPER_APP_KEY", "KIS_PAPER_APP_SECRET", "KIS_PAPER_ACCOUNT_NO",
+    "KIS_PAPER_ACCOUNT_PRD_CD",
     "TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET", "TOSS_ACCOUNT_NO",
     "ANTHROPIC_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
     "QUANT_LIMIT_DAILY_NOTIONAL", "QUANT_LIMIT_DAILY_ORDERS",
@@ -180,19 +189,21 @@ def test_starting_without_credentials_says_what_to_register(registry, accounts):
 
     problem = exc.value
     assert problem.status == 400 and problem.code == "credentials_missing"
-    assert "한국투자증권" in str(problem)
+    # 라벨이 환경까지 말합니다 — "한국투자증권" 만 적으면 실계좌 키를 찾아
+    # 넣은 사람이 왜 계속 거절당하는지 알 수 없습니다.
+    assert "한국투자증권 모의투자" in str(problem)
     assert "설정 화면" in str(problem), "무엇을 해야 하는지가 문장에 있어야 합니다"
     names = {item["name"] for item in problem.to_dict()["missing"]}
-    assert {"KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO"} <= names
+    assert {"KIS_PAPER_APP_KEY", "KIS_PAPER_APP_SECRET", "KIS_PAPER_ACCOUNT_NO"} <= names
     labels = {item["label"] for item in problem.missing}
-    assert "앱 키" in labels, "화면이 그대로 보여줄 한국어 라벨이어야 합니다"
+    assert "모의투자 앱 키" in labels, "화면이 그대로 보여줄 한국어 라벨이어야 합니다"
 
 
 def test_a_partly_configured_user_is_told_only_what_is_left(registry, accounts):
-    person = user(accounts, secrets={"KIS_APP_KEY": "k", "KIS_APP_SECRET": "s"})
+    person = user(accounts, secrets={"KIS_PAPER_APP_KEY": "k", "KIS_PAPER_APP_SECRET": "s"})
     report = registry.readiness(person.id, kis_config())
     assert report["ready"] is False
-    assert [item["name"] for item in report["missing"]] == ["KIS_ACCOUNT_NO"]
+    assert [item["name"] for item in report["missing"]] == ["KIS_PAPER_ACCOUNT_NO"]
 
 
 def test_a_configured_user_is_ready(registry, accounts):
@@ -203,7 +214,7 @@ def test_a_configured_user_is_ready(registry, accounts):
 def test_required_secrets_tells_the_setup_screen_what_a_strategy_needs():
     """화면이 "이 전략을 쓰려면 무엇이 필요한지" 를 미리 물어볼 수 있어야 합니다."""
     needed = required_secrets(kis_config(flow={"provider": "kis"}))
-    assert set(needed) == {"KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO"}
+    assert set(needed) == {"KIS_PAPER_APP_KEY", "KIS_PAPER_APP_SECRET", "KIS_PAPER_ACCOUNT_NO"}
     assert required_secrets(paper_config()) == []
 
 
@@ -219,11 +230,11 @@ def test_the_keys_reach_the_adapters_as_constructor_arguments(registry, accounts
     trader = build(person.id, kis_config(flow={"provider": "kis"}))
 
     broker = trader.engine.brokerage
-    assert broker.app_key == A_KEYS["KIS_APP_KEY"]
-    assert broker.app_secret == A_KEYS["KIS_APP_SECRET"]
-    assert broker.account_no == A_KEYS["KIS_ACCOUNT_NO"]
-    assert trader.provider.inner.app_key == A_KEYS["KIS_APP_KEY"]
-    assert trader.engine.flow_feed.provider.app_key == A_KEYS["KIS_APP_KEY"]
+    assert broker.app_key == A_KEYS["KIS_PAPER_APP_KEY"]
+    assert broker.app_secret == A_KEYS["KIS_PAPER_APP_SECRET"]
+    assert broker.account_no == A_KEYS["KIS_PAPER_ACCOUNT_NO"]
+    assert trader.provider.inner.app_key == A_KEYS["KIS_PAPER_APP_KEY"]
+    assert trader.engine.flow_feed.provider.app_key == A_KEYS["KIS_PAPER_APP_KEY"]
 
 
 def test_no_credential_is_ever_written_to_the_environment(registry, accounts, build):
@@ -241,8 +252,8 @@ def test_two_users_bots_never_hold_each_others_keys(registry, accounts, build):
     broker_a = build(a.id, kis_config()).engine.brokerage
     broker_b = build(b.id, kis_config()).engine.brokerage
 
-    assert broker_a.app_key == A_KEYS["KIS_APP_KEY"]
-    assert broker_b.app_key == B_KEYS["KIS_APP_KEY"]
+    assert broker_a.app_key == A_KEYS["KIS_PAPER_APP_KEY"]
+    assert broker_b.app_key == B_KEYS["KIS_PAPER_APP_KEY"]
     assert broker_a.account_no != broker_b.account_no
 
 
@@ -263,8 +274,8 @@ def test_a_key_left_in_the_template_loses_to_the_users_own(registry, accounts, b
                                            "app_secret": "운영자시크릿",
                                            "account_no": "99999999"}})
     broker = build(person.id, config).engine.brokerage
-    assert broker.app_key == A_KEYS["KIS_APP_KEY"]
-    assert broker.account_no == A_KEYS["KIS_ACCOUNT_NO"]
+    assert broker.app_key == A_KEYS["KIS_PAPER_APP_KEY"]
+    assert broker.account_no == A_KEYS["KIS_PAPER_ACCOUNT_NO"]
 
 
 def test_the_shared_template_config_is_never_mutated(registry, accounts, build):

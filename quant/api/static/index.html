@@ -4379,18 +4379,45 @@ async function loadStrategies() {
   if (!sel) return epoch === authEpoch;
   const keep = sel.value;
   const linked = new Set(Object.keys(configuredKeys || {}));
-  sel.innerHTML = strategies.map(st => {
-    const missing = (st.requires || []).filter(k => !linked.has(k));
-    const tag = missing.length ? " — 연동 필요" : "";
-    // 모드는 바로 아래 설명 칸이 사전 문장 그대로 말합니다. 다만 실거래는
-    // 고르는 순간에 알아야 합니다 — `label_ko` 를 그대로 둔 채 `mode` 만
-    // 올릴 수 있고, 그때 목록이 조용하면 모의인 줄 알고 시작을 누릅니다.
-    // 과거 검증은 시장에 닿지 않는다는 사실이 이름만큼 중요합니다.
-    const how = st.mode === "live" ? " · 실거래"
-              : st.mode === "backtest" ? " (과거 검증)" : "";
-    return `<option value="${esc(st.id)}"${missing.length ? " data-missing='1'" : ""}>` +
-           `${esc(stLabel(st))}${how}${tag}</option>`;
-  }).join("");
+  // 열 줄이 전부 "이름 · 모드 — 연동 필요" 한 덩어리로 늘어서 있으면 눈이
+  // 어디를 봐야 할지 모릅니다. 고를 때 실제로 필요한 판단은 둘입니다 —
+  // **돈이 움직이나**, 그리고 **지금 쓸 수 있나**. 앞의 것을 묶음 제목으로
+  // 올리면 줄마다 붙던 꼬리가 사라지고, 실거래는 이름 옆 작은 글씨가 아니라
+  // 통째로 다른 칸이 됩니다. 뒤의 것만 줄에 남깁니다.
+  //
+  // 순서는 안전한 것부터입니다. 실거래에 닿으려면 목록을 끝까지 내려가야
+  // 하고, 그 이동 자체가 한 번 더 묻는 일이 됩니다.
+  const GROUPS = [
+    ["backtest", "과거 검증 · 시장에 닿지 않습니다"],
+    ["dry_run", "모의투자 · 실시간 시세, 가상 체결"],
+    ["live", "🔴 실거래 · 진짜 주문, 진짜 돈"],
+  ];
+  const needs = st => (st.requires || []).filter(k => !linked.has(k)).length;
+  const rows = st => {
+    const tag = needs(st) ? " — 연동 필요" : "";
+    return `<option value="${esc(st.id)}"${needs(st) ? " data-missing='1'" : ""}>` +
+           `${esc(stLabel(st))}${tag}</option>`;
+  };
+  sel.innerHTML = GROUPS.map(([mode, title]) => {
+    // 바로 쓸 수 있는 것을 위로. 묶음 안에서까지 연동 필요와 섞여 있으면
+    // "지금 고를 수 있는 것" 을 다시 눈으로 골라내야 합니다.
+    // 2순위는 **서버가 준 순서** 입니다. 가나다순으로 다시 세우면 연습·국내·
+    // 미국으로 묶여 오던 순서가 흩어집니다 — 목록의 뜻을 화면이 지웁니다.
+    const order = new Map(strategies.map((st, i) => [st.id, i]));
+    const mine = strategies.filter(st => st.mode === mode)
+      .sort((a, b) => needs(a) - needs(b) || order.get(a.id) - order.get(b.id));
+    if (!mine.length) return "";
+    return `<optgroup label="${esc(title)}">${mine.map(rows).join("")}</optgroup>`;
+  }).join("") +
+    // 모르는 모드가 생겨도 목록에서 사라지지 않게 — 조용히 빠지는 것이
+    // 잘못 분류되는 것보다 나쁩니다.
+    (() => {
+      const known = new Set(GROUPS.map(([mode]) => mode));
+      const rest = strategies.filter(st => !known.has(st.mode));
+      return rest.length
+        ? `<optgroup label="${esc("기타")}">${rest.map(rows).join("")}</optgroup>`
+        : "";
+    })();
   // 연동이 끝난 전략을 기본으로 고릅니다.
   const ready = strategies.find(st => !(st.requires || []).some(k => !linked.has(k)));
   sel.value = keep || (ready ? ready.id : (strategies[0] || {}).id || "");

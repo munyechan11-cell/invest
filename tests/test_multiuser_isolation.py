@@ -695,7 +695,11 @@ def test_starting_without_credentials_names_what_is_missing(client):
     assert r.status_code == 400
     body = r.json()
     assert body["code"] == "credentials_missing"
-    assert {item["name"] for item in body["missing"]} >= {"KIS_APP_KEY", "KIS_APP_SECRET"}
+    # 이 설정은 `mode: dry_run` 이라 **모의투자 호스트** 를 봅니다. 그 문으로는
+    # 모의투자 키만 들어갑니다 — 실계좌 키를 요구하면 사람은 맞는 키를 넣고도
+    # 계속 거절당하고, 그때 나오는 말은 "키가 틀렸다" 입니다.
+    assert ({item["name"] for item in body["missing"]}
+            >= {"KIS_PAPER_APP_KEY", "KIS_PAPER_APP_SECRET"})
     # 무엇이 필요한지는 말해도, 남의 값이나 내 값이 문장에 섞이지는 않습니다.
     assert "app-key" not in r.text
 

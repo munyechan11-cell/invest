@@ -85,17 +85,33 @@ class VenueSpec:
 
 
 VENUES: list[VenueSpec] = [
+    # 한국투자증권은 **한 곳이 아니라 두 곳** 입니다. 모의투자와 실계좌는
+    # 호스트도 tr_id 도 다르고, 무엇보다 **앱 키가 따로 발급** 됩니다. 한 칸에
+    # 받으면 둘 중 하나만 쓸 수 있고, 어느 쪽을 넣었는지도 알 수 없습니다.
     VenueSpec(
-        id="kis", label_ko="한국투자증권 (KIS)", kind="equity_kr",
+        id="kis_paper", label_ko="한국투자증권 모의투자", kind="equity_kr",
         fields=[
-            ("KIS_APP_KEY", "앱 키", True),
-            ("KIS_APP_SECRET", "앱 시크릿", True),
-            ("KIS_ACCOUNT_NO", "계좌번호 (앞 8자리)", True),
+            ("KIS_PAPER_APP_KEY", "모의투자 앱 키", True),
+            ("KIS_PAPER_APP_SECRET", "모의투자 앱 시크릿", True),
+            ("KIS_PAPER_ACCOUNT_NO", "모의투자 계좌번호 (앞 8자리)", True),
+            ("KIS_PAPER_ACCOUNT_PRD_CD", "상품코드 (보통 01)", False),
+        ],
+        note_ko="실계좌와 완전히 분리된 연습용 계좌입니다 — 여기서 먼저 돌려 보세요. "
+                "https://apiportal.koreainvestment.com 의 모의투자에서 발급하며, "
+                "실계좌 키와는 다른 값입니다.",
+        paper_supported=True,
+    ),
+    VenueSpec(
+        id="kis", label_ko="한국투자증권 실계좌", kind="equity_kr",
+        fields=[
+            ("KIS_APP_KEY", "실계좌 앱 키", True),
+            ("KIS_APP_SECRET", "실계좌 앱 시크릿", True),
+            ("KIS_ACCOUNT_NO", "실계좌 계좌번호 (앞 8자리)", True),
             ("KIS_ACCOUNT_PRD_CD", "상품코드 (보통 01)", False),
         ],
-        note_ko="모의투자 환경이 별도로 있어 실계좌와 완전히 분리해 시험할 수 있습니다. "
-                "https://apiportal.koreainvestment.com 에서 발급.",
-        paper_supported=True,
+        note_ko="진짜 돈이 움직이는 계좌입니다. 모의투자에서 충분히 돌려 본 뒤에 "
+                "넣으세요. https://apiportal.koreainvestment.com 에서 발급.",
+        paper_supported=False,
     ),
     VenueSpec(
         id="toss", label_ko="토스증권", kind="equity_kr",
@@ -375,12 +391,20 @@ class CredentialStore:
             return {"ok": False, "error": f"미입력 항목: {', '.join(missing)}"}
 
         try:
-            if venue_id == "kis":
+            if venue_id in ("kis", "kis_paper"):
                 from quant.data.providers.kis import kis_token
 
-                await kis_token(os.environ["KIS_APP_KEY"],
-                                os.environ["KIS_APP_SECRET"], paper=True)
-                return {"ok": True, "detail": "모의투자 토큰 발급 성공"}
+                # 환경마다 **다른 호스트에 다른 키** 로 물어봅니다. 예전에는
+                # 무엇을 넣었든 모의투자로만 확인해서, 실계좌 키를 넣은 사람은
+                # 검증이 실패하고 모의투자 키를 넣은 사람은 "실계좌 확인됨" 을
+                # 봤습니다 — 둘 다 틀렸습니다.
+                paper = venue_id == "kis_paper"
+                prefix = "KIS_PAPER_" if paper else "KIS_"
+                await kis_token(os.environ[f"{prefix}APP_KEY"],
+                                os.environ[f"{prefix}APP_SECRET"], paper=paper)
+                return {"ok": True,
+                        "detail": ("모의투자 토큰 발급 성공" if paper
+                                   else "실계좌 토큰 발급 성공")}
 
             if venue_id == "toss":
                 from quant.brokerage.toss_broker import toss_token

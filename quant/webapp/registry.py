@@ -274,15 +274,45 @@ def _connected_account_venue(secrets: dict[str, str]) -> str:
                  if all(secrets.get(name) for name in needed)), "")
 
 
+def _kis_environment(config: StrategyConfig) -> str:
+    """이 설정이 말을 거는 KIS 환경 — "paper" 또는 "live".
+
+    `broker.params.environment` 가 있으면 그것이고, 없으면 어댑터와 **같은
+    규칙** 으로 추론합니다(`mode: live` 만 실계좌). 두 곳에서 다르게 추론하면
+    한쪽 키로 다른 쪽 호스트에 로그인하게 되고, 그때 나오는 말은 "키가 틀렸다"
+    입니다 — 키는 맞고 문이 다른 것인데.
+    """
+    explicit = str(config.broker.params.get("environment") or "").strip().lower()
+    if explicit in ("paper", "live"):
+        return explicit
+    if config.broker.params.get("paper_trading"):
+        return "paper"
+    return "live" if config.mode is RunMode.LIVE else "paper"
+
+
+def _kis_wiring(config: StrategyConfig) -> _Wiring:
+    """환경에 맞는 KIS 키 묶음. 모의투자와 실계좌는 **다른 키** 입니다."""
+    if _kis_environment(config) == "paper":
+        return _Wiring(
+            "kis_paper",
+            {"app_key": "KIS_PAPER_APP_KEY",
+             "app_secret": "KIS_PAPER_APP_SECRET",
+             "account_no": "KIS_PAPER_ACCOUNT_NO",
+             "product_code": "KIS_PAPER_ACCOUNT_PRD_CD"},
+            ("KIS_PAPER_APP_KEY", "KIS_PAPER_APP_SECRET", "KIS_PAPER_ACCOUNT_NO"),
+        )
+    return _Wiring(
+        "kis",
+        {"app_key": "KIS_APP_KEY", "app_secret": "KIS_APP_SECRET",
+         "account_no": "KIS_ACCOUNT_NO", "product_code": "KIS_ACCOUNT_PRD_CD"},
+        ("KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO"),
+    )
+
+
 def _broker_wiring(config: StrategyConfig) -> _Wiring | None:
     kind = config.broker.type
     if kind == "kis":
-        return _Wiring(
-            "kis",
-            {"app_key": "KIS_APP_KEY", "app_secret": "KIS_APP_SECRET",
-             "account_no": "KIS_ACCOUNT_NO", "product_code": "KIS_ACCOUNT_PRD_CD"},
-            ("KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO"),
-        )
+        return _kis_wiring(config)
     if kind == "toss":
         return _Wiring(
             "toss",
@@ -305,9 +335,12 @@ def _broker_wiring(config: StrategyConfig) -> _Wiring | None:
 def _data_wiring(config: StrategyConfig) -> _Wiring | None:
     provider = config.data.provider
     if provider == "kis":
-        return _Wiring("kis",
-                       {"app_key": "KIS_APP_KEY", "app_secret": "KIS_APP_SECRET"},
-                       ("KIS_APP_KEY", "KIS_APP_SECRET"))
+        # 시세도 환경마다 호스트가 다릅니다 — 주문과 같은 쪽을 봐야 합니다.
+        wiring = _kis_wiring(config)
+        return _Wiring(wiring.venue,
+                       {"app_key": wiring.args["app_key"],
+                        "app_secret": wiring.args["app_secret"]},
+                       (wiring.args["app_key"], wiring.args["app_secret"]))
     if provider == "toss":
         return _Wiring("toss",
                        {"client_id": "TOSS_CLIENT_ID",
@@ -323,9 +356,13 @@ def _data_wiring(config: StrategyConfig) -> _Wiring | None:
 
 def _flow_wiring(config: StrategyConfig) -> _Wiring | None:
     if config.flow.provider == "kis":
-        return _Wiring("kis",
-                       {"app_key": "KIS_APP_KEY", "app_secret": "KIS_APP_SECRET"},
-                       ("KIS_APP_KEY", "KIS_APP_SECRET"))
+        # 수급도 같은 환경의 키로 읽습니다 — 시세·주문과 다른 쪽을 보면
+        # 그 전략은 두 계좌를 섞어 판단하게 됩니다.
+        wiring = _kis_wiring(config)
+        return _Wiring(wiring.venue,
+                       {"app_key": wiring.args["app_key"],
+                        "app_secret": wiring.args["app_secret"]},
+                       (wiring.args["app_key"], wiring.args["app_secret"]))
     if config.flow.provider == "toss":
         # 수급은 읽기만 하므로 계좌번호는 필요 없습니다. 여기에 TOSS_ACCOUNT_NO
         # 까지 적으면 계좌를 열지 않은 사람이 수급 전략 앞에서 막힙니다.

@@ -204,3 +204,106 @@ def test_nothing_connected_says_so_instead_of_naming_paper():
     source = inspect.getsource(UserRegistry.broker_account)
     assert "아직 연동한 증권사가 없습니다" in source
     assert "모의투자 계좌도 마찬가지입니다" in source
+
+
+# ── 환경과 주문은 다른 축입니다 ──────────────────────────────────────────
+def test_reading_the_real_account_does_not_mean_sending_orders():
+    """예전에는 `self.paper = not self.live` 였습니다. 그래서 조회 전용으로
+    모드를 낮춘 화면이 읽는 **계좌까지** 바뀌었습니다 — 실계좌를 보려고 연
+    화면이 모의투자 잔고를 그렸고, 같은 앱 키라도 그 둘은 다른 계좌입니다."""
+    from quant.core.account import Portfolio
+
+    real_read = KisBrokerage(Portfolio(0.0, "KRW"), app_key="k", app_secret="s",
+                             account_no="12345678", environment="live",
+                             live=False, allow_env_credentials=False)
+    assert real_read.paper is False, "실계좌를 읽으라고 했는데 모의투자를 봅니다"
+    assert real_read.sends_orders is False, "읽기만 해야 합니다"
+
+    paper_read = KisBrokerage(Portfolio(0.0, "KRW"), app_key="k", app_secret="s",
+                              account_no="12345678", environment="paper",
+                              live=False, allow_env_credentials=False)
+    assert paper_read.paper is True and paper_read.sends_orders is False
+
+
+def test_an_unset_environment_keeps_the_old_inference():
+    """비워 두면 예전 그대로입니다 — 이 변경이 남의 설정을 조용히 바꾸면
+    안 됩니다."""
+    from quant.core.account import Portfolio
+
+    broker = KisBrokerage(Portfolio(0.0, "KRW"), app_key="k", app_secret="s",
+                          account_no="12345678", live=False,
+                          allow_env_credentials=False)
+    assert broker.paper is True
+
+
+def test_paper_host_with_real_money_is_refused():
+    from quant.brokerage.base import BrokerageError
+    from quant.core.account import Portfolio
+
+    with pytest.raises(BrokerageError, match="함께 쓸 수 없습니다"):
+        KisBrokerage(Portfolio(0.0, "KRW"), app_key="k", app_secret="s",
+                     account_no="12345678", environment="paper", live=True,
+                     allow_env_credentials=False)
+
+
+def test_a_typo_in_the_environment_is_refused_not_guessed():
+    from quant.brokerage.base import BrokerageError
+    from quant.core.account import Portfolio
+
+    with pytest.raises(BrokerageError, match="environment"):
+        KisBrokerage(Portfolio(0.0, "KRW"), app_key="k", app_secret="s",
+                     account_no="12345678", environment="mock",
+                     allow_env_credentials=False)
+
+
+# ── 환경마다 다른 키를 배선합니다 ────────────────────────────────────────
+def kis_cfg(**broker):
+    from quant.config.schema import StrategyConfig
+
+    return StrategyConfig.model_validate({
+        "name": "t", "mode": broker.pop("mode", "dry_run"),
+        "universe": {"symbols": [{"ticker": "005930", "venue": "kis",
+                                  "quote_currency": "KRW"}]},
+        "alpha": [{"type": "ema_cross"}],
+        "broker": {"type": "kis", **broker},
+        # 실거래 설정은 하루 한도가 하나라도 있어야 만들어집니다.
+        "limits": {"max_daily_orders": 5},
+    })
+
+
+def test_a_dry_run_strategy_asks_for_the_paper_keys():
+    """모의투자 호스트로는 모의투자 키만 들어갑니다. 실계좌 키를 요구하면
+    사람은 맞는 키를 넣고도 계속 거절당하고, 그때 나오는 말은 "키가 틀렸다"
+    입니다 — 키는 맞고 문이 다른 것인데."""
+    from quant.webapp.registry import required_secrets
+
+    assert set(required_secrets(kis_cfg())) == {
+        "KIS_PAPER_APP_KEY", "KIS_PAPER_APP_SECRET", "KIS_PAPER_ACCOUNT_NO"}
+
+
+def test_an_explicit_live_environment_asks_for_the_real_keys():
+    from quant.webapp.registry import required_secrets
+
+    needed = set(required_secrets(kis_cfg(params={"environment": "live"})))
+    assert needed == {"KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO"}
+
+
+def test_a_live_strategy_asks_for_the_real_keys():
+    from quant.webapp.registry import required_secrets
+
+    cfg = kis_cfg(mode="live", live_trading_confirmed=True)
+    assert set(required_secrets(cfg)) == {
+        "KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO"}
+
+
+def test_the_setup_screen_offers_both_kis_environments():
+    """한 칸에 받으면 둘 중 하나만 쓸 수 있고, 어느 쪽을 넣었는지도
+    알 수 없습니다."""
+    from quant.live.credentials import VENUES_BY_ID
+
+    assert "kis" in VENUES_BY_ID and "kis_paper" in VENUES_BY_ID
+    assert "모의투자" in VENUES_BY_ID["kis_paper"].label_ko
+    assert "실계좌" in VENUES_BY_ID["kis"].label_ko
+    paper_fields = {env for env, _, _ in VENUES_BY_ID["kis_paper"].fields}
+    live_fields = {env for env, _, _ in VENUES_BY_ID["kis"].fields}
+    assert not (paper_fields & live_fields), "두 환경이 같은 칸을 쓰면 안 됩니다"
