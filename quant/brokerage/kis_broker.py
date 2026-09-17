@@ -554,6 +554,25 @@ class KisBrokerage(LiveBrokerage):
                     costs[key] = float(row.get("pchs_avg_pric") or 0)
         return out, costs
 
+    async def _overseas_rows(self) -> list[dict]:
+        """해외 보유내역 원본 row.
+
+        `_overseas_balance` 는 수량과 매입단가만 뽑아 냅니다 — 포지션 대조에
+        필요한 것이 그 둘뿐이라서입니다. "내 계좌" 탭은 이름·현재가·평가금액도
+        보여 줘야 하므로 row 를 통째로 받습니다. **주문·대조가 쓰는 경로는
+        건드리지 않습니다** — 돈이 지나가는 길이라 화면 때문에 흔들면 안 됩니다.
+        """
+        rows: list[dict] = []
+        async for data in self._paged(
+            "/uapi/overseas-stock/v1/trading/inquire-balance",
+            TR_OVERSEAS_BALANCE[not self.paper],
+            {"OVRS_EXCG_CD": self.overseas_exchange,
+             "TR_CRCY_CD": EXCHANGE_CURRENCY.get(self.overseas_exchange, "USD")},
+            ctx_suffix="200", what="해외 잔고 조회",
+        ):
+            rows.extend(data.get("output1") or [])
+        return rows
+
     # ── "내 계좌" 탭 ─────────────────────────────────────────────────────
     async def account_overview(self) -> dict:
         """증권사가 말하는 계좌 상태 — 봇과 무관하게.
@@ -579,14 +598,18 @@ class KisBrokerage(LiveBrokerage):
         """
         issues: list[str] = []
 
-        def num(row: dict, key: str, label: str) -> float | None:
+        def num(row: dict, key: str, label: str, *, flag: bool = True) -> float | None:
             raw = row.get(key)
             if raw in (None, ""):
                 return None
             try:
                 return float(str(raw).replace(",", ""))
             except (TypeError, ValueError):
-                issues.append(f"{label} 값을 숫자로 읽을 수 없습니다")
+                # 보유 한 줄의 값은 집계 경고를 띄우지 않습니다 — 그 칸이
+                # "조회 불가" 로 비는 것 자체가 이미 화면에 보이는 신호이고,
+                # 집계 경고는 집계에 대한 말이어야 합니다.
+                if flag:
+                    issues.append(f"{label} 값을 숫자로 읽을 수 없습니다")
                 return None
 
         def money(value: float | None, currency: str = "KRW") -> dict:
@@ -637,21 +660,52 @@ class KisBrokerage(LiveBrokerage):
         invested = num(summary, "pchs_amt_smtl_amt", "매입금액합계")
         pnl = num(summary, "evlu_pfls_smtl_amt", "평가손익합계")
 
-        overseas_note = ""
+        # ── 해외 보유 ────────────────────────────────────────────────
+        # 예전에는 **종목 수만 세어 경고 한 줄** 로 끝냈습니다. 국내만 하는
+        # 사람에게는 그걸로 됐지만, 미국을 돌리는 사람은 자기 보유가 한 줄도
+        # 없는 표를 보게 됩니다 — 연동이 깨진 것과 구별되지 않습니다.
+        currency = EXCHANGE_CURRENCY.get(self.overseas_exchange, "USD")
+        items_note = ""
+        summary_notes: list[str] = []
         try:
-            positions, _costs = await self._overseas_balance()
+            overseas_rows = await self._overseas_rows()
         except Exception as exc:      # noqa: BLE001 — 국내 잔고까지 죽이지 않습니다
-            positions = {}
+            overseas_rows = []
             if self.overseas_exchange:
-                overseas_note = (
+                items_note = (
                     f"해외 잔고({self.overseas_exchange})를 읽지 못했습니다: {exc}. "
                     "아래 표와 집계는 국내분입니다"
                 )
                 log.warning("KIS 해외 잔고 조회 실패 — 국내분만 표시합니다: %s", exc)
-        if positions:
-            overseas_note = (
-                f"해외 보유 {len(positions)}종목은 집계금액에 포함되지 않았습니다 — "
-                "국내 잔고 창구가 해외분을 주지 않습니다"
+
+        held = 0
+        for row in overseas_rows:
+            qty = num(row, "ovrs_cblc_qty", "해외 보유수량", flag=False)
+            if not qty:
+                continue
+            held += 1
+            rate = num(row, "evlu_pfls_rt", "해외 평가손익율", flag=False)
+            items.append({
+                "ticker": str(row.get("ovrs_pdno") or "").strip(),
+                "name": str(row.get("ovrs_item_name") or "").strip(),
+                "quantity": qty,
+                # 원화 종목과 한 표에 섞입니다. 이 값이 없으면 화면이 245.67 을
+                # 245원으로 읽히게 그립니다.
+                "currency": currency,
+                "avg_price": num(row, "pchs_avg_pric", "해외 매입평균가", flag=False),
+                "last_price": num(row, "now_pric2", "해외 현재가", flag=False),
+                "market_value": money(
+                    num(row, "ovrs_stck_evlu_amt", "해외 평가금액", flag=False), currency),
+                "pnl": money(
+                    num(row, "frcr_evlu_pfls_amt", "해외 평가손익", flag=False), currency),
+                "pnl_pct": None if rate is None else rate / 100.0,
+            })
+        if held:
+            # 표에는 있지만 **집계에는 없습니다.** 이건 보유내역의 결함이
+            # 아니라 집계의 한계이므로, 경고도 집계 쪽에 답니다.
+            summary_notes.append(
+                f"위 집계금액은 국내분입니다 — 해외 보유 {held}종목({currency})은 "
+                "들어 있지 않습니다. 국내 잔고 창구가 해외분을 주지 않습니다"
             )
 
         return {
@@ -673,10 +727,10 @@ class KisBrokerage(LiveBrokerage):
             "daily_pnl": {},
             "daily_pnl_pct": None,
             "items": items,
-            "items_complete": not overseas_note,
-            "items_message": overseas_note,
-            "summary_complete": not issues,
-            "summary_message": " · ".join(issues),
+            "items_complete": not items_note,
+            "items_message": items_note,
+            "summary_complete": not (issues or summary_notes),
+            "summary_message": " · ".join(issues + summary_notes),
         }
 
     async def close(self):

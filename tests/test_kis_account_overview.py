@@ -35,6 +35,15 @@ BALANCE = {
 }
 
 
+#: 해외 잔고(`TTTS3012R`) output1 한 줄. 이름은 저장소가 이미 쓰고 있는
+#: `ovrs_pdno`/`ovrs_cblc_qty`/`pchs_avg_pric` 를 따르고, 나머지는 못 읽으면
+#: 빈 칸이 되도록 만들어 뒀습니다 — 틀린 숫자보다 빈 칸이 낫습니다.
+AAPL = {"ovrs_pdno": "AAPL", "ovrs_item_name": "APPLE INC",
+        "ovrs_cblc_qty": "3", "pchs_avg_pric": "228.40",
+        "now_pric2": "245.67", "ovrs_stck_evlu_amt": "737.01",
+        "frcr_evlu_pfls_amt": "51.81", "evlu_pfls_rt": "7.56"}
+
+
 class _Kis(KisBrokerage):
     """네트워크 없이 `account_overview` 만 돌리는 대역."""
 
@@ -48,10 +57,10 @@ class _Kis(KisBrokerage):
     async def _paged(self, *args, **kwargs):
         yield self._balance
 
-    async def _overseas_balance(self):
+    async def _overseas_rows(self):
         if isinstance(self._overseas, Exception):
             raise self._overseas
-        return (self._overseas or {}), {}
+        return list(self._overseas or [])
 
 
 def overview(**kw) -> dict:
@@ -140,15 +149,21 @@ def test_a_missing_overseas_permission_does_not_empty_the_whole_tab():
 
 def test_overseas_holdings_are_flagged_as_missing_from_the_totals():
     """국내 잔고 창구는 해외분을 주지 않습니다. 합계에 없다는 사실을
-    말하지 않으면, 사람은 이 화면이 계좌 전부라고 믿습니다."""
-    out = overview(overseas={"kis:AAPL": 3})
-    assert out["items_complete"] is False
-    assert "해외 보유 1종목" in out["items_message"]
+    말하지 않으면, 사람은 이 화면이 계좌 전부라고 믿습니다.
+
+    경고는 **집계 쪽** 에 답니다. 보유 표에는 해외분이 들어가 있으므로,
+    표가 불완전하다고 말하면 그게 틀린 말이 됩니다."""
+    out = overview(overseas=[AAPL])
+    assert out["items_complete"] is True, "표에는 들어 있습니다"
+    assert out["summary_complete"] is False
+    assert "해외 보유 1종목" in out["summary_message"]
+    assert "집계" in out["summary_message"]
 
 
 def test_a_domestic_only_account_reports_complete():
-    out = overview(overseas={})
+    out = overview(overseas=[])
     assert out["items_complete"] is True and out["items_message"] == ""
+    assert out["summary_complete"] is True and out["summary_message"] == ""
 
 
 # ── 지원하지 않는 어댑터 안내 ────────────────────────────────────────────
@@ -307,3 +322,64 @@ def test_the_setup_screen_offers_both_kis_environments():
     paper_fields = {env for env, _, _ in VENUES_BY_ID["kis_paper"].fields}
     live_fields = {env for env, _, _ in VENUES_BY_ID["kis"].fields}
     assert not (paper_fields & live_fields), "두 환경이 같은 칸을 쓰면 안 됩니다"
+
+
+# ── 미국을 돌리는 사람의 계좌 ────────────────────────────────────────────
+#
+# `configs/us_kis_paper.yaml` 을 내면서 생긴 구멍입니다. 어댑터는 해외 보유를
+# **세기만 하고** 표에는 넣지 않았습니다. 국내만 하는 사람에게는 경고 한 줄로
+# 충분했지만, 미국만 하는 사람은 자기 보유가 한 줄도 없는 표를 봅니다 —
+# 그리고 그 화면은 연동이 깨진 것과 구별되지 않습니다. "모의여도 잔액 볼 수
+# 있어야지" 가 이 탭이 존재하는 이유였습니다.
+
+def test_overseas_holdings_actually_appear_in_the_table():
+    tickers = [i["ticker"] for i in overview(overseas=[AAPL])["items"]]
+    assert "AAPL" in tickers, "해외 보유가 표에 없습니다"
+
+
+def test_a_us_only_account_is_not_an_empty_screen():
+    """국내 보유가 없는 계좌 — 미국만 돌리면 이게 보통입니다."""
+    empty = {"output1": [], "output2": [{"dnca_tot_amt": "0"}]}
+    out = overview(balance=empty, overseas=[AAPL])
+    assert len(out["items"]) == 1 and out["items"][0]["name"] == "APPLE INC"
+
+
+def test_the_foreign_row_carries_its_currency():
+    """원화 종목과 한 표에 섞입니다. 통화가 없으면 화면이 $245.67 을
+    245원 옆에 245.67 로 앉힙니다."""
+    row = overview(overseas=[AAPL])["items"][-1]
+    assert row["currency"] == "USD"
+    assert row["market_value"] == {"USD": 737.01}
+    assert row["pnl"] == {"USD": 51.81}
+    assert row["pnl_pct"] == pytest.approx(0.0756)
+
+
+def test_a_zero_quantity_overseas_row_is_not_a_holding():
+    """KIS 는 판 종목을 수량 0 으로 함께 줍니다."""
+    sold = dict(AAPL, ovrs_cblc_qty="0")
+    assert [i["ticker"] for i in overview(overseas=[sold])["items"]] == \
+        ["005930", "000660"]
+
+
+def test_an_unreadable_overseas_price_is_blank_not_zero():
+    """0 을 넣으면 화면이 "$0" 이라고 자신 있게 씁니다."""
+    broken = dict(AAPL, now_pric2="", ovrs_stck_evlu_amt="N/A")
+    row = overview(overseas=[broken])["items"][-1]
+    assert row["last_price"] is None and row["market_value"] == {}
+
+
+def test_a_bad_holding_value_does_not_accuse_the_summary():
+    """보유 한 줄이 이상한 것과 **집계가 이상한 것** 은 다른 말입니다.
+    그 칸이 "조회 불가" 로 비는 것 자체가 이미 화면에 보이는 신호입니다."""
+    out = overview(overseas=[dict(AAPL, ovrs_stck_evlu_amt="N/A")])
+    assert "숫자로 읽을 수 없습니다" not in out["summary_message"]
+
+
+def test_the_orders_path_is_untouched():
+    """`positions()` 가 쓰는 창구는 그대로입니다 — 돈이 지나가는 길을
+    화면 때문에 흔들면 안 됩니다."""
+    import inspect
+
+    src = inspect.getsource(KisBrokerage._venue_positions)
+    assert "_overseas_balance" in src
+    assert "_overseas_rows" not in src

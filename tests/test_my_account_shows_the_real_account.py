@@ -840,3 +840,69 @@ def test_a_us_holding_is_not_drawn_in_won():
     # 못 읽는 값은 0 이 아니라 없음입니다.
     assert _named({"amount": "??"}, "KRW") == {}
     assert _named(None, "KRW") == {}
+
+
+# ── 원화와 외화가 한 표에 앉습니다 ───────────────────────────────────────
+#
+# 한투 계좌 하나에 국내 종목과 미국 종목이 같이 들어 있습니다. 단가 칸에는
+# 통화 표시가 없어서, 아무것도 안 하면 $245.67 이 71,300원 바로 아래에
+# `245.67` 로 앉습니다. 같은 열의 두 숫자가 천 배 차이 나는 화면입니다.
+
+@JS_REQUIRED
+def test_a_dollar_holding_is_not_drawn_as_won():
+    got = _run_account_js(r"""
+async function api() {
+  return {
+    supported: true, source: "kis", environment: "paper",
+    cash_buying_power: {}, market_value: {KRW: 950300},
+    investable_assets: {KRW: 2645600}, cash: {KRW: 1284300},
+    invested: {}, pnl: {}, daily_pnl: {},
+    items: [
+      {ticker: "005930", name: "삼성전자", quantity: 13,
+       avg_price: 71250, last_price: 73100,
+       market_value: {KRW: 950300}, pnl: {KRW: 24050}, pnl_pct: 0.026},
+      {ticker: "AAPL", name: "APPLE INC", quantity: 3, currency: "USD",
+       avg_price: 228.40, last_price: 245.67,
+       market_value: {USD: 737.01}, pnl: {USD: 51.81}, pnl_pct: 0.0756}
+    ],
+    items_complete: true,
+    summary_complete: false,
+    summary_message: "위 집계금액은 국내분입니다 — 해외 보유 1종목(USD)은 들어 있지 않습니다"
+  };
+}
+(async function () {
+  await loadBrokerAccount();
+  write(JSON.stringify({html: BOX.innerHTML}));
+})().catch(function (e) { write(JSON.stringify({error: String(e)})); });
+""")
+    assert "error" not in got, got
+    html = got["html"]
+    assert "APPLE INC" in html, "해외 보유가 표에 없습니다"
+    assert "$245.67" in html and "$228.4" in html, (
+        "달러 단가에 통화 표시가 없습니다 — 원화 종목 바로 옆에 앉습니다")
+    assert "$737.01" in html and "+$51.81" in html
+    assert "71,250" in html and "$71,250" not in html, (
+        "원화 종목에 달러 표시가 붙었습니다")
+    assert "집계금액은 국내분" in html, "합계가 국내분이라는 사실이 화면에 없습니다"
+
+
+@JS_REQUIRED
+def test_a_missing_dollar_price_is_a_dash_not_a_lonely_dollar_sign():
+    got = _run_account_js(r"""
+async function api() {
+  return {
+    supported: true, source: "kis",
+    cash_buying_power: {}, market_value: {}, investable_assets: {},
+    cash: {}, invested: {}, pnl: {}, daily_pnl: {},
+    items: [{ticker: "AAPL", name: "APPLE INC", quantity: 3, currency: "USD",
+             avg_price: null, last_price: null,
+             market_value: {}, pnl: {}, pnl_pct: null}]
+  };
+}
+(async function () {
+  await loadBrokerAccount();
+  write(JSON.stringify({html: BOX.innerHTML}));
+})().catch(function (e) { write(JSON.stringify({error: String(e)})); });
+""")
+    assert "error" not in got, got
+    assert "$—" not in got["html"], "값이 없는 칸에 통화 기호만 남았습니다"

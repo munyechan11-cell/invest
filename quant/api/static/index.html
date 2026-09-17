@@ -4774,11 +4774,15 @@ async function loadBrokerAccount() {
         ? String(x.name) : "";
       const label = symLabel(ticker, name);
       if (!label) return "";
+      // 원화 종목과 외화 종목이 한 표에 섞입니다. 단가 칸에는 통화가 안
+      // 붙어 있어서, 표시가 없으면 $245.67 이 245원 옆에 245.67 로 앉습니다.
+      const unit = (v) => (typeof v === "number" && Number.isFinite(v)
+        && x.currency === "USD" ? "$" : "") + plain(v, 2);
       return `<tr>
         <td class="gold">${esc(label)}</td>
         <td>${plain(x.quantity, 8)}</td>
-        <td>${plain(x.avg_price, 2)}</td>
-        <td>${plain(x.last_price, 2)}</td>
+        <td>${unit(x.avg_price)}</td>
+        <td>${unit(x.last_price)}</td>
         <td>${esc(money(x.market_value))}</td>
         <td>${signed(x.pnl)}${pct(x.pnl_pct)}</td>
       </tr>`;
