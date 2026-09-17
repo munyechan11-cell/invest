@@ -91,6 +91,9 @@ class Engine:
         self._universe_configured = bool(ctx.universe)
         self.orders: list[Order] = []
         self.protection_events: list[dict] = []
+        #: 이미 "못 삽니다" 라고 말한 종목. 봉마다 되풀이하면 알림 채널이
+        #: 통째로 안 읽히게 됩니다. 조건이 풀리면 지워져 다시 말합니다.
+        self._unreachable_announced: set[str] = set()
         self._started = False
 
     @property
@@ -397,6 +400,7 @@ class Engine:
         except Exception:
             log.exception("execution model failed on %s", bar_ts)
             return
+        await self._announce_unreachable_entries()
         emitted_risk_keys = {
             order.symbol.key for order in orders
             if (order.symbol.key in priority_risk_keys
@@ -569,6 +573,36 @@ class Engine:
             if closed is not None:
                 await self.bus.publish(EventType.TRADE_CLOSED, _trade_dict(closed))
         return fills
+
+    async def _announce_unreachable_entries(self) -> None:
+        """전략이 사고 싶어 하는데 **한 주도 살 수 없는** 종목을 말합니다.
+
+        실행 모델은 격자에서 0 이 된 주문과 최소 주문금액 아래인 주문을
+        조용히 버립니다. 보유를 늘리는 미세 조정에서는 그게 옳지만, 보유가
+        0 인 종목이면 뜻이 완전히 다릅니다 — "이 계좌에서 이 종목은 못 산다"
+        이고, 같은 판단이 매 봉 반복되므로 봇은 그 종목을 **영원히** 사지
+        않습니다. 그 사실은 지금까지 로그에도 화면에도 없었습니다.
+
+        `ORDER_REJECTED` 로 내보냅니다 — 출하되는 실거래 설정이 전부 이
+        이벤트를 알림으로 받고 있고, 운영자가 알고 싶은 것도 정확히
+        "왜 주문이 안 나갔는가" 이기 때문입니다.
+
+        **종목마다 한 번만** 말합니다. 봉마다 같은 줄을 보내면 그 알림 채널이
+        통째로 읽히지 않게 되고, 그건 이 수정이 막으려는 것보다 나쁩니다.
+        조건이 풀리면(값이 오르거나 잔고가 늘거나) 기억을 지우므로, 다시
+        막히면 다시 말합니다.
+        """
+        current = dict(getattr(self.execution_model, "unreachable", {}) or {})
+        self._unreachable_announced.intersection_update(current)
+        for key, reason in current.items():
+            if key in self._unreachable_announced:
+                continue
+            self._unreachable_announced.add(key)
+            ticker = key.split(":", 1)[-1]
+            log.warning("%s 신규 진입 불가 — %s", ticker, reason)
+            await self.bus.publish(EventType.ORDER_REJECTED, {
+                "symbol": ticker, "reason": reason, "source": "execution",
+            })
 
     def _release_pin_if_flat(self, fill: Fill) -> None:
         """보유가 사라지면 핀도 사라집니다.

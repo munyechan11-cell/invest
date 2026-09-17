@@ -203,6 +203,11 @@ class ExecutionModel(ABC):
         self._stood_down: set[str] = set()
         self._reviewed_at: datetime | None = None
         self._last_review: list[OrderReview] = []
+        #: `Symbol.key` → 왜 이 종목에 신규 진입이 나가지 못했는가. 매 `_deltas`
+        #: 호출마다 새로 씁니다. **보유가 0 인 종목** 만 담습니다 — 보유를
+        #: 늘리는 미세 조정이 문턱에 걸리는 것은 그 문턱의 목적이고, 그것까지
+        #: 알리면 진짜 못 사는 종목이 묻힙니다.
+        self.unreachable: dict[str, str] = {}
 
     @abstractmethod
     def execute(self, ctx: Context, targets: list[PortfolioTarget]) -> list[Order]: ...
@@ -434,6 +439,7 @@ class ExecutionModel(ABC):
                 ) -> list[tuple[PortfolioTarget, Decimal, float]]:
         """(target, signed delta quantity, price) for every target worth acting on."""
         self.review_orders(ctx)
+        self.unreachable = {}
         out = []
         for t in targets:
             price = ctx.price(t.symbol)
@@ -450,6 +456,17 @@ class ExecutionModel(ABC):
             # Ordinary entries/rebalances still obey the symmetric Symbol grid.
             delta = raw_delta if exact_exit is not None else t.symbol.round_qty(raw_delta)
             if delta == 0:
+                # 들고 있지도 않은 종목에 목표가 섰는데 격자에서 0 이 됐다면,
+                # 그건 미세 조정이 아니라 **살 수 없는 진입** 입니다. 한 주가
+                # 종목당 한도보다 비싼 경우가 그것이고, 매 봉 같은 판단이
+                # 반복되므로 봇은 영원히 그 종목을 사지 않습니다.
+                if current == 0 and t.quantity != 0:
+                    self.unreachable[t.symbol.key] = (
+                        f"목표 {float(t.quantity):g}주가 최소 주문 단위 "
+                        f"{float(t.symbol.lot_size):g}주보다 작습니다 "
+                        f"(1주 {price:,.2f}) — 이 종목은 신규 진입이 나가지 "
+                        f"않습니다"
+                    )
                 continue
 
             # A minimum-notional floor is a cost heuristic for *entries*. Applying
@@ -465,6 +482,16 @@ class ExecutionModel(ABC):
                 if notional < floor:
                     # Below the venue minimum the order would be rejected anyway;
                     # below our own floor it is not worth the fee.
+                    #
+                    # 보유를 늘리는 미세 조정이면 그게 이 문턱의 목적입니다.
+                    # 하지만 보유가 0 인 종목이면 "이 계좌에서 이 종목은 못
+                    # 산다" 는 뜻이고, 그건 조용히 넘어갈 일이 아닙니다.
+                    if current == 0 and t.quantity != 0:
+                        self.unreachable[t.symbol.key] = (
+                            f"주문금액 {notional:,.0f} 이 최소 주문금액 "
+                            f"{floor:,.0f} 에 못 미칩니다 — 이 종목은 신규 "
+                            f"진입이 나가지 않습니다"
+                        )
                     continue
             if self._withheld(ctx, t.symbol, reducing):
                 continue
