@@ -74,11 +74,19 @@ class VenueSpec:
     fields: list[tuple[str, str, bool]]      # (env var, 한국어 라벨, required)
     note_ko: str = ""
     paper_supported: bool = True
+    #: 이 증권사가 **허용 IP 목록** 을 쓰는가. 토스만 씁니다.
+    #:
+    #: 검증이 실패할 때마다 "이 서버의 공인 IP 를 등록하세요" 를 붙이고
+    #: 있었는데, 한투는 IP 제한이 아예 없습니다(`DEPLOY.md` 도 그렇게 적고
+    #: 있습니다). 키가 틀려서 실패한 사람이 그 문장을 읽으면 있지도 않은
+    #: 등록 화면을 찾아다니게 됩니다 — 틀린 안내는 없는 안내보다 나쁩니다.
+    ip_allowlist: bool = False
 
     def to_dict(self) -> dict:
         return {
             "id": self.id, "label": self.label_ko, "kind": self.kind,
             "paper_supported": self.paper_supported, "note": self.note_ko,
+            "ip_allowlist": self.ip_allowlist,
             "fields": [{"env": env, "label": label, "required": required}
                        for env, label, required in self.fields],
         }
@@ -125,6 +133,8 @@ VENUES: list[VenueSpec] = [
                 "dry_run 모드(실시간 시세 + 가상 체결)로 충분히 검증한 뒤에만 "
                 "실거래로 넘어가세요. https://corp.tossinvest.com/ko/open-api",
         paper_supported=False,
+        #: 토스만 허용 IP 목록을 씁니다 — 이 서버의 공인 IP 를 등록해야 합니다.
+        ip_allowlist=True,
     ),
     VenueSpec(
         id="alpaca", label_ko="Alpaca (미국주식)", kind="equity_us",

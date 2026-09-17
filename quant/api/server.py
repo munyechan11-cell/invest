@@ -703,8 +703,24 @@ def _scrub(text: str, secrets_used: dict[str, str]) -> str:
 _KEY_SHAPE: dict[str, tuple[str, int, str]] = {
     "TOSS_CLIENT_ID": ("tsck_", 20, "토스 클라이언트 ID"),
     "TOSS_CLIENT_SECRET": ("tssk_", 20, "토스 클라이언트 시크릿"),
-    "KIS_APP_KEY": ("", 30, "KIS 앱 키"),
-    "KIS_APP_SECRET": ("", 100, "KIS 앱 시크릿"),
+    "KIS_APP_KEY": ("", 30, "KIS 실계좌 앱 키"),
+    "KIS_APP_SECRET": ("", 100, "KIS 실계좌 앱 시크릿"),
+    "KIS_PAPER_APP_KEY": ("", 30, "KIS 모의투자 앱 키"),
+    "KIS_PAPER_APP_SECRET": ("", 100, "KIS 모의투자 앱 시크릿"),
+}
+
+#: 숫자만 들어가야 하는 칸. 한투 계좌번호는 **앞 8자리 숫자** 이고, 주문은
+#: 그것을 `CANO` 로 그대로 씁니다(`account_no[:8]`).
+#:
+#: 이게 없어서 `m!4041317` 이 그대로 저장됐습니다. 한/영 상태에서 숫자 앞에
+#: 글자가 딸려 들어간 것인데, 저장은 되고 토큰 발급도 되고 **주문을 낼 때가
+#: 되어서야** 증권사가 거절합니다. 그 시점의 메시지는 "계좌 오류" 이고,
+#: 사람은 계좌 자체를 의심하게 됩니다.
+_DIGIT_FIELDS = {
+    "KIS_ACCOUNT_NO": ("KIS 실계좌 계좌번호", 8),
+    "KIS_PAPER_ACCOUNT_NO": ("KIS 모의투자 계좌번호", 8),
+    "KIS_ACCOUNT_PRD_CD": ("KIS 실계좌 상품코드", 2),
+    "KIS_PAPER_ACCOUNT_PRD_CD": ("KIS 모의투자 상품코드", 2),
 }
 
 
@@ -715,6 +731,18 @@ def _shape_problem(env: str, value: str) -> str:
     전부 부르기 전에 알 수 있는 것들이고, 부른 뒤에는 서버가 그냥
     `access_denied` 라고만 답합니다.
     """
+    if env in _DIGIT_FIELDS and value:
+        label, digits = _DIGIT_FIELDS[env]
+        if value != value.strip():
+            return f"{label}: 앞뒤에 공백이 섞여 있습니다"
+        if not value.isdigit():
+            odd = "".join(sorted({ch for ch in value if not ch.isdigit()}))
+            return (f"{label}: 숫자만 들어갑니다 — '{odd}' 가 섞여 있습니다. "
+                    f"한/영 상태에서 입력하면 숫자 앞에 글자가 딸려 들어갑니다.")
+        if len(value) != digits:
+            return f"{label}: {digits}자리여야 합니다 (지금 {len(value)}자리)"
+        return ""
+
     shape = _KEY_SHAPE.get(env)
     if not shape or not value:
         return ""
@@ -758,7 +786,7 @@ async def _public_ip() -> str:
     return ""
 
 
-async def _verify_kis(values: dict[str, str]) -> dict:
+async def _verify_kis(values: dict[str, str], *, paper: bool = False) -> dict:
     """토큰만 보지 않고 **봇이 실제로 밟는 길**을 밟아 봅니다.
 
     토큰 발급만 확인하면 "검증 성공" 이 뜬 뒤에도 봇이 워밍업에서 죽습니다 —
@@ -766,32 +794,35 @@ async def _verify_kis(values: dict[str, str]) -> dict:
     드러납니다. 여기서 현재가와 일봉까지 받아 보면, 어디서 막히는지 시작하기
     전에 알 수 있습니다.
 
-    실전과 모의를 둘 다 시도합니다. 어느 쪽 키인지는 사용자도 헷갈리는
-    부분이고, 우리가 대신 알아봐 주면 되는 일입니다.
+    **어느 환경인지는 카드가 정합니다.** 예전에는 실전·모의를 차례로 시도해
+    "되는 쪽" 을 골랐는데, 한투는 환경마다 키가 다르므로 그건 추측이 아니라
+    잘못된 친절이었습니다 — 모의투자 칸에 넣은 키가 실전으로 확인되면 그
+    화면은 없는 사실을 말한 것입니다.
     """
     from quant.core.types import Symbol
     from quant.data.providers.kis import KisProvider, kis_token
 
-    key, secret = values["KIS_APP_KEY"], values["KIS_APP_SECRET"]
+    prefix = "KIS_PAPER_" if paper else "KIS_"
+    key, secret = values[f"{prefix}APP_KEY"], values[f"{prefix}APP_SECRET"]
+    label = "모의투자" if paper else "실전"
     steps: list[dict] = []
     env_name = ""
-    for paper, label in ((False, "실전"), (True, "모의투자")):
-        try:
-            await kis_token(key, secret, paper=paper)
-            steps.append({"step": f"{label} 토큰 발급", "ok": True})
-            env_name = label
-            break
-        except Exception as exc:
-            steps.append({"step": f"{label} 토큰 발급", "ok": False,
-                          "detail": _short(exc)})
+    try:
+        await kis_token(key, secret, paper=paper)
+        steps.append({"step": f"{label} 토큰 발급", "ok": True})
+        env_name = label
+    except Exception as exc:
+        steps.append({"step": f"{label} 토큰 발급", "ok": False,
+                      "detail": _short(exc)})
     if not env_name:
         return {"ok": False, "steps": steps,
-                "error": "앱 키·시크릿으로 토큰을 받지 못했습니다. 한국투자증권 "
-                         "개발자센터에서 발급한 값이 맞는지, 앞뒤 공백이 섞이지 "
-                         "않았는지 확인하세요."}
+                "error": f"{label} 앱 키·시크릿으로 토큰을 받지 못했습니다. "
+                         f"한국투자증권 개발자센터의 **{label}** 에서 발급한 값이 "
+                         f"맞는지 확인하세요 — 모의투자와 실계좌는 키가 서로 "
+                         f"다르고, 반대쪽 키는 이 문으로 들어오지 못합니다."}
 
-    paper = env_name == "모의투자"
-    provider = KisProvider(app_key=key, app_secret=secret, paper=paper)
+    provider = KisProvider(app_key=key, app_secret=secret, paper=paper,
+                           allow_env_credentials=False)
     sample = Symbol("005930", venue="kis", quote_currency="KRW")
     try:
         quote = await provider.quote(sample)
@@ -934,8 +965,13 @@ async def verify_venue(venue_id: str, values: dict[str, str]) -> dict:
                 "error": shape_issues[0]}
 
     try:
-        if venue_id == "kis":
-            return await _verify_kis(values)
+        if venue_id in ("kis", "kis_paper"):
+            # 검증 구현이 두 곳(`credentials.verify`·여기)에 있었고 한쪽만
+            # 고쳤습니다. 그래서 모의투자 카드가 아래 ccxt 갈래로 떨어져
+            # "No module named 'ccxt'" 라고 답했습니다 — 한투 검증에 ccxt 가
+            # 필요할 이유가 없는데, 그 문장을 읽은 사람은 무엇을 고쳐야 할지
+            # 알 수 없습니다.
+            return await _verify_kis(values, paper=venue_id == "kis_paper")
 
         if venue_id == "toss":
             return await _verify_toss(values)
@@ -1634,9 +1670,10 @@ class UserDesk(Desk):
         mine = {k: v for k, v in self.accounts.secrets_for(self.user.id).items()
                 if k in wanted}
         result = await verify_venue(venue_id, mine)
-        if not result.get("ok"):
-            # 실패했을 때만 알아봅니다. 잘 되는 사람에게 굳이 외부 조회를
-            # 붙일 이유가 없습니다.
+        # 실패했을 때만, 그리고 **허용 IP 목록을 쓰는 증권사** 에만 붙입니다.
+        # 한투는 IP 제한이 없습니다. 키가 틀려서 실패한 사람에게 "IP 를
+        # 등록하세요" 라고 하면 있지도 않은 화면을 찾아다니게 됩니다.
+        if not result.get("ok") and spec.ip_allowlist:
             ip = await _public_ip()
             if ip:
                 result["server_ip"] = ip
