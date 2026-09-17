@@ -1059,10 +1059,23 @@ class UserRegistry:
         try:
             overview = getattr(broker, "account_overview", None)
             if overview is None:
-                return {
-                    "supported": False,
-                    "message": f"{wired.broker.type} 은 계좌 조회를 지원하지 않습니다",
-                }
+                # 증권사 이름만 적어 두면, 한투를 연동해 놓고 모의 전략을 보던
+                # 사람은 "paper 은 계좌 조회를 지원하지 않습니다" 를 읽고 자기
+                # 연동이 실패했다고 생각합니다. 실제로 그렇게 읽혔습니다.
+                # 무엇을 보고 있는지와 무엇을 하면 되는지를 함께 씁니다.
+                kind = wired.broker.type
+                if kind == "paper":
+                    message = (
+                        "지금 고른 전략은 모의 브로커로 돕니다 — 조회할 실계좌가 "
+                        "없습니다. 연동한 증권사를 쓰는 전략을 고르면 실제 잔고가 "
+                        "여기 나옵니다."
+                    )
+                else:
+                    message = (
+                        f"{kind} 어댑터는 아직 계좌 조회를 지원하지 않습니다. "
+                        "봇을 돌리는 데는 문제가 없고, 이 탭만 비어 있습니다."
+                    )
+                return {"supported": False, "broker": kind, "message": message}
             await broker.connect()
             out = await overview()
             out["supported"] = True

@@ -525,6 +525,126 @@ class KisBrokerage(LiveBrokerage):
                     costs[key] = float(row.get("pchs_avg_pric") or 0)
         return out, costs
 
+    # ── "내 계좌" 탭 ─────────────────────────────────────────────────────
+    async def account_overview(self) -> dict:
+        """증권사가 말하는 계좌 상태 — 봇과 무관하게.
+
+        **이것이 없어서 한투를 연동한 사람은 "계좌 조회 미지원" 만 봤습니다.**
+        토스에만 있던 창구이고, 화면은 진작 `source === "kis"` 를 그릴 준비가
+        돼 있었습니다. 계좌는 봇의 것이 아니라 사람의 것입니다 — 봇이 꺼져
+        있어도, 한 번도 안 돌았어도, 앱에서 산 종목이어도 여기 나와야 합니다.
+
+        **예수금과 매수가능금액은 다릅니다.** 잔고 조회(`inquire-balance`)가
+        주는 것은 `dnca_tot_amt`, 예수금입니다. 매수가능금액은 종목과 호가를
+        넣어야 답이 나오는 별개 창구(`inquire-psbl-order`)라 계좌 단위 숫자가
+        아닙니다. 그래서 `cash_buying_power` 자리는 **비워 두고** 예수금은
+        예수금 자리에 넣습니다. 이름이 다른 두 숫자를 같은 칸에 넣으면, 그
+        칸을 믿고 주문 크기를 정하는 사람이 미수를 냅니다.
+
+        **오늘 손익은 넣지 않습니다.** 잔고 응답에 그 값이 없습니다. 자산증감액
+        (`asst_icdc_amt`)은 입출금이 섞여 있어 손익이 아닙니다 — 비슷하게
+        생긴 숫자를 대신 넣는 것이 이 코드베이스가 반복해서 고쳐 온 실수입니다.
+
+        해외 잔고는 **따로, 실패해도 전체를 죽이지 않게** 읽습니다. 해외 계좌
+        권한이 없는 사람에게 국내 잔고까지 안 보이면 안 됩니다.
+        """
+        issues: list[str] = []
+
+        def num(row: dict, key: str, label: str) -> float | None:
+            raw = row.get(key)
+            if raw in (None, ""):
+                return None
+            try:
+                return float(str(raw).replace(",", ""))
+            except (TypeError, ValueError):
+                issues.append(f"{label} 값을 숫자로 읽을 수 없습니다")
+                return None
+
+        def money(value: float | None, currency: str = "KRW") -> dict:
+            """`{"KRW": 숫자}` — 못 읽은 값은 **빈 칸** 입니다.
+
+            0 을 넣으면 화면이 "0원" 이라고 자신 있게 씁니다. 모르는 것과
+            없는 것은 다릅니다.
+            """
+            return {} if value is None else {currency: value}
+
+        summary: dict = {}
+        items: list[dict] = []
+        async for data in self._paged(
+            "/uapi/domestic-stock/v1/trading/inquire-balance",
+            TR_BALANCE[not self.paper],
+            {"AFHR_FLPR_YN": "N", "OFL_YN": "", "INQR_DVSN": "02",
+             "UNPR_DVSN": "01", "FUND_STTL_ICLD_YN": "N",
+             "FNCG_AMT_AUTO_RDPT_YN": "N", "PRCS_DVSN": "00"},
+            ctx_suffix="100", what="계좌 조회",
+        ):
+            for row in data.get("output1") or []:
+                qty = num(row, "hldg_qty", "보유수량")
+                if not qty:
+                    continue
+                pnl_rate = num(row, "evlu_pfls_rt", "평가손익율")
+                items.append({
+                    "ticker": str(row.get("pdno") or "").strip(),
+                    "name": str(row.get("prdt_name") or "").strip(),
+                    "quantity": qty,
+                    "avg_price": num(row, "pchs_avg_pric", "매입평균가"),
+                    "last_price": num(row, "prpr", "현재가"),
+                    "market_value": money(num(row, "evlu_amt", "평가금액")),
+                    "pnl": money(num(row, "evlu_pfls_amt", "평가손익")),
+                    "pnl_pct": None if pnl_rate is None else pnl_rate / 100.0,
+                })
+            block = data.get("output2") or []
+            if isinstance(block, dict):
+                block = [block]
+            if block:
+                summary = block[0]
+
+        if not summary:
+            issues.append("계좌 집계 응답(output2)이 비어 있습니다")
+
+        deposit = num(summary, "dnca_tot_amt", "예수금")
+        holdings = num(summary, "scts_evlu_amt", "유가평가금액")
+        total = num(summary, "tot_evlu_amt", "총평가금액")
+        invested = num(summary, "pchs_amt_smtl_amt", "매입금액합계")
+        pnl = num(summary, "evlu_pfls_smtl_amt", "평가손익합계")
+
+        overseas_note = ""
+        try:
+            positions, _costs = await self._overseas_balance()
+        except Exception as exc:      # noqa: BLE001 — 국내 잔고까지 죽이지 않습니다
+            positions = {}
+            if self.overseas_exchange:
+                overseas_note = (
+                    f"해외 잔고({self.overseas_exchange})를 읽지 못했습니다: {exc}. "
+                    "아래 표와 집계는 국내분입니다"
+                )
+                log.warning("KIS 해외 잔고 조회 실패 — 국내분만 표시합니다: %s", exc)
+        if positions:
+            overseas_note = (
+                f"해외 보유 {len(positions)}종목은 집계금액에 포함되지 않았습니다 — "
+                "국내 잔고 창구가 해외분을 주지 않습니다"
+            )
+
+        return {
+            "source": "kis",
+            # 매수가능금액은 계좌 단위로 오지 않습니다 — 위 docstring 참고.
+            "cash_buying_power": {},
+            "cash": money(deposit),
+            "market_value": money(holdings),
+            "investable_assets": money(total),
+            "invested": money(invested),
+            "pnl": money(pnl),
+            "pnl_pct": (pnl / invested) if (pnl is not None and invested) else None,
+            # 오늘 손익은 이 창구에 없습니다. 비슷한 숫자로 채우지 않습니다.
+            "daily_pnl": {},
+            "daily_pnl_pct": None,
+            "items": items,
+            "items_complete": not overseas_note,
+            "items_message": overseas_note,
+            "summary_complete": not issues,
+            "summary_message": " · ".join(issues),
+        }
+
     async def close(self):
         await self._client.aclose()
 

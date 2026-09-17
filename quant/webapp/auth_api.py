@@ -99,6 +99,35 @@ class PasswordRequest(BaseModel):
     new: str = Field(max_length=1024, alias="new_password")
 
 
+class ResetRequest(BaseModel):
+    """복구 코드로 비밀번호를 다시 정할 때. 로그인하지 않은 사람이 씁니다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    email: str = Field(max_length=254)
+    code: str = Field(max_length=128, alias="recovery_code")
+    new: str = Field(max_length=1024, alias="new_password")
+
+
+class ConfirmPasswordRequest(BaseModel):
+    """지금 앉아 있는 사람이 주인인지 다시 묻습니다."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    password: str = Field(max_length=1024, alias="current_password")
+
+
+class DeleteAccountRequest(ConfirmPasswordRequest):
+    """비밀번호 **와** 이메일을 손으로 적어야 지웁니다.
+
+    실거래 확인이 전략 이름을 타이핑하게 하는 것과 같은 이유입니다. 비밀번호는
+    브라우저가 채워 줄 수 있으니 그것만으로는 "눌렀다" 와 "지우려고 했다" 를
+    구분하지 못합니다.
+    """
+
+    confirm_email: str = Field("", max_length=254)
+
+
 def public_user(user: User) -> dict:
     """화면에 내보내도 되는 사용자 필드 — 자격증명은 여기에 없습니다."""
     return {
@@ -352,10 +381,16 @@ class Auth:
     """
 
     def __init__(self, accounts: Accounts, *, cookie: str = SESSION_COOKIE,
-                 limiter: LoginRateLimiter | None = None):
+                 limiter: LoginRateLimiter | None = None,
+                 deletion_guard: Callable[[User], str] | None = None):
         self.accounts = accounts
         self.cookie = cookie
         self.limiter = limiter if limiter is not None else LoginRateLimiter()
+        #: 탈퇴를 막아야 하는 이유를 돌려주는 함수(막을 이유가 없으면 빈 문자열).
+        #: 이 모듈은 봇도 레지스트리도 모릅니다 — 알면 인증이 실행 계층에
+        #: 의존하게 되고, 그러면 둘 다 따로 테스트할 수 없습니다. 아는 쪽이
+        #: 끼워 넣습니다(`server.create_app`).
+        self.deletion_guard = deletion_guard
         self.router = APIRouter(prefix="/api/auth", tags=["auth"])
         self._install()
 
@@ -489,7 +524,11 @@ class Auth:
                 raise HTTPException(400, str(exc)) from None
             token = await run_in_threadpool(accounts.create_session, user.id)
             self._set_cookie(request, response, token)
-            return public_user(user)
+            # 가입하는 자리에서 복구 코드를 같이 줍니다. 나중에 받으러 오라고
+            # 하면, 받으러 오는 사람은 비밀번호를 잊지 않은 사람입니다.
+            # 메일 발송기가 없어서 이게 유일한 원격 복구 수단입니다.
+            code = await run_in_threadpool(accounts.issue_recovery_code, user.id)
+            return {**public_user(user), "recovery_code": code}
 
         @self.router.post("/login")
         async def login(req: LoginRequest, request: Request, response: Response):
@@ -578,11 +617,89 @@ class Auth:
             self._set_cookie(request, response, token)
             return {"ok": True, "message": "비밀번호를 바꿨습니다. 다른 기기는 모두 로그아웃됩니다."}
 
+        @self.router.post("/recovery-code")
+        async def recovery_code(req: ConfirmPasswordRequest,
+                                user: User = Depends(self.current_user)):
+            """복구 코드를 새로 받는다 — 화면에 **한 번만** 뜹니다.
+
+            비밀번호를 다시 묻습니다. 자리를 비운 사이 열린 브라우저 하나가
+            곧 비밀번호 재설정 수단이 되어서는 안 됩니다.
+            """
+            ok = await run_in_threadpool(
+                accounts.authenticate, user.email, req.password)
+            if ok is None:
+                raise HTTPException(400, "비밀번호가 맞지 않습니다")
+            code = await run_in_threadpool(accounts.issue_recovery_code, user.id)
+            return {
+                "code": code,
+                "message": ("지금 적어 두세요 — 다시 보여드릴 수 없습니다. "
+                            "이전에 받은 코드는 방금 무효가 됐습니다."),
+            }
+
+        @self.router.post("/reset-password")
+        async def reset_password(req: ResetRequest, request: Request):
+            """복구 코드로 비밀번호를 다시 정한다. 로그인은 시켜주지 않습니다.
+
+            **로그인 창구와 같은 속도 제한** 을 씁니다. 여기만 열어 두면
+            복구 코드가 제한 없이 추측당하는 두 번째 비밀번호가 됩니다.
+
+            성공해도 세션을 주지 않습니다 — 새 비밀번호로 직접 로그인하게
+            합니다. 코드를 주운 사람이 곧바로 안에 들어와 있는 것보다,
+            한 걸음 더 걷는 쪽이 낫습니다.
+            """
+            email = req.email.strip()
+            address = _client_address(request)
+            wait = self.limiter.retry_after(email, address)
+            if wait > 0:
+                raise _too_many(wait, TOO_MANY_LOGINS)
+            try:
+                await run_in_threadpool(
+                    accounts.reset_password, email, req.code, req.new)
+            except AccountError as exc:
+                self.limiter.fail(email, address)
+                delay = self.limiter.delay_for(email)
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                raise HTTPException(400, str(exc)) from None
+            self.limiter.succeed(email, address)
+            return {"ok": True,
+                    "message": "비밀번호를 다시 정했습니다 — 새 비밀번호로 로그인하세요."}
+
+        @self.router.post("/delete-account")
+        async def delete_account(req: DeleteAccountRequest, request: Request,
+                                 response: Response,
+                                 user: User = Depends(self.current_user)):
+            """계정과 저장된 증권사 키를 지운다. 되돌릴 수 없습니다.
+
+            순서가 중요합니다 — **봇이 도는지 먼저** 봅니다. 비밀번호가
+            맞는지보다 먼저입니다: 실거래 봇이 도는 채로 지우면 주문을 낸
+            주인이 사라진 포지션이 남고, 그건 비밀번호를 맞게 적었는지와
+            아무 상관이 없습니다.
+            """
+            if req.confirm_email.strip().lower() != user.email.strip().lower():
+                raise HTTPException(
+                    400, "확인을 위해 가입한 이메일을 그대로 적어 주세요")
+            if self.deletion_guard is not None:
+                blocked = self.deletion_guard(user)
+                if blocked:
+                    raise HTTPException(409, blocked)
+            try:
+                await run_in_threadpool(accounts.delete_user, user.id, req.password)
+            except AccountError as exc:
+                raise HTTPException(400, str(exc)) from None
+            self._clear_cookie(request, response)
+            return {"ok": True,
+                    "message": ("계정을 지웠습니다. 저장했던 증권사 키도 함께 "
+                                "사라졌고 복구되지 않습니다 — 다시 쓰시려면 "
+                                "증권사에서 새로 발급받으세요.")}
+
 
 def build_auth(accounts: Accounts, *, cookie: str = SESSION_COOKIE,
-               limiter: LoginRateLimiter | None = None) -> Auth:
+               limiter: LoginRateLimiter | None = None,
+               deletion_guard: Callable[[User], str] | None = None) -> Auth:
     """Accounts 하나로 라우터와 의존성을 만듭니다 — 마운트하는 쪽의 진입점."""
-    return Auth(accounts, cookie=cookie, limiter=limiter)
+    return Auth(accounts, cookie=cookie, limiter=limiter,
+                deletion_guard=deletion_guard)
 
 
 def build_auth_router(accounts: Accounts, **kwargs) -> APIRouter:
@@ -591,7 +708,8 @@ def build_auth_router(accounts: Accounts, **kwargs) -> APIRouter:
 
 
 __all__ = [
-    "Auth", "LoginRateLimiter", "LoginRequest", "PasswordRequest",
+    "Auth", "ConfirmPasswordRequest", "DeleteAccountRequest",
+    "LoginRateLimiter", "LoginRequest", "PasswordRequest", "ResetRequest",
     "RegisterRequest", "BAD_LOGIN", "COOKIE_MAX_AGE", "SESSION_COOKIE",
     "TOO_MANY_LOGINS", "TOO_MANY_SIGNUPS",
     "build_auth", "build_auth_router", "public_user",

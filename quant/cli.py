@@ -250,6 +250,52 @@ async def cmd_validate(args) -> int:
     return 0
 
 
+def cmd_reset_password(args) -> int:
+    """비밀번호와 복구 코드를 **둘 다** 잃은 계정의 마지막 길.
+
+    이 명령의 유일한 인증은 "이 서버에서 이 프로세스를 실행할 수 있다" 입니다.
+    그래서 원격 경로가 아니라 CLI 에만 있습니다 — 같은 일을 하는 엔드포인트를
+    하나 더 만들면 그게 곧 모든 계정의 뒷문입니다.
+
+    메일 발송기가 없는 서비스라 "재설정 링크를 보냈습니다" 는 만들 수 없고,
+    있는 척하면 사람이 오지 않을 메일을 기다립니다. 정직한 순서는
+    복구 코드 → (그것도 없으면) 서버 콘솔입니다.
+    """
+    import getpass
+
+    from quant.api.server import users_db_path
+    from quant.webapp.accounts import AccountError, Accounts, SecretKeyMissing
+
+    try:
+        accounts = Accounts(users_db_path(args.state))
+    except SecretKeyMissing as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
+    user = accounts.by_email(args.email)
+    if user is None:
+        # 콘솔 앞에 앉은 사람은 이미 서버의 주인입니다. 여기서까지 명부를
+        # 숨기면 오타를 고칠 방법이 없습니다.
+        print(f"✗ '{args.email}' 계정이 없습니다", file=sys.stderr)
+        return 1
+    print(f"  계정: {user.email} (가입 {user.created_at:%Y-%m-%d}"
+          f"{', 관리자' if user.is_admin else ''})")
+    new = getpass.getpass("  새 비밀번호: ")
+    if new != getpass.getpass("  한 번 더: "):
+        print("✗ 두 번 입력한 값이 다릅니다", file=sys.stderr)
+        return 1
+    try:
+        accounts.set_password(user.id, new)
+    except AccountError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 1
+    code = accounts.issue_recovery_code(user.id)
+    accounts.close()
+    print("\n✓ 비밀번호를 다시 정했습니다. 모든 기기가 로그아웃됐습니다.")
+    print(f"\n  새 복구 코드: {code}")
+    print("  다시 보여드릴 수 없습니다 — 지금 적어 두세요.\n")
+    return 0
+
+
 def cmd_models(args) -> int:
     from quant.data.provider import available_providers
     from quant.execution.models import BUILTIN_EXECUTION_MODELS
@@ -365,6 +411,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     models = sub.add_parser("models", help="list every pluggable model")
     models.set_defaults(fn=cmd_models, sync=True)
+
+    reset = sub.add_parser(
+        "reset-password",
+        help="비밀번호와 복구 코드를 둘 다 잃었을 때 (서버에서만)")
+    reset.add_argument("email")
+    reset.add_argument("--state", default="quant_state.db",
+                       help="상태 DB 경로 — 계정 DB 를 그 옆에서 찾습니다")
+    reset.set_defaults(fn=cmd_reset_password, sync=True)
 
     return parser
 

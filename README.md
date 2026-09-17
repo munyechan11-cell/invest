@@ -555,6 +555,46 @@ credentials, its own daily caps, its own bot. Nothing is shared: credentials
 are decrypted per request and never reach `os.environ`, because a process-global
 is readable by every other user's bot.
 
+### 비밀번호를 잊었을 때
+
+**이 서비스는 메일을 보내지 않습니다.** 그래서 "재설정 링크를 메일로" 는
+없습니다 — 있는 척하면 비밀번호를 잊은 사람이 오지 않을 메일을 기다립니다.
+대신 길이 둘입니다.
+
+1. **복구 코드.** 가입할 때 화면에 한 번 뜨고 다시는 볼 수 없습니다(증권사
+   키와 같은 규칙입니다 — 서버는 해시만 들고 있습니다). 로그인 화면의
+   「비밀번호를 잊으셨나요?」 에서 이메일 + 코드로 새 비밀번호를 정합니다.
+   쓰고 나면 그 코드는 소모되고, 로그인한 뒤 마이페이지에서 새로 받습니다.
+   재발급하면 이전 코드는 그 자리에서 무효입니다.
+
+2. **서버 콘솔.** 코드까지 잃었다면 이것뿐입니다:
+
+```bash
+python -m quant reset-password 내이메일@example.com
+```
+
+   유일한 인증은 "이 서버에서 이 프로세스를 실행할 수 있다" 입니다. 그래서
+   원격 API 에는 같은 일을 하는 창구가 없습니다 — 하나 더 두면 그게 곧 모든
+   계정의 뒷문입니다. 실행하면 모든 기기가 로그아웃되고 새 복구 코드가 함께
+   나옵니다.
+
+### 계정 삭제
+
+마이페이지에서 비밀번호 **와** 가입 이메일을 직접 적어야 지워집니다(실거래
+확인이 전략 이름을 타이핑하게 하는 것과 같은 이유입니다 — 브라우저가 채워
+주는 비밀번호만으로는 "눌렀다" 와 "지우려고 했다" 를 구분하지 못합니다).
+
+**자동매매가 돌고 있으면 거절합니다.** 실거래 봇이 도는 채로 계정이 사라지면
+주문을 낸 주인이 없는 포지션이 증권사에 남고, 그 포지션의 손절은 이 프로세스
+안에만 있었습니다. 먼저 정지하면 엔진이 미결 주문을 거두고 상태를 저장한 뒤
+닫습니다.
+
+지워지는 것: 계정, 세션, **저장된 증권사 키**. 키는 복구되지 않습니다 —
+저장할 때부터 다시 못 꺼내는 값이었고, 다시 쓰시려면 증권사에서 새로
+발급받는 것이지 여기서 되살리는 게 아닙니다. 감사 기록은 남되 이메일이
+적혀 있던 자리는 비웁니다 — 탈퇴로 지워져야 하는 것은 계정이지 사고
+기록이 아닙니다.
+
 `QUANT_SECRET_KEY` (32+ chars) is required — it derives the key that encrypts
 every user's broker credentials, and the server refuses to start without it.
 Lose it and no stored credential can be recovered; everyone re-registers.

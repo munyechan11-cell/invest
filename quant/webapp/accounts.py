@@ -280,7 +280,8 @@ class Accounts:
                 last_login_at TEXT,
                 plan          TEXT NOT NULL DEFAULT 'free',
                 referral      TEXT NOT NULL DEFAULT '',
-                tour_seen     INTEGER NOT NULL DEFAULT 0
+                tour_seen     INTEGER NOT NULL DEFAULT 0,
+                recovery_hash TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS sessions (
                 token_hash TEXT PRIMARY KEY,
@@ -311,7 +312,8 @@ class Accounts:
         have = {r["name"] for r in self.conn.execute("PRAGMA table_info(users)")}
         for column, ddl in (("plan", "TEXT NOT NULL DEFAULT 'free'"),
                             ("referral", "TEXT NOT NULL DEFAULT ''"),
-                            ("tour_seen", "INTEGER NOT NULL DEFAULT 0")):
+                            ("tour_seen", "INTEGER NOT NULL DEFAULT 0"),
+                            ("recovery_hash", "TEXT NOT NULL DEFAULT ''")):
             if column not in have:
                 self.conn.execute(f"ALTER TABLE users ADD COLUMN {column} {ddl}")
         self.conn.commit()
@@ -444,6 +446,126 @@ class Accounts:
         # 다른 기기에 남아 있던 세션을 살려두면 바꾼 의미가 없습니다.
         self.revoke_all(user_id)
         self.record(user_id, "password_changed")
+
+    # ── 복구 코드 ────────────────────────────────────────────────────────
+    #
+    # **이 서비스에는 메일 발송기가 없습니다.** 그래서 흔한 "재설정 링크를
+    # 메일로" 는 만들 수 없습니다 — 있는 척하면 비밀번호를 잊은 사람이 오지
+    # 않을 메일을 기다리게 됩니다.
+    #
+    # 대신 가입할 때 한 번 보여 주고 다시는 못 보는 코드를 줍니다. 증권사
+    # 키와 같은 규칙이고(`put_secret`), 같은 이유입니다: 저장된 쪽이 평문을
+    # 들고 있지 않아야 DB 사본 하나가 모든 계정의 열쇠가 되지 않습니다.
+    #
+    # 코드도 잃어버린 경우의 마지막 길은 **서버에 직접 들어가는 것** 입니다
+    # (`python -m quant reset-password`). 원격에서 되는 우회로를 하나 더
+    # 만들면 그게 곧 공격면이고, 이 봇은 본인 서버에서 도니까요.
+
+    def issue_recovery_code(self, user_id: int) -> str:
+        """새 복구 코드를 만들어 **평문으로 한 번** 돌려준다.
+
+        이전 코드는 이 순간 무효입니다. 재발급은 "예전 것이 샜을지도 모른다"
+        는 뜻이기도 하므로, 둘 다 살려두면 재발급의 의미가 없습니다.
+        """
+        code = "-".join(secrets.token_hex(3).upper() for _ in range(4))
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE users SET recovery_hash=? WHERE id=?",
+                (hash_password(code), user_id))
+            self.conn.commit()
+        if not cur.rowcount:
+            raise AccountError("그런 계정이 없습니다")
+        self.record(user_id, "recovery_code_issued")
+        return code
+
+    def has_recovery_code(self, user_id: int) -> bool:
+        row = self.conn.execute("SELECT recovery_hash FROM users WHERE id=?",
+                                (user_id,)).fetchone()
+        return bool(row and row["recovery_hash"])
+
+    def reset_password(self, email: str, code: str, new: str) -> User:
+        """복구 코드로 비밀번호를 다시 정한다.
+
+        성공하면 코드는 **소모** 됩니다. 한 번 쓴 코드가 계속 통하면 그건
+        비밀번호가 하나 더 있는 것과 같고, 그쪽은 아무도 안 바꿉니다.
+        새 코드는 로그인한 뒤 마이페이지에서 받습니다.
+
+        실패 이유를 나누지 않습니다 — 없는 이메일과 틀린 코드가 다른 답을
+        하면 이 창구가 곧 명부 조회 창구입니다. (가입 창구는 그럴 수 없는
+        이유가 따로 있습니다 — `register` 위 주석을 보세요.)
+        """
+        problem = password_problem(new or "")
+        if problem:
+            raise AccountError(problem)
+        user = self.by_email(email or "")
+        row = None if user is None else self.conn.execute(
+            "SELECT recovery_hash FROM users WHERE id=?", (user.id,)).fetchone()
+        stored = (row["recovery_hash"] if row else "") or ""
+        if user is None or not stored or not verify_password(code or "", stored):
+            if user is not None:
+                self.record(user.id, "recovery_failed")
+            raise AccountError("이메일 또는 복구 코드가 맞지 않습니다")
+        with self._lock:
+            self.conn.execute(
+                "UPDATE users SET password_hash=?, recovery_hash='' WHERE id=?",
+                (hash_password(new), user.id))
+            self.conn.commit()
+        self.revoke_all(user.id)
+        self.record(user.id, "password_reset_by_code")
+        log.warning("복구 코드로 비밀번호 재설정: %s", user.email)
+        return user
+
+    def set_password(self, user_id: int, new: str) -> None:
+        """현재 비밀번호를 묻지 않고 바꾼다 — **서버 안에서만** 부릅니다.
+
+        원격 경로에서는 부르지 마세요. 이 함수의 유일한 인증은 "이 프로세스를
+        실행할 수 있다" 이고, 그건 CLI 에서만 참입니다.
+        """
+        problem = password_problem(new or "")
+        if problem:
+            raise AccountError(problem)
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE users SET password_hash=? WHERE id=?",
+                (hash_password(new), user_id))
+            self.conn.commit()
+        if not cur.rowcount:
+            raise AccountError("그런 계정이 없습니다")
+        self.revoke_all(user_id)
+        self.record(user_id, "password_reset_on_console")
+
+    # ── 탈퇴 ─────────────────────────────────────────────────────────────
+    def delete_user(self, user_id: int, password: str) -> str:
+        """계정과 그 계정이 저장한 증권사 키를 지운다. 되돌릴 수 없습니다.
+
+        `sessions` 와 `user_secrets` 는 `ON DELETE CASCADE` 로 함께 사라지고,
+        **증권사 키는 복구되지 않습니다** — 저장할 때부터 다시 못 꺼내는
+        값이었습니다. 필요하면 증권사에서 새로 발급받는 것이지 여기서
+        되살리는 게 아닙니다.
+
+        `audit` 은 남깁니다. 그 계정이 무엇을 했는지는 운영자의 보안 기록이고,
+        탈퇴로 지워져야 하는 것은 계정이지 사고 기록이 아닙니다. 대신 이메일이
+        적혀 있던 자리는 비우고, 지웠다는 사실을 한 줄 남깁니다.
+
+        **봇이 돌고 있는지는 여기서 모릅니다.** 그건 호출부(`registry`를 아는
+        쪽)가 먼저 막아야 합니다 — 실거래 봇이 도는 채로 계정을 지우면 주문을
+        낸 주인이 사라진 포지션이 남습니다.
+        """
+        user = self.user(user_id)
+        row = None if user is None else self.conn.execute(
+            "SELECT password_hash FROM users WHERE id=?", (user_id,)).fetchone()
+        if user is None or row is None or not verify_password(
+                password or "", row["password_hash"]):
+            raise AccountError("비밀번호가 맞지 않습니다")
+        email = user.email
+        with self._lock:
+            self.conn.execute("UPDATE audit SET detail='' WHERE user_id=?",
+                              (user_id,))
+            self.conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+            self.conn.commit()
+        self.record(user_id, "account_deleted")
+        log.warning("계정 삭제: %s (id=%s)", email, user_id)
+        return email
 
     # ── 세션 ─────────────────────────────────────────────────────────────
     def create_session(self, user_id: int) -> str:

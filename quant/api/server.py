@@ -1939,7 +1939,29 @@ def create_app(config: StrategyConfig | None = None,
     app.state.accounts = accounts
     app.state.registry = registry
 
-    auth = build_auth(accounts) if accounts is not None else None
+    def _deletion_blocked(user) -> str:
+        """탈퇴를 막아야 하는 이유, 없으면 빈 문자열.
+
+        **돌고 있는 봇 위에서는 지우지 않습니다.** 실거래 봇이 도는 채로
+        계정이 사라지면 주문을 낸 주인이 없는 포지션이 증권사에 남고, 그
+        포지션의 손절은 이 프로세스 안에만 있었습니다. 먼저 정지하면 엔진이
+        미결 주문을 거두고 상태를 저장한 뒤 닫습니다 — 그 순서를 건너뛸
+        이유가 없습니다.
+        """
+        if registry is None:
+            return ""
+        try:
+            if registry._anything_running(user.id):
+                return ("자동매매가 돌고 있습니다 — 먼저 정지한 뒤 탈퇴하세요. "
+                        "돌고 있는 채로 지우면 주인 없는 주문과 포지션이 "
+                        "증권사에 남습니다.")
+        except Exception:      # noqa: BLE001 — 모르면 막는 쪽입니다
+            log.exception("탈퇴 전 봇 상태 확인 실패 (user=%s)", user.id)
+            return "봇이 돌고 있는지 확인하지 못했습니다 — 잠시 후 다시 시도하세요."
+        return ""
+
+    auth = (build_auth(accounts, deletion_guard=_deletion_blocked)
+            if accounts is not None else None)
     if auth is not None:
         app.include_router(auth.router)
 

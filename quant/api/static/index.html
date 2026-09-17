@@ -119,6 +119,27 @@
         <input id="liPassword" name="password" type="password"
                autocomplete="current-password" required></div>
       <button class="btn tap" type="submit" id="loginSubmit">로그인</button>
+      <button type="button" class="linkish" id="forgotBtn">비밀번호를 잊으셨나요?</button>
+    </form>
+
+    <!-- 복구 코드로 비밀번호 다시 정하기. 이 서비스는 메일을 보내지
+         않으므로, 가입할 때 받은 코드가 원격에서 쓸 수 있는 유일한 길입니다. -->
+    <form class="auth" id="resetForm" autocomplete="off" hidden>
+      <div class="fld"><label for="rsEmail">이메일</label>
+        <input id="rsEmail" name="email" type="email" autocomplete="username"
+               inputmode="email" required></div>
+      <div class="fld"><label for="rsCode">복구 코드 (여섯 자리씩 네 묶음)</label>
+        <input id="rsCode" type="text" autocomplete="off" spellcheck="false"
+               required></div>
+      <div class="fld"><label for="rsNew">새 비밀번호 (10자 이상, 숫자+문자)</label>
+        <input id="rsNew" type="password" autocomplete="new-password" required></div>
+      <div class="hint">가입할 때 한 번 보여드린 코드입니다. 쓰고 나면 그
+        코드는 없어지고, 로그인한 뒤 마이페이지에서 새로 받을 수 있습니다.
+        코드까지 잃어버렸다면 서버 콘솔에서 재설정 명령을 직접 실행하는 길만
+        남습니다 — 설치 안내 문서의 「비밀번호를 잊었을 때」에 있습니다.
+        원격에서 되는 우회로를 하나 더 두면 그게 곧 모든 계정의 뒷문입니다.</div>
+      <button class="btn tap" type="submit" id="resetSubmit">비밀번호 다시 정하기</button>
+      <button type="button" class="linkish" id="backToLogin">← 로그인으로</button>
     </form>
 
     <form class="auth" id="registerForm" autocomplete="on" hidden>
@@ -626,6 +647,37 @@
           </form>
           <div class="msg" id="pwMsg">비밀번호를 바꾸면 모든 기기의 로그인이 해제됩니다 —
             바꾼 뒤에는 다시 로그인해야 합니다.</div>
+        </div>
+
+        <div>
+          <h4>복구 코드</h4>
+          <form class="pwform" id="recoveryForm" autocomplete="off">
+            <div class="fld"><label for="rcPassword">현재 비밀번호</label>
+              <input id="rcPassword" type="password"
+                     autocomplete="current-password" required></div>
+            <button class="btn tap" type="submit" id="rcSubmit">새 코드 받기</button>
+          </form>
+          <div class="code-once" id="rcCode" hidden></div>
+          <div class="msg" id="rcMsg">비밀번호를 잊었을 때 쓰는 코드입니다.
+            이 서비스는 메일을 보내지 않으므로 재설정 링크가 오지 않습니다 —
+            코드가 유일한 원격 복구 수단입니다. 한 번만 보여드리고 다시 조회할 수
+            없으며, 새로 받으면 이전 코드는 그 자리에서 무효가 됩니다.</div>
+        </div>
+
+        <div>
+          <h4>계정 삭제</h4>
+          <form class="pwform" id="deleteForm" autocomplete="off">
+            <div class="fld"><label for="delPassword">현재 비밀번호</label>
+              <input id="delPassword" type="password"
+                     autocomplete="current-password" required></div>
+            <div class="fld"><label for="delEmail">확인을 위해 가입한 이메일을 적어 주세요</label>
+              <input id="delEmail" type="email" autocomplete="off"
+                     spellcheck="false" required></div>
+            <button class="btn tap warn" type="submit" id="delSubmit">계정 삭제</button>
+          </form>
+          <div class="msg" id="delMsg">되돌릴 수 없습니다. 저장된 증권사 키도 함께
+            사라지고 복구되지 않습니다 — 다시 쓰시려면 증권사에서 새로
+            발급받아야 합니다. 자동매매가 돌고 있으면 먼저 정지해야 합니다.</div>
         </div>
       </div>
     </div>
@@ -2893,6 +2945,75 @@ $("#passwordForm").addEventListener("submit", async ev => {
   }
 });
 
+/* 복구 코드 — 화면에 **한 번만** 뜹니다. 서버가 해시만 들고 있으므로 이
+   화면을 닫으면 아무도 다시 꺼낼 수 없습니다. */
+$("#recoveryForm").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  if (rejectAuthMutationDuringLogout()) return;
+  const epoch = authEpoch;
+  const identity = authIdentity(me);
+  const submit = $("#rcSubmit");
+  submit.disabled = true;
+  try {
+    const out = await post("/api/auth/recovery-code",
+                           {current_password: $("#rcPassword").value});
+    if (!authActionIsCurrent(epoch, identity)) return;
+    $("#rcPassword").value = "";
+    const box = $("#rcCode");
+    // 코드는 손으로 옮겨 적는 값이라 선택하기 쉬워야 합니다.
+    box.textContent = out.code || "";
+    box.hidden = !out.code;
+    note("#rcMsg", out.message || "지금 적어 두세요 — 다시 보여드릴 수 없습니다.", "ok");
+  } catch (e) {
+    if (isStaleAuthResponse(e) || !authActionIsCurrent(epoch, identity)) return;
+    note("#rcMsg", "발급 실패: " + e.message, "err");
+  } finally {
+    if (authActionIsCurrent(epoch, identity)) submit.disabled = false;
+  }
+});
+
+/* 계정 삭제. 비밀번호 **와** 이메일을 손으로 적게 하는 것은 실거래 확인이
+   전략 이름을 타이핑하게 하는 것과 같은 이유입니다 — 브라우저가 채워 주는
+   비밀번호만으로는 "눌렀다" 와 "지우려고 했다" 를 구분하지 못합니다.
+   서버는 그 위에 봇이 도는지도 봅니다(409). */
+$("#deleteForm").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  if (rejectAuthMutationDuringLogout()) return;
+  const submit = $("#delSubmit");
+  if (submit.dataset.armed !== "1") {
+    submit.dataset.armed = "1";
+    submit.textContent = "한 번 더 누르면 삭제";
+    setTimeout(() => {
+      if (!submit.isConnected) return;
+      submit.dataset.armed = "";
+      submit.textContent = "계정 삭제";
+    }, 5000);
+    return;
+  }
+  const epoch = authEpoch;
+  const identity = authIdentity(me);
+  submit.disabled = true;
+  try {
+    const out = await post("/api/auth/delete-account", {
+      current_password: $("#delPassword").value,
+      confirm_email: $("#delEmail").value.trim(),
+    });
+    if (!authActionIsCurrent(epoch, identity)) return;
+    ["#delPassword", "#delEmail"].forEach(sel => ($(sel).value = ""));
+    signedOut();
+    note("#gateMsg", out.message || "계정을 지웠습니다.", "ok");
+  } catch (e) {
+    if (isStaleAuthResponse(e) || !authActionIsCurrent(epoch, identity)) return;
+    note("#delMsg", "삭제 실패: " + e.message, "err");
+  } finally {
+    if (authActionIsCurrent(epoch, identity)) {
+      submit.disabled = false;
+      submit.dataset.armed = "";
+      submit.textContent = "계정 삭제";
+    }
+  }
+});
+
 $("#logoutBtn").onclick = async () => {
   if (logoutInFlight) return;
   const epoch = authEpoch;
@@ -2937,12 +3058,47 @@ let lastBotError = "";
 let lastHaltReason = "";
 
 function showTab(which) {
-  const login = which !== "register";
+  // 복구는 세 번째 **탭이 아닙니다.** 비밀번호를 잊는 일은 가입·로그인과
+  // 같은 무게가 아니고, 탭으로 올리면 처음 오는 사람이 셋 중 하나를 고르는
+  // 화면이 됩니다. 로그인 폼 아래 링크에서만 들어옵니다.
+  const reset = which === "reset";
+  const login = !reset && which !== "register";
   $("#tabLogin").classList.toggle("on", login);
-  $("#tabRegister").classList.toggle("on", !login);
+  $("#tabRegister").classList.toggle("on", !login && !reset);
   $("#loginForm").hidden = !login;
-  $("#registerForm").hidden = login;
+  $("#registerForm").hidden = login || reset;
+  $("#resetForm").hidden = !reset;
 }
+$("#forgotBtn").onclick = () => { showTab("reset"); $("#rsEmail").focus(); };
+$("#backToLogin").onclick = () => { showTab("login"); $("#liEmail").focus(); };
+
+/* 복구 코드로 비밀번호를 다시 정합니다. 성공해도 **로그인시키지 않습니다** —
+   코드를 주운 사람이 곧바로 안에 들어와 있는 것보다 한 걸음 더 걷는 쪽이
+   낫고, 서버도 세션을 주지 않습니다. */
+$("#resetForm").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const next = $("#rsNew").value;
+  const problem = passwordProblem(next);
+  if (problem) { note("#gateMsg", problem, "err"); return; }
+  const submit = $("#resetSubmit");
+  submit.disabled = true;
+  try {
+    await post("/api/auth/reset-password", {
+      email: $("#rsEmail").value.trim(),
+      recovery_code: $("#rsCode").value.trim(),
+      new_password: next,
+    });
+    ["#rsCode", "#rsNew"].forEach(sel => ($(sel).value = ""));
+    $("#liEmail").value = $("#rsEmail").value.trim();
+    showTab("login");
+    $("#liPassword").focus();
+    note("#gateMsg", "비밀번호를 다시 정했습니다 — 새 비밀번호로 로그인하세요.", "ok");
+  } catch (e) {
+    note("#gateMsg", "재설정 실패: " + e.message, "err");
+  } finally {
+    submit.disabled = false;
+  }
+});
 ["#tabLogin", "#tabRegister"].forEach(sel => {
   const el = $(sel), which = sel === "#tabLogin" ? "login" : "register";
   el.onclick = () => showTab(which);
@@ -3217,6 +3373,20 @@ $("#loginForm").addEventListener("submit", async ev => {
   }
 });
 
+/* 가입 직후 복구 코드를 마이페이지 자리에 띄우고 그리로 데려갑니다.
+   한 번만 볼 수 있는 값이라, 본 적 없이 지나가는 경로를 만들지 않습니다. */
+function showRecoveryCode(code) {
+  const box = $("#rcCode");
+  if (!box) return;
+  box.textContent = code;
+  box.hidden = false;
+  note("#rcMsg", "가입 완료 — 이 복구 코드를 지금 적어 두세요. " +
+                 "비밀번호를 잊으면 이것으로만 되찾을 수 있고, " +
+                 "다시 보여드릴 수 없습니다.", "ok");
+  if (typeof showPage === "function") showPage("me");
+  box.scrollIntoView({block: "center", behavior: "smooth"});
+}
+
 $("#registerForm").addEventListener("submit", async ev => {
   ev.preventDefault();
   if (rejectAuthMutationDuringLogout()) return;
@@ -3239,6 +3409,10 @@ $("#registerForm").addEventListener("submit", async ev => {
     if (user) {
       note("#gateMsg", "", "");
       signedIn(user);
+      // 가입한 자리에서 복구 코드를 보여 줍니다. 나중에 받으러 오라고 하면,
+      // 받으러 오는 사람은 비밀번호를 잊지 않은 사람입니다. 이 서비스는
+      // 메일을 보내지 않으므로 이게 유일한 원격 복구 수단입니다.
+      if (res && res.recovery_code) showRecoveryCode(res.recovery_code);
     } else {
       // 가입은 됐는데 세션이 안 붙는 서버 설정도 있습니다. 그때는 실패가 아니라
       // "이제 로그인하세요" 입니다.
@@ -4584,8 +4758,11 @@ async function loadBrokerAccount() {
     `<div class="r"><b>현금 매수가능금액</b><span>${esc(money(cashBuyingPower))}</span></div>` +
     `<div class="r"><b>보유주식 평가금액</b><span>${esc(money(holdingsValue))}</span></div>` +
     // 구형 응답은 보여 주기만 합니다. 운용가능자산 계산에는 절대 쓰지 않습니다.
+    // 매수가능금액을 못 주는 증권사는 예수금만 줍니다(한투 `inquire-balance`).
+    // 그건 구형 응답이 아니라 **다른 숫자** 입니다 — 미수 없이 살 수 있는
+    // 금액이 아니라 계좌에 있는 현금입니다. 이름을 그대로 씁니다.
     (!hasMoney(cashBuyingPower) && hasMoney(legacyCash)
-      ? `<div class="r"><b>예수금 · 구형 응답</b><span>${esc(money(legacyCash))}</span></div>`
+      ? `<div class="r"><b>예수금</b><span>${esc(money(legacyCash))}</span></div>`
       : "") +
     `<div class="dim" style="margin:7px 0 10px">현금 매수가능금액과 보유주식은 ` +
       `증권사 응답, 운용 가능 자산은 서버가 같은 통화끼리 계산했습니다. ` +
