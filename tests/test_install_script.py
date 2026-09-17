@@ -121,3 +121,35 @@ def test_it_tells_the_app_its_own_origin():
 def test_a_failure_says_where_to_look():
     assert "journalctl -u caddy" in DOMAIN_TEXT
     assert "ufw status" in DOMAIN_TEXT
+
+
+# ── 배포가 사용자 입력을 덮어쓰지 않는가 ────────────────────────────────
+#
+# 예전에는 이 성질을 `render.yaml` 을 읽는 테스트가 지켰습니다. Render 를
+# 없애면서 그 파일이 사라졌으므로, 같은 계약을 지금 배포하는 곳으로 옮깁니다 —
+# 지켜야 하는 것은 블루프린트가 아니라 **"배포 설정은 사람이 입력한 값을
+# 건드리지 않는다"** 는 사실이었습니다.
+
+def test_the_installer_writes_no_broker_credentials():
+    """증권사 키는 배포 설정이 아니라 **마이페이지** 에서 각자 입력합니다.
+
+    설치 스크립트가 같은 이름을 환경에 올려 두면, 사용자가 화면에서 넣은
+    값과 둘 중 어느 쪽이 진짜인지 알 수 없게 됩니다. 그리고 그 혼동은
+    "키를 분명히 넣었는데 남의 계좌로 주문이 나간다" 로 끝납니다.
+    """
+    text = TEXT
+    for name in ("KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO",
+                 "KIS_PAPER_APP_KEY", "KIS_PAPER_APP_SECRET",
+                 "TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET", "TOSS_ACCOUNT_NO",
+                 "ALPACA_API_KEY", "BINANCE_KEY"):
+        assert f"{name}=" not in text, (
+            f"설치 스크립트가 {name} 을 환경에 씁니다 — 증권사 키는 "
+            "사용자별로 암호화돼 계정 DB 에 들어가야 합니다")
+
+
+def test_the_installer_writes_no_daily_limits():
+    """하루 한도는 설정 파일과 사용자 설정에서 옵니다. 배포가 환경변수로
+    얹으면 그 값이 조용히 둘을 이깁니다 — 누가 정한 한도인지 알 수 없는
+    상태로 실거래가 돕니다."""
+    text = TEXT
+    assert "QUANT_LIMIT_DAILY" not in text
