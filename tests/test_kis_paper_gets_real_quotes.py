@@ -46,7 +46,7 @@ def test_quotes_never_come_from_the_mock_host(path, monkeypatch):
     for label, section in (("data", config.data), ("flow", config.flow)):
         if section.provider != "kis":
             continue
-        assert section.params.get("paper") is False, (
+        assert section.params.get("paper") is not True, (
             f"{path} 의 {label} 가 모의투자 호스트를 봅니다 — 그쪽에는 일봉이 "
             "없습니다")
 
@@ -182,3 +182,63 @@ def test_the_screen_draws_the_warning():
     assert "res.warning" in html, "경고를 서버가 보내도 화면이 안 그립니다"
     css = Path("quant/api/static/app.css").read_text(encoding="utf-8")
     assert ".vsum.warn" in css
+
+
+# ── 기본값이 함정이 아닌가 ───────────────────────────────────────────────
+def test_the_quote_providers_default_to_the_real_host():
+    """기본값이 `paper=True` 였습니다. `paper` 를 안 적은 설정은 조용히
+    시세 없는 문을 두드렸고, 돌아온 500 은 "키가 틀렸다" 처럼 보였습니다.
+
+    환경변수 되돌림이 `KIS_APP_KEY`(실계좌 이름)를 읽고 있었다는 것이 이미
+    같은 사실을 말하고 있었습니다 — 기본 호스트만 반대였습니다."""
+    import inspect
+
+    from quant.data.providers.kis import KisProvider
+    from quant.data.providers.kis_flow import KisFlowProvider
+
+    for cls in (KisProvider, KisFlowProvider):
+        assert inspect.signature(cls).parameters["paper"].default is False, (
+            f"{cls.__name__} 이 시세가 없는 호스트를 기본으로 봅니다")
+
+
+def test_the_broker_still_defaults_to_paper_trading_off_not_the_host():
+    """주문 쪽 기본값은 건드리지 않습니다 — 거기는 모의투자가 정상 동작하는
+    창구이고, 환경은 설정이 명시적으로 고릅니다."""
+    import inspect
+
+    from quant.brokerage.kis_broker import KisBrokerage
+
+    params = inspect.signature(KisBrokerage).parameters
+    assert params["environment"].default == ""
+    assert params["paper_trading"].default is False
+
+
+# ── "연습하는데 왜 실계좌 키?" ───────────────────────────────────────────
+def missing(*names):
+    from quant.webapp.registry import CredentialsMissing
+
+    return CredentialsMissing([
+        {"name": n, "label": n, "venue": "kis", "venue_label": "한국투자증권 실계좌"}
+        for n in names])
+
+
+def test_the_refusal_says_why_practice_needs_the_real_keys():
+    """이 문장이 없으면 사람은 자기가 설정을 잘못 골랐다고 생각하고,
+    **실거래 설정으로 옮겨 갑니다.** 그게 이 안내가 필요한 이유입니다."""
+    text = str(missing("KIS_APP_KEY", "KIS_APP_SECRET"))
+    assert "모의투자 호스트가 과거 시세를 주지 않기 때문" in text
+    assert "주문은 그대로 모의투자 계좌로" in text
+    assert "계좌번호는 넣지 않으셔도" in text
+
+
+def test_a_live_shortfall_does_not_get_the_practice_explanation():
+    """계좌번호가 없다는 것은 실거래를 하려는 것입니다 — 거기에 "연습용
+    전략인데" 를 붙이면 틀린 말이 됩니다."""
+    text = str(missing("KIS_APP_KEY", "KIS_ACCOUNT_NO"))
+    assert "연습용 전략" not in text
+
+
+def test_the_explanation_survives_the_wire():
+    payload = missing("KIS_APP_KEY").to_dict()
+    assert "모의투자 호스트가 과거 시세를" in payload["error"]
+    assert [i["name"] for i in payload["missing"]] == ["KIS_APP_KEY"]

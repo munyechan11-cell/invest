@@ -147,9 +147,21 @@ class CredentialsMissing(RuntimeProblem):
             venues.setdefault(item["venue_label"], []).append(item["label"])
         detail = " / ".join(f"{venue}: {', '.join(fields)}"
                             for venue, fields in venues.items())
+        # **연습하는데 왜 실계좌 키냐** 는 질문이 여기서 나옵니다. 모의투자
+        # 호스트에는 과거 일봉 창구가 없어서 시세만 실계좌에서 읽기 때문인데,
+        # 그 사실을 여기서 말하지 않으면 사람은 자기가 설정을 잘못 골랐다고
+        # 생각합니다 — 그리고 실거래 설정으로 옮겨 갑니다.
+        why = ""
+        names = {item["name"] for item in missing}
+        if names & {"KIS_APP_KEY", "KIS_APP_SECRET"} and not (
+                names & {"KIS_ACCOUNT_NO"}):
+            why = (" 연습용 전략인데 실계좌 앱 키를 묻는 이유는, 한투 "
+                   "**모의투자 호스트가 과거 시세를 주지 않기 때문** 입니다. "
+                   "시세만 실계좌 키로 읽고 주문은 그대로 모의투자 계좌로 "
+                   "나갑니다 — 계좌번호는 넣지 않으셔도 됩니다.")
         super().__init__(
             f"봇을 시작할 자격증명이 없습니다 — {detail}. "
-            "설정 화면에서 먼저 등록해 주세요."
+            f"설정 화면에서 먼저 등록해 주세요.{why}"
         )
 
     def to_dict(self) -> dict:

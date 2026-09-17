@@ -48,13 +48,21 @@ def _f(row: dict, *keys: str) -> float:
 class KisFlowProvider(FlowProvider):
     name = "kis_flow"
 
-    def __init__(self, app_key: str = "", app_secret: str = "", paper: bool = True,
+    def __init__(self, app_key: str = "", app_secret: str = "", paper: bool = False,
                  requests_per_second: float = 6.0, include_program: bool = True,
                  timeout: float = 20.0, allow_env_credentials: bool = True):
         self.app_key = (app_key or os.environ.get("KIS_APP_KEY", "")
                         if allow_env_credentials else app_key)
         self.app_secret = (app_secret or os.environ.get("KIS_APP_SECRET", "")
                            if allow_env_credentials else app_secret)
+        #: 시세는 **실계좌 호스트에만** 있습니다. 모의투자 호스트는 일봉
+        #: 창구(`inquire-daily-itemchartprice`)에 500 을 돌려줍니다 — 현재가는
+        #: 오는데 과거 봉만 안 옵니다. 그래서 기본값이 `True` 이던 시절에는
+        #: `paper` 를 안 적은 설정이 조용히 시세 없는 문을 두드렸고, 돌아온
+        #: 답은 "500" 이라 키가 틀린 것처럼 보였습니다.
+        #:
+        #: 환경변수 되돌림이 `KIS_APP_KEY`(실계좌 이름)를 읽는 것도 같은
+        #: 사실을 이미 말하고 있었습니다 — 기본 호스트만 반대였습니다.
         self.paper = paper
         self.include_program = include_program
         self._client = httpx.AsyncClient(timeout=timeout)

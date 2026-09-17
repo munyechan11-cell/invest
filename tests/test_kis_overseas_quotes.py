@@ -159,7 +159,22 @@ def test_no_exchange_knowing_it_says_why_instead_of_returning_nothing():
 
 
 def test_the_error_names_the_environment():
-    with pytest.raises(RuntimeError, match="paper=True"):
+    """어느 문을 두드렸는지 말해야 합니다. 예전에는 `paper` 값과 무관하게
+    "모의투자 환경이…" 라고 적혀 있어서, 실계좌로 실패한 사람에게 있지도
+    않은 원인을 가리켰습니다."""
+    with pytest.raises(RuntimeError, match="실계좌 환경입니다"):
+        history(_Kis(knows=None))
+    with pytest.raises(RuntimeError, match="모의투자 환경입니다"):
+        history(_Kis(knows=None, paper=True))
+
+
+def test_the_paper_error_says_where_quotes_actually_live():
+    with pytest.raises(RuntimeError, match="실계좌 키로 받으세요"):
+        history(_Kis(knows=None, paper=True))
+
+
+def test_the_live_error_points_at_permissions_not_the_environment():
+    with pytest.raises(RuntimeError, match="시세 조회 권한"):
         history(_Kis(knows=None))
 
 

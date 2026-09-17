@@ -107,7 +107,7 @@ class KisProvider(DataProvider):
         self,
         app_key: str = "",
         app_secret: str = "",
-        paper: bool = True,
+        paper: bool = False,
         requests_per_second: float = 8.0,
         overseas_exchange: str = "NASD",
         allow_env_credentials: bool = True,
@@ -116,6 +116,14 @@ class KisProvider(DataProvider):
                         if allow_env_credentials else app_key)
         self.app_secret = (app_secret or os.environ.get("KIS_APP_SECRET", "")
                            if allow_env_credentials else app_secret)
+        #: 시세는 **실계좌 호스트에만** 있습니다. 모의투자 호스트는 일봉
+        #: 창구(`inquire-daily-itemchartprice`)에 500 을 돌려줍니다 — 현재가는
+        #: 오는데 과거 봉만 안 옵니다. 그래서 기본값이 `True` 이던 시절에는
+        #: `paper` 를 안 적은 설정이 조용히 시세 없는 문을 두드렸고, 돌아온
+        #: 답은 "500" 이라 키가 틀린 것처럼 보였습니다.
+        #:
+        #: 환경변수 되돌림이 `KIS_APP_KEY`(실계좌 이름)를 읽는 것도 같은
+        #: 사실을 이미 말하고 있었습니다 — 기본 호스트만 반대였습니다.
         self.paper = paper
         #: 해외 종목을 어느 거래소부터 찾아볼 것인가. 주문 어댑터의
         #: `overseas_exchange` 와 같은 값을 넣으면 시세와 주문이 같은 곳을
@@ -198,10 +206,17 @@ class KisProvider(DataProvider):
             self._exchange_of.pop(ticker, None)
             # 전부 오류면 종목 문제가 아니라 **창구 문제** 입니다. 모의투자
             # 도메인이 해외 시세를 안 주는 경우가 여기로 옵니다.
+            # 어느 문을 두드렸는지 말해야 합니다. 예전에는 `paper` 값과
+            # 무관하게 "모의투자 환경이…" 라고 적혀 있어서, 실계좌로 실패한
+            # 사람에게 있지도 않은 원인을 가리켰습니다.
+            hint = ("모의투자 호스트에는 시세 창구가 거의 없습니다 — 시세는 "
+                    "실계좌 키로 받으세요"
+                    if self.paper else
+                    "해당 앱에 해외주식 시세 조회 권한이 있는지, 티커가 맞는지 "
+                    "확인하세요")
             raise RuntimeError(
                 f"KIS 해외 시세를 읽지 못했습니다 ({ticker}, {path}): {last}. "
-                f"모의투자 환경(paper={self.paper})이 해외 시세를 제공하는지 "
-                "확인이 필요합니다"
+                f"{'모의투자' if self.paper else '실계좌'} 환경입니다 — {hint}"
             ) from last
         return {}, ""
 
