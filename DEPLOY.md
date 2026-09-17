@@ -86,6 +86,28 @@ python -m quant live configs/live_crypto.yaml
 
 ---
 
+## 5. 올린 뒤 다시 올리기 (siftai.kr)
+
+서비스는 `quant` 계정이 돌리지만 **그 계정으로는 로그인할 수 없습니다** —
+`install.sh` 가 비밀번호 없는 시스템 계정으로 만들기 때문입니다(그게 맞습니다).
+들어가는 문은 `linuxuser` 이고, 거기서 `sudo -u quant` 로 건너갑니다.
+
+```bash
+ssh linuxuser@siftai.kr 'sudo -u quant git -C /home/quant/app pull --ff-only \
+  && sudo -u quant /home/quant/app/.venv/bin/pip install -q -r /home/quant/app/requirements.txt \
+  && sudo systemctl restart quant'
+```
+
+확인은 `curl -s https://siftai.kr/api/health` 로 합니다 — `trader_running` 이
+`false` 이고 `uptime_s` 가 방금 값이면 새 코드가 올라간 것입니다.
+
+⚠️ **장이 열려 있는 동안 재시작하지 마세요.** `SIGTERM` 을 받으면 현재
+사이클을 끝내고 멈추지만, 그 사이 시세는 계속 움직입니다. 봇이 돌고 있으면
+먼저 `POST /api/trader/stop` 으로 세우고, `trader_running: false` 를 확인한
+뒤에 올리세요.
+
+---
+
 ## 6. 운영 중
 
 | 확인 | 방법 |
@@ -107,7 +129,7 @@ python -m quant live configs/live_crypto.yaml
 
 ---
 
-## 6. 하지 말아야 할 것
+## 7. 하지 말아야 할 것
 
 - 백테스트 결과만 보고 실거래로 직행 — 그래서 walk-forward가 있습니다
 - `costs.preset: zero_cost`로 낸 성적을 실현 가능한 수익으로 착각
