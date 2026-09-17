@@ -14,5 +14,6 @@ Render Starter/Standard의 공유 IP는 Toss 허용 IP 계약과 맞지 않습�
 제어 API 인증도 공유 query token이 아니라 로그인 세션의 `__Host-` cookie를
 사용하므로 `QUANT_API_TOKEN`을 만들거나 URL에 `?token=`을 붙이지 마세요.
 
-Render 설정(`render.yaml`)은 IP 제한이 없는 provider를 별도로 운영할 때만
+Render 설정(`render.yaml`)은 **삭제했습니다** — 토스에 못 붙는 곳인데 남겨 두니
+`main` 에 푸시할 때마다 쓰지 않는 곳이 자동 배포되고 있었습니다. 예전에는
 루트 `DEPLOY.md`의 현재 제한을 확인한 뒤 사용합니다.
