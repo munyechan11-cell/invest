@@ -52,6 +52,7 @@ from quant.alpha.llm_client import (
     LLMConfig,
     LLMError,
     QuotaExhausted,
+    billing_hint,
 )
 from quant.alpha.seats import (
     BEAR_SEAT,
@@ -667,12 +668,20 @@ class TradingDesk(AlphaModel):
             return "LLM 응답이 없습니다 (사전 점검 시간 초과) — 네트워크나 모델 설정을 확인하세요"
         except LLMError as exc:
             message = str(exc)
+            # **어느 제공자인지 말해야 합니다.** 예전에는 무조건 Anthropic
+            # 이라고 적혀 있었는데, 출하 설정은 전부 제미나이입니다. 제미나이
+            # 할당량이 떨어진 사람이 그 문장을 읽으면 있지도 않은 Anthropic
+            # 계정을 충전하러 갑니다 — 틀린 안내는 없는 안내보다 나쁩니다.
+            who, where = billing_hint(
+                getattr(getattr(self.client, "config", None), "provider", ""))
             if "credit balance" in message or "quota" in message.lower():
-                return (f"Anthropic 계정 크레딧이 부족합니다. "
-                        f"console.anthropic.com 의 Plans & Billing 에서 충전한 뒤 "
-                        f"다시 시작하세요. (원문: {message[:160]})")
+                return (f"{who} 사용 한도가 찼습니다"
+                        + (f" — {where} 에서 확인하세요." if where else ".")
+                        + f" (원문: {message[:160]})")
             if " 401:" in message or " 403:" in message:
-                return f"API 키가 거부되었습니다 — 키를 확인하세요. ({message[:160]})"
+                return (f"{who} API 키가 거부되었습니다 — 키를 확인하세요."
+                        + (f" 발급: {where}" if where else "")
+                        + f" ({message[:160]})")
             if " 404:" in message:
                 available = await self._list_models()
                 hint = f" 사용 가능: {', '.join(available[:8])}" if available else ""

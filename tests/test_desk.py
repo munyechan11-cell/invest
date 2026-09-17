@@ -223,17 +223,53 @@ def test_an_unusable_key_disables_the_desk_instead_of_failing_every_bar():
     assert len(llm.calls) == before, "비활성화된 데스크가 호출을 계속했습니다"
 
 
-def test_a_credit_balance_error_says_what_to_do():
+def broke(message: str, provider: str = ""):
+    """사전 점검에서 곧장 터지는 대역. `provider` 를 주면 그 제공자로 행세합니다."""
+    from quant.alpha.llm_client import LLMConfig
+
     class Broke:
         usage = LLMUsage()
+        config = LLMConfig(provider=provider, api_key="x") if provider else None
 
         async def complete(self, system, user, schema=None):
-            raise LLMError("anthropic 400: Your credit balance is too low")
+            raise LLMError(message)
 
     desk = TradingDesk(Broke(), memory=False)
     asyncio.run(desk.on_start(make_ctx()))
-    reason = desk.status()["disabled_reason"]
-    assert "크레딧" in reason and "Plans & Billing" in reason
+    return desk.status()["disabled_reason"]
+
+
+def test_a_credit_balance_error_says_what_to_do():
+    reason = broke("anthropic 400: Your credit balance is too low", "anthropic")
+    assert "Anthropic" in reason and "Plans & Billing" in reason
+
+
+def test_a_gemini_quota_does_not_send_you_to_anthropic():
+    """출하 설정은 전부 제미나이입니다. 무조건 "Anthropic 크레딧을 충전하세요"
+    라고 하면, 있지도 않은 계정을 만들러 갑니다 — 틀린 안내는 없는 안내보다
+    나쁩니다."""
+    reason = broke("google 429: Quota exceeded for quota metric", "google")
+    assert "Google AI Studio" in reason and "aistudio.google.com" in reason
+    assert "Anthropic" not in reason and "console.anthropic.com" not in reason
+
+
+def test_a_rejected_key_names_its_provider_too():
+    reason = broke("google 403: API key not valid", "google")
+    assert "Google AI Studio" in reason and "키를 확인" in reason
+
+
+def test_an_unknown_provider_still_says_something_useful():
+    """모르는 제공자에 주소를 지어내지 않습니다."""
+    reason = broke("mistral 429: quota exceeded", "mistral")
+    assert "mistral" in reason and "사용 한도" in reason
+    assert ".com" not in reason.split("원문")[0]
+
+
+def test_a_client_without_a_config_does_not_crash_the_probe():
+    """대역·구형 클라이언트가 `config` 를 안 들고 있을 수 있습니다. 사전
+    점검이 거기서 터지면 데스크가 아니라 봇이 죽습니다."""
+    reason = broke("400: Your credit balance is too low")
+    assert "사용 한도" in reason
 
 
 def test_the_desk_refuses_to_run_in_a_backtest_by_default():

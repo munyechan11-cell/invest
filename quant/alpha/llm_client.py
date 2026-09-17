@@ -115,6 +115,22 @@ class LLMConfig:
         )
 
 
+#: 제공자별 "여기서 충전/발급하세요". 이름과 주소가 한곳에 있어야 합니다 —
+#: 데스크는 이 중 아무거나로 돌 수 있는데, 안내문이 한 곳을 박아 두고 있으면
+#: 제미나이로 돌리는 사람이 없는 Anthropic 계정을 충전하러 갑니다.
+BILLING: dict[str, tuple[str, str]] = {
+    "anthropic": ("Anthropic", "console.anthropic.com 의 Plans & Billing"),
+    "openai": ("OpenAI", "platform.openai.com 의 Billing"),
+    "google": ("Google AI Studio", "aistudio.google.com/app/apikey "
+                                   "(무료 티어는 하루 할당량이 있습니다)"),
+}
+
+
+def billing_hint(provider: str) -> tuple[str, str]:
+    """`(제공자 이름, 어디서 해결하는가)`. 모르는 제공자는 이름만 돌려줍니다."""
+    return BILLING.get(provider, (provider or "LLM 제공자", ""))
+
+
 class LLMError(RuntimeError):
     pass
 
