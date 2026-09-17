@@ -151,14 +151,56 @@ def test_a_domestic_only_account_reports_complete():
     assert out["items_complete"] is True and out["items_message"] == ""
 
 
-# ── 모의 브로커 안내 ─────────────────────────────────────────────────────
-def test_the_paper_message_says_what_to_do_instead_of_naming_a_broker():
-    """"paper 은 계좌 조회를 지원하지 않습니다" 를 읽은 사람은 자기 연동이
-    실패했다고 생각합니다. 실제로 그렇게 읽혔습니다."""
+# ── 지원하지 않는 어댑터 안내 ────────────────────────────────────────────
+def test_an_unsupported_adapter_says_the_bot_is_still_fine():
+    """"alpaca 은 계좌 조회를 지원하지 않습니다" 만 읽으면 연동이 깨진 줄
+    압니다. 이 탭만 비어 있고 매매에는 문제가 없다는 사실을 함께 씁니다."""
     import inspect
 
     from quant.webapp.registry import UserRegistry
 
     source = inspect.getsource(UserRegistry.broker_account)
-    assert "모의 브로커로 돕니다" in source
-    assert "연동한 증권사를 쓰는 전략" in source
+    assert "봇을 돌리는 데는 문제가 없고" in source
+
+
+# ── 어느 계좌를 본 것인가 ────────────────────────────────────────────────
+def test_the_overview_says_which_kis_account_it_read():
+    """모의투자와 실계좌는 호스트부터 다른 **별개 계좌** 입니다. 이 값이
+    없으면 화면이 모의투자 잔고를 실계좌로 그립니다 — 이 화면이 만들 수
+    있는 가장 비싼 오해입니다."""
+    paper = _Kis()
+    paper.paper = True
+    assert asyncio.run(paper.account_overview())["environment"] == "paper"
+
+    real = _Kis()
+    real.paper = False
+    assert asyncio.run(real.account_overview())["environment"] == "live"
+
+
+# ── 모의 전략을 보고 있어도 연동한 계좌가 나옵니다 ───────────────────────
+def test_a_paper_strategy_falls_back_to_the_connected_broker():
+    """계좌는 전략의 것이 아니라 사람의 것입니다. 전략을 바꿔야만 자기
+    잔고가 보이는 것은 이 탭의 설명과 정면으로 어긋납니다."""
+    from quant.webapp.registry import _connected_account_venue
+
+    kis = {"KIS_APP_KEY": "k", "KIS_APP_SECRET": "s", "KIS_ACCOUNT_NO": "12345678"}
+    assert _connected_account_venue(kis) == "kis"
+
+
+def test_an_incomplete_connection_is_not_chosen():
+    """키가 하나라도 비면 어댑터가 생성자에서 터지고, 그 예외는 "연동이
+    깨졌다" 로 보입니다 — 실제로는 우리가 고르지 말았어야 할 곳입니다."""
+    from quant.webapp.registry import _connected_account_venue
+
+    assert _connected_account_venue({"KIS_APP_KEY": "k"}) == ""
+    assert _connected_account_venue({}) == ""
+
+
+def test_nothing_connected_says_so_instead_of_naming_paper():
+    import inspect
+
+    from quant.webapp.registry import UserRegistry
+
+    source = inspect.getsource(UserRegistry.broker_account)
+    assert "아직 연동한 증권사가 없습니다" in source
+    assert "모의투자 계좌도 마찬가지입니다" in source

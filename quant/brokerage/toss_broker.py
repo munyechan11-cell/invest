@@ -1938,6 +1938,10 @@ class TossBrokerage(LiveBrokerage):
         더하면 그 순간 환차손익이 매매 손익에 섞입니다.
         """
         data, cash_buying_power = await self._account_snapshot(("KRW", "USD"))
+        # 토스에는 모의투자 환경이 없습니다 — 이 창구가 읽는 계좌는 언제나
+        # 실계좌 하나뿐입니다. 그래도 키를 함께 내보냅니다: 화면이 증권사마다
+        # 다른 규칙을 알 필요가 없어야 합니다.
+        environment = "live"
 
         summary_issues: list[str] = []
 
@@ -2121,6 +2125,7 @@ class TossBrokerage(LiveBrokerage):
         summary_issues = list(dict.fromkeys(summary_issues))
         return {
             "source": "toss",
+            "environment": environment,
             "invested": money(
                 data.get("totalPurchaseAmount"),
                 nonnegative=True,

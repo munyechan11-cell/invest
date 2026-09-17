@@ -627,6 +627,11 @@ class KisBrokerage(LiveBrokerage):
 
         return {
             "source": "kis",
+            # **어느 계좌를 본 것인가.** `self.paper` 는 호스트와 tr_id 를 함께
+            # 고르므로, 이 값이 다르면 같은 앱 키로도 **다른 계좌** 를 읽은
+            # 것입니다. 화면이 이것을 말하지 않으면 모의투자 잔고를 실계좌로
+            # 착각하게 되고, 그건 이 화면이 만들 수 있는 가장 비싼 오해입니다.
+            "environment": "paper" if self.paper else "live",
             # 매수가능금액은 계좌 단위로 오지 않습니다 — 위 docstring 참고.
             "cash_buying_power": {},
             "cash": money(deposit),

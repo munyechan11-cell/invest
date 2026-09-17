@@ -4717,9 +4717,18 @@ async function loadBrokerAccount() {
   const holdingsValue = d.market_value;
   const investableAssets = d.investable_assets;
   const legacyCash = d.cash;
-  const source = d.source === "toss" ? "토스증권 실계좌 API"
-               : d.source === "kis" ? "한국투자증권 실계좌 API"
-               : (d.source ? `${d.source} 실계좌 API` : "증권사 실계좌 API");
+  // 어느 계좌인지를 **증권사 이름과 함께** 말합니다. 한투는 모의투자와
+  // 실계좌가 호스트부터 다른 별개 계좌라, 이 한 줄이 없으면 모의투자 잔고를
+  // 실계좌로 착각하게 됩니다 — 이 화면이 만들 수 있는 가장 비싼 오해입니다.
+  const venue = d.source === "toss" ? "토스증권"
+              : d.source === "kis" ? "한국투자증권"
+              : (d.source || "증권사");
+  const source = venue + (d.environment === "paper" ? " 모의투자 계좌"
+                                                    : " 실계좌") + " API" +
+    // 고른 전략이 모의 브로커라 연동한 증권사로 대신 간 경우.
+    (d.via_connected_venue
+      ? ` · 고른 전략이 아니라 연동한 ${esc(d.via_connected_venue)} 계좌입니다`
+      : "");
 
   // 종목마다 지금 얼마어치를 들고 있는지가 계좌를 볼 때 가장 먼저 찾는
   // 숫자입니다. 수량과 현재가를 놓고 사람이 곱하게 두지 않습니다.

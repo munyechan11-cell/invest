@@ -255,6 +255,25 @@ def _ccxt_wiring(exchange: str, required: bool) -> _Wiring:
     )
 
 
+#: 계좌 조회(`account_overview`)를 구현한 브로커만. 순서가 곧 우선순위입니다.
+#: 둘 다 연동해 둔 사람에게는 하나를 골라야 하고, 고른 것을 화면이 말합니다.
+_ACCOUNT_VENUES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("toss", ("TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET", "TOSS_ACCOUNT_NO")),
+    ("kis", ("KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO")),
+)
+
+
+def _connected_account_venue(secrets: dict[str, str]) -> str:
+    """이 사람이 잔고를 볼 수 있는 증권사, 없으면 빈 문자열.
+
+    **필요한 키가 전부 있을 때만** 고릅니다. 하나라도 비면 어댑터가 생성자
+    에서 예외를 내고, 그 예외는 "연동이 깨졌다" 로 보이지만 실제로는 우리가
+    고르지 말았어야 할 곳을 고른 것입니다.
+    """
+    return next((venue for venue, needed in _ACCOUNT_VENUES
+                 if all(secrets.get(name) for name in needed)), "")
+
+
 def _broker_wiring(config: StrategyConfig) -> _Wiring | None:
     kind = config.broker.type
     if kind == "kis":
@@ -1040,7 +1059,22 @@ class UserRegistry:
         from quant.strategy.builder import build_brokerage, build_costs
 
         cfg = self.prepare(user_id, config)
-        wired = _with_credentials(cfg, self.accounts.secrets_for(user_id))
+        secrets = self.accounts.secrets_for(user_id)
+        # 고른 전략이 **모의 브로커** 면 볼 계좌가 없습니다. 그런데 계좌는
+        # 전략의 것이 아니라 사람의 것이고, 연동해 둔 증권사에는 볼 잔고가
+        # 있습니다(한투 모의투자 계좌에도 예수금이 있습니다). 전략을 바꿔야만
+        # 자기 잔고가 보이는 것은 이 탭의 설명과 정면으로 어긋납니다.
+        fallback = ""
+        if cfg.broker.type == "paper":
+            fallback = _connected_account_venue(secrets)
+            if fallback:
+                cfg = cfg.model_copy(deep=True)
+                cfg.broker.type = fallback
+                # 템플릿에 남은 모의 브로커 인자는 다른 어댑터의 인자가
+                # 아닙니다. 비우고 `_with_credentials` 가 이 사용자의 것만
+                # 채우게 둡니다.
+                cfg.broker.params = {}
+        wired = _with_credentials(cfg, secrets)
         # 조회 전용이므로 모드를 낮춰 세웁니다 — dry_run 어댑터는 네트워크로
         # 주문을 보내지 않습니다.
         wired = wired.model_copy(deep=True)
@@ -1065,10 +1099,12 @@ class UserRegistry:
                 # 무엇을 보고 있는지와 무엇을 하면 되는지를 함께 씁니다.
                 kind = wired.broker.type
                 if kind == "paper":
+                    # 여기까지 왔다는 것은 위 fallback 이 고를 곳도 없었다는
+                    # 뜻입니다 — 즉 연동한 증권사가 아예 없습니다.
                     message = (
-                        "지금 고른 전략은 모의 브로커로 돕니다 — 조회할 실계좌가 "
-                        "없습니다. 연동한 증권사를 쓰는 전략을 고르면 실제 잔고가 "
-                        "여기 나옵니다."
+                        "아직 연동한 증권사가 없습니다. ⚙ 설정에서 증권사를 "
+                        "연결하면 봇을 켜지 않아도 잔고가 여기 나옵니다 — "
+                        "모의투자 계좌도 마찬가지입니다."
                     )
                 else:
                     message = (
@@ -1079,6 +1115,10 @@ class UserRegistry:
             await broker.connect()
             out = await overview()
             out["supported"] = True
+            if fallback:
+                # 무엇을 보고 있는지 화면이 말할 수 있어야 합니다 — 고른
+                # 전략의 계좌가 아니라 연동한 증권사의 계좌입니다.
+                out["via_connected_venue"] = _venue_label(fallback)
             return out
         finally:
             with contextlib.suppress(Exception):
