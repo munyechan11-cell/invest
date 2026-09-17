@@ -265,9 +265,17 @@ async def gather_history(
     start: datetime,
     end: datetime,
     concurrency: int = 8,
+    failures: dict[str, str] | None = None,
 ) -> dict[str, list[Bar]]:
     """Fetch many symbols' history concurrently, bounded so we don't get
-    rate-limited into a ban."""
+    rate-limited into a ban.
+
+    실패는 빈 목록이 됩니다 — 한 종목이 못 읽혔다고 나머지를 버릴 이유가
+    없기 때문입니다. 그런데 **이유가 로그에만 남으면 사람에게는 안 닿습니다.**
+    "시세를 받지 못해 시작할 수 없습니다" 만 읽은 사람은 키를 의심하러 가고,
+    실제 이유가 "이 환경은 해외 시세를 안 준다" 였으면 거기서 하루를 씁니다.
+    `failures` 를 건네면 종목별 이유를 받아 갈 수 있습니다.
+    """
     sem = asyncio.Semaphore(concurrency)
 
     async def one(sym: Symbol) -> tuple[str, list[Bar]]:
@@ -276,6 +284,8 @@ async def gather_history(
                 return sym.key, await provider.history(sym, timeframe, start, end)
             except Exception as exc:
                 log.warning("history failed for %s: %s", sym, exc)
+                if failures is not None:
+                    failures[sym.key] = str(exc)
                 return sym.key, []
 
     results = await asyncio.gather(*(one(s) for s in symbols))

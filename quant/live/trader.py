@@ -240,8 +240,10 @@ class LiveTrader:
         to_fetch = list(symbols)
         if bench is not None and bench.key not in {s.key for s in symbols}:
             to_fetch.append(bench)
+        failures: dict[str, str] = {}
         series = await gather_history(self.provider, to_fetch,
-                                      self.config.data.timeframe, start, end)
+                                      self.config.data.timeframe, start, end,
+                                      failures=failures)
         usable = []
         for sym in symbols:
             bars = series.get(sym.key, [])
@@ -257,12 +259,42 @@ class LiveTrader:
             # 사용자가 읽는 문장입니다. 영어 한 줄이면 "왜 안 되는지 모르겠다"
             # 로 끝나고, 실제로 그렇게 끝났습니다.
             names = ", ".join(s.ticker for s in symbols[:6])
+            # **제공자가 말한 이유를 그대로 옮깁니다.** 이유 없이 "키를
+            # 확인하세요" 만 읽은 사람은 멀쩡한 키를 의심하러 갑니다. 실제
+            # 이유가 "이 환경은 해외 시세를 안 준다" 인 경우가 그렇습니다.
+            why = ""
+            reasons = list(dict.fromkeys(failures.values()))
+            if reasons:
+                why = " 증권사가 말한 이유: " + " / ".join(reasons[:2])
             raise RuntimeError(
-                f"시세를 받지 못해 시작할 수 없습니다 ({names}). "
+                f"시세를 받지 못해 시작할 수 없습니다 ({names})."
+                f"{why} "
                 f"증권사 키가 맞는지, 그 계좌로 시세 조회 권한이 있는지 "
                 f"확인하세요. 장 시간이 아니거나 거래소가 응답하지 않을 때도 "
                 f"이렇게 됩니다 — 잠시 후 다시 시도해 보세요.")
         self.engine.set_universe(usable)
+
+        # **일부만 빠진 경우도 말합니다.** 예전에는 로그 한 줄이 전부였고,
+        # 사람은 로그를 읽지 않습니다. 후보가 조용히 줄면 상대강도 알파가
+        # `min_universe` 아래로 떨어져 발화를 멈추는데, 그건 화면에서
+        # "대기 중" 과 구별되지 않습니다.
+        dropped = [s for s in symbols if s not in usable]
+        if dropped:
+            names = ", ".join(s.ticker for s in dropped[:6])
+            reasons = list(dict.fromkeys(
+                failures[s.key] for s in dropped if s.key in failures))
+            why = (" 증권사가 말한 이유: " + " / ".join(reasons[:2])) if reasons else ""
+            message = (
+                f"시세를 못 받아 {len(dropped)}종목이 후보에서 빠졌습니다 "
+                f"({names}).{why} 남은 후보는 {len(usable)}종목입니다"
+            )
+            log.warning(message)
+            await ctx.bus.publish(EventType.ERROR, {
+                "error": message,
+                "warmup_failures": {s.ticker: failures.get(s.key, "봉이 모자랍니다")
+                                    for s in dropped},
+                "universe_size": len(usable),
+            })
 
         if bench is not None and bench.key not in {s.key for s in usable}:
             bars = series.get(bench.key, [])

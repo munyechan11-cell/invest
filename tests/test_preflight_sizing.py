@@ -143,3 +143,54 @@ def test_the_paper_broker_has_no_per_order_ceiling_to_warn_about():
     assert entry_window(cfg(mode="backtest",
                             broker={"type": "paper",
                                     "live_trading_confirmed": False})) is None
+
+
+# ── 증권사 잔고를 못 읽는 조합 ───────────────────────────────────────────
+#
+# `us_kis_paper` 를 내면서 드러났습니다. 한투 잔고 창구가 주는 예수금은
+# **원화** 이고, 달러 장부에 그 숫자를 넣으면 1원 = 1달러 환산이 됩니다.
+# 어댑터는 그래서 아예 넘기지 않습니다 — 막는 것까지는 맞습니다. 그런데 그
+# 결과 사이징 기준이 조용히 `starting_cash` 로 남고, "어차피 계좌를 읽으니까"
+# 하고 그 숫자를 대충 적어 둔 사람은 그 사실을 알 길이 없습니다.
+
+def kis(currency: str) -> StrategyConfig:
+    return cfg(broker={"type": "kis"}, portfolio={"base_currency": currency})
+
+
+def test_a_dollar_book_on_kis_is_told_that_starting_cash_is_the_real_basis():
+    notes = preflight_warnings(kis("USD"))
+    assert any("starting_cash" in n and "USD" in n for n in notes), notes
+
+
+def test_a_won_book_on_kis_says_nothing_because_the_balance_is_read():
+    assert not any("starting_cash" in n for n in preflight_warnings(kis("KRW")))
+
+
+def test_toss_says_nothing_because_it_reports_cash_in_the_books_currency():
+    """토스는 `_venue_capital` 로 통화를 붙여 말합니다 — 안 맞으면 게이트웨이가
+    멈춥니다. 여기서 경고할 일이 아닙니다."""
+    notes = preflight_warnings(cfg(portfolio={"base_currency": "USD"}))
+    assert not any("starting_cash" in n for n in notes)
+
+
+def test_the_warning_matches_what_the_adapter_actually_does():
+    """경고와 어댑터가 따로 놀면, 둘 중 하나가 틀렸다는 사실이 아무 데도
+    나타나지 않습니다. 실제로 `_venue_cash()` 를 불러서 맞춰 둡니다."""
+    import asyncio
+
+    from quant.brokerage.kis_broker import KisBrokerage
+    from quant.core.account import Portfolio
+
+    class _Kis(KisBrokerage):
+        def __init__(self, currency):
+            self.portfolio = Portfolio(0.0, currency)
+            self._venue_deposit = 1_284_300.0
+
+    for currency in ("USD", "KRW"):
+        reads_balance = asyncio.run(_Kis(currency)._venue_cash()) is not None
+        warned = any("starting_cash" in n
+                     for n in preflight_warnings(kis(currency)))
+        assert reads_balance is not warned, (
+            f"{currency}: 어댑터는 잔고를 "
+            f"{'읽는데' if reads_balance else '못 읽는데'} 경고는 "
+            f"{'있습니다' if warned else '없습니다'}")
