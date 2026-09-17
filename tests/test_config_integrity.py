@@ -25,6 +25,7 @@ from quant.config.schema import (
 )
 from quant.core.types import AssetClass, OrderSide, RunMode, Symbol
 from quant.strategy.builder import build_brokerage, build_costs, build_engine
+from tests.conftest import ROOT, shipped_configs
 
 KRX = Symbol("005930", venue="kis", asset_class=AssetClass.EQUITY, quote_currency="KRW")
 
@@ -80,12 +81,14 @@ def test_model_params_stay_free_form():
     assert spec.params == {"anything": 1}
 
 
-@pytest.mark.parametrize("path", [
-    "configs/demo.yaml", "configs/demo_flow.yaml", "configs/kr_equity.yaml",
-    "configs/kr_toss.yaml", "configs/kr_desk_gemini.yaml", "configs/live_crypto.yaml",
-    "configs/us_equity.yaml", "configs/us_toss.yaml",
-    "configs/kr_toss_desk.yaml", "configs/us_toss_desk.yaml",
-])
+#: 출하되는 것 **과** 보관해 둔 것 둘 다. 보관은 삭제가 아니라 목록에서만
+#: 빼 둔 것이고, 되살릴 때 문법이 깨져 있으면 안 됩니다.
+ALL_CONFIGS = (list(shipped_configs())
+               + [f"configs/archive/{p.name}"
+                  for p in sorted((ROOT / "configs" / "archive").glob("*.yaml"))])
+
+
+@pytest.mark.parametrize("path", ALL_CONFIGS)
 def test_shipped_configs_have_no_unknown_keys(path):
     load_config(path)
 
@@ -150,7 +153,7 @@ def test_forcing_backtest_onto_a_live_config_simulates_instead_of_dry_running(ca
 
 
 def test_shipped_kr_example_pairs_backtest_with_the_simulator():
-    cfg = load_config("configs/kr_equity.yaml")
+    cfg = load_config("configs/archive/kr_equity.yaml")
     assert cfg.mode is RunMode.BACKTEST
     assert cfg.broker.type == "paper"
     assert cfg.costs.preset == "kr_equity"
@@ -227,7 +230,7 @@ def test_a_kr_backtest_charges_commission_and_sell_tax(tmp_path):
 
     from quant.backtest.runner import run_backtest
 
-    cfg = load_config("configs/kr_equity.yaml")
+    cfg = load_config("configs/archive/kr_equity.yaml")
     cfg.data.provider, cfg.data.params = "synthetic", {"seed": 7}
     cfg.portfolio = PortfolioConfig(starting_cash=10_000_000, base_currency="KRW",
                                     model=cfg.portfolio.model,

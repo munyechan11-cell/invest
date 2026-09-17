@@ -1,0 +1,128 @@
+# 국내 · AI 자동매매 — 한국투자증권 **모의투자**.
+#
+#   python -m quant validate configs/kr_kis_paper.yaml
+#
+# 🟢 **돈이 움직이지 않습니다.** 그런데 백테스트도 아닙니다 — 실시간 시세를
+#    받고, 진짜 주문이 한투 **모의투자 계좌** 로 나가고, 진짜 체결이 돌아옵니다.
+#    실거래와 다른 것은 그 계좌의 돈이 가짜라는 것 하나뿐입니다.
+#
+#    과거 데이터로 돌려보는 것(`demo`)과 여기의 차이가 중요합니다. 백테스트는
+#    "규칙이 과거에 무엇을 했을까" 를 답하고, 여기는 "이 봇이 지금 이 시장에서
+#    실제로 무엇을 하는가" 를 답합니다. 주문이 거절되는 것, 호가단위가 안 맞는
+#    것, 체결이 늦는 것 — 전부 여기서만 드러납니다.
+#
+# ⚠️ **키가 실계좌와 다릅니다.** 한투는 모의투자와 실계좌에 앱 키를 따로
+#    발급합니다. 설정 화면의 「한국투자증권 모의투자」 카드에 넣으세요 —
+#    실계좌 키를 넣으면 모의투자 호스트가 거절하고, 그때 나오는 말은
+#    "키가 틀렸다" 입니다. 키는 맞고 문이 다른 것인데.
+name: kr-kis-paper
+label_ko: "국내 · AI 자동매매 (한투 연습계좌)"
+description: 실시간 시세로 한투 모의투자 계좌에 진짜 주문을 냅니다. 돈만 가짜입니다.
+mode: dry_run
+
+data:
+  provider: kis
+  params: {app_key: "${KIS_PAPER_APP_KEY}", app_secret: "${KIS_PAPER_APP_SECRET}"}
+  timeframe: 1d
+  warmup_bars: 260
+  calendar: krx
+
+flow:
+  provider: kis
+  params: {app_key: "${KIS_PAPER_APP_KEY}", app_secret: "${KIS_PAPER_APP_SECRET}"}
+  history_sessions: 120
+
+universe:
+  # `tick_ladder: krx` — 국내 호가단위는 가격대마다 달라집니다(2만/5만/20만/50만
+  # 원이 경계). 고정 `tick_size` 하나만 적어 두면 종목이 그 경계를 넘는 순간
+  # 격자 밖 지정가가 되고 거래소가 거절합니다 — 진입만이 아니라 **손절도
+  # 지정가로 나가므로** 그 종목은 매 봉 거절만 반복하고 포지션에 갇힙니다.
+  symbols:
+    - {ticker: "005930", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    - {ticker: "000660", venue: kis, quote_currency: KRW, tick_size: 500, lot_size: 1, tick_ladder: krx}
+    - {ticker: "035420", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    - {ticker: "005380", venue: kis, quote_currency: KRW, tick_size: 500, lot_size: 1, tick_ladder: krx}
+  refresh_every_bars: 21
+  filters:
+    - {type: age, params: {min_bars: 200}}
+    - {type: volatility, params: {lookback_bars: 60, min_annual_vol: 0.12, max_annual_vol: 0.9}}
+    - {type: limit, params: {max_symbols: 4}}
+
+alpha:
+  - {type: investor_flow, params: {window: 20, min_streak: 3, min_participation: 0.01, hold_bars: 12}}
+  - {type: ema_cross, params: {fast: 20, slow: 60, adx_min: 22, hold_bars: 20}}
+  - {type: regime_filter, params: {period: 200, max_annual_vol: 0.8}}
+  - type: desk
+    params:
+      llm:          {provider: google, model: gemini-3.7-flash, max_tokens: 1200}
+      decision_llm: {provider: google, model: gemini-3.1-pro-preview, max_tokens: 1600}
+      cadence_bars: 1
+      max_symbols_per_run: 2
+      debate_rounds: 1
+      risk_debate_rounds: 1
+      deadline_s: 120
+      min_conviction: 0.62
+      cost_limit_usd: 10
+
+portfolio:
+  # 모의투자 계좌의 예수금에 맞춰 둔 값입니다. 실제 사이징은 이 숫자가 아니라
+  # **한투가 말하는 계좌 평가액** 을 읽습니다 — 예행연습이 실거래와 같은 길을
+  # 지나야 예행연습입니다.
+  starting_cash: 100000000        # 1억
+  base_currency: KRW
+  model: {type: vol_target, params: {target_annual_vol: 0.16, lookback: 60}}
+  max_position_weight: 0.35
+  max_gross_leverage: 0.9
+  cash_reserve_pct: 0.05
+  allow_short: false
+
+risk:
+  models:
+    - {type: max_dd_per_security, params: {atr_multiple: 8.0, max_drawdown_pct: 0.20, lock_bars: 4}}
+    - {type: trailing_stop, params: {atr_multiple: 5.0, activate_at_pct: 0.06}}
+    - {type: max_positions, params: {max_positions: 3}}
+    - {type: max_dd_portfolio, params: {max_drawdown_pct: 0.18, halt_bars: 10}}
+  protections:
+    - {type: cooldown, params: {stop_bars: 2}}
+    - {type: stoploss_guard, params: {lookback_bars: 60, trade_limit: 3, stop_bars: 15}}
+
+execution:
+  model: {type: limit, params: {offset_bps: 10, urgent_after_bars: 2}}
+  # 하루 거래대금 한도 ÷ 하루 주문 건수 한도. 이 둘보다 크면 건수 한도는
+  # 도달할 수 없는 숫자가 되고, 진입이 나가는 잔고 구간도 그만큼 좁아집니다.
+  min_order_notional: 5000000     # = 50,000,000 ÷ 10
+
+costs:
+  preset: kr_equity
+
+broker:
+  type: kis
+  params:
+    app_key: "${KIS_PAPER_APP_KEY}"
+    app_secret: "${KIS_PAPER_APP_SECRET}"
+    account_no: "${KIS_PAPER_ACCOUNT_NO}"
+    product_code: "${KIS_PAPER_ACCOUNT_PRD_CD}"
+    # 이 둘이 "가상 체결" 과 "모의투자 계좌에 진짜 주문" 을 가릅니다.
+    # `paper_trading` 없이 두면 엔진이 혼자 체결을 흉내 내고, 그러면 주문이
+    # 거절되는 것도 체결이 늦는 것도 영영 못 봅니다 — 예행연습의 요점은
+    # 그것들입니다.
+    paper_trading: true
+    environment: paper
+  max_order_notional: 35000000    # 1억 × 0.35 × 0.95 = 3,325만 ≤ 3,500만
+  live_trading_confirmed: false
+
+# ── 하루 거래 한도 ────────────────────────────────────────────────────────
+# 모의투자에도 걸어 둡니다. 예행연습에서 한도가 없으면, 실거래로 옮기는 날
+# 처음으로 한도에 걸리고 그때 그것이 정상인지 고장인지 알 수 없습니다.
+limits:
+  max_daily_notional: 50000000    # 하루 총 거래대금 5천만
+  max_daily_orders: 10            # 하루 주문 10건
+  max_daily_loss: 5000000         # 하루 실현손실 5백만
+  max_daily_loss_pct: 0.01        # 또는 자산의 1%
+  timezone_offset_hours: 9        # 한국시간 자정 기준
+  halt_until_next_day: true
+
+notify:
+  telegram_bot_token: "${TELEGRAM_BOT_TOKEN}"
+  telegram_chat_id: "${TELEGRAM_CHAT_ID}"
+  on_events: [order_filled, trade_closed, protection, order_rejected, error, state]

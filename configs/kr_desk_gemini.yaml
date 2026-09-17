@@ -10,7 +10,7 @@
 #    움직입니다. 연습하려면 `mode: dry_run` 으로 바꾸세요 — KIS 는 모의투자
 #    환경이 따로 있어서 `data.params.paper: true` 로도 연습할 수 있습니다.
 name: kr-desk-gemini
-label_ko: "국내 · AI 데스크 + 수급 (한투)"
+label_ko: "국내 · AI 자동매매 (한투)"
 description: 16석 AI 데스크 + 수급 알파. 판정 좌석만 더 큰 모델을 씁니다.
 mode: live
 

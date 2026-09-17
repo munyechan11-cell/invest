@@ -7,7 +7,7 @@
 # Going live is a two-step, on-purpose change: set mode: live AND
 # broker.live_trading_confirmed: true, then `quant live`.
 name: crypto-trend-4h
-label_ko: "코인 · 추세추종 4시간봉"
+label_ko: "코인 · AI 자동매매 (4시간봉)"
 description: Donchian breakout + squeeze release on major pairs, vol-targeted.
 # 🔴 **실거래입니다.** 다만 `broker.params.sandbox: true` 라 아직 거래소
 #    샌드박스로 나갑니다. 진짜 계좌로 내려면 그 값을 false 로 바꾸세요 —

@@ -87,8 +87,23 @@ costs:     {preset: crypto_spot}
 broker:    {type: ccxt, max_order_notional: 3000, live_trading_confirmed: false}
 ```
 
-Shipped configs: `demo.yaml` (no keys needed), `us_equity.yaml` (Yahoo),
-`live_crypto.yaml` (Binance), `kr_equity.yaml` (KIS, 국내 수수료·거래세 반영).
+출하되는 설정은 **자동매매 한 줄기** 입니다. 예전에는 "수급 추종" 과 "AI
+데스크" 가 따로 있는 것처럼 보였지만, 실거래 설정에는 **전부 데스크가 들어
+있었고** `us_toss` 와 `us_toss_desk` 는 알파 구성이 같았습니다 — 이름표만
+다른 중복이었습니다.
+
+| 설정 | 무엇 |
+|---|---|
+| `demo.yaml` | 키 없이 과거 데이터로 돌려보기 |
+| `kr_kis_paper.yaml` | 국내 · 한투 **연습계좌** 에 진짜 주문 (돈만 가짜) |
+| `kr_toss.yaml` | 국내 · 토스 실거래 |
+| `us_toss.yaml` | 미국 · 토스 실거래 |
+| `kr_desk_gemini.yaml` | 국내 · 한투 실거래 |
+| `live_crypto.yaml` | 코인 · 바이낸스 실거래 |
+
+물러난 것들은 지우지 않고 `configs/archive/` 에 둡니다 — 목록에서만 빠지고
+(화면은 `configs/` 를 한 겹만 훑습니다), 되살리려면 파일 하나를 도로 옮기면
+됩니다.
 
 ---
 

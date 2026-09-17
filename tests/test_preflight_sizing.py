@@ -12,11 +12,8 @@ import pytest
 from quant.cli import _load
 from quant.config.preflight import entry_window, preflight_warnings
 from quant.config.schema import StrategyConfig
-
-LIVE = ("configs/kr_toss.yaml", "configs/kr_toss_desk.yaml",
-        "configs/us_toss.yaml", "configs/us_toss_desk.yaml",
-        "configs/kr_desk_gemini.yaml", "configs/live_crypto.yaml")
-BACKTEST = ("configs/demo.yaml", "configs/us_equity.yaml", "configs/kr_equity.yaml")
+from tests.conftest import BACKTEST_CONFIGS as BACKTEST  # noqa: E402
+from tests.conftest import LIVE_CONFIGS as LIVE  # noqa: E402
 
 
 @pytest.fixture

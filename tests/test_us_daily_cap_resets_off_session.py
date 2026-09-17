@@ -59,9 +59,16 @@ def _resets_inside_the_session(tz_offset_hours: float, year: int) -> list[date]:
     return bad
 
 
-def test_the_sweep_actually_finds_the_us_toss_configs():
-    """찾는 규칙이 틀리면 아래 검사는 아무것도 안 보면서 통과합니다."""
-    assert {"us_toss.yaml", "us_toss_desk.yaml"} <= {p.name for p in US_CONFIGS}
+def test_the_sweep_actually_finds_the_us_configs():
+    """찾는 규칙이 틀리면 아래 검사는 아무것도 안 보면서 통과합니다.
+
+    이름을 박아 두지 않습니다 — 설정을 하나 옮길 때마다 이 줄이 깨졌고,
+    깨질 때마다 "검사가 비어 있지 않은가" 라는 원래 질문이 아니라 목록을
+    고치는 일이 됐습니다. 지켜야 하는 것은 **미국 장을 보는 설정이 하나라도
+    있고, 그것들이 전부 검사된다** 는 사실입니다.
+    """
+    assert US_CONFIGS, "미국 캘린더를 쓰는 출하 설정을 하나도 찾지 못했습니다"
+    assert "us_toss.yaml" in {p.name for p in US_CONFIGS}
 
 
 def test_the_detector_would_catch_a_kst_boundary():

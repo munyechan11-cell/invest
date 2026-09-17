@@ -19,15 +19,7 @@ from quant.core.context import Context
 from quant.core.events import EventBus
 from quant.core.types import UTC, Bar, RunMode, Symbol
 from quant.data.universe import LimitFilter, StaticSource, UniverseSelector
-
-LIVE_CONFIGS = (
-    "configs/kr_toss.yaml",
-    "configs/kr_toss_desk.yaml",
-    "configs/kr_desk_gemini.yaml",
-    "configs/us_toss.yaml",
-    "configs/us_toss_desk.yaml",
-    "configs/live_crypto.yaml",
-)
+from tests.conftest import LIVE_CONFIGS  # noqa: E402 — 목록은 한 곳에서
 
 #: 사람이 못 보고 지나가면 돈이 되는 사건들. 체결·청산만 알리는 봇은
 #: "조용하다 = 잘 되고 있다" 로 읽히는데, 하루 손실 한도로 멈춘 봇도

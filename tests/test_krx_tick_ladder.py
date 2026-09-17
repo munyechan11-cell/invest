@@ -19,6 +19,14 @@ from quant.core.types import (
     krx_tick_size,
 )
 from quant.data.providers.kis import korean_tick_size
+from tests.conftest import shipped_configs
+
+#: 국내 종목을 다루는 출하 설정 전부. 이름을 박아 두면 설정 하나를 옮길 때마다
+#: 가드가 없는 파일을 찾다가 깨집니다 — 지켜야 하는 것은 **그때그때 목록에
+#: 있는 것들** 입니다.
+KR_LIVE = [path for path in shipped_configs()
+           if any(sym.quote_currency.upper() == "KRW"
+                  for sym in _load(path).universe.symbols)]
 
 
 def kr(tick: str = "100", ladder: str = "krx") -> Symbol:
@@ -92,8 +100,6 @@ def test_a_zero_tick_still_means_no_grid():
 
 
 # ── 설정이 실제로 켜져 있는가 ────────────────────────────────────────────
-KR_LIVE = ("configs/kr_toss.yaml", "configs/kr_toss_desk.yaml",
-           "configs/kr_desk_gemini.yaml")
 
 
 @pytest.mark.parametrize("path", KR_LIVE)

@@ -993,7 +993,7 @@ def test_broker_account_is_no_store_and_shortly_coalesced(client, monkeypatch):
         "strategy": "kr_toss",
     }).status_code == 200
     assert client.get("/api/account/broker", params={
-        "strategy": "kr_toss_desk",
+        "strategy": "us_toss",
     }).status_code == 200
     assert calls == 3
 

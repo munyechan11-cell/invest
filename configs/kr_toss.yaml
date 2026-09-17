@@ -9,7 +9,7 @@
 #
 #    연습하려면 `mode: dry_run` 으로 바꾸세요(실시간 시세 + 가상 체결).
 name: kr-toss-flow
-label_ko: "국내 · 수급 추종 (토스)"
+label_ko: "국내 · AI 자동매매 (토스)"
 description: 외국인·기관 수급 추종 + 추세 확인, 변동성 타겟 사이징.
 mode: live
 
