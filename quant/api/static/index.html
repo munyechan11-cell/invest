@@ -1277,7 +1277,8 @@ function renderVerdict(d, demo) {
   v.innerHTML = `
     <div class="act px" style="color:${color}">${d.vetoed ? "거부" : esc(label)}</div>
     <div class="meta">
-      ${esc(symLabel(d.symbol, nameOf(d, "symbol")))}<br>
+      <button type="button" class="linky" data-goto-symbol="${esc(d.symbol || "")}"
+        title="차트를 이 종목으로">${esc(symLabel(d.symbol, nameOf(d, "symbol")))}</button><br>
       확신 ${Math.round((d.conviction || 0) * 100)}% · 합의 ${(d.consensus >= 0 ? "+" : "")}${(d.consensus || 0).toFixed(2)}<br>
       투표 ${d.voting_seats != null ? d.voting_seats : "—"}/8석 · 반대 ${Math.round((d.dissent_ratio || 0) * 100)}%<br>
       배율 ${Math.round((d.position_scale || 0) * 100)}% · ${d.horizon_bars || "—"}봉<br>
@@ -1291,6 +1292,26 @@ function renderVerdict(d, demo) {
       ${d.dissent ? `<em style="margin-top:8px">반대 의견</em>${esc(d.dissent)}` : ""}
     </div>`;
 }
+
+/* 심의한 종목과 차트가 다른 것을 보고 있으면, 사람은 그 판단이 지금 화면의
+   종목에 대한 것이라고 읽습니다. 한쪽을 다른 쪽에 맞추되 **자동으로 끌고
+   가지는 않습니다** — 보고 있던 차트가 심의 때마다 튀면 그것대로 못 씁니다.
+   대신 종목 이름을 누르면 그리로 갑니다. */
+document.addEventListener("click", (event) => {
+  const hit = event.target && event.target.closest
+    ? event.target.closest("[data-goto-symbol]") : null;
+  const ticker = hit && hit.dataset.gotoSymbol;
+  if (!ticker) return;
+  const sel = document.getElementById("cSym");
+  if (!sel) return;
+  // 후보 목록에 없는 종목일 수 있습니다(데스크는 후보 밖도 심의할 수 있음).
+  if (![...sel.options].some(o => o.value === ticker)) {
+    sel.add(new Option(ticker, ticker));
+  }
+  sel.value = ticker;
+  sel.dispatchEvent(new Event("change", {bubbles: true}));
+  if (typeof invalidateBrokerAccount === "function") invalidateBrokerAccount();
+});
 
 /* ── data plumbing ───────────────────────────────────────────────────── */
 /* The session lives in an HttpOnly cookie, so the browser must be told to

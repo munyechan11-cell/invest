@@ -51,10 +51,17 @@ alpha:
       llm:          {provider: google, model: gemini-3.7-flash, max_tokens: 1200}
       decision_llm: {provider: google, model: gemini-3.1-pro-preview, max_tokens: 1600}
       cadence_bars: 1
-      max_symbols_per_run: 2
+      # **후보 전부를 봅니다.** 2 였습니다 — 그러면 그 둘이 관망일 때 나머지
+      # 종목은 그 봉에서 한 번도 검토되지 않습니다. 화면에는 "관망" 하나만
+      # 남고, 사람은 봇이 멈춘 것으로 읽습니다.
+      max_symbols_per_run: 4
       debate_rounds: 1
       risk_debate_rounds: 1
-      deadline_s: 120
+      # **120초였고, 그게 관망을 만들고 있었습니다.** 마감 안에 토론·결정이
+      # 끝나지 않으면 데스크는 분석가 합의로 대체하고 확신을 깎습니다 —
+      # 판단이 아니라 시간이 모자란 것인데, 화면에서는 둘 다 "관망" 입니다.
+      # 일봉 전략에서 한 봉은 하루입니다. 4분을 못 기다릴 이유가 없습니다.
+      deadline_s: 240
       min_conviction: 0.6
       cost_limit_usd: 10
 

@@ -103,6 +103,12 @@ button{cursor:pointer}
 /* 계좌마다 한 덩이. 둘이 붙어 있으면 어느 줄이 어느 계좌인지 읽다가 놓칩니다. */
 .acct-one + .acct-one{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
 .acct-title{margin:0 0 8px;font-size:15px;font-weight:700}
+/* 심의 카드의 종목 이름 — 누르면 차트가 그리로 갑니다. 버튼처럼
+   보이면 카드가 시끄러워지므로 글자 그대로 두되 눌린다는 것만 알립니다. */
+.linky{all:unset;cursor:pointer;text-decoration:underline;
+  text-underline-offset:3px;text-decoration-color:var(--line)}
+.linky:hover,.linky:focus-visible{text-decoration-color:currentColor}
+.linky:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 [data-vres]{display:block;max-width:100%}
 
 /* ── 종목 찾기 ─────────────────────────────────────────────────────── */
