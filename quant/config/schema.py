@@ -89,6 +89,17 @@ class DataConfig(ConfigBlock):
     #: infer from the universe's venue. A live bot without one polls a closed
     #: book all night and reports every rejection as an API error.
     calendar: str = "auto"
+    #: 봉이 닫히기를 기다리는 동안 **몇 분마다 한 번 더 판단할 것인가.**
+    #: 0 이면 예전 그대로 — 봉 마감에만 돕니다.
+    #:
+    #: 일봉 전략에서 한 봉은 하루입니다. 그래서 데스크가 한 바퀴 돌고 나면
+    #: 다음 기회가 내일이었고, 사람은 정지·재시작으로 새 사이클을 억지로
+    #: 돌렸습니다. 이 값을 켜면 **같은 봉 안에서 아직 안 본 종목** 을 이어서
+    #: 봅니다(데스크의 `continue_within_bar` 와 짝입니다).
+    #:
+    #: ⚠️ 이 값이 짧을수록 AI 호출이 늘어납니다. 한 바퀴에 종목당 수십 회가
+    #: 나가므로, 후보를 다 훑을 만큼만 주면 됩니다.
+    review_every_minutes: int = Field(default=0, ge=0, le=720)
 
     @field_validator("timeframe")
     @classmethod

@@ -130,7 +130,7 @@ def bare_trader(engine, provider) -> LiveTrader:
 
 def test_market_permission_is_rechecked_after_the_long_candle_sleep(monkeypatch):
     trader = LiveTrader.__new__(LiveTrader)
-    trader.config = SimpleNamespace(data=SimpleNamespace(timeframe="1d"))
+    trader.config = SimpleNamespace(data=SimpleNamespace(timeframe="1d", review_every_minutes=0))
     trader._stop = None
     trader.started_at = None
     trader.running = False
@@ -184,7 +184,7 @@ def test_market_permission_is_rechecked_after_the_long_candle_sleep(monkeypatch)
 
 def test_a_boundary_that_lands_closed_is_re_evaluated_at_the_next_open(monkeypatch):
     trader = LiveTrader.__new__(LiveTrader)
-    trader.config = SimpleNamespace(data=SimpleNamespace(timeframe="1d"))
+    trader.config = SimpleNamespace(data=SimpleNamespace(timeframe="1d", review_every_minutes=0))
     trader._stop = None
     trader.started_at = None
     trader.running = False
@@ -736,7 +736,7 @@ async def test_live_fetch_never_consumes_a_still_forming_daily_bar():
 
     engine = SimpleNamespace(ctx=ctx)
     trader = bare_trader(engine, Provider())
-    trader.config = SimpleNamespace(data=SimpleNamespace(timeframe="1d"))
+    trader.config = SimpleNamespace(data=SimpleNamespace(timeframe="1d", review_every_minutes=0))
     trader._seen = {}
 
     bars = await trader._fetch_new_bars()

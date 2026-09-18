@@ -557,6 +557,17 @@ class TradingDesk(AlphaModel):
         #: 든 "quota" 를 세고 있었고 진짜 429 는 0건이었습니다. 측정이 틀리면
         #: 그 위의 판단도 전부 틀립니다.
         concurrent_symbols: int = 4,
+        #: 한 봉 안에서 **아직 안 본 종목** 을 이어서 심의할 것인가.
+        #:
+        #: 끄면(기본) 한 봉에 `max_symbols_per_run` 종목만 보고, 나머지는
+        #: 다음 봉까지 기회가 없습니다. 일봉이면 내일입니다 — 그래서 사람이
+        #: 정지·재시작으로 새 사이클을 억지로 돌리게 됩니다.
+        #:
+        #: 켜면 같은 봉에서 이어서 훑되 **같은 종목을 두 번 심의하지는
+        #: 않습니다.** 종목당 판단은 여전히 봉당 한 번이라, 회고 장부가 한
+        #: 판단을 여러 건으로 세는 일이 생기지 않습니다 — 그게 원래 이
+        #: 문을 잠가 둔 이유였습니다.
+        continue_within_bar: bool = False,
         debate_rounds: int = 2,
         risk_debate_rounds: int = 1,
         min_conviction: float = 0.55,
@@ -579,6 +590,9 @@ class TradingDesk(AlphaModel):
         self.cadence = max(cadence_bars, 1)
         self.max_symbols = max_symbols_per_run
         self.concurrent_symbols = max(1, int(concurrent_symbols))
+        self.continue_within_bar = bool(continue_within_bar)
+        #: 이번 봉에서 이미 심의한 종목. 새 봉이 오면 비웁니다.
+        self._covered: set[str] = set()
         self.debate_rounds = max(debate_rounds, 1)
         self.risk_debate_rounds = max(risk_debate_rounds, 1)
         self.min_conviction = min_conviction
@@ -1156,21 +1170,36 @@ class TradingDesk(AlphaModel):
     async def update(self, ctx: Context, bars: dict[str, Bar]) -> list[Insight]:
         if self._disabled:
             return []
-        # 이미 넣은 봉은 여기서 걸러 냅니다 — 이유는 `_ingested` 에.
-        bars = self._fresh_bars(bars)
-        if not bars:
-            # 새 봉이 하나도 없으면 **아무것도 하지 않습니다.** 그냥 지표만
-            # 건너뛰면 안 됩니다: 아래에서 `_bar_count` 가 올라가 cadence 가
-            # 어긋나고, 캐시된 결정이 history·memory·이벤트로 다시 흘러
-            # 회고 장부의 적중률과 알파 귀속이 같은 판단을 여러 건으로 셉니다.
-            # 부르는 쪽(`_deliberate_now`)은 LLM 호출이 0 인 것을 보고
-            # "이 봉은 이미 심의했습니다" 를 화면에 띄웁니다.
-            return []
-        for bar in bars.values():
-            self._indicators(ctx, bar.symbol).update(bar)
-            self._ingested[bar.symbol.key] = bar.ts
+        # **봉 한 번당 하는 일**과 **종목을 훑는 일**은 다릅니다.
+        #
+        # 예전에는 새 봉이 없으면 통째로 돌아섰습니다. 이유는 맞았습니다 —
+        # 지표를 두 번 먹이거나 `_bar_count` 를 두 번 올리면 cadence 가
+        # 어긋나고, 같은 판단이 회고 장부에 두 건으로 들어갑니다. 그런데 그
+        # 걱정은 **같은 종목을 다시 심의할 때** 의 것이지, 아직 한 번도 안 본
+        # 종목을 이어서 볼 때의 것이 아닙니다.
+        #
+        # 그래서 봉 장부(지표·`_ingested`·`_bar_count`·회고)는 새 봉에서만
+        # 돌리고, 심의는 **아직 안 본 종목** 에 한해 이어서 합니다.
+        fresh = self._fresh_bars(bars)
+        if fresh:
+            for bar in fresh.values():
+                self._indicators(ctx, bar.symbol).update(bar)
+                self._ingested[bar.symbol.key] = bar.ts
+            self._covered.clear()          # 새 봉 — 다시 전부 볼 수 있습니다
+            bars = fresh
+        else:
+            if not self.continue_within_bar or self._bar_count == 0:
+                # 부르는 쪽(`_deliberate_now`)은 LLM 호출이 0 인 것을 보고
+                # "이 봉은 이미 심의했습니다" 를 화면에 띄웁니다.
+                return []
+            if (self._bar_count - 1) % self.cadence != 0:
+                return []
+            bars = {k: b for k, b in bars.items()
+                    if b.symbol.key not in self._covered}
+            if not bars:
+                return []      # 이 봉의 후보를 전부 봤습니다
 
-        if self.memory is not None:
+        if self.memory is not None and fresh:
             for lesson in self.memory.settle(ctx):
                 # The verdict is on the excess, so print it — "+2.1% 실패" reads
                 # like a bug until you can see the index did +3.4%.
@@ -1180,9 +1209,10 @@ class TradingDesk(AlphaModel):
                          f"{lesson.excess_pct:+.2f}%" if lesson.benchmark_key else "",
                          "적중" if lesson.correct else "실패")
 
-        self._bar_count += 1
-        if (self._bar_count - 1) % self.cadence != 0:
-            return []
+        if fresh:
+            self._bar_count += 1
+            if (self._bar_count - 1) % self.cadence != 0:
+                return []
         if self.cost_limit_usd and self.estimated_cost_usd >= self.cost_limit_usd:
             log.warning("데스크 비용 한도 $%.2f 도달 — 심의 중단", self.cost_limit_usd)
             return []
@@ -1218,6 +1248,9 @@ class TradingDesk(AlphaModel):
             results = await asyncio.gather(
                 *(one(s) for s in targets), return_exceptions=True,
             )
+            # 봤으면 적습니다 — 실패한 것도 포함입니다. 실패한 종목을 계속
+            # 다시 집으면 남은 후보가 영영 순서를 못 받습니다.
+            self._covered.update(s.key for s in targets)
         finally:
             # 실패한 호출도 청구됩니다. 성공만 적으면 그 비용이 아무 계정에도
             # 잡히지 않고 운영자 카드로 갑니다.

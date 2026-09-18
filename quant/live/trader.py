@@ -631,6 +631,16 @@ class LiveTrader:
                     continue
                 wake = next_candle_close(datetime.now(UTC), tf, lag=3.0)
                 sleep_for = (wake - datetime.now(UTC)).total_seconds()
+                # **봉 마감만 기다리면 일봉 전략은 하루에 한 번 움직입니다.**
+                # 데스크가 한 바퀴 돌고 나면 다음 기회가 내일이라, 사람이
+                # 정지·재시작으로 새 사이클을 억지로 돌리게 됩니다.
+                #
+                # 이 값이 켜져 있으면 봉이 닫히기 전에도 깨어나 한 번 더
+                # 판단합니다. 새 봉이 없으므로 지표도 `_bar_count` 도 그대로고,
+                # 데스크는 **아직 안 본 종목만** 이어서 봅니다.
+                review = self.config.data.review_every_minutes * 60
+                if review and sleep_for > review:
+                    sleep_for = review
                 if sleep_for > 0:
                     log.debug("sleeping %.1fs until %s", sleep_for, wake.isoformat())
                     # 봉 하나를 통째로 자면 그 사이 사람이 누른 매수·매도가
