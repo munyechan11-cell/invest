@@ -121,20 +121,23 @@ def test_no_duplicate_candidates(path):
     assert len(tickers) == len(set(tickers))
 
 
-# ── 넓게 보려다 느려지는 것 ──────────────────────────────────────────────
+# ── 동시에 몇 종목까지 ───────────────────────────────────────────────────
 #
-# 로그: 종목당 호출 **80번**. 16석이면 19번이면 됩니다. 나머지는 전부 429
-# 재시도입니다 — 네 종목을 한꺼번에 던지면 같은 순간에 76번이 나가고, 무료
-# 티어는 그 대부분을 튕겨 냅니다. 튕긴 호출은 백오프만큼 기다렸다 다시
-# 나가므로, 넓게 보려던 것이 **느려지고 비싸집니다.**
+# 한때 2 로 묶여 있었습니다. "429 재시도 때문에 느리다" 는 진단이었는데
+# **그 진단이 틀렸습니다** — 로그를 세던 정규식이 한투 URL 의
+# `/quotations/` 안에 든 "quota" 를 잡고 있었고, 진짜 429 는 0건이었습니다.
+#
+# 그래서 여기서 고정하는 것은 "2 이하" 같은 숫자가 아닙니다. 숫자는 쓰는 키의
+# 한도에 달렸고, 그건 저장소가 알 수 없습니다. 고정할 수 있는 것은 **말이
+# 되는 범위** 뿐입니다: 심의하지도 않을 종목을 동시에 돌릴 수는 없습니다.
 
 @pytest.mark.parametrize("path", DESK_CONFIGS)
-def test_symbols_are_queued_not_all_fired_at_once(path):
+def test_concurrency_never_exceeds_what_is_deliberated(path):
     params = desk_params(path)
-    concurrent = params.get("concurrent_symbols", params.get("max_symbols_per_run", 4))
-    assert concurrent <= 2, (
-        f"{path}: {concurrent}종목을 동시에 심의합니다 — 같은 순간의 호출이 "
-        "한도를 넘으면 재시도로 되돌아옵니다")
+    per_run = params.get("max_symbols_per_run", 4)
+    concurrent = params.get("concurrent_symbols", per_run)
+    assert 1 <= concurrent <= per_run, (
+        f"{path}: 한 봉에 {per_run}종목을 심의하는데 동시 실행은 {concurrent}")
 
 
 def test_the_desk_actually_queues_them():

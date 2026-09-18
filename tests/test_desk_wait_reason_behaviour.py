@@ -57,6 +57,12 @@ def _run(cases: list[dict]) -> list[dict]:
     assert engine, "엔진 없음"
     path, args = engine
     src = "\n".join([
+        # `deskWaitReason` 이 새로 기대는 것. 하네스가 실제 코드를 그대로
+        # 가져오므로 의존이 늘면 여기도 늘어야 합니다 — 안 그러면
+        # ReferenceError 가 여섯 상황을 하나로 뭉칩니다.
+        "var startingSince = 0;",
+        "var STARTING_GRACE_MS = 360000;",
+        _fn("stillStarting"),
         _fn("deskWaitReason"),
         _fn("shownStrategy"),
         "var out = [];",

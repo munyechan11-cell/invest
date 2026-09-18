@@ -2495,8 +2495,31 @@ function fieldRow(env, label, hint) {
     <input id="${fid}" data-env="${esc(env)}" type="${isSecret ? "password" : "text"}"
       autocomplete="new-password" autocapitalize="off" autocorrect="off"
       spellcheck="false" data-lpignore="true" data-1p-ignore="true"
-      placeholder="${hint ? "변경할 때만 입력" : ""}"></div>`;
+      placeholder="${hint ? "변경할 때만 입력" : ""}">${
+    // **빈 칸으로는 못 지웁니다.** 빈 칸은 "그대로 두라" 는 뜻이니까요.
+    // 그래서 저장된 값에는 지우는 길이 따로 있어야 합니다 — 없으면 한 번
+    // 넣은 Gemini 키가 영영 남아, 잔액이 떨어진 뒤에도 그게 서비스 키를
+    // 계속 이깁니다.
+    hint ? `<button type="button" class="linky forget" data-forget="${esc(env)}"
+              title="저장된 값을 지웁니다">지우기</button>` : ""}</div>`;
 }
+
+/* 지우기. 되돌릴 수 없으므로 한 번 묻습니다. */
+document.addEventListener("click", async (event) => {
+  const hit = event.target && event.target.closest
+    ? event.target.closest("[data-forget]") : null;
+  const name = hit && hit.dataset.forget;
+  if (!name) return;
+  if (!confirm(`저장된 '${name}' 값을 지웁니다. 되돌릴 수 없습니다.\n계속할까요?`)) return;
+  try {
+    const res = await post("/api/setup/forget/" + encodeURIComponent(name));
+    note("#setupMsg", res.had ? `${name} 을(를) 지웠습니다`
+                              : `${name} 은(는) 저장돼 있지 않았습니다`, "ok");
+    await loadSetup();
+  } catch (e) {
+    note("#setupMsg", "지우지 못했습니다: " + e.message, "err");
+  }
+});
 
 /* 필수 항목이 다 있어야 "연동됨"입니다 — 앱 키만 있고 계좌번호가 없으면
    화면만 초록색이고 주문은 나가지 않습니다. */
@@ -5479,6 +5502,26 @@ function renderMini(payload) {
    서버는 이유를 이미 알고 있습니다 — `/api/desk` 의 `disabled_reason`,
    `/api/status` 의 `market.minutes_to_open` 과 `universe`. 여기까지 와 있던
    것을 화면이 안 읽었을 뿐입니다. */
+/* ▶ 시작을 누른 시각. 첫 심의가 나오거나 정지하면 지워집니다. 0 이면
+   "시작 중" 이 아닙니다. */
+let startingSince = 0;
+
+/* 워밍업은 종목 수에 비례합니다(20종목 × 260봉). 여기를 넘도록 아무것도
+   안 나오면 그건 준비 중이 아니라 **멈춘 것** 이고, 그때는 다른 칸이 이유를
+   말해 줍니다 — "시작 중…" 으로 영원히 덮어 두면 그 이유를 못 읽습니다. */
+const STARTING_GRACE_MS = 6 * 60 * 1000;
+
+function stillStarting() {
+  if (!startingSince) return false;
+  if (Date.now() - startingSince > STARTING_GRACE_MS) { startingSince = 0; return false; }
+  // 데스크가 한 번이라도 말을 했으면 더 이상 시작 중이 아닙니다.
+  if ((deskState || {}).last_decision_at || ((deskState || {}).seats || []).some(s => s && s.said)) {
+    startingSince = 0;
+    return false;
+  }
+  return true;
+}
+
 function deskWaitReason() {
   const st = shownStrategy();
   if (!st) return null;
@@ -5494,6 +5537,11 @@ function deskWaitReason() {
   if (why) {
     return {kind: "broken", who: "데스크가 꺼졌습니다",
             line: why + " — ⚙ 설정에서 Gemini 키를 확인하세요."};
+  }
+  if (stillStarting()) {
+    return {kind: "starting", who: "시작 중…",
+            line: "시세를 받아오는 중입니다. 종목 수만큼 과거 봉을 내려받은 " +
+                  "뒤에 첫 심의가 시작됩니다 — 몇 분 걸릴 수 있습니다."};
   }
   if (!document.body.classList.contains("running")) {
     return {kind: "idle", who: "아직 시작하지 않았습니다",
@@ -5773,6 +5821,11 @@ document.getElementById("runStart").onclick = async () => {
     note("#runMsg", `${runningLabel(res.strategy)} 시작됨 — ${modeKo(res.mode)}`, "ok");
     // 실행 상태는 한 군데서만 바꿉니다 — 화면이 서버와 어긋나던 원인입니다.
     runningStrategy = res.strategy || id;
+    // **시작과 첫 심의 사이는 몇 분입니다.** 20종목 워밍업을 받고, 그다음에야
+    // 데스크가 돕니다. 그동안 데스크 칸이 "아직 시작하지 않았습니다" 라고
+    // 말하고 있었는데, 바로 위 배너는 "시작됨" 이라고 합니다 — 한 화면이
+    // 서로 다른 두 말을 하면 사람은 켜진 건지 아닌지 알 수 없습니다.
+    startingSince = Date.now();
     setRunning(true);
     refresh();
     // 시작 버튼을 누른 사람이 다음에 보고 싶은 것은 "무슨 일이 일어나는가"
@@ -5976,6 +6029,7 @@ document.getElementById("runStop").onclick = async () => {
     } else {
       note("#runMsg", "정지했습니다 — 포지션은 그대로입니다", "ok");
       runningStrategy = "";
+      startingSince = 0;
       setRunning(false);
     }
     refresh();

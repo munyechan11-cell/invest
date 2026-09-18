@@ -109,6 +109,10 @@ button{cursor:pointer}
   text-underline-offset:3px;text-decoration-color:var(--line)}
 .linky:hover,.linky:focus-visible{text-decoration-color:currentColor}
 .linky:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+/* 저장된 값을 지우는 버튼. 칸 옆에 조용히 붙습니다 — 평소에는 쓰지
+   않는 길이고, 눈에 띄면 실수로 눌립니다. */
+.fld .forget{float:right;font-size:13px;color:var(--muted)}
+.fld .forget:hover,.fld .forget:focus-visible{color:var(--bad)}
 [data-vres]{display:block;max-width:100%}
 
 /* ── 종목 찾기 ─────────────────────────────────────────────────────── */

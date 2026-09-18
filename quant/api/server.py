@@ -1524,6 +1524,9 @@ class Desk:
     def disconnect(self, venue_id: str) -> dict:
         raise NotImplementedError
 
+    def forget_secret(self, name: str) -> dict:
+        raise NotImplementedError
+
     # ── 실행 ─────────────────────────────────────────────────────────────
     def load_strategy(self, config_path: str) -> StrategyConfig:
         raise NotImplementedError
@@ -1713,6 +1716,29 @@ class UserDesk(Desk):
         for name in removed:
             self.accounts.drop_secret(self.user.id, name)
         return {"disconnected": venue_id, "removed": removed}
+
+    def forget_secret(self, name: str) -> dict:
+        """저장된 값 하나를 지운다.
+
+        **빈 칸은 "그대로 두라" 는 뜻입니다.** 설정 화면이 비밀 칸을 비운 채
+        폼을 제출할 수 있어야 하니 그게 맞는데, 그 결과 **한 번 저장한 값을
+        지울 방법이 없었습니다.** 거래소 키는 `disconnect` 가 있지만 Gemini
+        키처럼 거래소에 속하지 않는 값은 거기에도 안 걸립니다.
+
+        지울 수 없다는 것은 단순한 불편이 아닙니다. 본인 Gemini 키가 남아
+        있으면 그게 서비스 키를 이기므로, 잔액이 떨어진 옛 키가 계속 쓰이고
+        새 서비스 키는 한 번도 불리지 않습니다 — 화면에는 "크레딧 소진" 만
+        뜨고, 무엇을 지워야 하는지는 어디에도 안 나옵니다.
+        """
+        key = (name or "").strip()
+        if key not in {env for env, _, _ in ACCOUNT_OPERATOR_FIELDS} and \
+                account_rejection_reason(key):
+            raise HTTPException(400, f"지울 수 없는 이름입니다: {key}")
+        had = key in self.accounts.configured(self.user.id)
+        if had:
+            self.accounts.drop_secret(self.user.id, key)
+        self.record("secret_forgotten", key)
+        return {"removed": key if had else "", "had": had, **self.setup()}
 
     # ── 실행 ─────────────────────────────────────────────────────────────
     def load_strategy(self, config_path: str) -> StrategyConfig:
@@ -3143,6 +3169,11 @@ def create_app(config: StrategyConfig | None = None,
             raise HTTPException(404, f"알 수 없는 거래소: {venue_id}")
         out = seat.disconnect(venue_id)
         return {**out, "note": "다시 쓰려면 키를 새로 등록해야 합니다"}
+
+    @app.post("/api/setup/forget/{name}")
+    async def setup_forget(name: str, seat: Desk = Depends(desk)):
+        """저장된 값 하나를 지운다 — 칸을 비워서는 지울 수 없기 때문입니다."""
+        return seat.forget_secret(name)
 
     @app.get("/api/strategies")
     async def strategies(seat: Desk = Depends(desk)):
