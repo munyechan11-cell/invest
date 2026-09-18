@@ -225,7 +225,10 @@ class Engine:
             ctx.clock.set(bar_ts)
 
         # 1 — fills first, using the bar that just closed
-        fills = await self._settle(bars) if settle else []
+        # 체결 이벤트는 `_settle` 안에서 이미 발행됩니다 — 여기서 받아 둘
+        # 이유가 없습니다(예전에는 받아 두고 맨 끝에서 버렸습니다).
+        if settle:
+            await self._settle(bars)
 
         # 2 — mark the book. History is kept for *every* symbol in the batch,
         # not just the active universe: a name that drops out of the universe
@@ -292,6 +295,22 @@ class Engine:
             await self._submit(risk_orders + manual_orders)
             return
 
+        await self._decide(bars, bar_ts)
+
+    async def _decide(self, bars: dict[str, Bar], bar_ts: datetime) -> None:
+        """알파부터 주문까지. **봉 장부는 건드리지 않습니다.**
+
+        `on_bars` 의 뒤쪽 절반을 그대로 떼어 낸 것입니다. 떼어 낸 이유는
+        하나뿐입니다 — 새 봉 없이 **판단만 다시 돌 수 있어야** 하기 때문입니다.
+        일봉 전략에서 한 봉은 하루라, 이 길이 없으면 데스크가 한 바퀴 돌고
+        나서 다음 기회가 내일입니다. 그래서 사람이 정지·재시작으로 새 사이클을
+        억지로 돌리고 있었습니다.
+
+        `on_bars` 를 다시 부르는 것으로는 안 됩니다. 그쪽은 체결을 정산하고
+        `push_bar` 로 봉을 쌓는데, `push_bar` 는 **중복을 거르지 않습니다** —
+        같은 봉을 두 번 넣으면 모든 지표의 창이 영구히 어긋납니다.
+        """
+        ctx = self.ctx
         # 4 — alpha, over the active universe only
         active = self._active(bars)
         try:
@@ -415,7 +434,23 @@ class Engine:
         )
         await self._submit(orders + manual_orders)
 
-        _ = fills  # already published in _settle
+    async def review(self) -> None:
+        """새 봉 없이 **판단만 한 번 더.**
+
+        데스크가 한 봉에 다 못 본 종목을 이어서 보게 하는 길입니다. 봉을
+        새로 넣지 않으므로 지표도 이력도 그대로고, 알파들은 같은 데이터를
+        보고 같은 답을 냅니다 — 달라지는 것은 아직 심의하지 않은 종목을
+        집는 데스크뿐입니다.
+
+        주문이 겹칠 걱정은 없습니다. 실행 계층은 목표와 **현재 보유** 의
+        차이만 내보내므로, 목표가 그대로면 낼 주문도 없습니다.
+        """
+        ctx = self.ctx
+        active = [s for s in ctx.universe if ctx.latest(s) is not None]
+        bars = {s.key: ctx.latest(s) for s in active}
+        if not bars:
+            return
+        await self._decide(bars, ctx.now)
 
     def _is_risk_reduction(
         self,

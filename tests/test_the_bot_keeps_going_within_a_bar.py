@@ -167,3 +167,71 @@ def test_one_bar_can_cover_the_whole_candidate_list(path):
     assert passes_needed * minutes <= 6 * 60, (
         f"{path}: 후보 {cap}종목을 {per_pass}씩 {minutes}분 간격이면 "
         f"{passes_needed * minutes}분 — 장중에 다 못 봅니다")
+
+
+# ── 엔진에 "판단만 다시" 길이 있는가 ────────────────────────────────────
+#
+# 데스크만 고쳐서는 소용이 없었습니다. 트레이더가 `if not bars: return` 으로
+# 먼저 돌아서고, 엔진도 `on_bars` 첫 줄에서 같은 이유로 돌아섭니다. 데스크는
+# 준비됐는데 **거기까지 도달을 못 했습니다** — 실제로 그렇게 배포됐고, 20분
+# 뒤 두 번째 바퀴에 아무 일도 일어나지 않았습니다.
+
+def test_the_engine_can_decide_without_new_bars():
+    from quant.core.engine import Engine
+
+    assert hasattr(Engine, "review"), "판단만 다시 도는 길이 없습니다"
+    assert hasattr(Engine, "_decide"), "on_bars 뒤쪽 절반이 떨어져 있지 않습니다"
+
+
+def test_review_does_not_touch_the_bar_ledger():
+    """`push_bar` 는 **중복을 거르지 않습니다.** 같은 봉을 다시 넣으면 모든
+    지표의 창이 영구히 어긋납니다 — 그래서 `on_bars` 를 다시 부르는 것으로는
+    안 됩니다."""
+    import inspect
+
+    from quant.core.engine import Engine
+
+    def code_only(fn) -> str:
+        """설명문은 빼고 **실제로 도는 줄** 만. 독스트링에 그 이름이 나오는
+        것과 그 함수를 부르는 것은 다릅니다."""
+        src = inspect.getsource(fn)
+        doc = inspect.getdoc(fn) or ""
+        for line in doc.splitlines():
+            src = src.replace(line, "")
+        return src
+
+    for fn in (Engine.review, Engine._decide):
+        body = code_only(fn)
+        assert "push_bar(" not in body, f"{fn.__name__} 이 봉을 다시 쌓습니다"
+        assert "self._settle(" not in body, f"{fn.__name__} 이 체결을 다시 정산합니다"
+
+
+def test_the_trader_actually_calls_it():
+    import inspect
+
+    from quant.live.trader import LiveTrader
+
+    src = inspect.getsource(LiveTrader._tick)
+    assert "self.engine.review()" in src
+    assert "review_every_minutes" in src
+
+
+def test_review_is_off_unless_the_config_asks():
+    """켜지 않은 설정이 조용히 더 자주 돌면 안 됩니다 — 비용이 거기에
+    비례합니다."""
+    import inspect
+
+    from quant.live.trader import LiveTrader
+
+    src = inspect.getsource(LiveTrader._tick)
+    assert "if self.config.data.review_every_minutes:" in src
+
+
+def test_review_does_nothing_without_a_universe():
+    import asyncio
+    from types import SimpleNamespace
+
+    from quant.core.engine import Engine
+
+    stub = SimpleNamespace(ctx=SimpleNamespace(universe=[], latest=lambda s: None))
+    asyncio.run(Engine.review(stub))      # 터지지 않으면 됩니다

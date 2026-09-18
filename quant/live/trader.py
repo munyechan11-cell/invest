@@ -1345,6 +1345,11 @@ class LiveTrader:
             bars = await self._fetch_new_bars()
             if not bars:
                 log.debug("no new closed bars this cycle")
+                # **봉이 없다고 판단까지 쉴 이유는 없습니다.** 데스크가 이번
+                # 봉에 다 못 본 종목이 남아 있으면 그것들을 이어서 봅니다.
+                # 봉을 새로 넣지 않으므로 지표도 이력도 그대로입니다.
+                if self.config.data.review_every_minutes:
+                    await self.engine.review()
                 return
             if not self._market_is_open():
                 # `_fetch_new_bars` is intentionally side-effect free. Leaving
