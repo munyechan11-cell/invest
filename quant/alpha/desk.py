@@ -546,6 +546,17 @@ class TradingDesk(AlphaModel):
         decision_llm: LLMConfig | LLMClient | None = None,
         cadence_bars: int = 1,
         max_symbols_per_run: int = 4,
+        #: 한 번에 **동시에** 심의할 종목 수. 나머지는 줄을 섭니다.
+        #:
+        #: 종목 하나를 심의하는 데 필요한 호출은 19번입니다. 그런데 로그에는
+        #: 종목당 **80번** 이 찍혔습니다 — 네 배가 전부 429 재시도입니다.
+        #: 네 종목을 한꺼번에 던지면 같은 순간에 76번이 나가고, 무료 티어
+        #: 제미나이는 그 대부분을 튕겨 냅니다. 튕긴 호출은 백오프만큼 기다린
+        #: 뒤 다시 나가므로, **넓게 보려다 느려지고 비싸집니다.**
+        #:
+        #: 줄을 세우면 총 호출이 줄어 오히려 빨라집니다. 한도가 넉넉한 키를
+        #: 쓰면 이 값을 올리세요.
+        concurrent_symbols: int = 2,
         debate_rounds: int = 2,
         risk_debate_rounds: int = 1,
         min_conviction: float = 0.55,
@@ -567,6 +578,7 @@ class TradingDesk(AlphaModel):
         self.flow_feed = flow_feed
         self.cadence = max(cadence_bars, 1)
         self.max_symbols = max_symbols_per_run
+        self.concurrent_symbols = max(1, int(concurrent_symbols))
         self.debate_rounds = max(debate_rounds, 1)
         self.risk_debate_rounds = max(risk_debate_rounds, 1)
         self.min_conviction = min_conviction
@@ -1197,9 +1209,14 @@ class TradingDesk(AlphaModel):
 
         before_calls, before_cost = self._calls(), self.estimated_cost_usd
         try:
+            gate = asyncio.Semaphore(self.concurrent_symbols)
+
+            async def one(symbol):
+                async with gate:
+                    return await self._deliberate_cached(ctx, symbol)
+
             results = await asyncio.gather(
-                *(self._deliberate_cached(ctx, s) for s in targets),
-                return_exceptions=True,
+                *(one(s) for s in targets), return_exceptions=True,
             )
         finally:
             # 실패한 호출도 청구됩니다. 성공만 적으면 그 비용이 아무 계정에도

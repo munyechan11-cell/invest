@@ -119,3 +119,38 @@ def test_the_korean_ladder_is_on_for_every_new_name(path):
 def test_no_duplicate_candidates(path):
     tickers = [s.ticker for s in _load(path).universe.symbols]
     assert len(tickers) == len(set(tickers))
+
+
+# ── 넓게 보려다 느려지는 것 ──────────────────────────────────────────────
+#
+# 로그: 종목당 호출 **80번**. 16석이면 19번이면 됩니다. 나머지는 전부 429
+# 재시도입니다 — 네 종목을 한꺼번에 던지면 같은 순간에 76번이 나가고, 무료
+# 티어는 그 대부분을 튕겨 냅니다. 튕긴 호출은 백오프만큼 기다렸다 다시
+# 나가므로, 넓게 보려던 것이 **느려지고 비싸집니다.**
+
+@pytest.mark.parametrize("path", DESK_CONFIGS)
+def test_symbols_are_queued_not_all_fired_at_once(path):
+    params = desk_params(path)
+    concurrent = params.get("concurrent_symbols", params.get("max_symbols_per_run", 4))
+    assert concurrent <= 2, (
+        f"{path}: {concurrent}종목을 동시에 심의합니다 — 같은 순간의 호출이 "
+        "한도를 넘으면 재시도로 되돌아옵니다")
+
+
+def test_the_desk_actually_queues_them():
+    """설정만 있고 코드가 안 지키면 아무것도 안 바뀝니다."""
+    import inspect
+
+    from quant.alpha.desk import TradingDesk
+
+    src = inspect.getsource(TradingDesk.update)
+    assert "Semaphore(self.concurrent_symbols)" in src
+
+
+def test_one_is_the_floor_not_zero():
+    """0 이면 아무 종목도 심의하지 못합니다."""
+    from quant.alpha.desk import TradingDesk
+    from tests.test_desk import ScriptedLLM
+
+    assert TradingDesk(ScriptedLLM(), concurrent_symbols=0, memory=False
+                       ).concurrent_symbols == 1
