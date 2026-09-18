@@ -116,13 +116,26 @@ alpha:
   - {type: regime_filter, params: {period: 200, max_annual_vol: 0.8}}
   - type: desk
     params:
-      llm:          {provider: google, model: gemini-3.7-flash, max_tokens: 1200}
-      decision_llm: {provider: google, model: gemini-3.1-pro-preview, max_tokens: 1600}
+      # **토큰 예산을 줄였습니다(1200/1600 → 900/1200).** 생성 시간은 뱉는
+      # 토큰 수에 거의 비례하므로, 여기가 심의 시간을 줄이는 가장 곧은 길입니다.
+      #
+      # 잘릴 걱정은 하지 않아도 됩니다 — 답이 중간에서 끊기면 클라이언트가
+      # **예산을 최대 4배까지 늘려 다시 받아옵니다**(`Truncated`). 그래서
+      # 길이가 꼭 필요한 좌석만 비용을 더 쓰고, 나머지는 전부 짧아집니다.
+      # 길게 쓰는 좌석이 많아 재시도가 잦아지면 이 값을 다시 올리세요.
+      llm:          {provider: google, model: gemini-3.7-flash, max_tokens: 900}
+      decision_llm: {provider: google, model: gemini-3.1-pro-preview, max_tokens: 1200}
       cadence_bars: 1
-      # **후보 전부를 봅니다.** 2 였습니다 — 그러면 그 둘이 관망일 때 나머지
-      # 종목은 그 봉에서 한 번도 검토되지 않습니다. 화면에는 "관망" 하나만
-      # 남고, 사람은 봇이 멈춘 것으로 읽습니다.
-      max_symbols_per_run: 4
+      # **한 봉에 훑는 종목 수.** 4 였습니다 — 그 넷이 전부 관망이면 그 봉에는
+      # 아무 일도 없고, 다음 기회는 **다음 봉** 입니다. 일봉이면 내일이고,
+      # 그래서 정지·재시작으로 새 사이클을 억지로 돌리게 됩니다.
+      #
+      # 이 값이 곧 "한 번 돌 때 몇 종목을 보는가" 입니다. 후보 목록(위
+      # `limit` 필터)까지 올리면 한 봉에 전부 훑습니다.
+      #
+      # ⚠️ **비용이 여기에 비례합니다.** 종목당 AI 호출이 80회쯤이므로
+      # 8종목이면 한 봉에 약 640회입니다. 늘리기 전에 요금제를 보세요.
+      max_symbols_per_run: 8
       # 한 번에 **동시에** 심의할 종목 수. 나머지는 줄을 섭니다.
       #
       # 한때 2 였습니다. "429 재시도 때문에 느리다" 는 진단이었는데 **그

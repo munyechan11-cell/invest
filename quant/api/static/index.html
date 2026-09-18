@@ -1270,13 +1270,32 @@ const ACTION_STYLE = {
    뱉었을 때 화면이 빈칸이 되면 무슨 결론이 났는지조차 알 수 없습니다. */
 const actionKo = a => (ACTION_STYLE[a] || [])[0] || a || "—";
 
+/* 이 판정이 실제로 낼 주문이 있는가.
+
+   **"매도" 는 "판다" 가 아닐 수 있습니다.** 공매도를 끈 전략에서 보유가 0인
+   종목에 `sell` 이 나오면 그건 "안 산다" 는 뜻입니다 — 데스크 자신도 근거에
+   `sell(청산/매수불가)` 이라고 적습니다. 그런데 화면은 큼직하게 "매도" 라고만
+   써서, 사람은 팔린 줄 알고 체결을 찾으러 갑니다. 찾을 게 없습니다. */
+function nothingToSell(d) {
+  if (!["sell", "strong_sell", "reduce"].includes(d.action)) return false;
+  const held = ((botState || {}).portfolio || {}).positions;
+  if (!Array.isArray(held)) return false;      // 모르면 말하지 않습니다
+  const sym = String(d.symbol || "");
+  return !held.some(x => String(x.symbol || "") === sym && Number(x.quantity) !== 0);
+}
+
 function renderVerdict(d, demo) {
   const [label, color] = ACTION_STYLE[d.action] || ["관망", "var(--muted)"];
+  const flat = nothingToSell(d);
   followDesk(String(d.symbol || ""));
   const v = $("#verdict");
   v.classList.remove("hidden");
   v.innerHTML = `
-    <div class="act px" style="color:${color}">${d.vetoed ? "거부" : esc(label)}</div>
+    <div class="act px" style="color:${flat ? "var(--muted)" : color}">${
+      d.vetoed ? "거부" : esc(label)}</div>
+    ${flat ? `<div class="msg dim" style="margin:6px 0">보유가 없어 **낼 주문이
+      없습니다** — 이 판정은 "판다" 가 아니라 <b>"사지 않는다"</b> 입니다.
+      공매도를 쓰지 않는 전략이라 내려갈 자리가 없습니다.</div>` : ""}
     <div class="meta">
       <button type="button" class="linky" data-goto-symbol="${esc(d.symbol || "")}"
         title="차트를 이 종목으로">${esc(symLabel(d.symbol, nameOf(d, "symbol")))}</button><br>
