@@ -3194,6 +3194,12 @@ def create_app(config: StrategyConfig | None = None,
             out.append({
                 "id": name, "name": cfg.name, "mode": cfg.mode.value,
                 "broker": cfg.broker.type,
+                # **`dry_run` 이 다 같은 뜻이 아닙니다.** 엔진이 혼자 체결을
+                # 흉내 내는 것과, 증권사 모의계좌로 진짜 주문이 나가는 것은
+                # 다른 일입니다 — 후자에서만 거절·호가단위·체결 지연을 봅니다.
+                # 화면이 둘을 "가상 체결" 한 마디로 뭉개고 있었습니다.
+                "sends_orders": bool(cfg.broker.params.get("paper_trading")
+                                     or cfg.mode is RunMode.LIVE),
                 "symbols": len(cfg.universe.symbols),
                 "requires": required_secrets(cfg),
                 # ── 한국어 ──────────────────────────────────────────────
@@ -3202,7 +3208,9 @@ def create_app(config: StrategyConfig | None = None,
                 # 화면은 그때 `name` 으로 떨어집니다 — 이름이 없다고 목록에서
                 # 그 전략이 사라지면 그게 훨씬 나쁩니다.
                 "label_ko": cfg.label_ko,
-                "mode_ko": glossary.MODE.get(cfg.mode.value, cfg.mode.value),
+                "mode_ko": glossary.mode_label(
+                    cfg.mode.value,
+                    bool(cfg.broker.params.get("paper_trading"))),
                 "broker_ko": glossary.BROKER.get(cfg.broker.type, cfg.broker.type),
                 "timeframe": cfg.data.timeframe,
                 # 시세가 실시간인지 지연인지는 전략을 고르기 전에 알아야 합니다.

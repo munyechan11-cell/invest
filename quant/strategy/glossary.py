@@ -167,6 +167,25 @@ MODE: dict[str, str] = {
     "live": "실거래 — 실제 주문이 나갑니다",
 }
 
+#: `dry_run` 인데 주문이 **정말로 나가는** 경우. 증권사 모의계좌가 그렇습니다.
+MODE_PAPER_ORDERS = "모의 매매 — 실시간 시세, 증권사 모의계좌로 진짜 주문"
+
+
+def mode_label(mode: str, sends_orders: bool = False) -> str:
+    """모드 한 줄. **`dry_run` 이 다 같은 뜻이 아닙니다.**
+
+    엔진이 혼자 체결을 흉내 내는 것과, 증권사 모의계좌로 진짜 주문이 나가는
+    것은 다른 일입니다. 주문이 거절되는 것도, 호가단위가 안 맞는 것도, 체결이
+    늦는 것도 **후자에서만** 드러납니다 — 예행연습의 요점이 바로 그것들인데,
+    화면은 둘을 "가상 체결" 한 마디로 뭉개고 있었습니다.
+
+    그리고 그 오해는 한쪽으로만 기웁니다: 진짜 주문이 나가는 설정을 "가상
+    체결" 로 읽은 사람은 **실제보다 안전하다고 믿습니다.**
+    """
+    if mode == "dry_run" and sends_orders:
+        return MODE_PAPER_ORDERS
+    return MODE.get(mode, mode)
+
 BROKER: dict[str, str] = {
     "paper": "가상 계좌 (연동 불필요)",
     "kis": "한국투자증권",

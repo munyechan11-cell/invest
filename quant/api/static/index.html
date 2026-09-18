@@ -4485,7 +4485,7 @@ async function loadStrategies() {
   // 하고, 그 이동 자체가 한 번 더 묻는 일이 됩니다.
   const GROUPS = [
     ["backtest", "과거 검증 · 시장에 닿지 않습니다"],
-    ["dry_run", "모의투자 · 실시간 시세, 가상 체결"],
+    ["dry_run", "모의투자 · 실시간 시세"],
     ["live", "🔴 실거래 · 진짜 주문, 진짜 돈"],
   ];
   const needs = st => (st.requires || []).filter(k => !linked.has(k)).length;
