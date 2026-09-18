@@ -32,7 +32,15 @@ import httpx
 
 from quant.brokerage.base import BrokerageError
 from quant.brokerage.live_base import LiveBrokerage
-from quant.core.types import UTC, Fill, Order, OrderSide, OrderType, utcnow
+from quant.core.types import (
+    UTC,
+    Fill,
+    Order,
+    OrderSide,
+    OrderType,
+    one_line_error,
+    utcnow,
+)
 from quant.data.calendar import KST
 from quant.data.providers.kis import kis_host, kis_token
 from quant.execution.costs import krx_sell_tax_bps
@@ -672,9 +680,19 @@ class KisBrokerage(LiveBrokerage):
         except Exception as exc:      # noqa: BLE001 — 국내 잔고까지 죽이지 않습니다
             overseas_rows = []
             if self.overseas_exchange:
+                # **사람이 읽을 문장이어야 합니다.** 예전에는 httpx 예외를
+                # 그대로 붙였고, 그 안에는 요청 URL 이 통째로 들어 있었습니다 —
+                # 화면에 세 줄짜리 URL 이 깔리고, 그 URL 의 `CANO=` 에
+                # **계좌번호가 그대로 노출** 됐습니다.
+                #
+                # 그리고 이건 보통 고장이 아닙니다: 해외 거래를 신청하지 않은
+                # 계좌에서는 이 창구가 원래 답을 주지 않습니다. 빨간 글로
+                # "실패" 라고만 하면 아무 문제 없는 사람이 뭔가 잘못된 줄
+                # 압니다.
                 items_note = (
-                    f"해외 잔고({self.overseas_exchange})를 읽지 못했습니다: {exc}. "
-                    "아래 표와 집계는 국내분입니다"
+                    "미국주식 잔고는 읽지 못했습니다 — 아래 숫자는 국내분만 "
+                    "입니다. 이 계좌에 해외주식 거래가 없거나 신청되지 않았으면 "
+                    f"정상입니다. (증권사 응답: {one_line_error(exc, 90)})"
                 )
                 log.warning("KIS 해외 잔고 조회 실패 — 국내분만 표시합니다: %s", exc)
 

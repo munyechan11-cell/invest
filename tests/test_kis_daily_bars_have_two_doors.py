@@ -127,3 +127,51 @@ def test_a_working_first_door_after_a_failed_page_keeps_what_it_read():
     provider._get = flaky
     bars = history(provider, days=400)
     assert bars and "inquire-daily-price" not in provider.calls
+
+
+# ── 한 번에 얼마나 달라고 하는가 ─────────────────────────────────────────
+#
+# 500 의 가장 그럴듯한 원인입니다. 이 창구는 **100건까지** 주는데, 우리는
+# 한 번에 140 달력일을 달라고 했습니다 — 그 안의 영업일은 약 101일입니다.
+# 한 칸 넘긴 요청에 한투가 돌려준 것은 "너무 많다" 가 아니라 500 이었고,
+# 그래서 이 고장은 계속 서버 탓처럼 보였습니다. 실계좌에서도 모의투자에서도
+# 똑같이 난 이유가 그것입니다 — 호스트가 달라도 **우리 요청은 같았습니다.**
+
+def trading_days(span: int) -> int:
+    """어느 요일에서 시작하든 최악의 경우 영업일 수."""
+    from datetime import date, timedelta
+
+    base = date(2026, 1, 1)
+    return max(
+        sum(1 for i in range(span + 1)
+            if (base + timedelta(days=offset + i)).weekday() < 5)
+        for offset in range(7)
+    )
+
+
+def test_one_page_never_asks_for_more_rows_than_the_venue_gives():
+    assert trading_days(KisProvider._PAGE_DAYS) < 100, (
+        f"한 번에 영업일 {trading_days(KisProvider._PAGE_DAYS)}일을 요구합니다 — "
+        "상한은 100건이고, 넘으면 500 이 옵니다")
+
+
+def test_the_old_window_would_have_been_over_the_limit():
+    """이 테스트가 고정하는 것은 숫자가 아니라 **왜 바뀌었는가** 입니다."""
+    assert trading_days(140) > 100
+
+
+def test_the_window_still_pages_back_far_enough_to_warm_up():
+    """창을 좁히면 호출이 늘어납니다. 무한히 늘면 그것대로 문제입니다."""
+    provider = _Kis()
+    history(provider, days=400)
+    pages = provider.calls.count("inquire-daily-itemchartprice")
+    assert 1 < pages <= 8, f"{pages}번 불렀습니다"
+
+
+def test_the_request_window_is_the_one_the_code_actually_uses():
+    """상수만 고치고 요청은 예전 폭 그대로면 아무것도 안 바뀝니다."""
+    import inspect
+
+    src = inspect.getsource(KisProvider.history)
+    assert "timedelta(days=self._PAGE_DAYS)" in src
+    assert "days=140" not in src

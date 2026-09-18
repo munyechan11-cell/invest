@@ -383,3 +383,52 @@ def test_the_orders_path_is_untouched():
     src = inspect.getsource(KisBrokerage._venue_positions)
     assert "_overseas_balance" in src
     assert "_overseas_rows" not in src
+
+
+# ── 오류 문장이 계좌번호를 흘리고 있었습니다 ────────────────────────────
+#
+# 화면에 이렇게 떴습니다:
+#
+#   해외 잔고(NASD)를 읽지 못했습니다: Server error '500 …' for url
+#   'https://…/inquire-balance?CANO=10094558&ACNT_PRDT_CD=01&…'
+#
+# 세 줄짜리 URL 이 창을 채웠고, 그 안에 **계좌번호가 그대로** 들어 있었습니다.
+# 게다가 이건 보통 고장이 아닙니다 — 해외 거래를 신청하지 않은 계좌에서는
+# 이 창구가 원래 답을 주지 않습니다.
+
+BOOM = RuntimeError(
+    "Server error '500 Internal Server Error' for url "
+    "'https://openapi.koreainvestment.com:9443/uapi/overseas-stock/v1/trading/"
+    "inquire-balance?CANO=10094558&ACNT_PRDT_CD=01&OVRS_EXCG_CD=NASD"
+    "&TR_CRCY_CD=USD&CTX_AREA_FK200=&CTX_AREA_NK200=' "
+    "For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500")
+
+
+def test_the_account_number_never_reaches_the_screen():
+    note = overview(overseas=BOOM)["items_message"]
+    assert "10094558" not in note, "오류 문장에 계좌번호가 남아 있습니다"
+    assert "CANO" not in note
+
+
+def test_the_url_query_is_not_pasted_across_the_screen():
+    note = overview(overseas=BOOM)["items_message"]
+    assert "?" not in note and "developer.mozilla.org" not in note
+    assert len(note) < 260
+
+
+def test_it_says_this_is_probably_not_a_fault():
+    """해외 거래를 신청하지 않은 계좌에서는 이게 정상입니다. "실패" 라고만
+    하면 아무 문제 없는 사람이 뭔가 잘못된 줄 압니다."""
+    note = overview(overseas=BOOM)["items_message"]
+    assert "정상입니다" in note and "국내분만" in note
+
+
+def test_the_venues_own_words_are_still_there():
+    """이유를 통째로 지우면 진짜 고장일 때 단서가 없어집니다."""
+    assert "500" in overview(overseas=BOOM)["items_message"]
+
+
+def test_the_domestic_numbers_survive():
+    out = overview(overseas=BOOM)
+    assert out["cash"] == {"KRW": 1_284_300.0}
+    assert len(out["items"]) == 2

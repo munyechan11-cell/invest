@@ -16,6 +16,7 @@ lot sizes are fractional and float rounding silently breaks exchange filters.
 from __future__ import annotations
 
 import math
+import re
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,25 @@ from enum import Enum
 from typing import Any
 
 UTC = timezone.utc
+
+
+def one_line_error(exc: object, limit: int = 140) -> str:
+    """예외 하나를 **화면에 갈 한 줄** 로.
+
+    httpx 의 HTTP 오류는 요청 URL 을 통째로 물고 옵니다. 그대로 화면에
+    붙이면 세 줄짜리 URL 이 창을 채우고, 중간에서 잘려 `FID_INPUT_DATE`
+    같은 조각으로 끝납니다 — 사람이 거기서 읽어 낼 것은 없습니다.
+
+    **질의문자열은 반드시 지웁니다.** 한투 계좌 조회 URL 에는 `CANO=` 로
+    계좌번호가 들어 있어서, 오류를 그대로 그리면 화면에 계좌번호가 뜹니다.
+
+    원본은 로그에 그대로 남으므로 잃는 것은 없습니다.
+    """
+    text = " ".join(str(exc).split())
+    text = re.sub(r"(https?://[^\s'\"?]+)\?[^\s'\"]*", r"\1", text)
+    # httpx 가 붙이는 안내 링크는 사용자에게 아무 뜻이 없습니다.
+    text = re.sub(r"\s*For more information check:\s*\S+", "", text)
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
 def utcnow() -> datetime:

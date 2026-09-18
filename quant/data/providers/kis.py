@@ -110,6 +110,18 @@ class KisProvider(DataProvider):
 
     _PERIOD = {"1d": "D", "1w": "W"}
 
+    #: 기간별시세 한 번에 요청할 달력일 수.
+    #:
+    #: **140 이었습니다. 그게 100건 상한을 한 칸 넘깁니다** — 140 달력일 안의
+    #: 영업일은 약 101일이고, 이 창구는 100건까지만 줍니다. 상한을 넘는 요청에
+    #: 한투가 돌려준 것은 "너무 많다" 가 아니라 **500** 이었고, 그래서 이 고장은
+    #: 계속 서버 탓처럼 보였습니다(실계좌에서도 모의투자에서도 똑같이 났습니다 —
+    #: 호스트가 아니라 우리 요청이 같았기 때문입니다).
+    #:
+    #: 100 달력일이면 영업일은 많아야 72일입니다. 호출이 몇 번 늘지만, 한 번에
+    #: 많이 달라다가 아무것도 못 받는 것보다 낫습니다.
+    _PAGE_DAYS = 100
+
     def __init__(
         self,
         app_key: str = "",
@@ -256,11 +268,11 @@ class KisProvider(DataProvider):
         if period is None:
             raise ValueError(f"KIS provider serves {sorted(self._PERIOD)} only, got {timeframe!r}")
         bars: list[Bar] = []
-        # The endpoint returns at most ~100 rows per call, so page backwards.
+        # 이 창구는 한 번에 100건까지입니다. 그보다 넓게 물으면 500 이 옵니다.
         cursor_end = end
         chart_failed = ""
         while cursor_end > start:
-            cursor_start = max(start, cursor_end - timedelta(days=140))
+            cursor_start = max(start, cursor_end - timedelta(days=self._PAGE_DAYS))
             try:
                 data = await self._get(
                     "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",

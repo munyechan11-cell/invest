@@ -19,6 +19,7 @@ from quant.core.types import (
     Bar,
     Quote,
     Symbol,
+    one_line_error,
     timeframe_delta,
     timeframe_seconds,
     utcnow,
@@ -285,7 +286,7 @@ async def gather_history(
             except Exception as exc:
                 log.warning("history failed for %s: %s", sym, exc)
                 if failures is not None:
-                    failures[sym.key] = str(exc)
+                    failures[sym.key] = one_line_error(exc)
                 return sym.key, []
 
     results = await asyncio.gather(*(one(s) for s in symbols))
