@@ -175,3 +175,74 @@ def test_the_request_window_is_the_one_the_code_actually_uses():
     src = inspect.getsource(KisProvider.history)
     assert "timedelta(days=self._PAGE_DAYS)" in src
     assert "days=140" not in src
+
+
+# ── 500 은 "서버가 죽었다" 가 아니라 "너무 빠르다" 였습니다 ─────────────
+#
+# 로그가 증거입니다. 창을 100일로 좁힌 뒤에도 500 이 났는데, **같은 종목의
+# 어떤 페이지는 오고 어떤 페이지는 안 왔습니다** — 000660 은 203봉을 받았고
+# 035420 은 한 장도 못 받았습니다. 폭이 원인이면 전부 실패했어야 합니다.
+#
+# 실패한 요청들은 같은 초에 몰려 있었습니다(02:17:38~39 에 네 건). 한투는
+# 유량을 넘긴 요청에 **429 가 아니라 500** 을 돌려줍니다. 그래서 이 고장은
+# 계속 서버 탓처럼 보였습니다.
+
+class _Throttled(KisProvider):
+    """처음 n번은 500, 그 다음은 정상인 대역."""
+
+    _BACKOFF_S = 0.0          # 테스트에서 실제로 기다리지 않습니다
+
+    def __init__(self, fail_times=1, **kw):
+        super().__init__(app_key="k", app_secret="s",
+                         allow_env_credentials=False, **kw)
+        self.left = fail_times
+        self.tries = 0
+
+    async def _headers(self, tr_id):
+        return {}
+
+    async def _client_get(self, *a, **kw):
+        raise AssertionError("쓰이지 않습니다")
+
+    async def _get(self, path, tr_id, params):
+        import httpx
+        self.tries += 1
+        if self.left > 0:
+            self.left -= 1
+            request = httpx.Request("GET", "https://openapi.koreainvestment.com/x")
+            raise httpx.HTTPStatusError(
+                "Server error '500 Internal Server Error'", request=request,
+                response=httpx.Response(500, request=request))
+        return CHART
+
+
+def test_a_500_is_retried_instead_of_giving_up_on_the_symbol():
+    """한 번의 500 으로 그 종목 전체를 30봉짜리 대체 창구로 떨구면,
+    알파가 필요로 하는 210봉은 영영 안 모입니다."""
+    import inspect
+
+    src = inspect.getsource(KisProvider._get)
+    assert "status_code < 500" in src, "5xx 와 4xx 를 구별하지 않습니다"
+    assert "_RETRIES" in src and "_BACKOFF_S" in src
+
+
+def test_a_4xx_is_not_retried():
+    """요청이 틀린 것이면 다시 물어도 같은 답입니다 — 유량만 더 씁니다."""
+    import inspect
+
+    src = inspect.getsource(KisProvider._get)
+    assert "exc.response.status_code < 500 or attempt" in src
+
+
+def test_the_request_rate_leaves_room_for_concurrent_symbols():
+    """`gather_history` 는 종목 8개를 동시에 읽습니다. 초당 8건으로 잡아
+    두면 같은 초에 8건이 그대로 몰립니다."""
+    import inspect
+
+    default = inspect.signature(KisProvider).parameters["requests_per_second"].default
+    assert default <= 4.0, f"초당 {default}건 — 동시 8종목이면 그대로 몰립니다"
+
+
+def test_the_retry_budget_is_bounded():
+    """무한 재시도는 워밍업을 영영 안 끝나게 만듭니다."""
+    assert 1 < KisProvider._RETRIES <= 5

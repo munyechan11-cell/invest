@@ -49,7 +49,7 @@ class KisFlowProvider(FlowProvider):
     name = "kis_flow"
 
     def __init__(self, app_key: str = "", app_secret: str = "", paper: bool = False,
-                 requests_per_second: float = 6.0, include_program: bool = True,
+                 requests_per_second: float = 3.0, include_program: bool = True,
                  timeout: float = 20.0, allow_env_credentials: bool = True):
         self.app_key = (app_key or os.environ.get("KIS_APP_KEY", "")
                         if allow_env_credentials else app_key)
@@ -73,7 +73,26 @@ class KisFlowProvider(FlowProvider):
         if not (self.app_key and self.app_secret):
             raise RuntimeError("KIS_APP_KEY / KIS_APP_SECRET are required for kis_flow")
 
+    #: 시세 제공자와 같은 이유로 같은 값입니다 — 한투는 유량을 넘긴 요청에
+    #: 429 가 아니라 **500** 을 돌려줍니다. 수급이 빠지면 데스크는 "수급 데이터
+    #: 전면 누락으로 포지셔닝을 확인할 수 없다" 며 관망합니다. 즉 이 500 하나가
+    #: **그대로 매매 판단이 됩니다.**
+    _RETRIES = 3
+    _BACKOFF_S = 0.8
+
     async def _get(self, path: str, tr_id: str, params: dict) -> dict:
+        last: Exception | None = None
+        for attempt in range(self._RETRIES):
+            try:
+                return await self._get_once(path, tr_id, params)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code < 500 or attempt == self._RETRIES - 1:
+                    raise
+                last = exc
+                await asyncio.sleep(self._BACKOFF_S * (attempt + 1))
+        raise last or RuntimeError(f"KIS {path}: 재시도했지만 실패했습니다")
+
+    async def _get_once(self, path: str, tr_id: str, params: dict) -> dict:
         async with self._lock:
             wait = self._next_at - time.monotonic()
             if wait > 0:

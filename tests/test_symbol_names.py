@@ -89,13 +89,13 @@ def test_a_looked_up_symbol_is_actually_written_down(tmp_path):
     있고 동작한 적은 없었습니다 — 화면은 매번 다시 코드로 물어봐야 했습니다.
     """
     store = StateStore(_state(tmp_path))
-    store.remember_ticker({"ticker": "068270", "venue": "toss",
-                           "name": "셀트리온", "currency": "KRW"})
+    store.remember_ticker({"ticker": "017670", "venue": "toss",
+                           "name": "SK텔레콤", "currency": "KRW"})
     store.close()
 
     reopened = StateStore(_state(tmp_path))
     try:
-        assert [r["name"] for r in reopened.known_tickers()] == ["셀트리온"]
+        assert [r["name"] for r in reopened.known_tickers()] == ["SK텔레콤"]
     finally:
         reopened.close()
 
@@ -103,12 +103,12 @@ def test_a_looked_up_symbol_is_actually_written_down(tmp_path):
 def test_an_empty_name_does_not_erase_a_known_one(tmp_path):
     """이름 없이 다시 저장하면 알던 이름을 잃습니다."""
     store = StateStore(_state(tmp_path))
-    store.remember_ticker({"ticker": "068270", "venue": "toss",
-                           "name": "셀트리온", "currency": "KRW"})
-    store.remember_ticker({"ticker": "068270", "venue": "toss",
+    store.remember_ticker({"ticker": "017670", "venue": "toss",
+                           "name": "SK텔레콤", "currency": "KRW"})
+    store.remember_ticker({"ticker": "017670", "venue": "toss",
                            "name": "", "currency": "KRW"})
     try:
-        assert [r["name"] for r in store.known_tickers()] == ["셀트리온"]
+        assert [r["name"] for r in store.known_tickers()] == ["SK텔레콤"]
     finally:
         store.close()
 
@@ -150,14 +150,14 @@ class BrokenFeed:
 @pytest.mark.asyncio
 async def test_only_the_unknown_symbols_are_asked_and_only_once(tmp_path):
     """아는 것을 다시 묻는 호출은 그 자체로 레이트 리밋을 깎아먹습니다."""
-    feed = FakeFeed({"068270": "셀트리온", "323410": "카카오뱅크"})
+    feed = FakeFeed({"017670": "SK텔레콤", "323410": "카카오뱅크"})
     book = NameBook(_state(tmp_path))
-    got = await book.resolve_many(["005930", "AAPL", "068270", "323410"], feed)
+    got = await book.resolve_many(["005930", "AAPL", "017670", "323410"], feed)
 
     assert len(feed.calls) == 1, f"한 번에 묻지 않았습니다: {feed.calls}"
-    assert feed.calls[0] == ["068270", "323410"], "아는 종목까지 물었습니다"
+    assert feed.calls[0] == ["017670", "323410"], "아는 종목까지 물었습니다"
     assert got["005930"] == "삼성전자"
-    assert got["068270"] == "셀트리온"
+    assert got["017670"] == "SK텔레콤"
 
 
 @pytest.mark.asyncio
@@ -170,10 +170,10 @@ async def test_nothing_missing_means_no_call_at_all(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_resolved_name_is_remembered_for_next_time(tmp_path):
-    feed = FakeFeed({"068270": "셀트리온"})
-    await NameBook(_state(tmp_path)).resolve_many(["068270"], feed)
+    feed = FakeFeed({"017670": "SK텔레콤"})
+    await NameBook(_state(tmp_path)).resolve_many(["017670"], feed)
     # 새 요청 — 프로바이더 없이도 알아야 합니다.
-    assert NameBook(_state(tmp_path)).name("068270") == "셀트리온"
+    assert NameBook(_state(tmp_path)).name("017670") == "SK텔레콤"
 
 
 @pytest.mark.asyncio
@@ -209,10 +209,10 @@ async def test_one_persons_miss_does_not_silence_anothers_broker(tmp_path):
 async def test_a_broken_feed_still_gives_back_the_names_we_have(tmp_path):
     """이름을 못 받았다고 목록 자체가 죽으면 고친 것보다 부순 것이 큽니다."""
     feed = BrokenFeed()
-    got = await NameBook(_state(tmp_path)).resolve_many(["005930", "068270"], feed)
+    got = await NameBook(_state(tmp_path)).resolve_many(["005930", "017670"], feed)
     assert feed.calls == 1
     assert got["005930"] == "삼성전자"
-    assert got["068270"] == "068270"
+    assert got["017670"] == "017670"
 
 
 # ── 토스 다건 조회 ──────────────────────────────────────────────────────

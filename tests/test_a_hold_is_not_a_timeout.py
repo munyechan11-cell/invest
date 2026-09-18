@@ -76,3 +76,46 @@ def test_the_fallback_caps_its_own_conviction():
     src = inspect.getsource(TradingDesk)
     assert '"conviction": min(abs(consensus), 0.7)' in src
     assert 'risk["position_scale"] = min(' in src
+
+
+# ── 후보가 좁으면 관망 하나가 "오늘은 끝" 이 됩니다 ─────────────────────
+#
+# 후보 4종목에 한 봉 심의 4종목이면, 그 넷이 관망일 때 그 봉에는 아무 일도
+# 없습니다. 화면에서 그건 봇이 멈춘 것과 구별되지 않습니다. 후보를 넓히면
+# 관망 하나가 곧 끝이 되지 않고, 매 봉 다시 매겨지는 선택이 다른 종목을
+# 올려 줍니다.
+
+KIS_PAPER = ["configs/kr_kis_paper.yaml", "configs/us_kis_paper.yaml"]
+
+
+@pytest.mark.parametrize("path", KIS_PAPER)
+def test_the_practice_universe_is_wide_enough_to_keep_looking(path):
+    config = _load(path)
+    assert len(config.universe.symbols) >= 20, (
+        f"{path}: 후보 {len(config.universe.symbols)}종목 — 관망 몇 개로 "
+        "그 봉이 끝납니다")
+
+
+@pytest.mark.parametrize("path", KIS_PAPER)
+def test_the_filter_does_not_undo_the_wider_universe(path):
+    """후보를 20개 적어 놓고 `limit` 이 4로 자르면 아무것도 안 바뀝니다."""
+    config = _load(path)
+    limits = [f.params.get("max_symbols") for f in config.universe.filters
+              if f.type == "limit"]
+    for cap in limits:
+        assert cap is None or cap >= 12, f"{path}: limit {cap} 이 후보를 다시 좁힙니다"
+
+
+@pytest.mark.parametrize("path", KIS_PAPER)
+def test_the_korean_ladder_is_on_for_every_new_name(path):
+    """새로 넣은 종목이 사다리를 안 켜면 그 종목만 조용히 거절당합니다."""
+    config = _load(path)
+    for spec in config.universe.symbols:
+        if spec.quote_currency.upper() == "KRW":
+            assert spec.tick_ladder == "krx", f"{path}: {spec.ticker}"
+
+
+@pytest.mark.parametrize("path", KIS_PAPER)
+def test_no_duplicate_candidates(path):
+    tickers = [s.ticker for s in _load(path).universe.symbols]
+    assert len(tickers) == len(set(tickers))

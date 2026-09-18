@@ -127,7 +127,11 @@ class KisProvider(DataProvider):
         app_key: str = "",
         app_secret: str = "",
         paper: bool = False,
-        requests_per_second: float = 8.0,
+        #: 8.0 이었습니다. `gather_history` 가 종목 8개를 동시에 읽으므로
+        #: 같은 초에 8건이 몰리고, 한투는 그때 **500** 을 돌려줍니다(429 가
+        #: 아니라서 throttling 으로 안 보였습니다). 시세는 봉마다 한 번이라
+        #: 느려도 됩니다 — 못 받는 것보다 낫습니다.
+        requests_per_second: float = 3.0,
         overseas_exchange: str = "NASD",
         allow_env_credentials: bool = True,
     ):
@@ -169,20 +173,47 @@ class KisProvider(DataProvider):
             "custtype": "P",
         }
 
+    #: 5xx 를 만나면 몇 번까지 다시 물어볼 것인가.
+    #:
+    #: **한투는 유량을 넘긴 요청에 429 가 아니라 500 을 돌려줍니다.** 그래서
+    #: 이 고장은 "서버가 죽었다" 처럼 보였고, 실제로는 같은 초에 8개 요청이
+    #: 몰린 것이었습니다 — 로그가 그 증거입니다. 같은 종목의 어떤 페이지는
+    #: 오고 어떤 페이지는 500 이 나는데, 창을 좁혀도 그대로였습니다.
+    #:
+    #: 한 번의 500 으로 그 종목 전체를 30봉짜리 대체 창구로 떨구면, 알파가
+    #: 필요로 하는 210봉은 영영 안 모입니다. 잠깐 쉬었다 다시 묻습니다.
+    _RETRIES = 3
+    _BACKOFF_S = 0.8
+
     async def _get(self, path: str, tr_id: str, params: dict) -> dict:
-        async with self._lock:
-            wait = self._next_at - time.monotonic()
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._next_at = time.monotonic() + self._gap
-        r = await self._client.get(
-            f"{kis_host(self.paper)}{path}", headers=await self._headers(tr_id), params=params
-        )
-        r.raise_for_status()
-        data = r.json()
-        if str(data.get("rt_cd", "0")) != "0":
-            raise RuntimeError(f"KIS {path} error: {data.get('msg1') or data}")
-        return data
+        last: Exception | None = None
+        for attempt in range(self._RETRIES):
+            async with self._lock:
+                wait = self._next_at - time.monotonic()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                self._next_at = time.monotonic() + self._gap
+            try:
+                r = await self._client.get(
+                    f"{kis_host(self.paper)}{path}",
+                    headers=await self._headers(tr_id), params=params,
+                )
+                r.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                # 4xx 는 다시 물어봐도 같은 답입니다 — 요청이 틀린 것이니까요.
+                if exc.response.status_code < 500 or attempt == self._RETRIES - 1:
+                    raise
+                last = exc
+                # 쉬는 시간을 늘려 갑니다. 같은 속도로 다시 밀면 같은 답입니다.
+                await asyncio.sleep(self._BACKOFF_S * (attempt + 1))
+                continue
+            data = r.json()
+            if str(data.get("rt_cd", "0")) != "0":
+                raise RuntimeError(f"KIS {path} error: {data.get('msg1') or data}")
+            if attempt:
+                log.info("kis %s 재시도 %d회 만에 성공", path.rsplit("/", 1)[-1], attempt)
+            return data
+        raise last or RuntimeError(f"KIS {path}: 재시도했지만 실패했습니다")
 
     # ── 국내인가 해외인가 ────────────────────────────────────────────
     @staticmethod

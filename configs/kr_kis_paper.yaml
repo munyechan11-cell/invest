@@ -49,16 +49,66 @@ universe:
   # 원이 경계). 고정 `tick_size` 하나만 적어 두면 종목이 그 경계를 넘는 순간
   # 격자 밖 지정가가 되고 거래소가 거절합니다 — 진입만이 아니라 **손절도
   # 지정가로 나가므로** 그 종목은 매 봉 거절만 반복하고 포지션에 갇힙니다.
+  # **후보 20종목.** 4종목이었습니다 — 그 넷이 모두 관망이면 그 봉에는
+  # 아무 일도 없고, 화면에서 그건 봇이 멈춘 것과 구별되지 않습니다. 후보가
+  # 넓으면 관망 하나가 곧 "오늘은 끝" 이 되지 않습니다.
+  #
+  # `tick_size` 는 전부 100 으로 적되 **사다리(`tick_ladder: krx`)가 실제
+  # 호가단위를 정합니다** — 국내는 가격대마다 단위가 달라지고, 고정값 하나만
+  # 믿으면 종목이 경계를 넘는 순간 격자 밖 지정가가 되어 거절됩니다. 진입만이
+  # 아니라 **손절도 지정가로 나가므로** 그 종목은 포지션에 갇힙니다.
+  #
+  # 아래 목록은 후보일 뿐이고, 실제로 무엇을 사는지는 필터와 알파가 정합니다.
+  # 보유 종목 수는 risk.max_positions 가 셉니다.
   symbols:
+    # 삼성전자
     - {ticker: "005930", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
-    - {ticker: "000660", venue: kis, quote_currency: KRW, tick_size: 500, lot_size: 1, tick_ladder: krx}
+    # SK하이닉스
+    - {ticker: "000660", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # LG에너지솔루션
+    - {ticker: "373220", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # 삼성바이오로직스
+    - {ticker: "207940", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # 현대차
+    - {ticker: "005380", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # 기아
+    - {ticker: "000270", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # 셀트리온
+    - {ticker: "068270", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # NAVER
     - {ticker: "035420", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
-    - {ticker: "005380", venue: kis, quote_currency: KRW, tick_size: 500, lot_size: 1, tick_ladder: krx}
+    # 카카오
+    - {ticker: "035720", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # KB금융
+    - {ticker: "105560", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # 신한지주
+    - {ticker: "055550", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # 현대모비스
+    - {ticker: "012330", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # LG화학
+    - {ticker: "051910", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # 삼성SDI
+    - {ticker: "006400", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # 삼성물산
+    - {ticker: "028260", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # 한국전력
+    - {ticker: "015760", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # 두산에너빌리티
+    - {ticker: "034020", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # HD한국조선해양
+    - {ticker: "009540", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # HMM
+    - {ticker: "011200", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
+    # 삼성생명
+    - {ticker: "032830", venue: kis, quote_currency: KRW, tick_size: 100, lot_size: 1, tick_ladder: krx}
   refresh_every_bars: 21
   filters:
     - {type: age, params: {min_bars: 200}}
     - {type: volatility, params: {lookback_bars: 60, min_annual_vol: 0.12, max_annual_vol: 0.9}}
-    - {type: limit, params: {max_symbols: 4}}
+    # 후보를 몇 개까지 남길 것인가. 데스크는 이 중 max_symbols_per_run 만큼
+    # 심의하고, 그 선택은 매 봉 다시 매겨집니다 — 한 종목이 관망이어도
+    # 다음 봉에는 다른 종목이 올라옵니다.
+    - {type: limit, params: {max_symbols: 12}}
 
 alpha:
   - {type: investor_flow, params: {window: 20, min_streak: 3, min_participation: 0.01, hold_bars: 12}}

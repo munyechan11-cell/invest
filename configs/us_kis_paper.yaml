@@ -51,22 +51,36 @@ universe:
   # 미국 주식은 호가단위가 가격과 무관하게 $0.01 이고 상하한가가 없습니다 —
   # 국내와 달리 `tick_ladder` 를 켜지 않습니다.
   benchmark: SPY
+  # **후보 20종목.** 8종목이었습니다 — 후보가 좁으면 관망 몇 개로 그 봉이
+  # 끝나고, 화면에서 그건 봇이 멈춘 것과 구별되지 않습니다.
   symbols:
-    - {ticker: AAPL,  venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
-    - {ticker: MSFT,  venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
-    - {ticker: NVDA,  venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: AAPL, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: MSFT, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: NVDA, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
     - {ticker: GOOGL, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
-    - {ticker: AMZN,  venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
-    - {ticker: META,  venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
-    - {ticker: AVGO,  venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
-    - {ticker: LLY,   venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: AMZN, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: META, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: AVGO, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: LLY, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: TSLA, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: JPM, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: V, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: UNH, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: XOM, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: COST, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: NFLX, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: AMD, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: QCOM, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: ADBE, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: CRM, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
+    - {ticker: PEP, venue: kis, quote_currency: USD, tick_size: 0.01, lot_size: 1}
   refresh_every_bars: 21
   filters:
     - {type: age, params: {min_bars: 250}}
     - {type: volatility, params: {lookback_bars: 60, min_annual_vol: 0.15, max_annual_vol: 0.9}}
     # 후보를 `min_universe` 아래로 자르면 상대강도 알파가 조용히 발화를
     # 멈춥니다. 보유 종목 수는 risk.max_positions 가 셉니다.
-    - {type: limit, params: {max_symbols: 8}}
+    - {type: limit, params: {max_symbols: 12}}
 
 alpha:
   - {type: xs_momentum, params: {lookback: 126, skip: 21, top_n: 4, rebalance_every: 21,
