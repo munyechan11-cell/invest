@@ -269,9 +269,23 @@ def _ccxt_wiring(exchange: str, required: bool) -> _Wiring:
 
 #: 계좌 조회(`account_overview`)를 구현한 브로커만. 순서가 곧 우선순위입니다.
 #: 둘 다 연동해 둔 사람에게는 하나를 골라야 하고, 고른 것을 화면이 말합니다.
-_ACCOUNT_VENUES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("toss", ("TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET", "TOSS_ACCOUNT_NO")),
-    ("kis", ("KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO")),
+#: (거래소 id, 있어야 하는 키들, 어댑터 종류, 어댑터 인자).
+#:
+#: **`kis_paper` 가 빠져 있었습니다.** 한투를 모의투자/실계좌 둘로 쪼갤 때
+#: 이 표를 안 고쳐서, 모의투자만 연동한 사람은 카드에 "연동됨" 을 보면서
+#: 잔고 탭에서는 "아직 연동한 증권사가 없습니다" 를 읽었습니다. 두 화면이
+#: 같은 계정을 두고 서로 다른 말을 한 것입니다.
+#:
+#: 실계좌가 앞에 오는 이유: 실계좌는 **계좌번호까지** 있어야 고릅니다. 시세
+#: 때문에 앱 키만 넣어 둔 사람은 여기 걸리지 않고 모의투자로 내려갑니다.
+_ACCOUNT_VENUES: tuple[tuple[str, tuple[str, ...], str, dict], ...] = (
+    ("toss", ("TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET", "TOSS_ACCOUNT_NO"),
+     "toss", {}),
+    ("kis", ("KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO"),
+     "kis", {"environment": "live"}),
+    ("kis_paper", ("KIS_PAPER_APP_KEY", "KIS_PAPER_APP_SECRET",
+                   "KIS_PAPER_ACCOUNT_NO"),
+     "kis", {"environment": "paper"}),
 )
 
 
@@ -282,8 +296,42 @@ def _connected_account_venue(secrets: dict[str, str]) -> str:
     에서 예외를 내고, 그 예외는 "연동이 깨졌다" 로 보이지만 실제로는 우리가
     고르지 말았어야 할 곳을 고른 것입니다.
     """
-    return next((venue for venue, needed in _ACCOUNT_VENUES
+    return next((venue for venue, needed, _kind, _params in _ACCOUNT_VENUES
                  if all(secrets.get(name) for name in needed)), "")
+
+
+def _account_gap(secrets: dict[str, str]) -> str:
+    """연동은 했는데 **잔고를 볼 수 없는** 이유. 없으면 빈 문자열.
+
+    "아직 연동한 증권사가 없습니다" 는 아무것도 안 넣은 사람에게만 맞는
+    말입니다. 실계좌 카드에 시세용으로 앱 키만 넣은 사람에게 그 문장을
+    보여 주면, 이미 한 일을 다시 하러 갑니다 — 그리고 두 번째에도 같은
+    화면을 봅니다.
+    """
+    for venue, needed, _kind, _params in _ACCOUNT_VENUES:
+        have = [name for name in needed if secrets.get(name)]
+        if not have or len(have) == len(needed):
+            continue
+        spec = VENUES_BY_ID.get(venue)
+        labels = {env: label for env, label, _r in (spec.fields if spec else ())}
+        missing = ", ".join(labels.get(n, n) for n in needed if not secrets.get(n))
+        return (f"「{_venue_label(venue)}」 는 연동돼 있지만 잔고를 보려면 "
+                f"{missing} 이(가) 더 필요합니다. ⚙ 설정에서 채워 주세요 — "
+                f"시세용으로 앱 키만 넣으신 것이라면 그대로 두셔도 되고, "
+                f"「한국투자증권 모의투자」 를 연결하면 그 잔고가 여기 나옵니다.")
+    return ""
+
+
+def _account_adapter(venue: str) -> tuple[str, dict]:
+    """거래소 id → (어댑터 종류, 어댑터 인자).
+
+    `kis_paper` 는 거래소 id 이지 어댑터 이름이 아닙니다 — 그대로 넣으면
+    "그런 브로커 없음" 으로 터집니다.
+    """
+    for vid, _needed, kind, params in _ACCOUNT_VENUES:
+        if vid == venue:
+            return kind, dict(params)
+    return venue, {}
 
 
 def _kis_environment(config: StrategyConfig) -> str:
@@ -1099,7 +1147,8 @@ class UserRegistry:
         wired = _with_credentials(cfg, self.accounts.secrets_for(user_id))
         return build_data_provider(wired)
 
-    async def broker_account(self, user_id: int, config: StrategyConfig) -> dict:
+    async def broker_account(self, user_id: int, config: StrategyConfig,
+                             venue: str = "") -> dict:
         """증권사가 말하는 계좌 상태 — 봇과 무관하게.
 
         "내 계좌" 탭은 돌고 있는 봇의 장부를 그렸습니다. 봇이 꺼져 있으면
@@ -1120,14 +1169,16 @@ class UserRegistry:
         # 자기 잔고가 보이는 것은 이 탭의 설명과 정면으로 어긋납니다.
         fallback = ""
         if cfg.broker.type == "paper":
-            fallback = _connected_account_venue(secrets)
+            # `venue` 가 오면 그 계좌만 봅니다 — 계좌별로 하나씩 그릴 때
+            # 쓰는 경로입니다. 없으면 예전처럼 알아서 고릅니다.
+            fallback = venue or _connected_account_venue(secrets)
             if fallback:
                 cfg = cfg.model_copy(deep=True)
-                cfg.broker.type = fallback
                 # 템플릿에 남은 모의 브로커 인자는 다른 어댑터의 인자가
                 # 아닙니다. 비우고 `_with_credentials` 가 이 사용자의 것만
-                # 채우게 둡니다.
-                cfg.broker.params = {}
+                # 채우게 둡니다. `environment` 는 비밀이 아니라 **어느 계좌를
+                # 볼 것인가** 라서 여기서 정해 줘야 합니다.
+                cfg.broker.type, cfg.broker.params = _account_adapter(fallback)
         wired = _with_credentials(cfg, secrets)
         # 조회 전용이므로 모드를 낮춰 세웁니다 — dry_run 어댑터는 네트워크로
         # 주문을 보내지 않습니다.
@@ -1154,8 +1205,11 @@ class UserRegistry:
                 kind = wired.broker.type
                 if kind == "paper":
                     # 여기까지 왔다는 것은 위 fallback 이 고를 곳도 없었다는
-                    # 뜻입니다 — 즉 연동한 증권사가 아예 없습니다.
-                    message = (
+                    # 뜻입니다. 그런데 그게 곧 "아무것도 연동 안 했다" 는
+                    # 아닙니다 — 카드는 채웠는데 잔고에 필요한 칸 하나가
+                    # 비어 있을 수 있습니다. 그 사람에게 "연결하세요" 라고
+                    # 하면 이미 한 일을 다시 하러 갑니다.
+                    message = _account_gap(secrets) or (
                         "아직 연동한 증권사가 없습니다. ⚙ 설정에서 증권사를 "
                         "연결하면 봇을 켜지 않아도 잔고가 여기 나옵니다 — "
                         "모의투자 계좌도 마찬가지입니다."
@@ -1173,10 +1227,43 @@ class UserRegistry:
                 # 무엇을 보고 있는지 화면이 말할 수 있어야 합니다 — 고른
                 # 전략의 계좌가 아니라 연동한 증권사의 계좌입니다.
                 out["via_connected_venue"] = _venue_label(fallback)
+                out["venue"] = fallback
             return out
         finally:
             with contextlib.suppress(Exception):
                 await broker.close()
+
+    async def broker_accounts(self, user_id: int, config: StrategyConfig) -> list[dict]:
+        """연동한 **계좌마다 하나씩.** 합치지 않습니다.
+
+        지금까지 이 탭은 계좌 하나만 그렸습니다. 한투는 모의투자와 실계좌가
+        **별개 계좌** 라서, 둘 다 연동한 사람은 한쪽만 보고 다른 쪽을 그
+        숫자로 짐작하게 됩니다 — 모의에 1억이 있고 실계좌가 0원인데 화면에
+        1억만 뜨면, 그건 이 화면이 만들 수 있는 가장 비싼 오해입니다.
+
+        한 계좌가 실패해도 나머지는 그립니다. 실패한 계좌는 **빠지는 게
+        아니라** 이유를 달고 남습니다 — 목록에서 사라지면 "연동이 풀렸나" 가
+        됩니다.
+        """
+        secrets = self.accounts.secrets_for(user_id)
+        out: list[dict] = []
+        for venue, needed, _kind, _params in _ACCOUNT_VENUES:
+            if not all(secrets.get(name) for name in needed):
+                continue
+            picked = config.model_copy(deep=True)
+            picked.broker.type = "paper"     # 아래 fallback 이 이 거래소를 고르게
+            picked.broker.params = {}
+            try:
+                account = await self.broker_account(user_id, picked, venue=venue)
+            except Exception as exc:         # noqa: BLE001 — 나머지는 그립니다
+                log.warning("%s 계좌 조회 실패: %s", venue, exc)
+                account = {"supported": False, "broker": venue,
+                           "message": f"조회하지 못했습니다: {exc}"}
+            account["venue"] = venue
+            account["venue_label"] = _venue_label(venue)
+            out.append(account)
+        return out
+
 
     def desk_owns_key(self, user_id: int, config: StrategyConfig) -> bool:
         """이 사용자의 데스크가 **자기 키**로 도는가 — 데스크를 세우지 않고.

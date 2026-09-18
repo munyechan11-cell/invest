@@ -39,6 +39,13 @@ from quant.data.provider import DataProvider, register_provider
 
 log = logging.getLogger("quant.data.kis")
 
+
+def _short_text(text: str, limit: int = 120) -> str:
+    """한 줄로 줄입니다. 잘린 URL 이 화면을 채우면 아무도 안 읽습니다."""
+    one = " ".join(str(text).split())
+    return one if len(one) <= limit else one[:limit] + "…"
+
+
 #: 시세용 거래소 코드 ← 주문용 코드. 한 글자씩 다릅니다.
 OVERSEAS_QUOTE_EXCHANGE = {"NASD": "NAS", "NAS": "NAS", "NYSE": "NYS",
                            "NYS": "NYS", "AMEX": "AMS", "AMS": "AMS"}
@@ -251,20 +258,31 @@ class KisProvider(DataProvider):
         bars: list[Bar] = []
         # The endpoint returns at most ~100 rows per call, so page backwards.
         cursor_end = end
+        chart_failed = ""
         while cursor_end > start:
             cursor_start = max(start, cursor_end - timedelta(days=140))
-            data = await self._get(
-                "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
-                "FHKST03010100",
-                {
-                    "FID_COND_MRKT_DIV_CODE": "J",
-                    "FID_INPUT_ISCD": symbol.ticker,
-                    "FID_INPUT_DATE_1": cursor_start.strftime("%Y%m%d"),
-                    "FID_INPUT_DATE_2": cursor_end.strftime("%Y%m%d"),
-                    "FID_PERIOD_DIV_CODE": period,
-                    "FID_ORG_ADJ_PRC": "0",   # 0 = split/dividend adjusted
-                },
-            )
+            try:
+                data = await self._get(
+                    "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+                    "FHKST03010100",
+                    {
+                        "FID_COND_MRKT_DIV_CODE": "J",
+                        "FID_INPUT_ISCD": symbol.ticker,
+                        "FID_INPUT_DATE_1": cursor_start.strftime("%Y%m%d"),
+                        "FID_INPUT_DATE_2": cursor_end.strftime("%Y%m%d"),
+                        "FID_PERIOD_DIV_CODE": period,
+                        "FID_ORG_ADJ_PRC": "0",   # 0 = split/dividend adjusted
+                    },
+                )
+            except Exception as exc:          # noqa: BLE001 — 두 번째 문이 있습니다
+                # **기간별시세가 500 을 냅니다 — 모의투자에서도, 실계좌에서도.**
+                # 현재가는 오는데 이 창구만 그렇습니다. 원인을 여기서 알 수는
+                # 없지만, 한투는 같은 일봉을 **두 곳** 에서 줍니다. 한 문이
+                # 닫혔다고 봇이 시작조차 못 하는 것이 더 나쁩니다.
+                chart_failed = str(exc)
+                log.warning("kis 기간별시세 실패 %s — 일자별시세로 물러섭니다: %s",
+                            symbol.ticker, exc)
+                break
             rows = data.get("output2") or []
             if not rows:
                 break
@@ -283,11 +301,59 @@ class KisProvider(DataProvider):
                 except (KeyError, ValueError):
                     continue
             cursor_end = cursor_start - timedelta(days=1)
+
+        if chart_failed and not bars:
+            bars = await self._daily_price_fallback(symbol, period, timeframe,
+                                                    chart_failed)
         # KIS may include today's still-forming daily row.  The provider
         # contract is closed bars, so compare the candle *end*, not only its
         # open date, before exposing it to a live strategy.
         uniq = {b.ts: b for b in bars if start <= b.ts and b.end_ts <= end}
         return [uniq[k] for k in sorted(uniq)]
+
+    async def _daily_price_fallback(self, symbol, period: str, timeframe: str,
+                                    why: str) -> list[Bar]:
+        """두 번째 문 — 국내주식 **일자별시세**(`FHKST01010400`).
+
+        기간을 받지 않고 최근 몇십 봉만 돌려주므로 워밍업을 다 채우지는
+        못합니다. 그래도 **빈손보다 낫습니다**: 봇이 켜지고, 부족한 봉은
+        "신호를 낼 수 없다" 로 따로 말해 줍니다. 여기까지 실패하면 그때
+        비로소 시작할 수 없는 상태이고, 그 사실을 **두 문 모두의 이유와
+        함께** 말합니다 — 한쪽만 말하면 "그 엔드포인트만 고치면 되겠네" 로
+        읽히니까요.
+        """
+        try:
+            data = await self._get(
+                "/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+                "FHKST01010400",
+                {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol.ticker,
+                 "FID_PERIOD_DIV_CODE": period, "FID_ORG_ADJ_PRC": "0"},
+            )
+        except Exception as exc:              # noqa: BLE001 — 이제는 말해야 합니다
+            raise RuntimeError(
+                f"KIS 국내 일봉을 두 창구 모두에서 받지 못했습니다 "
+                f"({symbol.ticker}). 기간별시세: {_short_text(why)} / "
+                f"일자별시세: {_short_text(str(exc))}. 현재가는 오는데 일봉만 "
+                f"이렇다면 그 앱에 **국내주식 시세 조회** 권한이 있는지 "
+                f"확인하세요"
+            ) from exc
+        out: list[Bar] = []
+        for row in data.get("output") or []:
+            raw_date = str(row.get("stck_bsop_date") or "")
+            values = [self._num(row, k) for k in
+                      ("stck_oprc", "stck_hgpr", "stck_lwpr", "stck_clpr")]
+            if not raw_date or any(v is None or v <= 0 for v in values):
+                continue
+            try:
+                ts = datetime.strptime(raw_date, "%Y%m%d").replace(tzinfo=UTC)
+            except ValueError:
+                continue
+            out.append(Bar(symbol, ts, *values,
+                           self._num(row, "acml_vol") or 0.0, timeframe))
+        if out:
+            log.info("kis 일자별시세로 %s 봉 %d개를 받았습니다 (%s)",
+                     symbol.ticker, len(out), "워밍업이 짧을 수 있습니다")
+        return out
 
     async def quote(self, symbol):
         if not self._domestic_code(symbol.ticker):

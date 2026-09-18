@@ -3228,11 +3228,24 @@ def create_app(config: StrategyConfig | None = None,
         # exchanges. A two-second duplicate read is cheaper than showing account
         # A's cash under strategy B, so strategy identity stays in the partition.
         cache_key = ("broker-account", user_scope, cfg.name, cfg.broker.type)
+
+        async def read() -> dict:
+            """고른 전략의 계좌 + **연동한 계좌 전부.**
+
+            한투는 모의투자와 실계좌가 별개 계좌입니다. 한쪽만 그리면 둘 다
+            연동한 사람은 다른 쪽을 그 숫자로 짐작하게 됩니다 — 모의에 1억,
+            실계좌에 0원인데 화면에 1억만 뜨는 것이 그 모양입니다.
+            """
+            out = await seat.registry.broker_account(seat.user.id, cfg)
+            with contextlib.suppress(Exception):
+                every = await seat.registry.broker_accounts(seat.user.id, cfg)
+                if len(every) > 1 or (every and not out.get("supported")):
+                    out = dict(out)
+                    out["accounts"] = every
+            return out
+
         try:
-            return await state.account_reads.get(
-                cache_key,
-                lambda: seat.registry.broker_account(seat.user.id, cfg),
-            )
+            return await state.account_reads.get(cache_key, read)
         except ReadBusy:
             raise HTTPException(
                 503, "계좌 조회가 잠시 밀려 있습니다 — 곧 다시 시도하세요",

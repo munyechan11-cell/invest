@@ -140,13 +140,16 @@ def test_the_lookup_is_read_only():
 
 
 def test_cash_buying_power_is_not_confused_with_legacy_cash():
-    """매수가능금액과 예수금은 다른 값이고, 구형 cash는 합계 fallback이 아니다."""
+    """매수가능금액과 예수금은 다른 값이고, 구형 cash는 합계 fallback이 아니다.
+
+    계좌마다 하나씩 그리게 되면서 이 조각이 `accountBlock(a)` 안으로
+    들어갔습니다 — 읽는 값은 그대로입니다."""
     body = _fn(SCRIPT, "loadBrokerAccount")
-    assert "d.cash_buying_power" in body, "현금 매수가능금액을 읽지 않습니다"
-    assert "d.investable_assets" in body, "서버가 계산한 운용가능자산을 읽지 않습니다"
-    assert "legacyCash = d.cash" in body, "구형 cash 응답의 경계를 드러내지 않습니다"
+    assert "a.cash_buying_power" in body, "현금 매수가능금액을 읽지 않습니다"
+    assert "a.investable_assets" in body, "서버가 계산한 운용가능자산을 읽지 않습니다"
+    assert "legacyCash = a.cash" in body, "구형 cash 응답의 경계를 드러내지 않습니다"
     assert "money(legacyCash)" in body, "구형 cash를 표시조차 못 합니다"
-    assert "investableAssets = d.investable_assets" in body, (
+    assert "investableAssets = a.investable_assets" in body, (
         "운용가능자산을 서버 응답이 아닌 다른 값으로 계산합니다")
     assert "cashBuyingPower +" not in body and "legacyCash +" not in body, (
         "화면이 계좌 총액을 다시 계산합니다 — 통화/출처 계약이 무너집니다")
@@ -906,3 +909,114 @@ async function api() {
 """)
     assert "error" not in got, got
     assert "$—" not in got["html"], "값이 없는 칸에 통화 기호만 남았습니다"
+
+
+# ── 계좌가 둘이면 둘 다 ──────────────────────────────────────────────────
+#
+# 모의투자에 1억, 실계좌에 0원. 화면에 1억만 뜨면 그 사람은 실계좌에도
+# 돈이 있다고 읽습니다 — 이 화면이 만들 수 있는 가장 비싼 오해입니다.
+# 두 계좌는 통화도 호스트도 다르므로 **더하지 않고 나란히** 놓습니다.
+
+MULTI = r"""
+async function api() {
+  return {
+    supported: true, source: "kis", environment: "paper",
+    cash_buying_power: {}, market_value: {KRW: 0},
+    investable_assets: {KRW: 100000000}, cash: {KRW: 100000000},
+    invested: {}, pnl: {}, daily_pnl: {}, items: [],
+    accounts: [
+      {supported: true, venue: "kis_paper", venue_label: "한국투자증권 모의투자",
+       source: "kis", environment: "paper", cash_buying_power: {},
+       market_value: {KRW: 0}, investable_assets: {KRW: 100000000},
+       cash: {KRW: 100000000}, invested: {}, pnl: {}, daily_pnl: {}, items: []},
+      {supported: true, venue: "kis", venue_label: "한국투자증권 실계좌",
+       source: "kis", environment: "live", cash_buying_power: {},
+       market_value: {KRW: 0}, investable_assets: {KRW: 0},
+       cash: {KRW: 0}, invested: {}, pnl: {}, daily_pnl: {}, items: []}
+    ]
+  };
+}
+(async function () {
+  await loadBrokerAccount();
+  write(JSON.stringify({html: BOX.innerHTML}));
+})().catch(function (e) { write(JSON.stringify({error: String(e)})); });
+"""
+
+
+@JS_REQUIRED
+def test_both_accounts_are_drawn_not_just_one():
+    got = _run_account_js(MULTI)
+    assert "error" not in got, got
+    html = got["html"]
+    assert "한국투자증권 모의투자" in html and "한국투자증권 실계좌" in html
+    assert html.count("<b>운용 가능 자산</b>") == 2, "계좌 하나만 그렸습니다"
+
+
+@JS_REQUIRED
+def test_an_empty_real_account_is_shown_as_zero_not_hidden():
+    """0원이라고 빼 버리면 "연동이 안 됐나" 가 됩니다."""
+    html = _run_account_js(MULTI)["html"]
+    assert "100,000,000원" in html and "0원" in html
+
+
+@JS_REQUIRED
+def test_the_two_balances_are_never_added_together():
+    html = _run_account_js(MULTI)["html"]
+    assert "100,000,000원" in html
+    assert "200,000,000" not in html, "두 계좌를 더했습니다"
+
+
+@JS_REQUIRED
+def test_each_block_says_which_environment_it_is():
+    html = _run_account_js(MULTI)["html"]
+    assert "모의투자 계좌 API" in html and "실계좌 API" in html
+
+
+@JS_REQUIRED
+def test_a_failed_account_keeps_its_place_with_a_reason():
+    """목록에서 사라지면 "연동이 풀렸나" 가 됩니다."""
+    got = _run_account_js(r"""
+async function api() {
+  return {
+    supported: true, source: "kis", environment: "paper",
+    cash_buying_power: {}, market_value: {}, investable_assets: {KRW: 1},
+    cash: {}, invested: {}, pnl: {}, daily_pnl: {}, items: [],
+    accounts: [
+      {supported: true, venue: "kis_paper", venue_label: "한국투자증권 모의투자",
+       source: "kis", environment: "paper", cash_buying_power: {},
+       market_value: {}, investable_assets: {KRW: 1}, cash: {}, invested: {},
+       pnl: {}, daily_pnl: {}, items: []},
+      {supported: false, venue: "toss", venue_label: "토스증권",
+       message: "조회하지 못했습니다: 토큰 만료"}
+    ]
+  };
+}
+(async function () {
+  await loadBrokerAccount();
+  write(JSON.stringify({html: BOX.innerHTML}));
+})().catch(function (e) { write(JSON.stringify({error: String(e)})); });
+""")
+    assert "error" not in got, got
+    assert "토스증권" in got["html"] and "토큰 만료" in got["html"]
+
+
+@JS_REQUIRED
+def test_a_single_account_response_is_unchanged():
+    """서버가 목록을 안 주면 예전 그대로 하나만 그립니다."""
+    got = _run_account_js(r"""
+async function api() {
+  return {
+    supported: true, source: "toss",
+    cash_buying_power: {KRW: 420000}, market_value: {KRW: 0},
+    investable_assets: {KRW: 420000}, cash: null, invested: {KRW: 0},
+    pnl: {}, daily_pnl: {}, items: []
+  };
+}
+(async function () {
+  await loadBrokerAccount();
+  write(JSON.stringify({html: BOX.innerHTML}));
+})().catch(function (e) { write(JSON.stringify({error: String(e)})); });
+""")
+    assert "error" not in got, got
+    assert got["html"].count("<b>운용 가능 자산</b>") == 1
+    assert "420,000원" in got["html"]

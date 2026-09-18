@@ -4747,100 +4747,119 @@ async function loadBrokerAccount() {
   const plain = (v, digits) => typeof v !== "number" || !Number.isFinite(v)
     ? "—" : v.toLocaleString("ko-KR", {maximumFractionDigits: digits});
 
-  // 서로 다른 출처입니다. `investable_assets` 는 서버가 **동일 통화끼리만**
-  // 합산한 값이고, 없을 때 `cash` 나 전략 starting_cash 로 재계산하지 않습니다.
-  const cashBuyingPower = d.cash_buying_power;
-  const holdingsValue = d.market_value;
-  const investableAssets = d.investable_assets;
-  const legacyCash = d.cash;
-  // 어느 계좌인지를 **증권사 이름과 함께** 말합니다. 한투는 모의투자와
-  // 실계좌가 호스트부터 다른 별개 계좌라, 이 한 줄이 없으면 모의투자 잔고를
-  // 실계좌로 착각하게 됩니다 — 이 화면이 만들 수 있는 가장 비싼 오해입니다.
-  const venue = d.source === "toss" ? "토스증권"
-              : d.source === "kis" ? "한국투자증권"
-              : (d.source || "증권사");
-  const source = venue + (d.environment === "paper" ? " 모의투자 계좌"
-                                                    : " 실계좌") + " API" +
-    // 고른 전략이 모의 브로커라 연동한 증권사로 대신 간 경우.
-    (d.via_connected_venue
-      ? ` · 고른 전략이 아니라 연동한 ${esc(d.via_connected_venue)} 계좌입니다`
-      : "");
+  // 계좌 하나를 그리는 조각. 연동한 계좌마다 이걸 한 번씩 부릅니다 —
+  // 한투는 모의투자와 실계좌가 별개 계좌라서, 한쪽만 그리면 다른 쪽을
+  // 그 숫자로 짐작하게 됩니다(모의 1억 · 실계좌 0원).
+  function accountBlock(a) {
+    // 서로 다른 출처입니다. `investable_assets` 는 서버가 **동일 통화끼리만**
+    // 합산한 값이고, 없을 때 `cash` 나 전략 starting_cash 로 재계산하지 않습니다.
+    const cashBuyingPower = a.cash_buying_power;
+    const holdingsValue = a.market_value;
+    const investableAssets = a.investable_assets;
+    const legacyCash = a.cash;
+    // 어느 계좌인지를 **증권사 이름과 함께** 말합니다. 한투는 모의투자와
+    // 실계좌가 호스트부터 다른 별개 계좌라, 이 한 줄이 없으면 모의투자 잔고를
+    // 실계좌로 착각하게 됩니다 — 이 화면이 만들 수 있는 가장 비싼 오해입니다.
+    const venue = a.source === "toss" ? "토스증권"
+                : a.source === "kis" ? "한국투자증권"
+                : (a.source || "증권사");
+    const source = venue + (a.environment === "paper" ? " 모의투자 계좌"
+                                                      : " 실계좌") + " API" +
+      // 고른 전략이 모의 브로커라 연동한 증권사로 대신 간 경우.
+      (a.via_connected_venue
+        ? ` · 고른 전략이 아니라 연동한 ${esc(a.via_connected_venue)} 계좌입니다`
+        : "");
 
-  // 종목마다 지금 얼마어치를 들고 있는지가 계좌를 볼 때 가장 먼저 찾는
-  // 숫자입니다. 수량과 현재가를 놓고 사람이 곱하게 두지 않습니다.
-  const rows = (Array.isArray(d.items) ? d.items : [])
-    .filter(x => x && typeof x === "object" && !Array.isArray(x))
-    .map(x => {
-      // JSON row여도 ticker/name이 object면 `[object Object]`라는 가짜 종목이
-      // 됩니다. 표시 가능한 식별자가 없는 행은 버리고 나머지 정상 행은 살립니다.
-      const ticker = typeof x.ticker === "string" || typeof x.ticker === "number"
-        ? String(x.ticker) : "";
-      const name = typeof x.name === "string" || typeof x.name === "number"
-        ? String(x.name) : "";
-      const label = symLabel(ticker, name);
-      if (!label) return "";
-      // 원화 종목과 외화 종목이 한 표에 섞입니다. 단가 칸에는 통화가 안
-      // 붙어 있어서, 표시가 없으면 $245.67 이 245원 옆에 245.67 로 앉습니다.
-      const unit = (v) => (typeof v === "number" && Number.isFinite(v)
-        && x.currency === "USD" ? "$" : "") + plain(v, 2);
-      return `<tr>
-        <td class="gold">${esc(label)}</td>
-        <td>${plain(x.quantity, 8)}</td>
-        <td>${unit(x.avg_price)}</td>
-        <td>${unit(x.last_price)}</td>
-        <td>${esc(money(x.market_value))}</td>
-        <td>${signed(x.pnl)}${pct(x.pnl_pct)}</td>
-      </tr>`;
-    }).join("");
-  const itemsWarning = d.items_complete === false
-    ? `<div class="msg err" role="status" style="margin-top:9px">` +
-      `${esc(d.items_message || "일부 보유내역 상세를 확인할 수 없습니다. 위 집계금액을 참고하세요.")}</div>`
-    : "";
-  const summaryWarning = d.summary_complete === false
-    ? `<div class="msg err" role="status" style="margin-top:9px">` +
-      `${esc(d.summary_message || "일부 계좌 집계값을 확인할 수 없습니다.")}</div>`
-    : "";
+    // 종목마다 지금 얼마어치를 들고 있는지가 계좌를 볼 때 가장 먼저 찾는
+    // 숫자입니다. 수량과 현재가를 놓고 사람이 곱하게 두지 않습니다.
+    const rows = (Array.isArray(a.items) ? a.items : [])
+      .filter(x => x && typeof x === "object" && !Array.isArray(x))
+      .map(x => {
+        // JSON row여도 ticker/name이 object면 `[object Object]`라는 가짜 종목이
+        // 됩니다. 표시 가능한 식별자가 없는 행은 버리고 나머지 정상 행은 살립니다.
+        const ticker = typeof x.ticker === "string" || typeof x.ticker === "number"
+          ? String(x.ticker) : "";
+        const name = typeof x.name === "string" || typeof x.name === "number"
+          ? String(x.name) : "";
+        const label = symLabel(ticker, name);
+        if (!label) return "";
+        // 원화 종목과 외화 종목이 한 표에 섞입니다. 단가 칸에는 통화가 안
+        // 붙어 있어서, 표시가 없으면 $245.67 이 245원 옆에 245.67 로 앉습니다.
+        const unit = (v) => (typeof v === "number" && Number.isFinite(v)
+          && x.currency === "USD" ? "$" : "") + plain(v, 2);
+        return `<tr>
+          <td class="gold">${esc(label)}</td>
+          <td>${plain(x.quantity, 8)}</td>
+          <td>${unit(x.avg_price)}</td>
+          <td>${unit(x.last_price)}</td>
+          <td>${esc(money(x.market_value))}</td>
+          <td>${signed(x.pnl)}${pct(x.pnl_pct)}</td>
+        </tr>`;
+      }).join("");
+    const itemsWarning = a.items_complete === false
+      ? `<div class="msg err" role="status" style="margin-top:9px">` +
+        `${esc(a.items_message || "일부 보유내역 상세를 확인할 수 없습니다. 위 집계금액을 참고하세요.")}</div>`
+      : "";
+    const summaryWarning = a.summary_complete === false
+      ? `<div class="msg err" role="status" style="margin-top:9px">` +
+        `${esc(a.summary_message || "일부 계좌 집계값을 확인할 수 없습니다.")}</div>`
+      : "";
 
-  box.innerHTML =
-    `<div class="dim" style="margin-bottom:8px">출처: ${esc(source)}</div>` +
-    `<div class="r"><b>운용 가능 자산</b><span>${esc(money(investableAssets))}</span></div>` +
-    `<div class="r"><b>현금 매수가능금액</b><span>${esc(money(cashBuyingPower))}</span></div>` +
-    `<div class="r"><b>보유주식 평가금액</b><span>${esc(money(holdingsValue))}</span></div>` +
-    // 구형 응답은 보여 주기만 합니다. 운용가능자산 계산에는 절대 쓰지 않습니다.
-    // 매수가능금액을 못 주는 증권사는 예수금만 줍니다(한투 `inquire-balance`).
-    // 그건 구형 응답이 아니라 **다른 숫자** 입니다 — 미수 없이 살 수 있는
-    // 금액이 아니라 계좌에 있는 현금입니다. 이름을 그대로 씁니다.
-    (!hasMoney(cashBuyingPower) && hasMoney(legacyCash)
-      ? `<div class="r"><b>예수금</b><span>${esc(money(legacyCash))}</span></div>`
-      : "") +
-    `<div class="dim" style="margin:7px 0 10px">현금 매수가능금액과 보유주식은 ` +
-      `증권사 응답, 운용 가능 자산은 서버가 같은 통화끼리 계산했습니다. ` +
-      `조회할 수 없는 값은 봇 전략 장부로 채우지 않습니다.</div>` +
-    `<div class="r"><b>주식 매수원금</b><span>${esc(money(d.invested))}</span></div>` +
-    `<div class="r"><b>평가손익</b><span>${signed(d.pnl)}${pct(d.pnl_pct)}</span></div>` +
-    `<div class="r"><b>오늘 손익</b><span>${signed(d.daily_pnl)}${pct(d.daily_pnl_pct)}</span></div>` +
-    summaryWarning +
-    (rows
-      ? `<div class="acct-scroll" role="region" tabindex="0" ` +
-          `aria-label="실제 증권사 보유주식 표. 좌우로 스크롤할 수 있습니다.">` +
-          `<table class="acct"><caption class="sr-only">실제 증권사 보유주식</caption>` +
-          `<thead><tr>
-             <th scope="col">종목</th><th scope="col">수량</th>` +
-             `<th scope="col">평단</th><th scope="col">현재가</th>` +
-             `<th scope="col">평가금액</th><th scope="col">평가손익</th>
-           </tr></thead><tbody>${rows}</tbody></table></div>` + itemsWarning
-      : (d.items_complete === false
-          ? itemsWarning
-          : `<div class="dim" style="margin-top:9px">보유 중인 종목이 없습니다.</div>`));
+    return     `<div class="dim" style="margin-bottom:8px">출처: ${esc(source)}</div>` +
+      `<div class="r"><b>운용 가능 자산</b><span>${esc(money(investableAssets))}</span></div>` +
+      `<div class="r"><b>현금 매수가능금액</b><span>${esc(money(cashBuyingPower))}</span></div>` +
+      `<div class="r"><b>보유주식 평가금액</b><span>${esc(money(holdingsValue))}</span></div>` +
+      // 구형 응답은 보여 주기만 합니다. 운용가능자산 계산에는 절대 쓰지 않습니다.
+      // 매수가능금액을 못 주는 증권사는 예수금만 줍니다(한투 `inquire-balance`).
+      // 그건 구형 응답이 아니라 **다른 숫자** 입니다 — 미수 없이 살 수 있는
+      // 금액이 아니라 계좌에 있는 현금입니다. 이름을 그대로 씁니다.
+      (!hasMoney(cashBuyingPower) && hasMoney(legacyCash)
+        ? `<div class="r"><b>예수금</b><span>${esc(money(legacyCash))}</span></div>`
+        : "") +
+      `<div class="dim" style="margin:7px 0 10px">현금 매수가능금액과 보유주식은 ` +
+        `증권사 응답, 운용 가능 자산은 서버가 같은 통화끼리 계산했습니다. ` +
+        `조회할 수 없는 값은 봇 전략 장부로 채우지 않습니다.</div>` +
+      `<div class="r"><b>주식 매수원금</b><span>${esc(money(a.invested))}</span></div>` +
+      `<div class="r"><b>평가손익</b><span>${signed(a.pnl)}${pct(a.pnl_pct)}</span></div>` +
+      `<div class="r"><b>오늘 손익</b><span>${signed(a.daily_pnl)}${pct(a.daily_pnl_pct)}</span></div>` +
+      summaryWarning +
+      (rows
+        ? `<div class="acct-scroll" role="region" tabindex="0" ` +
+            `aria-label="실제 증권사 보유주식 표. 좌우로 스크롤할 수 있습니다.">` +
+            `<table class="acct"><caption class="sr-only">실제 증권사 보유주식</caption>` +
+            `<thead><tr>
+               <th scope="col">종목</th><th scope="col">수량</th>` +
+               `<th scope="col">평단</th><th scope="col">현재가</th>` +
+               `<th scope="col">평가금액</th><th scope="col">평가손익</th>
+             </tr></thead><tbody>${rows}</tbody></table></div>` + itemsWarning
+        : (a.items_complete === false
+            ? itemsWarning
+            : `<div class="dim" style="margin-top:9px">보유 중인 종목이 없습니다.</div>`));
+  }
+
+  // 서버가 계좌 목록을 주면 계좌마다 하나씩, 아니면 예전처럼 하나만.
+  const every = Array.isArray(d.accounts) ? d.accounts.filter(Boolean) : null;
+  box.innerHTML = (every && every.length)
+    ? every.map(a => `<section class="acct-one">` +
+        `<h4 class="acct-title">${esc(a.venue_label || a.venue || "계좌")}</h4>` +
+        (a.supported === false
+          ? `<div class="dim">${esc(a.message || "조회할 수 없습니다")}</div>`
+          : accountBlock(a)) +
+        `</section>`).join("")
+    : accountBlock(d);
   brokerAccountRetryUntil = 0;
-  const partial = d.summary_complete === false || d.items_complete === false;
-  const partialRail = d.summary_complete === false
+  // 상단 레일은 한 줄뿐이라 계좌 하나를 골라야 합니다. 조회된 것 중 첫
+  // 계좌 — 여러 계좌를 한 숫자로 더하지 않습니다. 통화도 계좌도 다릅니다.
+  const primary = (every || []).find(a => a && a.supported !== false) || d;
+  const partial = primary.summary_complete === false
+    || primary.items_complete === false;
+  const partialRail = primary.summary_complete === false
     ? "일부 통화 합계 미조회" : "보유 상세 확인 필요";
   finish(
     partial ? "delayed" : "live",
     partial ? "계좌 일부 미조회" : "계좌 최신",
     Date.now(),
-    partial ? partialRail : money(investableAssets),
+    partial ? partialRail : money(primary.investable_assets),
   );
   return 20000;
 }

@@ -100,6 +100,9 @@ button{cursor:pointer}
 .vstep.ok{color:var(--ok)} .vstep.bad{color:var(--bad)}
 .vsum{margin-top:6px;font-size:14px;line-height:1.7;overflow-wrap:anywhere}
 .vsum.ok{color:var(--ok)} .vsum.bad{color:var(--bad)} .vsum.warn{color:var(--warn)}
+/* 계좌마다 한 덩이. 둘이 붙어 있으면 어느 줄이 어느 계좌인지 읽다가 놓칩니다. */
+.acct-one + .acct-one{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+.acct-title{margin:0 0 8px;font-size:15px;font-weight:700}
 [data-vres]{display:block;max-width:100%}
 
 /* ── 종목 찾기 ─────────────────────────────────────────────────────── */

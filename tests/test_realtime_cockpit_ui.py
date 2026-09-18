@@ -278,8 +278,14 @@ def test_reconnect_aligns_hidden_selector_before_strategy_scoped_reads():
 
 
 def test_partial_account_response_never_claims_the_whole_account_is_latest():
+    """계좌를 여러 개 그리게 되면서 상단 레일이 보는 대상이 `d` 에서
+    **조회된 첫 계좌** 로 바뀌었습니다 — 여러 계좌를 한 줄에 더하지 않기
+    위해서입니다. 부분 조회를 "최신" 이라 우기지 않는 성질은 그대로입니다."""
     account = _whole_fn("loadBrokerAccount")
-    assert "d.summary_complete === false || d.items_complete === false" in account
+    assert "primary.summary_complete === false" in account
+    assert "primary.items_complete === false" in account
+    assert "d.summary_complete" not in account, (
+        "레일이 여러 계좌 중 어느 것을 말하는지 불분명해집니다")
     assert 'partial ? "계좌 일부 미조회" : "계좌 최신"' in account
     assert '"일부 통화 합계 미조회"' in account
 
