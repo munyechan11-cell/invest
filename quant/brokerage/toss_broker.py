@@ -53,6 +53,7 @@ from quant.core.types import (
     OrderType,
     Quote,
     Symbol,
+    one_line_error,
     timeframe_seconds,
     utcnow,
 )
@@ -1733,7 +1734,8 @@ class TossBrokerage(LiveBrokerage):
                 snapshot = self._order_snapshot(order, remote)
                 self._apply_order_snapshot(order, snapshot)
             except Exception as exc:  # noqa: BLE001 — do not orphan on uncertainty
-                reason = f"토스 취소 후 원주문 상태를 확인하지 못했습니다: {exc}"
+                reason = ("토스 취소 후 원주문 상태를 확인하지 못했습니다: "
+                          f"{one_line_error(exc, 120)}")
                 self.fill_channel_down(reason)
                 log.warning("%s", reason)
                 return False

@@ -23,6 +23,7 @@ from quant.core.types import (
     OrderStatus,
     RunMode,
     Symbol,
+    one_line_error,
     utcnow,
 )
 
@@ -195,7 +196,8 @@ class LiveBrokerage(Brokerage):
             return str(guard(order) or "")
         except Exception as exc:  # noqa: BLE001 - uncertainty fails closed
             log.exception("submission guard failed for %s", order.symbol.ticker)
-            return f"주문 직전 안전 상태를 확인하지 못했습니다: {exc}"
+            return ("주문 직전 안전 상태를 확인하지 못했습니다: "
+                    f"{one_line_error(exc, 120)}")
 
     def _enforce_submission_guard(self, order: Order) -> None:
         """Raise at a concrete adapter's last synchronous send boundary."""
@@ -514,7 +516,7 @@ class LiveBrokerage(Brokerage):
                 broker_id = await self._venue_submit(order)
             except Exception as exc:
                 order.status = OrderStatus.REJECTED
-                order.reject_reason = f"venue rejected: {exc}"
+                order.reject_reason = f"venue rejected: {one_line_error(exc, 120)}"
                 log.error("venue rejected %s: %s", order.symbol.ticker, exc)
                 return order
 

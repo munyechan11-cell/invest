@@ -43,6 +43,13 @@ def one_line_error(exc: object, limit: int = 140) -> str:
     text = re.sub(r"(https?://[^\s'\"?]+)\?[^\s'\"]*", r"\1", text)
     # httpx 가 붙이는 안내 링크는 사용자에게 아무 뜻이 없습니다.
     text = re.sub(r"\s*For more information check:\s*\S+", "", text)
+    if not text:
+        # **어떤 예외는 `str()` 이 비어 있습니다.** `httpx.ReadTimeout()` 과
+        # `asyncio.TimeoutError()` 가 그렇습니다. 그대로 끼워 넣으면 화면에
+        # "주식일별주문체결조회 실패: " 처럼 **뒤가 잘린 문장** 이 남고, 읽는
+        # 사람은 원인이 없는 것인지 우리가 못 적은 것인지 알 수 없습니다.
+        # 적어도 무엇이 터졌는지는 이름으로 남깁니다.
+        text = type(exc).__name__
     return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 

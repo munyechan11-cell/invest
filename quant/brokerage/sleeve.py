@@ -42,7 +42,15 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
 
 from quant.brokerage.base import Brokerage, BrokerageError
-from quant.core.types import Fill, Order, OrderSide, OrderStatus, RunMode, utcnow
+from quant.core.types import (
+    Fill,
+    Order,
+    OrderSide,
+    OrderStatus,
+    RunMode,
+    one_line_error,
+    utcnow,
+)
 
 # 계층으로는 거꾸로 보이지만 순환은 없습니다 — `gateway` 는 `sleeve` 를 모르고,
 # 슬리브는 이미 게이트웨이를 생성자로 받습니다. 정지를 **거절** 로 접으려면
@@ -242,7 +250,8 @@ class SleeveBrokerage(Brokerage):
         except Exception as exc:  # noqa: BLE001 - 불확실하면 막는 쪽으로 닫습니다
             log.exception("%s: 제출 가드가 실패했습니다 (%s)",
                           self.agent_id, order.symbol.ticker)
-            return f"주문 직전 안전 상태를 확인하지 못했습니다: {exc}"
+            return ("주문 직전 안전 상태를 확인하지 못했습니다: "
+                    f"{one_line_error(exc, 120)}")
 
     # ── 체결 채널 ────────────────────────────────────────────────────────
     #

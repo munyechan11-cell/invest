@@ -412,7 +412,12 @@ class KisBrokerage(LiveBrokerage):
             try:
                 rows = await self._venue_executions()
             except Exception as exc:
-                self.fill_channel_down(f"주식일별주문체결조회 실패: {exc}")
+                # `str(exc)` 가 빈 예외가 있습니다(읽기 시간초과가 그렇습니다).
+                # 그대로 끼우면 "실패: " 뒤가 공백이고, **체결을 못 읽는 날**
+                # 원인을 알 길이 없어집니다 — 하필 그날이 제일 알아야 하는 날
+                # 입니다.
+                self.fill_channel_down(
+                    f"주식일별주문체결조회 실패: {one_line_error(exc, 120)}")
                 return await super().poll_fills()
 
             by_id = {_field(row, "order_id"): row for row in rows
@@ -495,7 +500,7 @@ class KisBrokerage(LiveBrokerage):
             except Exception as exc:
                 raise BrokerageError(
                     "KIS 체결 조회(주식일별주문체결조회)를 사용할 수 없습니다 — "
-                    f"체결을 확인할 수 없는 상태로는 주문하지 않습니다: {exc}"
+                    f"체결을 확인할 수 없는 상태로는 주문하지 않습니다: {one_line_error(exc, 120)}"
                 ) from exc
         await super().connect()
 

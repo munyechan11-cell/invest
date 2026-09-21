@@ -37,6 +37,7 @@ from quant.core.types import (
     PortfolioTarget,
     RunMode,
     Symbol,
+    one_line_error,
 )
 from quant.execution.base import ExecutionModel
 from quant.live.limits import TradingBudget
@@ -118,7 +119,7 @@ class Engine:
                 open_orders = list(await self.brokerage.open_orders())
             except Exception as exc:  # noqa: BLE001 — uncertainty is itself unsafe
                 open_orders = []
-                issues.append(f"로컬 미결 주문 조회 실패: {exc}")
+                issues.append(f"로컬 미결 주문 조회 실패: {one_line_error(exc, 120)}")
                 causes.append(exc)
             for order in open_orders:
                 try:
