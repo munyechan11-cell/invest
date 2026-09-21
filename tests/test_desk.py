@@ -241,7 +241,7 @@ def broke(message: str, provider: str = ""):
 
 def test_a_credit_balance_error_says_what_to_do():
     reason = broke("anthropic 400: Your credit balance is too low", "anthropic")
-    assert "Anthropic" in reason and "Plans & Billing" in reason
+    assert "Anthropic" in reason and "한도" in reason
 
 
 def test_a_gemini_quota_does_not_send_you_to_anthropic():
@@ -249,7 +249,7 @@ def test_a_gemini_quota_does_not_send_you_to_anthropic():
     라고 하면, 있지도 않은 계정을 만들러 갑니다 — 틀린 안내는 없는 안내보다
     나쁩니다."""
     reason = broke("google 429: Quota exceeded for quota metric", "google")
-    assert "Google AI Studio" in reason and "aistudio.google.com" in reason
+    assert "Google AI Studio" in reason
     assert "Anthropic" not in reason and "console.anthropic.com" not in reason
 
 

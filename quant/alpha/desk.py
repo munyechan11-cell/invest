@@ -68,7 +68,15 @@ from quant.alpha.seats import (
 from quant.core.aio import LazySemaphore
 from quant.core.context import Context
 from quant.core.events import EventType
-from quant.core.types import Bar, Direction, Insight, RunMode, Symbol, periods_per_year
+from quant.core.types import (
+    Bar,
+    Direction,
+    Insight,
+    RunMode,
+    Symbol,
+    one_line_error,
+    periods_per_year,
+)
 from quant.data.flow import FlowFeed
 from quant.indicators.streaming import (
     ADX,
@@ -700,10 +708,10 @@ class TradingDesk(AlphaModel):
             # 계정을 충전하러 갑니다 — 틀린 안내는 없는 안내보다 나쁩니다.
             who, where = billing_hint(
                 getattr(getattr(self.client, "config", None), "provider", ""))
-            if "credit balance" in message or "quota" in message.lower():
-                return (f"{who} 사용 한도가 찼습니다"
-                        + (f" — {where} 에서 확인하세요." if where else ".")
-                        + f" (원문: {message[:160]})")
+            if ("credit balance" in message or "quota" in message.lower()
+                    or "spending cap" in message.lower()
+                    or "credits are depleted" in message.lower()):
+                return self._exhausted_reason(exc)
             if " 401:" in message or " 403:" in message:
                 return (f"{who} API 키가 거부되었습니다 — 키를 확인하세요."
                         + (f" 발급: {where}" if where else "")
@@ -881,6 +889,29 @@ class TradingDesk(AlphaModel):
         async with self._sem:
             return await client.complete(seat.system, user, seat.schema)
 
+    def _exhausted_reason(self, exc: Exception) -> str:
+        """한도에 걸렸을 때 사람이 읽을 한 줄.
+
+        **무엇이 소진됐는지에 따라 할 일이 다릅니다.** 하루 할당량은 기다리면
+        풀리고, 지출 한도·선불 잔액은 결제 화면에 가야 풀립니다. 한 문장으로
+        뭉개면 기다려도 안 풀리는 것을 기다리게 됩니다.
+
+        사전 점검과 실행 중 경로가 **같은 문장** 을 쓰도록 여기 한 곳에
+        둡니다 — 이 저장소는 같은 판정이 두 곳에 갈라져 있다가 한쪽만 고쳐진
+        적이 이미 있습니다.
+        """
+        who, where = billing_hint(
+            getattr(getattr(self.client, "config", None), "provider", ""))
+        text = str(exc).lower()
+        if "spending cap" in text or "credits are depleted" in text:
+            todo = (f"{who} 결제 한도에 걸렸습니다 — **기다려도 풀리지 않습니다.**"
+                    + (f" {where} 에서 한도·잔액을 확인하세요." if where else ""))
+        else:
+            todo = (f"{who} 사용 한도가 찼습니다 — 보통 하루 단위로 풀립니다. "
+                    f"한 바퀴가 호출 약 {len(self.seats) + 3}회를 쓰므로, 계속 "
+                    f"걸리면 좌석 축소(seats 옵션)도 방법입니다.")
+        return f"{todo} (원문: {one_line_error(exc, 120)})"
+
     async def _safe_ask(self, seat: Seat, user: str, fallback: dict) -> dict:
         try:
             return await self._ask(seat, user)
@@ -888,12 +919,7 @@ class TradingDesk(AlphaModel):
             # Stop the whole desk. Letting the remaining fifteen seats each
             # retry an exhausted allowance turns a clear failure into ten
             # minutes of deadline burn and the same answer.
-            self._disabled = (
-                f"LLM 사용량이 소진되었습니다 — 데스크를 중단합니다. "
-                f"16석 한 바퀴는 호출 약 {len(self.seats) + 3}회를 씁니다. "
-                f"무료 티어라면 유료 전환이나 좌석 축소(seats 옵션)를 고려하세요. "
-                f"({str(exc)[:150]})"
-            )
+            self._disabled = self._exhausted_reason(exc)
             log.error(self._disabled)
             raise
         except LLMError as exc:

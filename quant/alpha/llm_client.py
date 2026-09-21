@@ -184,8 +184,26 @@ def _retry_after(message: str) -> float | None:
 _LONG_WAIT_S = 25.0
 
 
+#: 다시 시도해도 **오늘 안에는 풀리지 않는** 429 들.
+#:
+#: 앞의 넷은 하루 할당량, 뒤의 셋은 **돈** 입니다. 돈 쪽이 빠져 있어서 실제로
+#: 이런 일이 있었습니다 — 구글이 "monthly spending cap" 을 돌려주는데 그것이
+#: 평범한 혼잡으로 분류되어, 데스크가 **사흘 내내** 사이클마다 열아홉 번씩
+#: 실패하고 그때마다 "분석가 합의 대체" 로 물러섰습니다. 화면에는 판정이
+#: 정상처럼 떴고, 그게 축약본이라는 사실은 작은 표 하나뿐이었습니다.
+#:
+#: 대기 시간으로도 못 걸렀습니다. 한도 초과 응답에는 `retryDelay` 가 아예
+#: 없어서 "얼마나 기다리면 되나" 로는 판정할 수 없습니다.
+_TERMINAL_429 = (
+    "per day", "perday", "daily", "quota_exceeded",
+    "spending cap",              # 프로젝트 월 지출 한도
+    "credits are depleted",      # 선불 잔액 소진
+    "billing account",           # 결제 계정 자체의 문제
+)
+
+
 def _is_long_exhaustion(message: str) -> bool:
-    if any(w in message.lower() for w in ("per day", "perday", "daily", "quota_exceeded")):
+    if any(w in message.lower() for w in _TERMINAL_429):
         return True
     wait = _retry_after(message)
     return wait is not None and wait >= _LONG_WAIT_S
