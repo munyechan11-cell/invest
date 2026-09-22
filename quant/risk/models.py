@@ -214,7 +214,10 @@ class MaximumDrawdownPortfolio(RiskManagementModel):
             if self._resume_at is not None and ctx.now >= self._resume_at:
                 self.tripped = False
                 self._resume_at = None
-                ctx.unlock_all()
+                # 자기가 건 전체 정지만 푼다. `unlock_all` 은 쿨다운과 종목별
+                # 손절 가드까지 같이 지우고, 그것들은 드로다운이 끝난 직후에
+                # 가장 필요한 잠금이다.
+                ctx.unlock_book()
                 # fresh baseline so the strategy is not judged against a peak it
                 # can no longer reach from a flat book
                 ctx.portfolio.high_water_mark = ctx.portfolio.equity

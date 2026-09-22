@@ -221,6 +221,18 @@ class Context:
     def unlock(self, symbol: Symbol) -> None:
         self._locks.pop(symbol.key, None)
 
+    def unlock_book(self) -> None:
+        """Lift only the whole-book halt, leaving per-symbol locks alone.
+
+        `unlock_all` empties the map, which is right for an operator clearing
+        everything and wrong for one component lifting its own halt: the same
+        map holds cooldowns, stop-out guards and low-profit locks that other
+        components set for their own reasons, each with its own expiry.
+        Clearing those when a drawdown halt ends re-opens exactly the names
+        that were just locked out, at the moment the book is most fragile.
+        """
+        self._locks.pop("*", None)
+
     def unlock_all(self) -> None:
         self._locks.clear()
 
