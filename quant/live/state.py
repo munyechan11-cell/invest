@@ -176,6 +176,11 @@ CREATE TABLE IF NOT EXISTS locks (
   until TEXT NOT NULL, reason TEXT,
   PRIMARY KEY (run_id, symbol_key)
 );
+CREATE TABLE IF NOT EXISTS risk_state (
+  run_id INTEGER NOT NULL, model TEXT NOT NULL,
+  payload TEXT NOT NULL, updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, model)
+);
 CREATE TABLE IF NOT EXISTS pins (
   run_id INTEGER NOT NULL, symbol_key TEXT NOT NULL,
   reason TEXT, pinned_at TEXT NOT NULL,
@@ -1937,6 +1942,47 @@ class StateStore:
              for key, (until, reason) in locks.items()],
         )
         self.conn.commit()
+
+    def save_risk_state(self, state: dict[str, dict]) -> None:
+        """Persist what the risk models must not lose to a restart.
+
+        `save_locks` above says a restart re-enters exactly the names that were
+        just locked out, and lists the drawdown halt among what it protects.
+        It protects the halt's *lock*. It does not protect the count of how
+        many times that halt has fired, and that count is the kill switch:
+        three trips means the strategy is broken, not unlucky, and it stops
+        until an operator looks at it. A redeploy used to hand it three fresh
+        lives — and clear a permanent halt outright.
+        """
+        self._claim()
+        self.conn.execute("DELETE FROM risk_state WHERE run_id=?", (self.run_id,))
+        now = datetime.now(UTC).isoformat()
+        self.conn.executemany(
+            "INSERT INTO risk_state(run_id, model, payload, updated_at) "
+            "VALUES(?,?,?,?)",
+            [(self.run_id, model, json.dumps(payload, ensure_ascii=False), now)
+             for model, payload in state.items()],
+        )
+        self.conn.commit()
+
+    def restore_risk_state(self) -> dict[str, dict]:
+        """Whatever was stored, by model name. Unreadable rows are skipped."""
+        self._claim()
+        rows = self.conn.execute(
+            "SELECT model, payload FROM risk_state WHERE run_id=?", (self.run_id,)
+        ).fetchall()
+        out: dict[str, dict] = {}
+        for r in rows:
+            try:
+                payload = json.loads(r["payload"])
+            except (ValueError, TypeError):
+                log.warning("리스크 모델 %s 의 저장된 상태를 읽지 못했습니다", r["model"])
+                continue
+            if isinstance(payload, dict):
+                out[r["model"]] = payload
+        if out:
+            log.info("복원: 리스크 모델 상태 %d건", len(out))
+        return out
 
     def restore_locks(self, now: datetime) -> dict[str, tuple[datetime, str]]:
         self._claim()

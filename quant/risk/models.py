@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import math
 import statistics
+from datetime import datetime
 from decimal import Decimal
 
 from quant.core.context import Context
@@ -240,6 +241,35 @@ class MaximumDrawdownPortfolio(RiskManagementModel):
             ctx.lock_all(ctx.now + ctx.bar_delta * self.halt_bars, reason)
             return [self._flatten(t, reason) for t in targets]
         return targets
+
+    def state_payload(self) -> dict | None:
+        """The trip count is the whole kill switch, and it lived only in memory.
+
+        The halt's *lock* was already persisted, which is why this looked
+        covered. It was not: the lock comes back after a restart and expires on
+        schedule, while `trips` comes back at zero. A strategy that had spent
+        two of its three lives gets three fresh ones, and a permanent halt that
+        says an operator must look at it is undone by a redeploy.
+        """
+        if not (self.tripped or self.trips or self.halted_permanently):
+            return None
+        return {"tripped": self.tripped, "trips": self.trips,
+                "halted_permanently": self.halted_permanently,
+                "resume_at": self._resume_at.isoformat() if self._resume_at else ""}
+
+    def load_state(self, payload: dict) -> None:
+        self.tripped = bool(payload.get("tripped"))
+        self.trips = int(payload.get("trips") or 0)
+        self.halted_permanently = bool(payload.get("halted_permanently"))
+        raw = payload.get("resume_at") or ""
+        self._resume_at = datetime.fromisoformat(raw) if raw else None
+        if self.halted_permanently:
+            log.error("복원: 드로다운 한도를 %d회 넘겨 **영구 정지** 상태입니다 — "
+                      "운영자가 직접 확인해야 풀립니다", self.trips)
+        elif self.tripped:
+            log.warning("복원: 드로다운 정지 중 (%d/%d회) — 해제 예정 %s",
+                        self.trips, self.max_trips,
+                        self._resume_at.isoformat() if self._resume_at else "미정")
 
 
 class PortfolioVolatilityCap(RiskManagementModel):

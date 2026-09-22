@@ -27,6 +27,20 @@ class RiskManagementModel(ABC):
     def on_trade_closed(self, ctx: Context, trade) -> None:
         return None
 
+    # -- durable state ---------------------------------------------------
+    def state_payload(self) -> dict | None:
+        """State that must survive a restart, or None when there is none.
+
+        A halt a model imposed on itself is the case this exists for: the lock
+        it set is already persisted, but the counter that decides whether the
+        next one is permanent is not, so a restart hands a broken strategy a
+        fresh set of lives.
+        """
+        return None
+
+    def load_state(self, payload: dict) -> None:
+        return None
+
     # -- helper ----------------------------------------------------------
     @staticmethod
     def _flatten(target: PortfolioTarget, reason: str) -> PortfolioTarget:
@@ -87,6 +101,30 @@ class CompositeRiskModel(RiskManagementModel):
             return PortfolioTarget(t.symbol, current,
                                    tag=f"증액 보류: {why}", source=self.name)
         return t                                         # 줄이는 주문
+
+    # -- durable state ---------------------------------------------------
+    def durable_state(self) -> dict[str, dict]:
+        """What each model must not lose to a restart, keyed by model name."""
+        out: dict[str, dict] = {}
+        for model in self.models:
+            payload = model.state_payload()
+            if payload is not None:
+                out[model.name] = payload
+        return out
+
+    def load_durable_state(self, saved: dict[str, dict]) -> int:
+        restored = 0
+        for model in self.models:
+            payload = saved.get(model.name)
+            if payload is None:
+                continue
+            try:
+                model.load_state(payload)
+            except Exception:
+                log.exception("리스크 모델 %s 상태를 복원하지 못했습니다", model.name)
+                continue
+            restored += 1
+        return restored
 
     def on_trade_closed(self, ctx, trade):
         for m in self.models:

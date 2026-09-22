@@ -215,6 +215,7 @@ class LiveTrader:
                 )
                 self.state.snapshot_positions(self.engine.ctx.portfolio)
                 self.state.save_locks(self.engine.ctx.export_locks())
+                self.state.save_risk_state(self._risk_state())
                 self.state.save_pins(self.engine.ctx.pinned)
             elif event.type in (EventType.PROTECTION, EventType.ORDER_REJECTED,
                                 EventType.RISK_ACTION, EventType.ERROR):
@@ -381,9 +382,10 @@ class LiveTrader:
         if resumed:
             restored = self.state.restore_positions(self.engine.ctx.portfolio, symbols)
             self.engine.ctx.import_locks(self.state.restore_locks(datetime.now(UTC)))
+            risk_models = self._load_risk_state(self.state.restore_risk_state())
             pinned = self.state.restore_pins(self.engine.ctx, symbols)
-            log.info("run %s 복원: 포지션 %d건, 핀 %d건", self.state.run_id,
-                     restored, pinned)
+            log.info("run %s 복원: 포지션 %d건, 핀 %d건, 리스크 모델 %d건",
+                     self.state.run_id, restored, pinned, risk_models)
         if isinstance(self.engine.brokerage, LiveBrokerage):
             # Deliberately `isinstance`, not `venue_backed`. This branch and the
             # `mark_reconciliation_required` one below decide who may adopt the
@@ -955,6 +957,15 @@ class LiveTrader:
             await self.engine._submit(orders)
         return len(orders)
 
+    def _risk_state(self) -> dict[str, dict]:
+        """리스크 모델들이 재시작에 잃으면 안 되는 것. 없으면 빈 dict."""
+        durable = getattr(self.engine.risk, "durable_state", None)
+        return durable() if durable is not None else {}
+
+    def _load_risk_state(self, saved: dict[str, dict]) -> int:
+        load = getattr(self.engine.risk, "load_durable_state", None)
+        return load(saved) if load is not None and saved else 0
+
     async def _run_exit_safety(self) -> None:
         """Evaluate only exposure-reducing risk targets between strategy bars."""
         ctx = self.engine.ctx
@@ -1500,6 +1511,7 @@ class LiveTrader:
             try:
                 self.state.snapshot_positions(self.engine.ctx.portfolio)
                 self.state.save_locks(self.engine.ctx.export_locks())
+                self.state.save_risk_state(self._risk_state())
                 self.state.save_pins(self.engine.ctx.pinned)
             except Exception as exc:  # noqa: BLE001 — still release every resource
                 log.exception("could not persist the final live state")
