@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 
 from quant.core.context import Context
-from quant.core.types import ClosedTrade, Symbol
+from quant.core.types import ClosedTrade, Symbol, one_line_error
 
 log = logging.getLogger("quant.protections")
 
@@ -209,21 +209,69 @@ class MaxDrawdownProtection(Protection):
 
 
 class ProtectionManager:
-    """Runs every protection once per bar and reports what fired."""
+    """Runs every protection once per bar and reports what fired.
 
-    def __init__(self, *protections: Protection):
+    A protection that raises is not a protection that cleared. One that keeps
+    raising is not a protection at all — and this repository has already paid
+    for that distinction once: a signal generator lost its API quota, failed
+    every cycle for three days, logged each failure and quietly fell back. The
+    logs were all there. Nobody read them for three days.
+
+    So a failure is reported like any other event — it reaches the operator's
+    notifier on the same channel a firing protection does — and a protection
+    that has failed on `broken_after_bars` consecutive bars stops new entries
+    across the book. Not on the first one: a single raise is more likely a data
+    glitch than a broken breaker, and halting a working book on a hiccup is its
+    own kind of loss.
+
+    Other protections keep running throughout. One that crashes must not take
+    the working ones down with it.
+    """
+
+    def __init__(self, *protections: Protection, broken_after_bars: int = 3):
         self.protections = list(protections)
+        self.broken_after_bars = broken_after_bars
+        self._failing: dict[str, int] = {}
 
     def apply(self, ctx: Context) -> list[dict]:
         events: list[dict] = []
         for p in self.protections:
             try:
-                events.extend(p.apply(ctx))
-            except Exception:
-                log.exception("protection %s raised", p.name)
+                fired = p.apply(ctx)
+            except Exception as exc:
+                events.append(self._failed(ctx, p, exc))
+            else:
+                events.extend(fired)
+                if self._failing.pop(p.name, 0):
+                    log.info("보호장치 %s 이(가) 다시 동작합니다", p.name)
         for e in events:
-            log.info("protection fired: %s", e)
+            # A crash is already logged with its traceback in `_failed`; saying
+            # "fired" about it here would mislead whoever greps this file
+            # during an incident.
+            if not e.get("failed"):
+                log.info("protection fired: %s", e)
         return events
+
+    def _failed(self, ctx: Context, p: Protection, exc: Exception) -> dict:
+        """Record one failure, and halt if this protection is simply broken.
+
+        The halt is left to expire on its own once the protection recovers.
+        Lifting it here would mean `unlock_all`, which clears every lock in the
+        book including ones other protections set for their own reasons.
+        """
+        bars = self._failing[p.name] = self._failing.get(p.name, 0) + 1
+        log.exception("보호장치 %s 이(가) 예외로 멈췄습니다 (%d봉 연속)", p.name, bars)
+        reason = (f"보호장치 {p.name} 이(가) {bars}봉 연속 실패했습니다 "
+                  f"— {one_line_error(exc)}")
+        event = {"protection": p.name, "symbol": "*", "failed": True,
+                 "bars": bars, "reason": reason}
+        if bars >= self.broken_after_bars:
+            until = ctx.now + ctx.bar_delta * p.stop_bars
+            halt = f"{reason} — 안전장치가 없는 상태라 신규 진입을 멈춥니다"
+            ctx.lock_all(until, halt)
+            event["reason"] = halt
+            event["until"] = until.isoformat()
+        return event
 
 
 BUILTIN_PROTECTIONS = {
