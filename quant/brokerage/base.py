@@ -136,5 +136,12 @@ class Brokerage(ABC):
             raise BrokerageError(
                 f"{sym} quantity {order.quantity} is off the {sym.lot_size} lot grid"
             )
-        if order.type.value.startswith("limit") and order.limit_price is None:
-            raise BrokerageError("limit order without a limit price")
+        # 타입별로 필요한 가격이 다릅니다. 문자열 접두사로 보면 `stop_limit` 이
+        # "limit" 으로 시작하지 않아 **지정가 없는 스톱리밋** 이 그대로 통과했고,
+        # 스톱 주문의 발동가는 아예 아무도 안 봤습니다. 시뮬레이터는 빠진 값을
+        # 봉 시가로 메워 주지만 거래소는 그러지 않습니다 — 여기가 프로세스를
+        # 떠나기 전 마지막 문입니다.
+        if order.type in (OrderType.LIMIT, OrderType.STOP_LIMIT) and order.limit_price is None:
+            raise BrokerageError(f"{order.type.value} order without a limit price")
+        if order.type in (OrderType.STOP, OrderType.STOP_LIMIT) and order.stop_price is None:
+            raise BrokerageError(f"{order.type.value} order without a stop price")
