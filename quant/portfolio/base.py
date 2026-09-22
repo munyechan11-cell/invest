@@ -8,6 +8,11 @@ Every model returns absolute targets for the full union of (symbols with active
 insights) ∪ (symbols currently held), so a symbol that stops being liked gets an
 explicit zero target rather than being silently forgotten.
 
+That rule reads *absence* as an instruction, and it only holds when the alpha
+layer actually ran. When a model crashed, absence means nobody looked — so a
+held name with no view of any kind is left alone rather than sold. An active
+insight worth zero is still a decision and is still obeyed.
+
 Sizing is gated by an asymmetric buy/hold band shared by every model: it takes
 more conviction to open a position than to keep one. A signal oscillating across
 a single threshold otherwise buys and sells the same name repeatedly while
@@ -74,6 +79,17 @@ class PortfolioConstructionModel(ABC):
             symbols.setdefault(pos.symbol.key, pos.symbol)
 
         investable = ctx.equity * (1.0 - self.cash_reserve_pct)
+        # 알파 층이 이번 봉을 다 보지 못했으면, 인사이트가 **없다** 는 사실이
+        # 더 이상 "이 종목은 이제 아니다" 를 뜻하지 않습니다. 본 적이 없다는
+        # 뜻입니다. 위 독스트링의 규칙(없으면 0 타깃 = 청산)은 알파가 온전히
+        # 돌았을 때만 성립합니다.
+        degraded = bool(ctx.state("alpha").get("degraded"))
+        # **본 적 없는 것** 만 붙잡습니다. 활성 인사이트가 있는데 가중치가 0 이면
+        # 그건 침묵이 아니라 판단입니다 — FLAT 거부권이거나 확신이 유지 문턱
+        # 아래로 내려간 경우이고, 둘 다 나가라는 지시입니다. 알파가 불완전하다는
+        # 이유로 그것까지 미루면 손절 성격의 청산을 막게 됩니다.
+        viewed = {i.symbol.key for i in active}
+        held_keys = {p.symbol.key for p in ctx.portfolio.open_positions}
         targets: list[PortfolioTarget] = []
         for key, symbol in symbols.items():
             if ctx.is_pinned(symbol):
@@ -81,6 +97,12 @@ class PortfolioConstructionModel(ABC):
                 # than a zero) leaves the position untouched instead of closing it.
                 continue
             weight = raw.get(key, 0.0)
+            if degraded and key not in viewed and key in held_keys:
+                # 핀과 같은 처리 — 타깃을 아예 내지 않으면 보유는 그대로 남습니다.
+                # 리스크 층은 그대로 돌므로 손절과 트레일링은 계속 작동합니다.
+                log.warning("%s: 알파가 이번 봉을 다 보지 못해 청산 판단을 미룹니다",
+                            symbol.ticker)
+                continue
             price = ctx.price(symbol)
             if price <= 0:
                 continue

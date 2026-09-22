@@ -13,7 +13,8 @@ from abc import ABC, abstractmethod
 from datetime import timedelta
 
 from quant.core.context import Context
-from quant.core.types import Bar, Direction, Insight, Symbol
+from quant.core.events import EventType
+from quant.core.types import Bar, Direction, Insight, Symbol, one_line_error
 
 log = logging.getLogger("quant.alpha")
 
@@ -82,15 +83,60 @@ class CompositeAlphaModel(AlphaModel):
         for m in self.models:
             m.on_universe_changed(ctx, added, removed)
 
+    #: `ctx.state` 의 소유자 이름. 포트폴리오 층이 이 칸을 읽습니다.
+    STATE = "alpha"
+
     async def update(self, ctx, bars):
+        """Run every model. A crash is reported, never read as silence.
+
+        Absence of an insight is an instruction here: the portfolio layer turns
+        a held symbol with no active view into a zero target, which closes the
+        position. That is right when a model looked and had nothing to say. It
+        is wrong when the model never got to look — and a model that keeps
+        raising will, once its last insight passes its horizon, have every name
+        it was responsible for sold at market, paying 거래세 on the way out, for
+        a decision nobody made.
+
+        This repository has already lost three days to that shape once. So a
+        failure is published where the operator's notifier can see it, and the
+        portfolio layer is told the view is incomplete so it holds those names
+        instead of closing them.
+        """
         out: list[Insight] = []
+        failed: list[str] = []
         for model in self.models:
             try:
                 out.extend(await model.update(ctx, bars))
-            except Exception:
+            except Exception as exc:
                 # One broken model must not silence the rest of the book.
-                log.exception("alpha model %s raised", model.name)
+                failed.append(f"{model.name}: {one_line_error(exc)}")
+                log.exception("알파 모델 %s 이(가) 이번 봉을 보지 못했습니다", model.name)
+        await self._report(ctx, failed)
         return out
+
+    async def _report(self, ctx, failed: list[str]) -> None:
+        state = ctx.state(self.STATE)
+        was = state.get("degraded") or []
+        state["degraded"] = failed
+        if not failed:
+            if was:
+                log.info("알파 모델이 다시 전부 동작합니다")
+                await ctx.bus.publish(
+                    EventType.ERROR,
+                    {"component": "alpha", "recovered": True,
+                     "reason": "알파 모델이 다시 전부 동작합니다"},
+                    source=self.name,
+                )
+            return
+        reason = ("알파 모델 " + str(len(failed)) + "개가 이번 봉을 보지 못했습니다 — "
+                  + "; ".join(failed)
+                  + " · 이 모델들이 보던 종목은 **팔지 않고 그대로 둡니다**")
+        log.error(reason)
+        await ctx.bus.publish(
+            EventType.ERROR,
+            {"component": "alpha", "failed": failed, "reason": reason},
+            source=self.name,
+        )
 
 
 class InsightCollection:
