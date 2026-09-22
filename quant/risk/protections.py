@@ -95,12 +95,18 @@ class StoplossGuard(Protection):
 
     def check(self, ctx, symbol):
         recent = self._recent(ctx, symbol)
+        # The two settings answer different questions and compose: `stops_only`
+        # picks which kind of exit counts, `required_profit` how bad it has to
+        # be. Applying the threshold in both branches also fixes a guard that
+        # was too eager — `was_stopped_out` counts a *trailing* stop, so an exit
+        # that locked in a gain was evidence against the strategy. With the
+        # shipped `trade_limit: 3`, a good run of trailing stops was enough to
+        # halt a book that was working.
+        hits = [t for t in recent if t.pnl_pct < self.required_profit]
+        label = "losing trades"
         if self.stops_only:
-            hits = [t for t in recent if t.was_stopped_out]
+            hits = [t for t in hits if t.was_stopped_out]
             label = "stop-outs"
-        else:
-            hits = [t for t in recent if t.pnl_pct < self.required_profit]
-            label = "losing trades"
         if len(hits) >= self.trade_limit:
             reasons = {t.exit_reason for t in hits}
             return True, (
@@ -176,9 +182,18 @@ class LowProfitPairs(Protection):
         trades = self._recent(ctx, symbol)
         if len(trades) < self.min_trades:
             return False, ""
-        total = sum(t.pnl_pct for t in trades)
+        # Weighted by the capital each trade actually put at risk. Adding raw
+        # percentage returns answers no question anyone asked: a 40% loss on a
+        # starter position and a 40% gain on a full one sum to zero and were
+        # not remotely a wash. Keeping the result a fraction also keeps
+        # `required_profit` readable — 0.0 is break-even, -0.02 is "down 2%".
+        deployed = sum(float(t.quantity) * t.entry_price for t in trades)
+        if deployed <= 0:
+            return False, ""
+        total = sum(t.pnl for t in trades) / deployed
         if total < self.required_profit:
-            return True, f"{len(trades)} trades netting {total:+.2%} over the window"
+            return True, (f"{len(trades)} trades netting {total:+.2%} on capital "
+                          f"over the window")
         return False, ""
 
 
