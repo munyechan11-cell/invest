@@ -346,22 +346,43 @@ class SectorExposureCap(RiskManagementModel):
         self.groups = groups
         self.limit = max_group_weight
 
+    def _group_of(self, symbol) -> str | None:
+        return self.groups.get(symbol.ticker) or self.groups.get(symbol.key)
+
     def manage(self, ctx, targets):
         equity = max(ctx.equity, 1e-9)
+        keyed = {t.symbol.key for t in targets}
         exposure: dict[str, float] = {}
-        for t in targets:
-            group = self.groups.get(t.symbol.ticker) or self.groups.get(t.symbol.key)
+
+        def add(symbol, quantity) -> None:
+            group = self._group_of(symbol)
             if not group:
-                continue
+                return
             exposure[group] = exposure.get(group, 0.0) + abs(
-                float(t.quantity) * ctx.price(t.symbol) / equity
+                float(quantity) * ctx.price(symbol) / equity
             )
+
+        for t in targets:
+            add(t.symbol, t.quantity)
+        # A holding this batch left out still sits in the group. The rebalance
+        # deadband drops any name whose weight barely moved, so summing only
+        # the targets lets a group drift past its cap for as long as the old
+        # names stay quiet — the same trap `MaxPositionCount` documents above,
+        # and it was open here.
+        #
+        # 빠진 보유는 여기서 줄일 수 없으므로(이번 봉 목표가 없습니다) 한도는
+        # **배치 쪽을 더 조이는 것** 으로 지켜집니다. 안 보고 통과시키는 것보다
+        # 낫고, 들고 있던 종목을 강제로 팔지도 않습니다.
+        for pos in ctx.portfolio.open_positions:
+            if pos.symbol.key not in keyed:
+                add(pos.symbol, pos.quantity)
+
         overweight = {g: self.limit / w for g, w in exposure.items() if w > self.limit}
         if not overweight:
             return targets
         out = []
         for t in targets:
-            group = self.groups.get(t.symbol.ticker) or self.groups.get(t.symbol.key)
+            group = self._group_of(t.symbol)
             scale = overweight.get(group or "")
             if scale is None:
                 out.append(t)
