@@ -207,7 +207,16 @@ class Context:
             log.info("locked %s until %s — %s", symbol.ticker, until.isoformat(), reason)
 
     def lock_all(self, until: datetime, reason: str) -> None:
-        self._locks["*"] = (until, reason)
+        # Same rule as `lock`: a halt already in force is never shortened by a
+        # later one. Several whole-book protections share this one key, and the
+        # one with the nearer expiry is the one that fires most often — without
+        # this guard a 12-bar stop-out guard overwrites a 24-bar drawdown halt
+        # on exactly the bars that halt exists for. Lifting a halt early is
+        # `unlock_all`, deliberately and in one place.
+        current = self._locks.get("*")
+        if current is None or until > current[0]:
+            self._locks["*"] = (until, reason)
+            log.info("locked all until %s — %s", until.isoformat(), reason)
 
     def unlock(self, symbol: Symbol) -> None:
         self._locks.pop(symbol.key, None)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 from quant.core.context import Context
 from quant.core.types import ClosedTrade, Symbol
@@ -36,22 +37,35 @@ class Protection(ABC):
     def apply(self, ctx: Context) -> list[dict]:
         """Evaluate and set locks. Returns whatever it triggered, for the log."""
         events: list[dict] = []
-        until = ctx.now + ctx.bar_delta * self.stop_bars
         if self.per_symbol:
             candidates = {t.symbol.key: t.symbol for t in self._recent(ctx, None)}
             for sym in candidates.values():
                 triggered, reason = self.check(ctx, sym)
                 if triggered:
+                    until = self.lock_until(ctx, sym)
                     ctx.lock(sym, until, f"{self.name}: {reason}")
                     events.append({"protection": self.name, "symbol": sym.ticker,
                                    "reason": reason, "until": until.isoformat()})
         else:
             triggered, reason = self.check(ctx, None)
             if triggered:
+                until = self.lock_until(ctx, None)
                 ctx.lock_all(until, f"{self.name}: {reason}")
                 events.append({"protection": self.name, "symbol": "*",
                                "reason": reason, "until": until.isoformat()})
         return events
+
+    def lock_until(self, ctx: Context, symbol: Symbol | None) -> datetime:
+        """When a lock set on this bar should expire.
+
+        Measured from now, because most protections read the state of the book
+        *as of this bar* and the wait starts here. A protection whose window is
+        anchored to a past event has to override this: `apply` runs every bar,
+        and re-deriving the expiry from `ctx.now` while the condition still
+        holds walks the lock forward one bar at a time instead of letting it
+        run out.
+        """
+        return ctx.now + ctx.bar_delta * self.stop_bars
 
     def _recent(self, ctx: Context, symbol: Symbol | None) -> list[ClosedTrade]:
         return ctx.recent_trades(symbol, within=ctx.bar_delta * self.lookback_bars)
@@ -110,21 +124,36 @@ class CooldownPeriod(Protection):
         super().__init__(lookback_bars=stop_bars + 1, stop_bars=stop_bars)
         self.only_after_loss = only_after_loss
 
-    def check(self, ctx, symbol):
+    def _last_exit(self, ctx, symbol) -> ClosedTrade | None:
         # Only a real exit starts a cooldown. Scaling out realises PnL and is
         # recorded as a trade, but the strategy still holds the name — treating
         # a trim as an exit locks it out of a position it is in the middle of
         # managing.
         trades = [t for t in self._recent(ctx, symbol) if t.closes_position]
         if not trades:
+            return None
+        return max(trades, key=lambda t: t.exit_ts)
+
+    def check(self, ctx, symbol):
+        last = self._last_exit(ctx, symbol)
+        if last is None:
             return False, ""
-        last = max(trades, key=lambda t: t.exit_ts)
         if self.only_after_loss and last.pnl >= 0:
             return False, ""
         elapsed = (ctx.now - last.exit_ts) / ctx.bar_delta
         if elapsed < self.stop_bars:
             return True, f"cooling down {self.stop_bars - elapsed:.0f} more bars after exit"
         return False, ""
+
+    def lock_until(self, ctx, symbol):
+        # Anchored to the exit, not to now. This is a fixed wait after leaving a
+        # name, and `check` keeps returning True for every bar of that wait — so
+        # an expiry measured from `ctx.now` would be rewritten one bar later on
+        # each pass and hold the symbol for roughly twice `stop_bars`.
+        last = self._last_exit(ctx, symbol)
+        if last is None:
+            return super().lock_until(ctx, symbol)
+        return last.exit_ts + ctx.bar_delta * self.stop_bars
 
 
 class LowProfitPairs(Protection):
