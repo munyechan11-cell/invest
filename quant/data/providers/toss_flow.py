@@ -258,6 +258,8 @@ class TossFlowProvider(FlowProvider):
                 retail_qty=_net(row["individual"]),
                 # `*_value` 는 0 입니다 — 모듈 상단 참고. 토스는 종목별 매매대금을
                 # 주지 않고, 종가를 곱한 추정치는 체결 단가가 아닙니다.
+                # 프로그램 매매도 주지 않습니다. `program_reported` 를 두지 않아
+                # `program_qty` 는 0 이 아니라 null(모름)로 나갑니다.
                 close=close,
                 volume=volume,
                 institution_detail=detail,

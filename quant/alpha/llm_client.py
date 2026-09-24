@@ -19,6 +19,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -484,9 +485,38 @@ def _jev_failure(text: str, *, bad_request: bool, status: int | None = None) -> 
     return LLMError(f"jev {422 if bad_request else 503}: {body}")
 
 
+def _redirect_target(location: str) -> str:
+    """옮겨 간 곳의 **호스트까지만**. 경로와 쿼리는 옮기지 않습니다.
+
+    `Location` 에 무엇이 실려 올지 모릅니다(토큰이 든 쿼리 등). 운영자에게
+    필요한 것은 "https 로 옮겨 갔다", "다른 도메인이다" 정도라 거기서 끊습니다.
+    """
+    parts = urlsplit(location or "")
+    if not parts.netloc:
+        return "같은 호스트의 다른 경로" if location else "?"
+    host = parts.hostname or "?"
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return f"{parts.scheme}://{host}" if parts.scheme else host
+
+
 def _jev_raise_for_status(response: httpx.Response) -> None:
-    """HTTP 오류 → 꼬리표. 402·429 는 본문을 보고 한도 경로로 보냅니다."""
-    if response.status_code in (402, 429):
+    """HTTP 오류 → 꼬리표. 402·429 는 본문을 보고 한도 경로로 보냅니다.
+
+    **3xx 도 오류입니다.** httpx 는 리디렉션을 따라가지 않고(따라가도 다른
+    호스트로 가면 Authorization 을 떼어 냅니다), `_raise_for_status` 는 400
+    아래를 통과시켰습니다. 그러면 308 의 빈 본문을 JSON-RPC 로 읽다가 꼬리표
+    없는 오류가 나서 일시 장애처럼 세 번 재시도했고, 사전 점검은 "JSON 이 아닌
+    응답 (308): " 로 끝났습니다 — 어디로 옮겨 갔는지는 말하지 않고. 같은
+    주소로 다시 보내면 같은 3xx 가 오므로 "jev 404"(재시도 없음)로 적어,
+    사전 점검이 llm.base_url 을 가리키게 합니다.
+    """
+    status = response.status_code
+    if 300 <= status < 400:
+        where = _redirect_target(response.headers.get("location", ""))
+        raise LLMError(f"jev 404: 엔드포인트가 옮겨졌습니다 ({status} → {where}) — "
+                       "llm.base_url 을 확인하세요")
+    if status in (402, 429):
         raise _jev_failure(_jev_error_text(response), bad_request=False,
                            status=response.status_code)
     _raise_for_status(response, "jev")
@@ -750,11 +780,12 @@ class LLMClient:
 
         if schema is None:
             # 데스크의 사전 점검("Reply with the single word OK."). Jev 는 그 말을
-            # 할 수 없으니, 가장 싼 도구 호출 하나로 키와 연결만 확인합니다.
-            await self._jev_tool("jev_check", {
-                "state": "connectivity check",
-                "question": "Is this a connectivity check?",
-            })
+            # 할 수 없으니, 좌석이 쓰는 도구와 질문 모양 그대로 작은 호출 하나를
+            # 보내 키·연결·**질문 형식**·답의 모양을 함께 확인합니다. 예전에는
+            # `jev_check` 로 키와 연결만 봐서, 서버가 좌석의 질문 형식을 거절해도
+            # 점검은 통과하고 데스크는 켜진 채 봉마다 16석이 실패했습니다.
+            payload = await self._jev_tool("jev_evaluate", jev.preflight_arguments())
+            jev.read_preflight(payload)
             return "OK"
         request = jev.build_request(system, user, schema)
         payload = await self._jev_tool("jev_evaluate", request.arguments)
@@ -828,13 +859,14 @@ class LLMClient:
                 "jsonrpc": "2.0", "id": rid, "method": "tools/call",
                 "params": {"name": name, "arguments": arguments},
             }, session, self._jev_protocol)
-            if r.status_code >= 400:
-                if attempt == 0 and ((r.status_code == 404 and session)
-                                     or _session_lost(_jev_error_text(r))):
-                    log.info("jev 세션이 만료되어 다시 엽니다 (%d)", r.status_code)
-                    self._jev_drop(generation)
-                    continue
-                _jev_raise_for_status(r)
+            if (r.status_code >= 400 and attempt == 0
+                    and ((r.status_code == 404 and session)
+                         or _session_lost(_jev_error_text(r)))):
+                log.info("jev 세션이 만료되어 다시 엽니다 (%d)", r.status_code)
+                self._jev_drop(generation)
+                continue
+            # 3xx·4xx·5xx 는 꼬리표를 붙여 올립니다. 2xx 만 본문으로 갑니다.
+            _jev_raise_for_status(r)
             message = _jev_message(r, rid)
             error = message.get("error")
             if error is not None:

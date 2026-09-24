@@ -65,6 +65,7 @@ from quant.alpha.seats import (
     RISK_SEATS,
     SPRITE_NAMES,
     TRADER_SEAT,
+    VETO_BLOCK_BARS,
     Seat,
     roster,
 )
@@ -244,8 +245,39 @@ class DeskDecision:
             "lessons_used": self.lessons_used,
             "elapsed_s": round(self.elapsed_s, 2),
             "llm_calls": self.llm_calls,
+            # 이 심의가 쓴 돈. 계산은 늘 하고 있었는데(`UsageTally`) 여기서 빠져,
+            # 화면과 `/api/desk` 는 심의 한 번의 비용을 보여 줄 수 없었습니다.
+            "cost_usd": round(self.cost_usd, 6),
             "degraded": self.degraded,
+            # 답하지 못한 좌석. 좌석은 실패해도 대체값을 내므로(분석가는 "판단
+            # 재료 부족", 트레이더는 "즉시 시장가" …) 이 수가 없으면 화면은 실패를
+            # 정직한 판단으로 그립니다. 헤드의 실패는 `degraded` 가 말합니다.
+            "seat_failures": len(self.seat_errors),
+            "first_seat_error": (one_line_error(self.seat_errors[0][1], 200)
+                                 if self.seat_errors else ""),
         }
+
+    @property
+    def seat_errors(self) -> list[tuple[str, str]]:
+        """(좌석, 오류) — 대체값으로 채워진 좌석들, 단계 순서대로. 헤드는 뺍니다."""
+        found: list[tuple[str, str]] = []
+
+        def check(where: str, report) -> None:
+            if isinstance(report, dict) and report.get("error"):
+                found.append((where, str(report["error"])))
+
+        for key, report in self.analysts.items():
+            check(key, report)
+        for round_ in self.debate.get("rounds", []):
+            for side in ("bull", "bear"):
+                check(side, round_.get(side))
+        for round_ in self.risk_debate.get("rounds", []):
+            check("risk_aggressive", round_.get("aggressive"))
+            check("risk_conservative", round_.get("conservative"))
+        check("risk_neutral", self.risk)
+        check("research_manager", self.plan)
+        check("trader", self.trade)
+        return found
 
     def summary_line(self) -> str:
         mark = "⛔" if self.vetoed else {
@@ -767,9 +799,23 @@ class TradingDesk(AlphaModel):
                 hint = f" 사용 가능: {', '.join(available[:8])}" if available else ""
                 return (f"모델을 찾을 수 없습니다 — 모델 이름을 확인하세요."
                         f"{hint} ({message[:120]})")
-            return f"LLM 사전 점검 실패: {message[:200]}"
+            if provider == "jev":
+                # 키도 한도도 아닌 실패입니다. 예전에는 아래의 "LLM 사전 점검
+                # 실패" 로 떨어졌고, 화면은 거기에 "LLM 키와 한도를 확인하세요"
+                # 를 붙였습니다 — 406·405·HTML 인증 페이지처럼 **주소나 배포**
+                # 문제일 때 사람을 키로 보냈습니다.
+                if message.startswith("jev 422:"):
+                    return ("Jev 가 데스크의 질문 형식을 거부했습니다 — Jev 서버의 "
+                            "jev_evaluate 입력 형식이 바뀌었을 수 있습니다. 기다려도 "
+                            "풀리지 않으니 데스크 코드를 확인하세요. "
+                            f"({message[:160]})")
+                return ("Jev 연결 실패 (MCP 응답 형식·주소) — llm.base_url 과 Jev 배포 "
+                        f"상태를 확인하세요. ({message[:200]})")
+            return (f"LLM 사전 점검 실패: {message[:200]} — AI 데스크의 LLM 키와 한도를 "
+                    "확인하세요.")
         except Exception as exc:                      # pragma: no cover - defensive
-            return f"LLM 사전 점검 실패: {type(exc).__name__}: {exc}"
+            return (f"LLM 사전 점검 실패: {type(exc).__name__}: {exc} — AI 데스크의 LLM "
+                    "키와 한도를 확인하세요.")
         return ""
 
     def _record_spend(self, calls: int, spent: float) -> None:
@@ -991,7 +1037,11 @@ class TradingDesk(AlphaModel):
         user = f"결정론적으로 계산된 시장 브리프다. 이 숫자들을 사실로 간주하라.\n{payload}\n\n"
         if external:
             user += f"[{brief.get('기준시각')}] 시점 기준 외부 컨텍스트:\n{external}\n\n"
+        # 방향은 **기간** 이 있어야 판단할 수 있습니다. 예전에는 헤드에게만 이
+        # 문장이 있어서, 분석가는 "보유기간 동안" 을 제각기 짐작했습니다 — 같은
+        # 투표에서 좌석마다 다른 기간을 가정한 셈입니다.
         user += (
+            f"기본 보유기간은 {self.default_horizon}봉이다. "
             "당신 좌석의 관점에서만 판단하라. 다른 분석가의 영역은 침범하지 마라. "
             "브리프의 숫자를 인용해 근거를 대라. 데이터가 없으면 지어내지 말고 "
             "data_sufficient=false 로 답하라."
@@ -1398,8 +1448,10 @@ class TradingDesk(AlphaModel):
 
         if d.vetoed:
             # A veto closes the position; it never means merely "do not add".
+            # 봉 수는 Jev 에게 거부를 묻는 문장과 같은 값입니다(`VETO_BLOCK_BARS`).
             return self._insight(
-                ctx, symbol, Direction.FLAT, period=ctx.bar_delta * 3, confidence=0.9,
+                ctx, symbol, Direction.FLAT, period=ctx.bar_delta * VETO_BLOCK_BARS,
+                confidence=0.9,
                 tag=f"리스크 거부: {d.veto_reason or d.risk.get('reasoning', '')}"[:180],
                 decision=d.to_dict(),
             )

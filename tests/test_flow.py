@@ -226,3 +226,53 @@ def test_retail_contrarian_fades_a_retail_crowd():
     ctx = make_ctx(bars=40)
     out = asyncio.run(alpha.update(ctx, {SYM.key: ctx.history(SYM, 1)[0]}))
     assert out and out[0].direction is Direction.FLAT   # bearish, but shorting is off
+
+
+# ── 프로그램 매매: 모르면 null ───────────────────────────────────────────
+def _kis(program_rows, *, program_fails=False):
+    from quant.data.providers.kis_flow import KisFlowProvider
+
+    p = KisFlowProvider(app_key="k", app_secret="s", allow_env_credentials=False)
+
+    async def get(path, tr_id, params):
+        if "inquire-investor" in path:
+            return {"output": [
+                {"stck_bsop_date": d, "prsn_ntby_qty": "-300", "frgn_ntby_qty": "200",
+                 "orgn_ntby_qty": "100", "prsn_ntby_tr_pbmn": "-15000",
+                 "frgn_ntby_tr_pbmn": "10000", "orgn_ntby_tr_pbmn": "5000",
+                 "stck_clpr": "50000"} for d in ("20240102", "20240103")]}
+        if "program-trade" in path:
+            if program_fails:
+                raise RuntimeError("EGW00123 not available on this tier")
+            return {"output": program_rows}
+        return {"output2": []}
+
+    p._get = get
+    return p
+
+
+def test_kis_program_trading_is_null_where_the_feed_has_no_row():
+    """한투 프로그램 엔드포인트는 막히기도 하고(계좌 등급) 날짜가 빠지기도 합니다.
+    그 자리의 0 은 "프로그램 순매수 0주" 가 아니라 "모름" 입니다."""
+    start, end = datetime(2024, 1, 1, tzinfo=UTC), datetime(2024, 1, 10, tzinfo=UTC)
+    p = _kis([{"stck_bsop_date": "20240103", "whol_ntby_qty": "0",
+               "whol_ntby_tr_pbmn": "0"}])
+    rows = {f.ts.date().isoformat(): f.to_dict()
+            for f in asyncio.run(p.flows(SYM, start, end))}
+    assert rows["2024-01-03"]["program_qty"] == 0            # 실제로 0 이라고 온 날
+    assert rows["2024-01-02"]["program_qty"] is None         # 행이 없던 날
+
+    blocked = _kis([], program_fails=True)
+    rows = [f.to_dict() for f in asyncio.run(blocked.flows(SYM, start, end))]
+    assert rows and all(r["program_qty"] is None for r in rows)
+    assert blocked._program_supported is False
+
+
+def test_the_program_gloss_says_null_means_not_reported():
+    from quant.alpha.jev import FLOW_TERMS
+
+    assert "null" in FLOW_TERMS["program_qty"] and "not report" in FLOW_TERMS["program_qty"]
+    # 합성 소스는 프로그램 매매를 주는 소스처럼 그대로 숫자를 냅니다.
+    flows = asyncio.run(SyntheticFlowProvider(seed=1).flows(
+        SYM, T0, T0 + timedelta(days=10)))
+    assert flows and all(isinstance(f.to_dict()["program_qty"], int) for f in flows)

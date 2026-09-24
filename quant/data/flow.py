@@ -55,6 +55,13 @@ class InvestorFlow:
     volume: float = 0.0
     #: sub-desk breakdown when the venue provides it (연기금, 투신, 사모, …)
     institution_detail: dict = field(default_factory=dict)
+    #: 이 기록에 프로그램 매매가 **실려 있는가**. 토스는 프로그램 매매를 주지
+    #: 않고, 한투는 프로그램 엔드포인트가 막히거나 그날 행이 없으면 빠집니다.
+    #: 그때 `program_qty` 는 기본값 0 인데, 그 0 은 "프로그램 순매수가 정확히
+    #: 0주" 가 아니라 "모름" 입니다. 금액 축(`has_value_axis`)과 달리 값으로
+    #: 가릴 수 없어서(프로그램 매매가 실제로 0 인 종목이 많습니다) 소스가 직접
+    #: 표시합니다.
+    program_reported: bool = False
 
     @property
     def smart_money_qty(self) -> float:
@@ -107,7 +114,11 @@ class InvestorFlow:
             "foreign_qty": round(self.foreign_qty),
             "institution_qty": round(self.institution_qty),
             "retail_qty": round(self.retail_qty),
-            "program_qty": round(self.program_qty),
+            # 소스가 주지 않은 프로그램 매매는 0 이 아니라 null 입니다. 0 을
+            # 흘리면 수급 좌석은 "프로그램 매매가 없었다" 를 사실로 읽고, "외국인
+            # 수급이 프로그램 바스켓인지" 를 가리는 규칙이 한 번도 걸리지 않습니다.
+            "program_qty": (round(self.program_qty) if self.program_reported
+                            else None),
             # 모르는 금액은 0 이 아니라 null 입니다 — `has_value_axis` 참고.
             "foreign_value": round(self.foreign_value) if known else None,
             "institution_value": round(self.institution_value) if known else None,

@@ -2703,10 +2703,12 @@ def create_app(config: StrategyConfig | None = None,
         한다면 순서가 뒤바뀝니다. 검색해서 고른 종목을 그 자리에서 16명에게
         물어볼 수 있어야 합니다.
 
-        **이 호출은 돈이 듭니다.** 심의 한 번이 약 $0.06 이고 그 비용은
-        서비스가 냅니다. 그래서 요금제 한도를 먼저 확인하고, 끝난 뒤에는
-        실제 토큰 수로 계량합니다 — 계량하지 않으면 한 사람의 반복 클릭이
-        운영자 카드로 청구되고, 나중에 소급해서 만들 수도 없습니다.
+        **이 호출은 돈이 듭니다.** 출하 설정(Jev, 16석)이면 심의 한 번이 입력
+        약 3만 토큰 — 입력 100만 토큰당 $0.042 라 약 $0.0013 입니다(출력은
+        무료). 다른 제공자로 돌리면 수십 배가 됩니다. 비용은 서비스가 냅니다.
+        그래서 요금제 한도를 먼저 확인하고, 끝난 뒤에는 실제 토큰 수로
+        계량합니다 — 계량하지 않으면 한 사람의 반복 클릭이 운영자 카드로
+        청구되고, 나중에 소급해서 만들 수도 없습니다.
         """
         ticker = (req.ticker or "").strip().upper()
         if not ticker:
@@ -2836,15 +2838,24 @@ def create_app(config: StrategyConfig | None = None,
                         usage.record_spend, seat.user.id, calls, spent, own_key)
 
         if decision is None:
+            # 심의 **도중에** 데스크가 꺼졌을 수 있습니다(Jev 잔액 소진 → 좌석이
+            # `QuotaExhausted` 로 데스크를 끄고 None). 그 이유는 데스크가 이미
+            # 적어 두었는데, 여기서 읽지 않으면 "잠시 후 다시 시도하세요" 가
+            # 나갑니다 — 기다려도 풀리지 않는 것을 기다리게 하고, 봇이 없을 때는
+            # 요청마다 새 데스크라 클릭할 때마다 같은 호출을 또 합니다.
+            disabled = (model.status() or {}).get("disabled_reason") or ""
+            if disabled:
+                raise HTTPException(503, f"AI 데스크가 꺼져 있습니다 — {disabled}")
             raise HTTPException(
                 422, "심의가 결론에 이르지 못했습니다 — 마감 시간을 넘겼거나 "
-                     "데스크 한도에 걸렸습니다. 잠시 후 다시 시도하세요.")
+                     "데이터가 부족합니다. 잠시 후 다시 시도하세요.")
         seat_errors = [str(r.get("error")) for r in decision.analysts.values()
                        if isinstance(r, dict) and r.get("error")]
-        if (decision.degraded and decision.analysts
-                and len(seat_errors) == len(decision.analysts)):
-            # 분석가가 **한 석도** 답하지 못했습니다. 그 위의 합의는 판단이 아니라
-            # 빈 값이고(확신 0 의 관망), 이유는 좌석의 오류에만 있습니다.
+        if decision.analysts and len(seat_errors) == len(decision.analysts):
+            # 분석가가 **한 석도** 답하지 못했습니다. 헤드가 답했든(투표 0석의
+            # 판단) 못 했든(확신 0 의 관망) 그 결론은 판단이 아니고, 이유는
+            # 좌석의 오류에만 있습니다. 이 호출은 주문을 내지 않으므로 거절이
+            # 안전합니다. 예전에는 헤드가 답하면 HTTP 200 이었습니다.
             who = _desk_llm(cfg)[0]
             raise HTTPException(
                 503, f"AI 데스크가 {who} 에 닿지 못했습니다 — 분석가 "

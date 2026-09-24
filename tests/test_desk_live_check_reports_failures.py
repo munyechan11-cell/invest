@@ -24,7 +24,7 @@ import httpx
 import pytest
 
 import quant.live.credentials as credentials
-from tests.test_jev import FakeJev, desk_answers
+from tests.test_jev import FakeJev, desk_answers, seat_calls
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "desk_live_check.py"
 
@@ -56,7 +56,7 @@ def run_script(monkeypatch, answer) -> tuple[int, str, FakeJev]:
 def test_a_healthy_run_prints_a_real_cost_and_exits_zero(monkeypatch):
     code, out, fake = run_script(monkeypatch, desk_answers("bullish"))
     assert code == 0, out
-    assert len(fake.tool_calls("jev_evaluate")) == 16
+    assert len(seat_calls(fake)) == 16
     # 가짜 Jev 는 호출마다 입력 677 토큰: 16 × 677 / 1e6 × $0.042 = $0.00045
     assert "LLM 16회 · 추정 $0.00045 (종목 1개)" in out, out
     assert "시작 점검: LLM 1회" in out
@@ -76,3 +76,24 @@ def test_failed_seats_are_counted_and_the_run_exits_nonzero(monkeypatch):
     assert re.search(r"좌석 \d+곳 실패", out), out
     assert "질문 'stance' 의 답이 없습니다" in out             # 첫 오류를 보여 준다
     assert "실시간 적용 판정" not in out                       # 틀린 권고를 하지 않는다
+
+
+# ── 한 좌석만 실패해도 속도 판정을 하지 않는다 ───────────────────────────────
+@pytest.mark.parametrize("seat", ["Head of Desk", "Trader", "Research Manager",
+                                  "Neutral Risk", "Aggressive Risk", "Bear Researcher"])
+def test_a_single_failed_seat_after_the_analysts_still_exits_nonzero(monkeypatch, seat):
+    """분석가 말고 뒷좌석 하나만 실패한 경우. 예전 검사는 분석가 실패만 봐서,
+    이 자리의 판정을 지워도 모든 테스트가 통과했습니다."""
+    bullish = desk_answers("bullish")
+
+    def answer(name, args):
+        if name == "jev_evaluate" and args["state"].get("seat") == seat:
+            return {"jsonrpc": "2.0", "result": {"isError": True, "content": [
+                {"type": "text", "text": "MCP error -32602: Invalid arguments"}]}}
+        return bullish(name, args)
+
+    code, out, _ = run_script(monkeypatch, answer)
+    assert code == 1, out
+    assert re.search(r"좌석 \d+곳 실패", out), out
+    assert "-32602" in out
+    assert "실시간 적용 판정" not in out

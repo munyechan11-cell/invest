@@ -42,6 +42,7 @@ from quant.alpha.seats import (
     RISK_VERDICT_SCHEMA,
     SEATS_BY_KEY,
     TRADER_SCHEMA,
+    VETO_BLOCK_BARS,
     Seat,
 )
 
@@ -178,10 +179,15 @@ LENSES: dict[str, str] = {
         "Neutral risk seat: reconciles the aggressive and conservative arguments into "
         "one position-size multiplier between 0 and 1. Never take a mechanical "
         "midpoint; weight toward whichever side gave more concrete, nameable evidence. "
+        "On this desk a veto overrides the head of desk: it closes the whole position "
+        "if one is held and blocks every model from buying this stock for the next "
+        f"{VETO_BLOCK_BARS} bars. This seat answers before the direction is decided, so "
+        "a veto is not a veto of one new order. "
         "Veto only if the loss limit cannot be determined, liquidity cannot absorb the "
         "target size, a portfolio concentration limit is breached, or the whole case is "
-        "inference with no observation. Any other discomfort is expressed by a smaller "
-        "size; veto and size reduction are different tools."
+        "inference with no observation. Any other discomfort, including a concern that "
+        "only argues for adding less, is expressed by a smaller size; veto and size "
+        "reduction are different tools."
     ),
     "research_manager": (
         "Research manager: turns the eight analyst reports and the bull/bear debate "
@@ -192,11 +198,15 @@ LENSES: dict[str, str] = {
     ),
     "trader": (
         "Trader: translates the research plan into an executable order. Direction was "
-        "decided in the research plan and must not be re-argued. Entry style: market now "
-        "if the signal fades fast; a patient limit order if the spread is wide and the "
-        "signal slow; scale in if the size is large relative to liquidity; wait for a "
-        "pullback if the price is overheated. Use more tranches (1 to 4) for higher "
-        "volatility or larger size. Heed any execution-cost warning."
+        "decided in the research plan and must not be re-argued. Judge only from what "
+        "the evidence shows: recent returns, distance from the 52-week high, volume, "
+        "the spread, the estimated round-trip cost and the position's share of daily "
+        "volume. Entry style: market now when costs are small and waiting gains little; "
+        "a patient limit order when the spread or round-trip cost is material; scale in "
+        "if the size is large relative to liquidity; wait for a pullback if the price "
+        "has just run up sharply near its 52-week high. Use more tranches (1 to 4) for "
+        "larger recent moves or a larger share of daily volume. Heed the execution-cost "
+        "section of the evidence."
     ),
     "head": (
         "Head of desk: combines all seats into the final decision, which becomes a real "
@@ -308,6 +318,11 @@ GLOSSARY: dict[str, str] = {
     "중립형": "neutral risk seat",
     "좌석 응답 실패": "the seat failed to answer (carries no information)",
     "응답 실패": "the seat failed to answer (carries no information)",
+    # 좌석이 실패했을 때 데스크가 대신 적는 말(`desk.py` 의 대체값). "축소" 만
+    # 있으면 헤드 행동의 뜻(전량 청산)으로 풀립니다 — 리스크 좌석 대체값의
+    # "사이즈 축소" 는 배율을 낮췄다는 말이지 청산이 아닙니다.
+    "사이즈 축소": "a smaller position size (not a close of the position)",
+    "다음 사이클 재평가": "re-evaluate at the next deliberation",
     "공매도": "short selling",
     "허용": "allowed",
     "불가": "not allowed",
@@ -371,6 +386,13 @@ GLOSSARY: dict[str, str] = {
     "포트폴리오 집중도 한도를 넘음": "a portfolio concentration limit would be breached",
     "근거 전체가 관측 없는 추론": "the whole case is inference with no observation",
     "해당 사유 없음": "none of the veto conditions applies",
+    # 미시구조 좌석의 출력 — 체결 가능성 (`EXECUTION_KO`)
+    "체결 가능성": "executability of the intended order (microstructure seat)",
+    "목표 사이즈로 체결 가능": "executable at the target size; costs are small next to a "
+                        "typical move",
+    "조건부 체결 가능": "executable only with a smaller size, limit orders or split orders",
+    "체결 곤란": "not executable as intended; costs or market impact would eat the edge, "
+             "or order-size constraints prevent it",
     # 계획·트레이더·헤드의 출력 (`WINNER_KO`, `ENTRY_KO`, `ACTION_KO`)
     "토론": "debate",
     "강세 측 우세": "the bull side carried the debate",
@@ -418,7 +440,7 @@ FLOW_TERMS: dict[str, str] = {
                   "falling price; bearish_divergence = selling a rising price; "
                   "confirmed_* = flow and price agree",
     "program_qty": "program-trading net quantity (index/arbitrage baskets, not a view "
-                   "on the stock)",
+                   "on the stock; null = the source does not report program trading)",
     "participation_pct": "net foreign+institution volume as % of that session's volume",
     "pattern": "accumulation / distribution / mixed for that session",
 }
@@ -472,6 +494,23 @@ HAZARD_KO = {
     "none": "없음",
 }
 
+#: 미시구조 좌석의 고유 질문. 이 좌석은 방향을 부르지 않습니다(렌즈·프롬프트) —
+#: 그런데 분석가 공통 질문(방향·재료)만 받아, 리포트가 "중립 80%" 뿐이었고
+#: 뒷좌석은 체결 가능성에 대한 판단을 한 번도 읽지 못했습니다.
+EXECUTION = {
+    "executable": "Executable at the target size: the round-trip cost and the "
+                  "position's share of average daily volume are small next to a "
+                  "typical recent move, and lot and tick sizes allow the order",
+    "conditional": "Executable only with conditions (a smaller size, limit orders or "
+                   "splitting the order), because the spread, the round-trip cost or "
+                   "the position's share of daily volume is material",
+    "not_executable": "Not executable as intended: costs or market impact would "
+                      "consume the expected edge, or lot, tick or minimum-order "
+                      "constraints prevent the intended order",
+}
+EXECUTION_KO = {"executable": "목표 사이즈로 체결 가능", "conditional": "조건부 체결 가능",
+                "not_executable": "체결 곤란"}
+
 VETO_REASONS = {
     "loss_limit_unknown": "The loss limit for this position cannot be determined from "
                           "the evidence",
@@ -515,25 +554,33 @@ TRADE_ACTIONS = {
     "hold": "Hold: the plan gives no direction to act on, so place no order",
     "sell": "Sell: the plan's direction is to sell or exit",
 }
+#: 트레이더의 증거는 가격·유동성·체결비용·포트폴리오 절과 계획·리스크 판정뿐입니다
+#: (`TRADER_SEAT.brief_sections`) — 변동성·RSI·볼린저가 없고, Jev 계획에는
+#: 신호의 수명도 적혀 있지 않습니다. 예전 선택지는 "변동성", "과열", "신호가 빨리
+#: 사라지면" 을 물어서 Jev 는 없는 것을 보고 답해야 했습니다. 증거에 **있는**
+#: 대용치(최근 수익률, 52주 고점 대비, 스프레드, 왕복 비용, 거래량 비중)로 묻습니다.
 ENTRY_STYLES = {
-    "market_now": "Market order now: the signal is expected to fade quickly, so fill "
-                  "immediately",
-    "limit_patient": "Patient limit order: the spread is wide and the signal is slow, "
-                     "so post inside the spread and wait",
-    "scale_in": "Scale in: the size is large relative to liquidity, so enter in "
-                "several pieces",
-    "wait_for_pullback": "Wait for a pullback: the price is overheated or extended, so "
-                         "wait for a retracement before entering",
+    "market_now": "Market order now: the spread and the estimated round-trip cost are "
+                  "small, so waiting for a better price gains little; fill immediately",
+    "limit_patient": "Patient limit order: the spread or the estimated round-trip cost "
+                     "is material, so post inside the spread and wait",
+    "scale_in": "Scale in: the size is large relative to liquidity (the position is a "
+                "noticeable share of average daily volume), so enter in several pieces",
+    "wait_for_pullback": "Wait for a pullback: the price has just run up sharply (large "
+                         "recent 5-bar and 20-bar returns) and sits near its 52-week "
+                         "high, so wait for a retracement before entering",
 }
 ENTRY_KO = {"market_now": "즉시 시장가", "limit_patient": "지정가 대기",
             "scale_in": "분할 진입", "wait_for_pullback": "눌림 대기"}
 TRANCHE_LEVELS = (
-    "One order: low volatility and a size that is small relative to liquidity",
-    "Two orders: moderate volatility, or a size that is noticeable relative to "
-    "average volume",
-    "Three orders: high volatility, or a size that is large relative to liquidity",
-    "Four orders: very high volatility, or a size that would move the price if sent "
-    "at once",
+    "One order: recent 5-bar and 20-bar returns are small and the position is a tiny "
+    "share of average daily volume",
+    "Two orders: recent returns are moderate, or the position is a noticeable share of "
+    "average daily volume",
+    "Three orders: recent returns are large, or the position is a large share of "
+    "average daily volume",
+    "Four orders: recent returns are very large, or the position would move the price "
+    "if sent at once",
 )
 
 #: 선택지 설명은 **데스크가 그 답으로 실제로 하는 일** 이어야 합니다. Jev 의
@@ -716,17 +763,21 @@ def _score(instructions: str, levels) -> dict:
 
 
 def _analyst_questions(seat: Seat | None) -> dict:
-    return {
+    # 보유기간은 증거에 적혀 있습니다(`TradingDesk._run_analyst`). 예전에는 헤드
+    # 에게만 적혀 있어서, 분석가는 "보유기간 동안" 을 짐작으로 채웠습니다 —
+    # 매크로처럼 기간에 따라 답이 갈리는 좌석이 서로 다른 기간을 가정했습니다.
+    questions = {
         "stance": _choice(
             "From this seat's perspective only, which way does the evidence this seat "
-            "is responsible for point over the holding horizon?",
+            "is responsible for point over the desk's default holding period (stated "
+            "in the evidence)?",
             {
                 "bullish": "The evidence this seat covers points to the price rising "
-                           "over the holding horizon",
+                           "over that holding period",
                 "neutral": "Mixed or balanced evidence, or this seat's job is not to "
                            "call direction, or the data this seat needs is missing",
                 "bearish": "The evidence this seat covers points to the price falling "
-                           "over the holding horizon",
+                           "over that holding period",
             },
         ),
         "data_sufficient": _boolean(
@@ -736,6 +787,16 @@ def _analyst_questions(seat: Seat | None) -> dict:
             "The data this seat needs is missing, empty or too short",
         ),
     }
+    if seat is not None and seat.key == "microstructure":
+        # 이 좌석의 **본업**. 방향 질문은 그대로 두어(투표·합의가 달라지지
+        # 않게) 한 호출 안에서 하나를 더 묻습니다.
+        questions["execution"] = _choice(
+            "This seat does not call direction. Can an order of the intended size be "
+            "executed without costs eating the edge? Judge the spread, the estimated "
+            "round-trip cost, the position's share of average daily volume, and the lot "
+            "and tick sizes against a typical recent move (the 5-bar and 20-bar "
+            "returns).", EXECUTION)
+    return questions
 
 
 def _debate_questions(seat: Seat | None) -> dict:
@@ -807,11 +868,22 @@ def _risk_debate_questions(seat: Seat | None) -> dict:
 
 def _risk_verdict_questions(seat: Seat | None) -> dict:
     return {
+        # 거부가 **무엇을 하는지** 를 묻는 말에 적습니다. 거부는 헤드보다 앞서
+        # 보유를 전량 청산하고 모든 모델의 매수를 막습니다(`desk._to_insight`,
+        # FLAT 은 포트폴리오의 거부권). 리스크 좌석은 방향이 정해지기 **전에**
+        # 답하므로 "이 거래" 는 아직 없습니다. 예전 문장("veto this trade?")은
+        # 새 주문 하나를 막는 일로 읽혀, 얇은 유동성에서 "더 사지 말자" 가 보유를
+        # 그 유동성 속으로 파는 일이 될 수 있었습니다. 기준(네 가지)은 그대로입니다.
         "veto": _boolean(
-            "Should the neutral risk seat veto this trade? Veto ONLY if the loss limit "
-            "cannot be determined, liquidity cannot absorb the target size, a portfolio "
-            "concentration limit is breached, or the whole case is inference with no "
-            "observation. Other discomfort is not a veto.",
+            "Should the neutral risk seat veto? On this desk a veto overrides the head "
+            "of desk: it closes the whole position if one is held (see the current "
+            "holding in this stock) and blocks every model from buying this stock for "
+            f"the next {VETO_BLOCK_BARS} bars. The risk seat answers before the "
+            "direction is decided, so this is not a veto of one new order. Veto ONLY if "
+            "the loss limit cannot be determined, liquidity cannot absorb the target "
+            "size, a portfolio concentration limit is breached, or the whole case is "
+            "inference with no observation. Other discomfort, including a concern that "
+            "only argues for adding less, is not a veto: the size multiplier handles it.",
             "At least one of the four veto conditions is true",
             "None of the four veto conditions is true; any concern is a matter of size",
         ),
@@ -843,11 +915,14 @@ def _trade_questions(seat: Seat | None) -> dict:
             "Translate the research plan into an order direction. Do not re-argue the "
             "direction; follow the plan (and a risk veto, if any).", TRADE_ACTIONS),
         "entry_style": _choice(
-            "Which entry style fits the signal speed, the spread and the size relative "
-            "to liquidity?", ENTRY_STYLES),
+            "Which entry style fits the spread and the estimated round-trip cost, the "
+            "size relative to liquidity, and how far the price has recently run (the "
+            "5-bar and 20-bar returns and the distance from the 52-week high)?",
+            ENTRY_STYLES),
         "tranches": _score(
-            "Into how many orders should the entry be split, given volatility and size "
-            "relative to liquidity?", TRANCHE_LEVELS),
+            "Into how many orders should the entry be split, given the size of recent "
+            "5-bar and 20-bar returns and the position's share of average daily "
+            "volume?", TRANCHE_LEVELS),
     }
 
 
@@ -882,6 +957,52 @@ _QUESTIONS = {
     "trade": _trade_questions,
     "head": _head_questions,
 }
+
+
+# ── 시작 점검 ────────────────────────────────────────────────────────────────
+#: 데스크가 켜질 때 한 번 묻는 것. 좌석이 쓰는 도구(`jev_evaluate`)와 세 가지
+#: 질문 모양(선택·예아니오·단계 점수)을 그대로 씁니다.
+#:
+#: 예전 점검은 `jev_check` 하나였습니다 — 키와 연결만 확인하고, 좌석이 실제로
+#: 보내는 질문 형식은 한 번도 확인하지 않았습니다. 서버가 그 형식을 거절하면
+#: (-32602) 점검은 통과하고 데스크는 "켜짐" 인 채 봉마다 16석이 전부 실패했습니다.
+#: 답은 쓰지 않습니다. 좌석과 같은 읽기(`read_choice` …)를 통과하는지만 봅니다.
+PREFLIGHT_STATE = {
+    "purpose": "Startup check of a trading desk: confirms the connection and the "
+               "question format. The answers are not used for any decision.",
+    "note": "The sky in this note is blue.",
+}
+PREFLIGHT_QUESTIONS = {
+    "check_choice": _choice("Which colour does the note give the sky?", {
+        "blue": "The note says the sky is blue",
+        "other": "The note gives the sky another colour, or none",
+    }),
+    "check_boolean": _boolean("Is this a startup check?",
+                              "The state describes a startup check",
+                              "The state describes something else"),
+    "check_score": _score("How clearly does the state describe a startup check?", (
+        "Not at all: the state is about something else",
+        "Partly: a check is mentioned but its purpose is unclear",
+        "Clearly: the state says it is a startup check and what it confirms",
+    )),
+}
+
+
+def preflight_arguments() -> dict:
+    """시작 점검 한 번의 `jev_evaluate` 인자."""
+    return {"state": dict(PREFLIGHT_STATE),
+            "questions": {k: dict(v) for k, v in PREFLIGHT_QUESTIONS.items()}}
+
+
+def read_preflight(payload: Any) -> None:
+    """좌석과 같은 읽기로 답을 읽는다. 모양이 어긋나면 `LLMError`."""
+    answers = payload.get("answers") if isinstance(payload, dict) else None
+    if not isinstance(answers, dict):
+        raise LLMError(f"jev: 시작 점검 응답에 answers 가 없습니다: {str(payload)[:200]}")
+    read_choice(answers, "check_choice",
+                tuple(PREFLIGHT_QUESTIONS["check_choice"]["criteria"]))
+    read_boolean(answers, "check_boolean")
+    read_score(answers, "check_score", len(PREFLIGHT_QUESTIONS["check_score"]["criteria"]))
 
 
 # ── 데스크 밖의 호출 ─────────────────────────────────────────────────────────
@@ -1139,12 +1260,23 @@ def _map_analyst(request: JevRequest, answers: dict, u: float) -> dict:
                       f"참고 확률: {spread} ({_SOURCE})"]
         stance = "neutral"
         conviction = min(conviction, 0.2)
-    return {
+    out = {
         "stance": stance,
         "conviction": round(_clamp01(conviction), 3),
         "key_points": key_points,
         "data_sufficient": sufficient,
     }
+    if "execution" in request.questions:
+        # 미시구조 좌석. 방향·확신·투표는 위 그대로이고, 체결 판단은 서술 칸에만
+        # 들어갑니다 — 첫 줄(화면 말풍선)과, 걸림이 있으면 `risks`(프롬프트가
+        # "key_points 와 risks 에 비용 문제를 적어라" 라고 요구하는 자리).
+        exec_p = read_choice(answers, "execution", EXECUTION)
+        verdict = _argmax(exec_p, prefer=("conditional", "not_executable", "executable"))
+        line = f"체결 가능성: {EXECUTION_KO[verdict]} {_pct(exec_p[verdict])} ({_SOURCE})"
+        key_points.insert(0 if sufficient else 1, line)
+        if verdict != "executable":
+            out["risks"] = [f"{EXECUTION_KO[verdict]} ({_pct(exec_p[verdict])})"]
+    return out
 
 
 def _map_debate(request: JevRequest, answers: dict, u: float) -> dict:

@@ -154,7 +154,7 @@ async def run(args: argparse.Namespace) -> int:
         seats=[x.strip() for x in args.seats.split(",") if x.strip()] or None,
     )
     await desk.on_start(ctx)
-    # 시작 점검(Jev 는 jev_check 한 번)은 종목 심의와 따로 적습니다 — 합쳐 적으면
+    # 시작 점검(Jev 는 작은 jev_evaluate 한 번)은 종목 심의와 따로 적습니다 — 합쳐 적으면
     # "LLM 16회" 옆의 비용이 17회분이 됩니다.
     preflight_calls, preflight_cost = desk.status()["llm_calls"], desk.estimated_cost_usd
     if desk.status()["disabled_reason"]:
@@ -168,12 +168,21 @@ async def run(args: argparse.Namespace) -> int:
 
     decision = await desk.deliberate(ctx, symbol)
     if decision is None:
+        # 심의 도중에 데스크가 꺼졌을 수 있습니다(잔액·한도 소진). 그 이유를
+        # 데스크가 적어 두었으니 그대로 보여 줍니다 — 마감이나 데이터 탓이 아닙니다.
+        reason = desk.status()["disabled_reason"]
+        if reason:
+            print(f"\n{BAR}\n  심의 도중 데스크가 꺼졌습니다\n{BAR}")
+            print(f"  {reason}")
+            print(BAR)
+            return 2
         print("심의가 완료되지 않았습니다 (마감시간 초과 또는 데이터 부족)")
         return 1
 
     usage = desk.client.usage
     print(f"\n{BAR}\n  {decision.summary_line()}\n{BAR}")
-    # 소수 다섯째 자리까지 — Jev 는 종목당 $0.0005 안팎이라 `.3f` 로는 $0.000 입니다.
+    # 소수 다섯째 자리까지 — Jev 는 종목당 $0.001 안팎(입력 약 3만 토큰)이라 `.3f`
+    # 로는 $0.000 입니다.
     print(f"  소요 {decision.elapsed_s:.1f}초 · LLM {decision.llm_calls}회 · "
           f"추정 ${decision.cost_usd:.5f} (종목 1개)")
     print(f"  시작 점검: LLM {preflight_calls}회 · 추정 ${preflight_cost:.5f}")

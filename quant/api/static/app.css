@@ -377,6 +377,7 @@ tr:last-child td{border-bottom:0}
   width:0;height:0;border:6px solid transparent;border-top-color:var(--panel)}
 .bubble b{display:block;font-size:12px;font-weight:700;margin-bottom:3px}
 .bubble.bull b{color:var(--up)} .bubble.bear b{color:var(--down)} .bubble.neutral b{color:var(--muted)}
+.bubble.bad b{color:var(--bad)}
 /* 4열 좌석은 각 줄의 첫·마지막 말풍선을 방 안쪽으로 당깁니다. */
 .seats .seat:nth-child(4n+1) .bubble{left:0;right:auto;transform:none}
 .seats .seat:nth-child(4n) .bubble{left:auto;right:0;transform:none}
