@@ -195,6 +195,9 @@ VENUES_BY_ID = {v.id: v for v in VENUES}
 OPERATOR_FIELDS = [
     ("OPERATOR_NAME", "이름 (기록용)", False),
     ("GOOGLE_API_KEY", "Gemini API 키 (내 키로 AI 데스크를 쓸 때, 선택)", False),
+    # 출하된 데스크 설정은 전부 `provider: jev` 입니다. 이 값이 없으면 데스크가
+    # 세워지지 않고, 데스크가 있는 전략은 시작되지 않습니다.
+    ("JEV_API_KEY", "Jev API 토큰 (AI 데스크 16석이 이 토큰으로 판단합니다)", False),
     ("TELEGRAM_BOT_TOKEN", "텔레그램 봇 토큰 (알림, 선택)", False),
     ("TELEGRAM_CHAT_ID", "텔레그램 챗 ID (알림, 선택)", False),
 ]
@@ -310,7 +313,7 @@ class CredentialStore:
             operator=raw.get("OPERATOR_NAME", "") or os.environ.get("OPERATOR_NAME", ""),
             venues=venues,
             has_llm=has("ANTHROPIC_API_KEY") or has("OPENAI_API_KEY")
-            or has("GOOGLE_API_KEY"),
+            or has("GOOGLE_API_KEY") or has("JEV_API_KEY"),
             has_notifier=has("TELEGRAM_BOT_TOKEN") and has("TELEGRAM_CHAT_ID"),
             updated_at=stamp,
         )

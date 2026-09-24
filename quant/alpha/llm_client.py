@@ -9,6 +9,7 @@ to regex a JSON blob out of prose.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
 import os
@@ -33,6 +34,8 @@ DEFAULT_MODELS = {
     "anthropic": "claude-opus-5",
     "openai": "gpt-5.5",
     "google": "gemini-pro-latest",
+    # Jev 가 응답에 스스로 밝히는 모델 이름. 고를 수 있는 다른 모델은 없습니다.
+    "jev": "typesafe-ai/jev",
 }
 
 
@@ -47,6 +50,11 @@ MODEL_PRICES: dict[str, tuple[float, float]] = {
     "gemini-3.5-flash": (1.50, 9.00),
     "gemini-3.7-flash": (0.75, 3.75),
     "gpt-5": (1.25, 10.00),
+    # Jev: 입력 1M 토큰당 $0.042, 출력은 무료 — 운영자가 알려 준 단가(2026-09-24).
+    # 출력이 공짜인 이유는 Jev 가 글이 아니라 확률만 돌려주기 때문입니다. 단가가
+    # 바뀌면 여기를 고치세요. 이 표에 없으면 `_FALLBACK_PRICE`(가장 비싼 요율)로
+    # 매겨져 `cost_limit_usd` 가 수백 배 일찍 걸립니다.
+    "typesafe-ai/jev": (0.042, 0.0),
 }
 
 #: An unknown model is priced at the most expensive thing we know about. The
@@ -110,7 +118,8 @@ class LLMConfig:
         return os.environ.get(
             {"anthropic": "ANTHROPIC_API_KEY",
              "openai": "OPENAI_API_KEY",
-             "google": "GOOGLE_API_KEY"}.get(self.provider, ""),
+             "google": "GOOGLE_API_KEY",
+             "jev": "JEV_API_KEY"}.get(self.provider, ""),
             "",
         )
 
@@ -123,6 +132,8 @@ BILLING: dict[str, tuple[str, str]] = {
     "openai": ("OpenAI", "platform.openai.com 의 Billing"),
     "google": ("Google AI Studio", "aistudio.google.com/app/apikey "
                                    "(무료 티어는 하루 할당량이 있습니다)"),
+    # 결제 화면 주소를 모릅니다. 모르는 주소를 지어내느니 이름만 둡니다.
+    "jev": ("Jev", ""),
 }
 
 
@@ -244,6 +255,142 @@ def _extract_json(text: str) -> dict:
         raise LLMError(f"model did not return JSON: {text[:400]}") from exc
 
 
+# ── Jev 전송 (MCP streamable HTTP, SDK 없이 httpx 만) ────────────────────────
+#: `LLMConfig.base_url` 이 비어 있을 때의 주소.
+JEV_DEFAULT_URL = "https://jev-mcp-rose.vercel.app/api/mcp"
+#: 우리가 제안하는 MCP 버전. 서버가 initialize 에서 다른 값을 고르면 그 값을 씁니다.
+MCP_PROTOCOL_VERSION = "2025-06-18"
+
+
+def _sse_messages(text: str):
+    """`text/event-stream` 본문 → 이벤트별 `data:` 를 이은 문자열들."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    for block in text.split("\n\n"):
+        lines = [line[5:] for line in block.split("\n") if line.startswith("data:")]
+        # SSE 규칙: `data:` 뒤의 공백 한 칸은 구분자이지 값이 아닙니다.
+        lines = [line[1:] if line.startswith(" ") else line for line in lines]
+        if lines:
+            yield "\n".join(lines)
+
+
+def _jev_message(response: httpx.Response, request_id: int) -> dict:
+    """응답에서 **이 요청의** JSON-RPC 메시지를 꺼낸다.
+
+    SSE 로 오면 진행 알림 같은 다른 메시지가 섞일 수 있어 id 로 고릅니다.
+    """
+    ctype = response.headers.get("content-type", "").lower()
+    if ctype.startswith("text/event-stream"):
+        for data in _sse_messages(response.text):
+            try:
+                message = json.loads(data)
+            except ValueError:
+                continue
+            if isinstance(message, dict) and message.get("id") == request_id:
+                return message
+        raise LLMError(f"jev: SSE 응답에 요청 {request_id} 의 답이 없습니다: "
+                       f"{response.text[:200]}")
+    try:
+        message = response.json()
+    except ValueError as exc:
+        raise LLMError(f"jev: JSON 이 아닌 응답 ({response.status_code}): "
+                       f"{response.text[:200]}") from exc
+    if isinstance(message, list):                      # JSON-RPC 배치
+        message = next((m for m in message
+                        if isinstance(m, dict) and m.get("id") == request_id), None)
+    if not isinstance(message, dict):
+        raise LLMError(f"jev: JSON-RPC 메시지가 아닙니다: {response.text[:200]}")
+    return message
+
+
+def _rpc_error_text(error: Any) -> str:
+    if isinstance(error, dict):
+        return str(error.get("message") or json.dumps(error, ensure_ascii=False))
+    return str(error)
+
+
+def _jev_error_text(response: httpx.Response) -> str:
+    """HTTP 오류 본문의 설명. JSON-RPC 오류든 `{"error": "missing_token"}` 이든."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text[:400]
+    if isinstance(payload, dict) and "error" in payload:
+        return _rpc_error_text(payload["error"])
+    return response.text[:400]
+
+
+#: 이 말이 들어간 거절은 요청이 틀린 게 아니라 **세션이 사라진** 것입니다.
+_SESSION_WORDS = ("session", "not initialized", "not initialised")
+
+
+def _session_lost(text: str) -> bool:
+    lowered = text.lower()
+    return any(w in lowered for w in _SESSION_WORDS)
+
+
+# ── Jev 오류 → 상태 꼬리표 ───────────────────────────────────────────────────
+# 꼬리표가 `complete()` 의 행동을 정합니다: 422 는 바로 실패, 429 는 한도 경로
+# (기다리거나 `QuotaExhausted` 로 데스크 전체를 멈춤), 503 은 잠깐의 장애로 보고
+# 다시 시도. 전에는 Jev 가 돌려준 오류를 **전부** 422 로 적었습니다. 그러면
+# 게이트웨이의 일시 장애 한 번이 헤드 좌석을 재시도 없이 떨어뜨리고, 데스크는
+# 분석가 합의로 물러서 보유를 팔았습니다 — 같은 장애가 HTTP 503 으로 왔으면 한 번
+# 더 묻고 관망했을 자리입니다. 하루 한도 소진도 평범한 오류로 읽혀, 데스크가
+# 멈추지 않고 봉마다 16번씩 실패했습니다.
+
+#: 요청 자체가 틀렸다는 JSON-RPC 오류 코드 — 같은 요청을 다시 보내도 같습니다.
+#: 파싱 불가(-32700), 잘못된 요청(-32600), 없는 메서드(-32601), 잘못된 인자(-32602).
+#: 나머지 — 내부 오류(-32603), 서버 오류(-32000~-32099), 모르는 코드 — 는 서버
+#: 사정일 수 있어 다시 물을 가치가 있습니다.
+_JEV_BAD_REQUEST_CODES = frozenset({-32700, -32600, -32601, -32602})
+
+#: 한도·과금을 말하는 오류. 무엇이 "오늘 안에는 안 풀리는" 한도인지는
+#: `_is_long_exhaustion` 이 정합니다 — 여기서는 그 경로에 태우기만 합니다.
+_JEV_QUOTA_WORDS = ("quota", "rate limit", "rate-limit", "rate_limit", "ratelimit",
+                    "too many requests", "per day", "daily", "credit", "billing",
+                    "payment", "insufficient funds", "spending cap")
+
+#: 도구 오류(`isError`) 가운데 **입력이 틀렸다** 는 말. 도구 오류에는 코드가
+#: 없어서 글로 봅니다. SDK 는 입력 검증 실패를 "MCP error -32602: …" 로 적습니다.
+#: "unexpected" 가 걸리지 않게 "expected" 같은 넓은 말은 넣지 않습니다.
+_JEV_BAD_INPUT_WORDS = ("invalid argument", "invalid param", "invalid input",
+                        "invalid request", "validation", "too large", "too long",
+                        "too many questions", "exceeds", "must be", "unknown tool",
+                        "-32700", "-32600", "-32601", "-32602")
+
+
+def _jev_failure(text: str, *, bad_request: bool) -> LLMError:
+    """Jev 가 돌려준 오류에 `complete()` 가 읽는 상태 꼬리표를 붙인다."""
+    lowered = text.lower()
+    if any(w in lowered for w in _JEV_QUOTA_WORDS):
+        status = 429
+    elif bad_request:
+        status = 422
+    else:
+        status = 503
+    return LLMError(f"jev {status}: {text[:400]}")
+
+
+def _rpc_failure(error: Any, prefix: str = "") -> LLMError:
+    """JSON-RPC `error` → 꼬리표. 요청이 틀렸는지는 코드로만 봅니다."""
+    code = error.get("code") if isinstance(error, dict) else None
+    return _jev_failure(prefix + _rpc_error_text(error),
+                        bad_request=isinstance(code, int)
+                        and code in _JEV_BAD_REQUEST_CODES)
+
+
+def _tool_failure(text: str) -> LLMError:
+    """도구의 `isError` 결과 → 꼬리표. 코드가 없어 글로 봅니다."""
+    lowered = text.lower()
+    return _jev_failure(text, bad_request=any(w in lowered for w in _JEV_BAD_INPUT_WORDS))
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return max(int(value or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 class _RateLimiter:
     """Simple pacer. Spreads requests evenly rather than firing a burst.
 
@@ -269,7 +416,13 @@ class _RateLimiter:
 
 
 class LLMClient:
-    """One client, three wire protocols."""
+    """One client, four wire protocols.
+
+    The fourth, Jev, is not a text model: it answers typed questions with
+    probabilities, so `_jev` asks it narrow questions and `quant.alpha.jev`
+    turns the answers into the caller's schema. The contract the desk sees —
+    `complete()` and `usage` — is the same for all four.
+    """
 
     def __init__(self, config: LLMConfig):
         self.config = config
@@ -281,6 +434,24 @@ class LLMClient:
             raise LLMError(
                 f"no API key for provider {config.provider!r} — set the matching env var"
             )
+        # ── Jev(MCP) 세션 ──
+        # 데스크는 이 클라이언트 하나로 좌석 여럿을 **동시에** 부릅니다. 세션을
+        # 좌석마다 열면 16석 × 종목 수만큼 initialize 가 나가고, 서버가 어느
+        # 세션을 기억할지도 알 수 없습니다. 그래서 처음 한 번만(single-flight)
+        # 열고 모두가 같이 씁니다. 세대 번호는 "내가 쓰던 세션이 죽었다" 는
+        # 신고가 여럿 겹쳐도 다시 여는 것은 한 번이게 하려고 둡니다.
+        self._jev_lock = LazyLock()
+        self._jev_ready = False
+        self._jev_session = ""
+        self._jev_protocol = ""
+        self._jev_generation = 0
+        self._jev_ids = itertools.count(1)
+        self._undecided_below = 0.65
+        if config.provider == "jev":
+            from quant.alpha.jev import DEFAULT_UNDECIDED_BELOW, undecided_threshold
+            # 잘못 적은 설정은 첫 심의가 아니라 시작할 때 드러나야 합니다.
+            self._undecided_below = undecided_threshold(
+                (config.extra or {}).get("undecided_below", DEFAULT_UNDECIDED_BELOW))
 
     async def complete(self, system: str, user: str, schema: dict | None = None) -> Any:
         """Return parsed JSON when `schema` is given, else raw text."""
@@ -295,6 +466,8 @@ class LLMClient:
                     return await self._openai(system, user, schema, budget)
                 if self.config.provider == "google":
                     return await self._google(system, user, schema, budget)
+                if self.config.provider == "jev":
+                    return await self._jev(system, user, schema)
                 raise LLMError(f"unsupported provider {self.config.provider!r}")
             except Truncated as exc:
                 last = exc
@@ -428,6 +601,148 @@ class LLMClient:
         text = "".join(p.get("text", "") for p in parts)
         _check_truncated(candidate.get("finishReason"), text)
         return _extract_json(text) if schema else text
+
+    # ── Jev: 판단 모델, MCP streamable HTTP ──────────────────────────────
+    async def _jev(self, system: str, user: str, schema: dict | None):
+        """좌석 하나 = `jev_evaluate` 한 번. 숫자와 문장은 `quant.alpha.jev` 가 만든다.
+
+        Jev 는 글을 쓰지 않으므로 다른 제공자처럼 스키마를 넘기고 JSON 을 받는
+        방식이 안 됩니다. 좁은 질문을 확률로 받아 코드가 스키마를 채웁니다.
+        """
+        # 여기서 가져오는 이유: jev 가 이 모듈의 LLMError 를 씁니다(순환 import).
+        from quant.alpha import jev
+
+        if schema is None:
+            # 데스크의 사전 점검("Reply with the single word OK."). Jev 는 그 말을
+            # 할 수 없으니, 가장 싼 도구 호출 하나로 키와 연결만 확인합니다.
+            await self._jev_tool("jev_check", {
+                "state": "connectivity check",
+                "question": "Is this a connectivity check?",
+            })
+            return "OK"
+        request = jev.build_request(system, user, schema)
+        payload = await self._jev_tool("jev_evaluate", request.arguments)
+        return jev.map_answers(request, payload, undecided_below=self._undecided_below)
+
+    def _jev_url(self) -> str:
+        return self.config.base_url or JEV_DEFAULT_URL
+
+    async def _jev_post(self, body: dict, session: str = "",
+                        protocol: str = "") -> httpx.Response:
+        headers = {
+            "Authorization": f"Bearer {self.config.resolved_key()}",
+            "Content-Type": "application/json",
+            # 스펙이 둘 다 받겠다고 말하라고 요구합니다. 서버는 둘 중 하나로 답합니다.
+            "Accept": "application/json, text/event-stream",
+        }
+        if session:
+            headers["Mcp-Session-Id"] = session
+        if protocol:
+            headers["MCP-Protocol-Version"] = protocol
+        return await self._client.post(self._jev_url(), json=body, headers=headers)
+
+    async def _jev_connect(self) -> int:
+        """세션이 없으면 한 번만 연다. 지금 세션의 세대 번호를 돌려준다."""
+        if self._jev_ready:
+            return self._jev_generation
+        async with self._jev_lock:
+            if self._jev_ready:                 # 기다리는 사이 누가 열었다
+                return self._jev_generation
+            rid = next(self._jev_ids)
+            r = await self._jev_post({
+                "jsonrpc": "2.0", "id": rid, "method": "initialize",
+                "params": {"protocolVersion": MCP_PROTOCOL_VERSION, "capabilities": {},
+                           "clientInfo": {"name": "quant-desk", "version": "1"}},
+            })
+            _raise_for_status(r, "jev")
+            message = _jev_message(r, rid)
+            if message.get("error") is not None:
+                raise _rpc_failure(message["error"], "initialize 거부: ")
+            result = message.get("result") if isinstance(message.get("result"), dict) else {}
+            # 상태 없는(stateless) 서버는 세션 id 를 주지 않습니다. 그때는 안 보냅니다.
+            session = r.headers.get("mcp-session-id", "")
+            protocol = str(result.get("protocolVersion") or MCP_PROTOCOL_VERSION)
+            ack = await self._jev_post({"jsonrpc": "2.0",
+                                        "method": "notifications/initialized"},
+                                       session, protocol)
+            _raise_for_status(ack, "jev")     # 200·202·204 무엇이든, 본문은 없다
+            self._jev_session, self._jev_protocol = session, protocol
+            self._jev_generation += 1
+            self._jev_ready = True
+            return self._jev_generation
+
+    def _jev_drop(self, generation: int) -> None:
+        """그 세션이 아직 지금 세션이면 버린다. 이미 누가 다시 열었으면 그대로."""
+        if self._jev_generation == generation:
+            self._jev_ready = False
+            self._jev_session = ""
+
+    async def _jev_tool(self, name: str, arguments: dict) -> dict:
+        """`tools/call` 한 번. 세션이 죽었으면 한 번만 다시 열고 한 번만 다시 묻는다.
+
+        서버리스 배포(Vercel)는 인스턴스가 바뀌면 세션을 잊습니다. 그건 우리
+        요청이 틀린 게 아니므로 좌석 실패로 넘기지 않고 조용히 다시 엽니다.
+        두 번째에도 거절되면 그때는 진짜 실패입니다.
+        """
+        for attempt in range(2):
+            generation = await self._jev_connect()
+            session = self._jev_session
+            rid = next(self._jev_ids)
+            r = await self._jev_post({
+                "jsonrpc": "2.0", "id": rid, "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            }, session, self._jev_protocol)
+            if r.status_code >= 400:
+                if attempt == 0 and ((r.status_code == 404 and session)
+                                     or _session_lost(_jev_error_text(r))):
+                    log.info("jev 세션이 만료되어 다시 엽니다 (%d)", r.status_code)
+                    self._jev_drop(generation)
+                    continue
+                _raise_for_status(r, "jev")
+            message = _jev_message(r, rid)
+            error = message.get("error")
+            if error is not None:
+                text = _rpc_error_text(error)
+                if attempt == 0 and _session_lost(text):
+                    log.info("jev 세션이 만료되어 다시 엽니다: %s", text[:120])
+                    self._jev_drop(generation)
+                    continue
+                # 요청이 틀렸다는 코드(-32602 …)만 422 — 재시도하지 않습니다.
+                # 내부·서버 오류(-32603, -32000~-32099)는 503 으로 적어
+                # `complete()` 가 한 번 더 묻게 하고, 한도를 말하면 429 입니다.
+                raise _rpc_failure(error)
+            return self._jev_result(message)
+        raise LLMError("jev: 세션을 다시 열었지만 또 거부되었습니다")  # pragma: no cover
+
+    def _jev_result(self, message: dict) -> dict:
+        """JSON-RPC result → Jev 의 답 dict. 사용량은 여기서 셉니다."""
+        result = message.get("result")
+        if not isinstance(result, dict):
+            raise LLMError(f"jev: 응답에 result 가 없습니다: {str(message)[:200]}")
+        texts = [c.get("text", "") for c in (result.get("content") or [])
+                 if isinstance(c, dict) and c.get("type") == "text"]
+        if result.get("isError"):
+            # 도구는 돌았습니다 — 청구됐을 수 있으니 호출은 셉니다(토큰은 모름).
+            # 한도가 과소계상되는 쪽이 일찍 멈추는 쪽보다 나쁩니다.
+            self.usage.add(0, 0)
+            # 스펙은 API 실패(윗단 게이트웨이의 장애)도 여기로 보내라고 합니다.
+            # 그래서 전부 "요청이 틀렸다" 로 읽지 않고 글로 가릅니다.
+            raise _tool_failure(" ".join(texts) or "tool error")
+        payload = result.get("structuredContent")
+        if not isinstance(payload, dict):
+            payload = None
+            if texts:
+                try:
+                    payload = json.loads(texts[0])
+                except ValueError:
+                    payload = None
+        if not isinstance(payload, dict):
+            self.usage.add(0, 0)
+            raise LLMError(f"jev: 도구 응답이 JSON 객체가 아닙니다: "
+                           f"{(texts[0] if texts else str(result))[:200]}")
+        u = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+        self.usage.add(_as_int(u.get("inputTokens")), _as_int(u.get("outputTokens")))
+        return payload
 
     async def list_models(self) -> list[str]:
         """Model ids this provider will accept for generation. Best effort."""

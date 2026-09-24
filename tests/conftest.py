@@ -44,7 +44,8 @@ def shipped_configs(mode=None) -> list:
             "KIS_PAPER_APP_KEY", "KIS_PAPER_APP_SECRET", "KIS_PAPER_ACCOUNT_NO",
             "KIS_ACCOUNT_PRD_CD", "KIS_PAPER_ACCOUNT_PRD_CD",
             "BINANCE_KEY", "BINANCE_SECRET", "TELEGRAM_BOT_TOKEN",
-            "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY")
+            "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY",
+            "JEV_API_KEY")
     restore = {k: os.environ.get(k) for k in keys}
     for k in keys:
         os.environ.setdefault(k, "x")

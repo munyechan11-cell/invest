@@ -40,7 +40,7 @@ def test_quotes_never_come_from_the_mock_host(path, monkeypatch):
     for var in ("KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO",
                 "KIS_PAPER_APP_KEY", "KIS_PAPER_APP_SECRET",
                 "KIS_PAPER_ACCOUNT_NO", "TELEGRAM_BOT_TOKEN",
-                "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY"):
+                "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY", "JEV_API_KEY"):
         monkeypatch.setenv(var, "x")
     config = _load(path)
     for label, section in (("data", config.data), ("flow", config.flow)):
@@ -80,7 +80,7 @@ def test_orders_still_go_to_the_paper_account():
 def test_the_web_wiring_agrees_with_the_yaml(path, monkeypatch):
     for var in ("KIS_APP_KEY", "KIS_APP_SECRET", "KIS_PAPER_APP_KEY",
                 "KIS_PAPER_APP_SECRET", "KIS_PAPER_ACCOUNT_NO",
-                "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY"):
+                "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY", "JEV_API_KEY"):
         monkeypatch.setenv(var, "x")
     config = _load(path)
     assert _data_wiring(config).args["app_key"] == "KIS_APP_KEY"
@@ -96,7 +96,7 @@ def test_the_web_wiring_agrees_with_the_yaml(path, monkeypatch):
 
 def test_a_live_config_still_demands_the_real_account_number(monkeypatch):
     for var in ("KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO",
-                "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY"):
+                "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY", "JEV_API_KEY"):
         monkeypatch.setenv(var, "x")
     needs = required_secrets(_load("configs/kr_desk_gemini.yaml"))
     assert "KIS_ACCOUNT_NO" in needs

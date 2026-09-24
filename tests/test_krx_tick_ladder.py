@@ -106,7 +106,8 @@ def test_a_zero_tick_still_means_no_grid():
 def test_every_shipped_korean_symbol_uses_the_ladder(path, monkeypatch):
     for var in ("TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET", "TOSS_ACCOUNT_NO",
                 "KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO",
-                "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY"):
+                "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY",
+                "JEV_API_KEY"):
         monkeypatch.setenv(var, "x")
     config = _load(path)
     krw = [s for s in config.universe.symbols if s.quote_currency.upper() == "KRW"]

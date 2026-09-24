@@ -7,6 +7,11 @@
     python scripts/desk_live_check.py                 # 기본 (1종목, 토론 1라운드)
     python scripts/desk_live_check.py --rounds 2      # 더 깊게
     python scripts/desk_live_check.py --model claude-sonnet-5   # 더 싸게
+    python scripts/desk_live_check.py --provider jev  # 출하 설정과 같은 Jev (JEV_API_KEY)
+
+Jev 는 16석을 좌석당 호출 한 번으로 판단합니다(종목당 16회 + 시작 때 점검 1회).
+글을 쓰지 않고 확률만 돌려주므로 서술 칸은 확률을 적은 정해진 문장이고,
+`--max-tokens` 와 `--model` 은 쓰지 않습니다. **실제 호출이라 과금됩니다.**
 
 주문은 나가지 않습니다 — `deliberate()` 만 호출하고 엔진 파이프라인은 타지 않습니다.
 합성 데이터를 쓰므로 결과의 방향성 자체에는 의미가 없고, 측정 대상은 기계 쪽입니다.
@@ -46,8 +51,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="데스크 실전 심의 1회")
     p.add_argument("--ticker", default="005930")
     p.add_argument("--provider", default="auto",
-                   choices=["auto", "anthropic", "google", "openai"],
-                   help="auto = .env 에 있는 키를 보고 고름")
+                   choices=["auto", "jev", "anthropic", "google", "openai"],
+                   help="auto = .env 에 있는 키를 보고 고름 (Jev 가 먼저)")
     p.add_argument("--model", default="", help="비우면 프로바이더 기본 모델")
     p.add_argument("--rounds", type=int, default=1, help="강세/약세 토론 라운드")
     p.add_argument("--risk-rounds", type=int, default=1)
@@ -70,7 +75,10 @@ def pick_provider(requested: str) -> str:
     operator hunting for a config problem that is really a "you have a
     different key" problem.
     """
+    # Jev 가 먼저인 이유: 출하 데스크 설정이 전부 Jev 라, 키가 여럿이면 실제로
+    # 돌게 될 것을 재는 쪽이 맞습니다.
     available = [name for name, var in (
+        ("jev", "JEV_API_KEY"),
         ("anthropic", "ANTHROPIC_API_KEY"),
         ("google", "GOOGLE_API_KEY"),
         ("openai", "OPENAI_API_KEY"),
@@ -82,7 +90,7 @@ def pick_provider(requested: str) -> str:
             return ""
         return requested
     if not available:
-        print("LLM 키가 하나도 없습니다 — .env 에 ANTHROPIC_API_KEY / "
+        print("LLM 키가 하나도 없습니다 — .env 에 JEV_API_KEY / ANTHROPIC_API_KEY / "
               "GOOGLE_API_KEY / OPENAI_API_KEY 중 하나를 넣으세요.", file=sys.stderr)
         return ""
     if len(available) > 1:
@@ -96,6 +104,12 @@ async def run(args: argparse.Namespace) -> int:
     if not provider:
         return 2
     model = args.model or DEFAULT_MODELS.get(provider, "")
+    if provider == "jev" and args.model and args.model != DEFAULT_MODELS["jev"]:
+        # Jev 에는 고를 모델이 없습니다. 다른 이름을 적으면 단가표에서 못 찾아
+        # 비용이 가장 비싼 기본 요율로 계산됩니다.
+        print(f"Jev 에는 모델 선택이 없습니다 — --model {args.model} 은 무시합니다",
+              file=sys.stderr)
+        model = DEFAULT_MODELS["jev"]
 
     symbol = Symbol(args.ticker, venue="kis", quote_currency="KRW",
                     tick_size=Decimal("100"), lot_size=Decimal("1"))
@@ -119,10 +133,18 @@ async def run(args: argparse.Namespace) -> int:
                                           avg_volume=12_000_000), live=False)
     await feed.backfill([symbol], start, end)
 
+    if provider == "jev":
+        # 출하 설정(`llm: {provider: jev, timeout: 30}`)과 같게. 토큰 한도·온도는
+        # Jev 에 뜻이 없어 넘기지 않습니다.
+        llm = LLMConfig(provider="jev", model=model, timeout=30.0,
+                        requests_per_minute=args.rpm,
+                        max_retries=5 if args.rpm else 3)
+    else:
+        llm = LLMConfig(provider=provider, model=model, max_tokens=args.max_tokens,
+                        temperature=0.2, requests_per_minute=args.rpm,
+                        max_retries=5 if args.rpm else 3)
     desk = TradingDesk(
-        LLMConfig(provider=provider, model=model, max_tokens=args.max_tokens,
-                  temperature=0.2, requests_per_minute=args.rpm,
-                  max_retries=5 if args.rpm else 3),
+        llm,
         flow_feed=feed,
         debate_rounds=args.rounds,
         risk_debate_rounds=args.risk_rounds,

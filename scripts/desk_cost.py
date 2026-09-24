@@ -61,6 +61,10 @@ MODELS = [
     Model("gemini-3.5-flash", 1.50, 9.00),
     Model("gemini-3.7-flash", 0.75, 3.75, "2026-12-31까지, 이후 $1.50/$7.50"),
     Model("gemini-3.5-flash-lite", 0.30, 2.50),
+    # 운영자가 알려 준 단가(2026-09-24). 출력은 무료 — Jev 는 확률만 돌려줍니다.
+    # 입력 토큰은 위 Gemini 실측을 그대로 쓴 근사치입니다(Jev 는 영어 역할·용어집·
+    # 질문을 보내고 서버 쪽 프롬프트가 호출마다 약 400 토큰 붙습니다).
+    Model("typesafe-ai/jev", 0.042, 0.0, "출력 무료, 입력 토큰은 근사"),
 ]
 BY_NAME = {m.name: m for m in MODELS}
 

@@ -48,6 +48,7 @@ from datetime import datetime
 
 from quant.alpha.base import AlphaModel
 from quant.alpha.llm_client import (
+    JEV_DEFAULT_URL,
     LLMClient,
     LLMConfig,
     LLMError,
@@ -703,11 +704,13 @@ class TradingDesk(AlphaModel):
         except LLMError as exc:
             message = str(exc)
             # **어느 제공자인지 말해야 합니다.** 예전에는 무조건 Anthropic
-            # 이라고 적혀 있었는데, 출하 설정은 전부 제미나이입니다. 제미나이
-            # 할당량이 떨어진 사람이 그 문장을 읽으면 있지도 않은 Anthropic
-            # 계정을 충전하러 갑니다 — 틀린 안내는 없는 안내보다 나쁩니다.
-            who, where = billing_hint(
-                getattr(getattr(self.client, "config", None), "provider", ""))
+            # 이라고 적혀 있었는데, 그때 출하 설정은 전부 제미나이였습니다(지금은
+            # Jev). 제미나이 할당량이 떨어진 사람이 그 문장을 읽으면 있지도 않은
+            # Anthropic 계정을 충전하러 갑니다 — 틀린 안내는 없는 안내보다
+            # 나쁩니다. 그래서 이름은 설정의 제공자에서 `billing_hint` 로 얻습니다.
+            config = getattr(self.client, "config", None)
+            provider = getattr(config, "provider", "")
+            who, where = billing_hint(provider)
             if ("credit balance" in message or "quota" in message.lower()
                     or "spending cap" in message.lower()
                     or "credits are depleted" in message.lower()):
@@ -716,6 +719,16 @@ class TradingDesk(AlphaModel):
                 return (f"{who} API 키가 거부되었습니다 — 키를 확인하세요."
                         + (f" 발급: {where}" if where else "")
                         + f" ({message[:160]})")
+            if " 404:" in message and provider == "jev":
+                # Jev 에는 고를 모델이 없습니다(모델 설정을 보내지도 않습니다).
+                # 404 는 주소가 틀렸거나 배포가 옮겨졌다는 뜻이라, "모델 이름을
+                # 확인하세요" 는 있지도 않은 설정으로 사람을 보냅니다.
+                # 직접 적은 주소는 화면에 옮기지 않습니다 — 쿼리에 무엇이 들어
+                # 있을지 모릅니다. 기본 주소는 코드에 공개된 값입니다.
+                where_url = ("직접 적은 주소를 쓰는 중" if getattr(config, "base_url", "")
+                             else f"기본 주소 {JEV_DEFAULT_URL}")
+                return (f"Jev 주소를 찾을 수 없습니다 — 설정의 llm.base_url 을 "
+                        f"확인하세요({where_url}). ({message[:120]})")
             if " 404:" in message:
                 available = await self._list_models()
                 hint = f" 사용 가능: {', '.join(available[:8])}" if available else ""

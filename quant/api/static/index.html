@@ -5555,7 +5555,9 @@ function deskWaitReason() {
   const why = (deskState || {}).disabled_reason;
   if (why) {
     return {kind: "broken", who: "데스크가 꺼졌습니다",
-            line: why + " — ⚙ 설정에서 Gemini 키를 확인하세요."};
+            // 제공자 이름은 적지 않습니다 — 꺼진 이유(why)가 이미 어느 제공자의
+            // 키·한도인지 말하고, 출하 설정은 Gemini 가 아니라 Jev 입니다.
+            line: why + " — AI 데스크의 LLM 키와 한도를 확인하세요."};
   }
   if (stillStarting()) {
     return {kind: "starting", who: "시작 중…",

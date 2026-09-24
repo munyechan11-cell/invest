@@ -63,7 +63,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from starlette.concurrency import run_in_threadpool
 
-from quant.alpha.llm_client import LLMError
+from quant.alpha.llm_client import LLMError, billing_hint
 from quant.config.loader import load_config
 from quant.config.schema import StrategyConfig
 from quant.core.aio import LazyLock, LazySemaphore
@@ -639,6 +639,11 @@ ACCOUNT_KEYS: frozenset[str] = frozenset(WRITABLE_KEYS) - _SERVICE_SCOPED
 #: 비용을 내므로, 자기 키를 넣는 것은 사용량 상한을 벗어나고 싶을 때뿐입니다 —
 #: 그래서 서비스가 실제로 쓰는 제공자와 같은 것만 보여줍니다. 쓰지도 않는
 #: 제공자의 칸이 서 있으면 사용자는 그것이 필요한 값이라고 읽습니다.
+#:
+#: ⚠️ 2026-09: 출하 데스크 설정이 전부 `provider: jev` 로 바뀌었습니다. 이
+#: Gemini 키는 제공자가 google 인 데스크에만 들어가므로(`_with_credentials`),
+#: 지금 출하 설정에서는 넣어도 한도가 풀리지 않습니다. 이 칸을 어떻게 할지는
+#: 아직 정하지 않은 제품 결정이라 그대로 둡니다.
 _BYO_LLM_KEY = "GOOGLE_API_KEY"
 
 #: 자기 키 칸에 붙는 설명. 계정 화면에서는 "선택"의 뜻이 달라집니다 —
@@ -652,6 +657,25 @@ ACCOUNT_OPERATOR_FIELDS = [
     for env, label, required in OPERATOR_FIELDS
     if env not in _SERVICE_SCOPED and not env.endswith("_API_KEY")
 ] + [(_BYO_LLM_KEY, _BYO_LLM_LABEL, False)]
+
+
+def _desk_llm(cfg: StrategyConfig) -> tuple[str, bool]:
+    """(이 전략의 AI 데스크가 쓰는 LLM 이름, 계정 화면의 자기 키로 풀리는가).
+
+    키가 없다는 안내가 제공자 하나를 박아 두면 틀린 곳으로 보냅니다. 출하
+    설정은 전부 Jev 인데 계정 화면이 받는 자기 키(`_BYO_LLM_KEY`)는 Gemini
+    키라서, Jev 데스크에 "본인 Gemini 키를 넣으세요" 라고 하면 넣어도 아무것도
+    바뀌지 않습니다 — 그 키는 제공자가 google 인 데스크에만 들어갑니다.
+    """
+    spec = next((m for m in cfg.alpha if m.type in ("desk", "council")), None)
+    llm = spec.params.get("llm") if spec is not None else None
+    if not isinstance(llm, dict):
+        return "LLM", False
+    provider = str(llm.get("provider", "anthropic"))      # LLMConfig 의 기본값
+    if provider == "google":                              # _BYO_LLM_KEY 의 제공자
+        return "Gemini", True
+    return billing_hint(provider)[0], False
+
 
 #: 프로세스 환경에 남아 있으면 안 되는 이름들 — 계좌에 닿거나 사람에게 닿는 값.
 #:
@@ -1655,7 +1679,8 @@ class UserDesk(Desk):
                 "operator": self.user.display_name or self.user.email,
                 "venues": linked,
                 "has_llm": any(name in configured for name in
-                               ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY")),
+                               ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY",
+                                "JEV_API_KEY")),
                 "has_notifier": ("TELEGRAM_BOT_TOKEN" in configured
                                  and "TELEGRAM_CHAT_ID" in configured),
                 "updated_at": "",
@@ -1765,11 +1790,13 @@ class UserDesk(Desk):
             # 모르겠다" 가 반복됐습니다.
             log.warning("봇 시작 실패(LLM): %s", exc)
             has_desk = any(m.type in ("desk", "council") for m in cfg.alpha)
+            who, byo = _desk_llm(cfg)
+            fix = (f"마이페이지에서 본인 {who} 키를 넣거나" if byo else
+                   f"서비스의 {who} 키 설정을 운영자에게 확인하거나")
             raise HTTPException(
                 503,
-                f"'{cfg.name}' 은 AI 데스크를 쓰는 전략인데 쓸 수 있는 LLM 키가 "
-                f"없습니다. 마이페이지에서 본인 Gemini 키를 넣거나, 데스크가 없는 "
-                f"전략을 고르세요."
+                f"'{cfg.name}' 은 AI 데스크를 쓰는 전략인데 쓸 수 있는 {who} 키가 "
+                f"없습니다. {fix}, 데스크가 없는 전략을 고르세요."
                 if has_desk else f"모델을 준비하지 못했습니다: {exc}") from None
 
     async def start_group(self, req: GroupStartRequest) -> dict:
@@ -1801,11 +1828,15 @@ class UserDesk(Desk):
                 self.user.id, group, configs, on_event=self.hub.publish)
         except LLMError as exc:
             log.warning("그룹 시작 실패(LLM): %s", exc)
+            desk_cfg = next((c for c in configs.values()
+                             if any(m.type in ("desk", "council") for m in c.alpha)), None)
+            who, byo = _desk_llm(desk_cfg) if desk_cfg is not None else ("LLM", False)
+            fix = (f"마이페이지에서 본인 {who} 키를 넣거나" if byo else
+                   f"서비스의 {who} 키 설정을 운영자에게 확인하거나")
             raise HTTPException(
                 503,
-                "AI 데스크를 쓰는 전략인데 쓸 수 있는 LLM 키가 없습니다. "
-                "마이페이지에서 본인 Gemini 키를 넣거나, 데스크가 없는 전략을 "
-                f"고르세요. ({exc})") from None
+                f"AI 데스크를 쓰는 전략인데 쓸 수 있는 {who} 키가 없습니다. "
+                f"{fix}, 데스크가 없는 전략을 고르세요. ({exc})") from None
 
     async def stop(self) -> dict:
         return await self.registry.stop(self.user.id)
@@ -2731,14 +2762,16 @@ def create_app(config: StrategyConfig | None = None,
                     # 맞는 말도 아니고 고칠 방법도 알려주지 못합니다.
                     mine = await run_in_threadpool(
                         seat.registry.desk_owns_key, seat.user.id, cfg)
+                    who, byo = _desk_llm(cfg)
                     raise HTTPException(
                         503,
-                        "넣어 두신 Gemini 키를 쓸 수 없습니다 — 값이 맞는지, "
-                        "해당 키에 Gemini API 사용 권한이 있는지 확인하세요."
+                        f"넣어 두신 {who} 키를 쓸 수 없습니다 — 값이 맞는지, "
+                        f"해당 키에 {who} API 사용 권한이 있는지 확인하세요."
                         if mine else
-                        "AI 데스크를 쓸 수 없습니다 — 서비스의 Gemini 키가 "
-                        "설정되지 않았거나 한도에 걸렸습니다. 마이페이지에서 "
-                        "본인 Gemini 키를 넣으면 바로 쓸 수 있습니다.") from None
+                        f"AI 데스크를 쓸 수 없습니다 — 서비스의 {who} 키가 "
+                        "설정되지 않았거나 한도에 걸렸습니다. "
+                        + (f"마이페이지에서 본인 {who} 키를 넣으면 바로 쓸 수 "
+                           "있습니다." if byo else "운영자에게 문의하세요.")) from None
                 raise HTTPException(
                     503, f"데스크를 준비할 수 없습니다: {text}") from None
 

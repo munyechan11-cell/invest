@@ -32,7 +32,8 @@ def env(monkeypatch):
     for var in ("TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET", "TOSS_ACCOUNT_NO",
                 "KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO",
                 "BINANCE_KEY", "BINANCE_SECRET", "TELEGRAM_BOT_TOKEN",
-                "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY"):
+                "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY",
+                "JEV_API_KEY"):
         monkeypatch.setenv(var, "x")
 
 
