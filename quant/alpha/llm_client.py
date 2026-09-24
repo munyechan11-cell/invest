@@ -9,6 +9,8 @@ to regex a JSON blob out of prose.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import itertools
 import json
 import logging
@@ -87,11 +89,60 @@ class LLMUsage:
         self.input_tokens += i
         self.output_tokens += o
         self.calls += 1
+        tally = _TALLY.get()
+        if tally is not None:
+            pin, pout = price_for(self.model)
+            tally.record(i, o, i / 1e6 * pin + o / 1e6 * pout)
 
     @property
     def cost_usd(self) -> float:
         pin, pout = price_for(self.model)
         return self.input_tokens / 1e6 * pin + self.output_tokens / 1e6 * pout
+
+
+class UsageTally:
+    """**이 작업이** 쓴 LLM 사용량 — 심의 한 번, 봉 한 번, 요청 한 번.
+
+    `LLMUsage` 는 클라이언트 하나의 누적이라, 앞뒤 값을 빼서 "이번에 쓴 것"
+    을 구하면 **동시에 도는 다른 작업의 호출까지** 섞입니다. 데스크는 한
+    클라이언트로 종목 4개를 동시에 심의하므로, 종목마다 적힌 호출 수가 16이
+    아니라 64였습니다. 그래서 작업마다 따로 셉니다: `usage_tally()` 로 연
+    작업과 그 작업이 만든 태스크(`asyncio.gather`·`wait_for` 는 컨텍스트를
+    물려받습니다)의 호출만 여기에 적힙니다. 안쪽에서 다시 열면 바깥에도
+    같이 적힙니다 — 봉 전체의 합과 종목 하나의 몫을 함께 셀 수 있게.
+    """
+
+    __slots__ = ("calls", "input_tokens", "output_tokens", "cost_usd", "_parent")
+
+    def __init__(self, parent: UsageTally | None = None):
+        self.calls = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.cost_usd = 0.0
+        self._parent = parent
+
+    def record(self, i: int, o: int, cost: float) -> None:
+        tally: UsageTally | None = self
+        while tally is not None:
+            tally.calls += 1
+            tally.input_tokens += i
+            tally.output_tokens += o
+            tally.cost_usd += cost
+            tally = tally._parent
+
+
+_TALLY: contextvars.ContextVar = contextvars.ContextVar("llm_usage_tally", default=None)
+
+
+@contextlib.contextmanager
+def usage_tally():
+    """이 블록(과 여기서 만든 태스크)이 쓴 LLM 사용량을 센다."""
+    tally = UsageTally(_TALLY.get())
+    token = _TALLY.set(tally)
+    try:
+        yield tally
+    finally:
+        _TALLY.reset(token)
 
 
 @dataclass
@@ -193,6 +244,34 @@ def _retry_after(message: str) -> float | None:
 
 #: a suggested wait beyond this is not throttling, it is an exhausted allowance
 _LONG_WAIT_S = 25.0
+
+#: `LLMError` 의 상태 꼬리표 — "google 429: …", "jev 503: …". 글의 **맨 앞** 만.
+_STATUS_TAG = re.compile(r"^[A-Za-z_][\w.-]* (\d{3}):")
+
+#: 다시 보내도 같은 답이 오는 상태. 재시도하지 않습니다.
+_NO_RETRY_STATUS = frozenset({400, 401, 403, 404, 422})
+
+
+def _status_of(message: str) -> int | None:
+    m = _STATUS_TAG.match(message)
+    return int(m.group(1)) if m else None
+
+
+def _describe(exc: BaseException | None) -> str:
+    """마지막 실패를 한 줄로. `str()` 이 빈 예외(httpx 시간 초과)는 이름이라도.
+
+    예전에는 `str(last)` 만 붙여, 느린 Jev 가 "LLM call failed after 3 attempts: "
+    로 끝나는 빈 문장을 로그와 좌석 `error` 칸에 남겼습니다 — 시간 초과인지
+    다른 실패인지 알 수 없었습니다. 우리 오류(`LLMError`)는 꼬리표가 이미 원인을
+    말하므로 그대로 둡니다.
+    """
+    if exc is None:
+        return "알 수 없는 오류"
+    if isinstance(exc, LLMError) and str(exc).strip():
+        return str(exc)
+    text = " ".join(str(exc).split())
+    name = type(exc).__name__
+    return f"{name}: {text}" if text else name
 
 
 #: 다시 시도해도 **오늘 안에는 풀리지 않는** 429 들.
@@ -343,31 +422,74 @@ def _session_lost(text: str) -> bool:
 #: 사정일 수 있어 다시 물을 가치가 있습니다.
 _JEV_BAD_REQUEST_CODES = frozenset({-32700, -32600, -32601, -32602})
 
-#: 한도·과금을 말하는 오류. 무엇이 "오늘 안에는 안 풀리는" 한도인지는
-#: `_is_long_exhaustion` 이 정합니다 — 여기서는 그 경로에 태우기만 합니다.
-_JEV_QUOTA_WORDS = ("quota", "rate limit", "rate-limit", "rate_limit", "ratelimit",
-                    "too many requests", "per day", "daily", "credit", "billing",
-                    "payment", "insufficient funds", "spending cap")
+#: **돈** 이 떨어졌다는 말 — 잔액·결제·지출 한도. 기다려도 풀리지 않으므로
+#: 곧바로 `QuotaExhausted`("jev 402") 로 데스크를 세웁니다. 전에는 이 말들이
+#: 평범한 429 로 적혀 세 번씩 재시도된 뒤 좌석 실패로 끝났고, 데스크는 켜진
+#: 채로 봉마다 16석 × 3번을 다시 실패했습니다. 분석가가 답한 **뒤에** 잔액이
+#: 떨어지면 헤드만 실패해 분석가 합의로 물러서고, 그 합의가 매도였습니다.
+_JEV_BILLING_WORDS = ("credit", "billing", "payment", "insufficient funds",
+                      "spending cap")
+
+#: 할당량이 찼다는 말. Jev 에는 알려진 분 단위 할당량이 없어, 짧은 창을 말하지
+#: 않는 한 "오늘 안에는 안 풀리는" 쪽으로 읽습니다("Quota exceeded for this
+#: token"). 제미나이가 쓰는 공용 `_TERMINAL_429` 에는 넣지 않습니다 — 거기서는
+#: "Quota exceeded … per minute" 가 흔한 **일시** 429 입니다.
+_JEV_QUOTA_WORDS = ("quota", "per day", "daily")
+
+#: 잠깐의 속도 제한. 무엇이 긴 대기인지는 `_is_long_exhaustion` 이 정합니다.
+_JEV_THROTTLE_WORDS = ("rate limit", "rate-limit", "rate_limit", "ratelimit",
+                       "too many requests")
+
+#: 한도 문구가 **짧은 창** 을 말하면 기다리면 풀립니다 — 데스크를 세울 일이 아닙니다.
+_SHORT_WINDOW_WORDS = ("per minute", "per-minute", "per second", "per-second",
+                       "/minute", "/second")
 
 #: 도구 오류(`isError`) 가운데 **입력이 틀렸다** 는 말. 도구 오류에는 코드가
 #: 없어서 글로 봅니다. SDK 는 입력 검증 실패를 "MCP error -32602: …" 로 적습니다.
-#: "unexpected" 가 걸리지 않게 "expected" 같은 넓은 말은 넣지 않습니다.
-_JEV_BAD_INPUT_WORDS = ("invalid argument", "invalid param", "invalid input",
-                        "invalid request", "validation", "too large", "too long",
-                        "too many questions", "exceeds", "must be", "unknown tool",
-                        "-32700", "-32600", "-32601", "-32602")
+#:
+#: **명시적인 표지만** 둡니다. 예전에는 "too long", "exceeds", "validation",
+#: "must be" 같은 넓은 말이 있어서 "The upstream model took too long to respond,
+#: please try again" 이나 "output validation failed, retry" 같은 **일시 장애** 가
+#: 422(재시도 없음)로 읽혔습니다. 헤드에서 그 한 번이 분석가 합의 대체 → 매도
+#: 였습니다. 틀리는 방향의 값이 다릅니다 — 입력 오류를 503 으로 읽으면 재시도
+#: 두 번이 더 들 뿐이고, 일시 장애를 422 로 읽으면 보유가 팔립니다.
+_JEV_BAD_INPUT_WORDS = ("mcp error -32700", "mcp error -32600", "mcp error -32601",
+                        "mcp error -32602", "invalid argument", "unknown tool")
 
 
-def _jev_failure(text: str, *, bad_request: bool) -> LLMError:
-    """Jev 가 돌려준 오류에 `complete()` 가 읽는 상태 꼬리표를 붙인다."""
+def _short_window(text: str) -> bool:
     lowered = text.lower()
-    if any(w in lowered for w in _JEV_QUOTA_WORDS):
-        status = 429
-    elif bad_request:
-        status = 422
-    else:
-        status = 503
-    return LLMError(f"jev {status}: {text[:400]}")
+    if any(w in lowered for w in _SHORT_WINDOW_WORDS):
+        return True
+    wait = _retry_after(text)
+    return wait is not None and wait < _LONG_WAIT_S
+
+
+def _jev_failure(text: str, *, bad_request: bool, status: int | None = None) -> LLMError:
+    """Jev 가 돌려준 오류에 `complete()` 가 읽는 상태 꼬리표를 붙인다.
+
+    돈·할당량 소진은 여기서 곧바로 `QuotaExhausted` 입니다(`complete()` 가
+    재시도하지 않고 그대로 올립니다). `status` 는 HTTP 로 온 402·429 일 때.
+    """
+    lowered = text.lower()
+    body = text[:400]
+    short = _short_window(text)
+    if status == 402 or (not short and any(w in lowered for w in _JEV_BILLING_WORDS)):
+        return QuotaExhausted(f"jev 402: {body}")
+    if not short and any(w in lowered for w in _JEV_QUOTA_WORDS):
+        return QuotaExhausted(f"jev 429: {body}")
+    if status == 429 or any(w in lowered for w in (*_JEV_THROTTLE_WORDS, *_JEV_QUOTA_WORDS,
+                                                   *_JEV_BILLING_WORDS)):
+        return LLMError(f"jev 429: {body}")
+    return LLMError(f"jev {422 if bad_request else 503}: {body}")
+
+
+def _jev_raise_for_status(response: httpx.Response) -> None:
+    """HTTP 오류 → 꼬리표. 402·429 는 본문을 보고 한도 경로로 보냅니다."""
+    if response.status_code in (402, 429):
+        raise _jev_failure(_jev_error_text(response), bad_request=False,
+                           status=response.status_code)
+    _raise_for_status(response, "jev")
 
 
 def _rpc_failure(error: Any, prefix: str = "") -> LLMError:
@@ -480,22 +602,36 @@ class LLMClient:
                 log.info("%s 응답이 잘려 출력 한도를 %d 토큰으로 올려 재시도합니다",
                          self.config.resolved_model(), budget)
                 continue
+            except QuotaExhausted:
+                # 이미 "오늘 안에는 안 풀린다" 로 판정된 실패(Jev 의 잔액·할당량).
+                raise
             except (httpx.HTTPError, LLMError) as exc:
                 last = exc
                 # A 4xx is a bad request, not a blip. Retrying it three times
                 # just triples the latency before the same failure.
+                #
+                # 꼬리표는 **맨 앞** 에서만 읽습니다. 예전에는 글 전체에서
+                # " 400:" 을 찾아서, "jev 503: Upstream provider returned 400:
+                # overloaded" 같은 일시 장애가 서버 문장 속 숫자 때문에 한 번에
+                # 실패했습니다.
                 text = str(exc)
-                if any(f" {code}:" in text for code in (400, 401, 403, 404, 422)):
+                status = _status_of(text)
+                if status in _NO_RETRY_STATUS:
                     raise
+                # 한도 소진 판정은 **마지막 시도 전에** 합니다. 예전에는 마지막
+                # 시도에서 먼저 빠져나가, 일시 장애 두 번 뒤에 온 하루 한도가
+                # 평범한 LLMError 가 되었습니다(max_retries=1 이면 늘 그랬습니다).
+                # 헤드에서 그것은 데스크 정지가 아니라 분석가 합의 대체였습니다.
+                if status == 429 and _is_long_exhaustion(text):
+                    raise QuotaExhausted(text) from exc
                 if attempt == self.config.max_retries - 1:
                     break
                 # A 429 usually carries the provider's own suggested delay.
                 # Guessing a shorter one just burns another rejected request.
-                if " 429:" in text and _is_long_exhaustion(text):
-                    raise QuotaExhausted(text) from exc
-                wait = _retry_after(text) if " 429:" in text else None
+                wait = _retry_after(text) if status == 429 else None
                 await asyncio.sleep(wait if wait is not None else 1.5 * (2 ** attempt))
-        raise LLMError(f"LLM call failed after {self.config.max_retries} attempts: {last}")
+        raise LLMError(f"LLM call failed after {self.config.max_retries} attempts: "
+                       f"{_describe(last)}") from last
 
     # ── providers ────────────────────────────────────────────────────────
     async def _anthropic(self, system: str, user: str, schema: dict | None,
@@ -654,7 +790,7 @@ class LLMClient:
                 "params": {"protocolVersion": MCP_PROTOCOL_VERSION, "capabilities": {},
                            "clientInfo": {"name": "quant-desk", "version": "1"}},
             })
-            _raise_for_status(r, "jev")
+            _jev_raise_for_status(r)
             message = _jev_message(r, rid)
             if message.get("error") is not None:
                 raise _rpc_failure(message["error"], "initialize 거부: ")
@@ -665,7 +801,7 @@ class LLMClient:
             ack = await self._jev_post({"jsonrpc": "2.0",
                                         "method": "notifications/initialized"},
                                        session, protocol)
-            _raise_for_status(ack, "jev")     # 200·202·204 무엇이든, 본문은 없다
+            _jev_raise_for_status(ack)   # 200·202·204 무엇이든, 본문은 없다
             self._jev_session, self._jev_protocol = session, protocol
             self._jev_generation += 1
             self._jev_ready = True
@@ -698,7 +834,7 @@ class LLMClient:
                     log.info("jev 세션이 만료되어 다시 엽니다 (%d)", r.status_code)
                     self._jev_drop(generation)
                     continue
-                _raise_for_status(r, "jev")
+                _jev_raise_for_status(r)
             message = _jev_message(r, rid)
             error = message.get("error")
             if error is not None:

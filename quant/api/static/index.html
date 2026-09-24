@@ -1222,8 +1222,12 @@ async function playDeliberation(d, opts) {
     if (d.risk) {
       const scale = Math.round((d.position_scale || 0) * 100);
       $("#riskTag").textContent = d.vetoed ? "거부" : `배율 ${scale}%`;
+      /* 거부 사유와 판정 설명은 두 문장입니다. 사이를 띄우지 않고 붙이면
+         말풍선의 "첫 문장" 이 둘을 한 덩어리로 읽어 중간에서 잘립니다. */
+      const reason = (d.veto_reason || "").trim();
+      const joint = !reason ? "" : /[.!?。]$/.test(reason) ? " " : ". ";
       say("risk_neutral",
-          (d.vetoed ? "⛔ 거부: " + (d.veto_reason || "") : `최종 배율 ${scale}% — `) +
+          (d.vetoed ? "⛔ 거부: " + reason + joint : `최종 배율 ${scale}% — `) +
           (d.risk.reasoning || ""),
           d.vetoed ? "bear" : "neutral");
       if (!(await wait(1800))) return;
@@ -5326,6 +5330,10 @@ function renderAsk(d, ticker) {
   out.innerHTML =
     `<div class="act">${esc(symLabel(ticker, nameOf(d, "ticker")))} · ${esc(act)}${cv}</div>` +
     (d.veto_reason ? `<div class="why">거부 사유 — ${esc(d.veto_reason)}</div>` : "") +
+    /* 축약 심의는 판단이 아닙니다 — 토론·결정이 실패해 분석가 합의로 물러선
+       결과입니다. 메인 화면은 "축약" 을 붙이는데 이 창만 말하지 않아서, 실패한
+       심의가 멀쩡한 "관망" 으로 읽혔습니다. */
+    (d.degraded ? `<div class="why">⚠ 축약 심의 — ${esc(d.degraded)}</div>` : "") +
     (d.rationale ? `<div class="why">${esc(d.rationale)}</div>` : "") +
     `<div class="kv">` +
       kv("목표 비중", d.target_weight_pct ? d.target_weight_pct.toFixed(1) + "%" : "—") +

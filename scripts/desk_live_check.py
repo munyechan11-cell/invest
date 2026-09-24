@@ -154,6 +154,9 @@ async def run(args: argparse.Namespace) -> int:
         seats=[x.strip() for x in args.seats.split(",") if x.strip()] or None,
     )
     await desk.on_start(ctx)
+    # 시작 점검(Jev 는 jev_check 한 번)은 종목 심의와 따로 적습니다 — 합쳐 적으면
+    # "LLM 16회" 옆의 비용이 17회분이 됩니다.
+    preflight_calls, preflight_cost = desk.status()["llm_calls"], desk.estimated_cost_usd
     if desk.status()["disabled_reason"]:
         print(f"\n{BAR}\n  데스크를 시작할 수 없습니다\n{BAR}")
         print(f"  {desk.status()['disabled_reason']}")
@@ -170,11 +173,15 @@ async def run(args: argparse.Namespace) -> int:
 
     usage = desk.client.usage
     print(f"\n{BAR}\n  {decision.summary_line()}\n{BAR}")
+    # 소수 다섯째 자리까지 — Jev 는 종목당 $0.0005 안팎이라 `.3f` 로는 $0.000 입니다.
     print(f"  소요 {decision.elapsed_s:.1f}초 · LLM {decision.llm_calls}회 · "
-          f"추정 ${desk.estimated_cost_usd:.3f}")
-    print(f"  토큰 in {usage.input_tokens:,} / out {usage.output_tokens:,}")
-    if decision.degraded:
-        print(f"  ⚠ 축약 심의: {decision.degraded}")
+          f"추정 ${decision.cost_usd:.5f} (종목 1개)")
+    print(f"  시작 점검: LLM {preflight_calls}회 · 추정 ${preflight_cost:.5f}")
+    print(f"  토큰 in {usage.input_tokens:,} / out {usage.output_tokens:,} (점검 포함)")
+    failures = seat_failures(decision)
+    if failures:
+        print(f"  ⚠ 좌석 {len(failures)}곳 실패 — 첫 오류 [{failures[0][0]}] "
+              f"{failures[0][1][:160]}")
 
     print("\n── 분석 8석 ──")
     for key_, report in decision.analysts.items():
@@ -216,7 +223,8 @@ async def run(args: argparse.Namespace) -> int:
             "ticker": symbol.ticker, "close": bars[-1].close,
             "provider": provider, "model": model,
             "elapsed_s": decision.elapsed_s, "llm_calls": decision.llm_calls,
-            "cost_usd": desk.estimated_cost_usd, "action": decision.action,
+            "cost_usd": decision.cost_usd, "preflight_cost_usd": preflight_cost,
+            "seat_failures": failures, "action": decision.action,
             "conviction": decision.conviction, "scale": decision.position_scale,
             "consensus": decision.consensus, "voting_seats": decision.voting_seats,
             "vetoed": decision.vetoed, "degraded": decision.degraded,
@@ -235,12 +243,44 @@ async def run(args: argparse.Namespace) -> int:
 
     # The number that decides whether this is usable in real time.
     print(f"\n{BAR}")
+    if failures:
+        # 실패한 좌석은 기다리지 않고 대체값을 냅니다. 그 심의의 소요 시간은
+        # 실제 심의보다 짧아서, 그걸로 봉 주기를 권하면 틀린 권고가 됩니다.
+        print(f"  좌석 {len(failures)}곳이 답하지 못해 속도·비용 판정을 하지 않습니다.")
+        for where, error in failures[:5]:
+            print(f"    - {where}: {error[:140]}")
+        print(BAR)
+        return 1
     print(f"  실시간 적용 판정: 심의 {decision.elapsed_s:.0f}초 → "
           f"최소 봉 주기 {_min_timeframe(decision.elapsed_s)} 이상 권장")
-    print(f"  10종목을 매 봉 심의하면 시간당 약 ${desk.estimated_cost_usd * 10:.2f} "
-          f"(1분봉이면 이 값의 60배)")
+    print(f"  10종목을 매 봉 심의하면 한 봉에 약 ${decision.cost_usd * 10:.5f} "
+          f"(1시간봉이면 시간당, 1분봉이면 그 60배)")
     print(BAR)
     return 0
+
+
+def seat_failures(decision) -> list[tuple[str, str]]:
+    """답하지 못한 좌석과 그 오류. 좌석은 실패해도 대체값을 내므로 따로 셉니다."""
+    found: list[tuple[str, str]] = []
+
+    def check(where: str, report) -> None:
+        if isinstance(report, dict) and report.get("error"):
+            found.append((where, str(report["error"])))
+
+    for key, report in decision.analysts.items():
+        check(key, report)
+    for round_ in decision.debate.get("rounds", []):
+        for side in ("bull", "bear"):
+            check(f"{side} R{round_.get('round')}", round_.get(side))
+    for round_ in decision.risk_debate.get("rounds", []):
+        for side in ("aggressive", "conservative"):
+            check(f"risk_{side} R{round_.get('round')}", round_.get(side))
+    check("risk_neutral", decision.risk)
+    check("research_manager", decision.plan)
+    check("trader", decision.trade)
+    if decision.degraded:
+        found.append(("head", decision.degraded))
+    return found
 
 
 def _min_timeframe(seconds: float) -> str:

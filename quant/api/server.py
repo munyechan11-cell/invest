@@ -63,13 +63,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from starlette.concurrency import run_in_threadpool
 
-from quant.alpha.llm_client import LLMError, billing_hint
+from quant.alpha.llm_client import LLMError, billing_hint, usage_tally
 from quant.config.loader import load_config
 from quant.config.schema import StrategyConfig
 from quant.core.aio import LazyLock, LazySemaphore
 from quant.core.context import QUOTE_FUTURE_TOLERANCE
 from quant.core.events import Event
-from quant.core.types import UTC, RunMode, Symbol
+from quant.core.types import UTC, RunMode, Symbol, one_line_error
 from quant.data.names import NameBook
 from quant.live.agents import MAX_AGENTS
 from quant.live.credentials import (
@@ -2812,26 +2812,44 @@ def create_app(config: StrategyConfig | None = None,
                      f"부족합니다(최소 60개). 상장 직후이거나 거래가 드문 종목일 수 있습니다.")
 
         ctx = _standalone_context(cfg, symbol, bars)
-        before_calls, before_cost = model.status()["llm_calls"], model.estimated_cost_usd
-        try:
-            decision = await model.deliberate(ctx, symbol)
-        except Exception as exc:
-            log.warning("심의 실패 %s: %s", ticker, exc)
-            raise HTTPException(502, f"심의 중 오류: {exc}") from None
-        finally:
-            # 실패했어도 부른 만큼은 청구됩니다. 성공만 계량하면 실패한
-            # 호출의 비용이 아무 계정에도 잡히지 않습니다.
-            after = model.status()
-            spent = max(0.0, model.estimated_cost_usd - before_cost)
-            calls = max(0, after["llm_calls"] - before_calls)
-            if calls:
-                await run_in_threadpool(
-                    usage.record_spend, seat.user.id, calls, spent, own_key)
+        # 꺼진 데스크(키 거절·한도 소진·주소 오류)로 심의하면 16석이 전부
+        # 실패하고 분석가 합의의 "관망" 이 HTTP 200 으로 나갑니다 — 사람은
+        # 판단으로 읽습니다. 부르지 않고 꺼진 이유를 그대로 돌려줍니다.
+        disabled = (model.status() or {}).get("disabled_reason") or ""
+        if disabled:
+            raise HTTPException(503, f"AI 데스크가 꺼져 있습니다 — {disabled}")
+        # **이 요청이** 쓴 것만 셉니다. 돌고 있는 봇의 데스크라면 같은 순간에
+        # 봉 심의가 같은 클라이언트로 돌 수 있고, 누적의 앞뒤 차이는 그 호출까지
+        # 이 사람에게 청구했습니다(봉 쪽 계량기도 같은 호출을 또 적습니다).
+        with usage_tally() as used:
+            try:
+                decision = await model.deliberate(ctx, symbol)
+            except Exception as exc:
+                log.warning("심의 실패 %s: %s", ticker, exc)
+                raise HTTPException(502, f"심의 중 오류: {exc}") from None
+            finally:
+                # 실패했어도 부른 만큼은 청구됩니다. 성공만 계량하면 실패한
+                # 호출의 비용이 아무 계정에도 잡히지 않습니다.
+                calls, spent = used.calls, max(0.0, used.cost_usd)
+                if calls:
+                    await run_in_threadpool(
+                        usage.record_spend, seat.user.id, calls, spent, own_key)
 
         if decision is None:
             raise HTTPException(
                 422, "심의가 결론에 이르지 못했습니다 — 마감 시간을 넘겼거나 "
                      "데스크 한도에 걸렸습니다. 잠시 후 다시 시도하세요.")
+        seat_errors = [str(r.get("error")) for r in decision.analysts.values()
+                       if isinstance(r, dict) and r.get("error")]
+        if (decision.degraded and decision.analysts
+                and len(seat_errors) == len(decision.analysts)):
+            # 분석가가 **한 석도** 답하지 못했습니다. 그 위의 합의는 판단이 아니라
+            # 빈 값이고(확신 0 의 관망), 이유는 좌석의 오류에만 있습니다.
+            who = _desk_llm(cfg)[0]
+            raise HTTPException(
+                503, f"AI 데스크가 {who} 에 닿지 못했습니다 — 분석가 "
+                     f"{len(seat_errors)}석이 모두 실패했습니다: "
+                     f"{one_line_error(seat_errors[0], 200)}")
         out = decision.to_dict()
         out["metered"] = {"llm_calls": calls, "cost_usd": round(spent, 4),
                           "billed_to": "own_key" if own_key else "service"}

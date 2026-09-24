@@ -319,7 +319,9 @@ def test_trader_action_entry_and_tranches():
     })
     assert (out["action"], out["entry_style"], out["tranches"]) == ("buy", "scale_in", 2)
     assert out["conviction"] == pytest.approx(0.8)
-    assert "분할 진입" in out["execution_note"]
+    # 진입 방식·분할 수는 각자 칸에 있고 화면이 앞에 붙입니다 — 설명에 또 적지 않습니다.
+    assert out["execution_note"].startswith("매수(buy) 80%. ")
+    assert "분할 진입" not in out["execution_note"] and "회 분할" not in out["execution_note"]
     # 기대값 1.5 는 반올림해 2 → 3회. 파이썬 round 의 은행가 반올림(→2회)이 아닙니다.
     half = mapped("trader", {
         "action": choice({"buy": 0.5, "hold": 0.3, "sell": 0.2}),
@@ -339,9 +341,10 @@ def test_head_undecided_group_holds():
                                        "sell": 0.3}))
     assert out["action"] == "hold"
     assert "판단 보류" in out["rationale"]
-    assert "60%" in out["rationale"]
-    # 확신도는 가장 큰 묶음의 확률 — 관망은 주문이 되지 않으니 "얼마나 가까웠나" 의 기록.
-    assert out["conviction"] == pytest.approx(0.6)
+    assert "60%" in out["rationale"]                  # 얼마나 가까웠나는 근거가 말합니다
+    # 확신도는 **최종 행동(관망)** 이 속한 쪽의 확률 — 트레이더와 같습니다.
+    # "관망 · 확신 60%" 는 관망에 60% 를 건 것으로 읽힙니다(실제로는 10%).
+    assert out["conviction"] == pytest.approx(0.1)
 
 
 def test_head_decided_group_picks_the_best_option_inside_it():
@@ -895,8 +898,8 @@ def test_a_json_rpc_error_fails_fast():
 
 
 @pytest.mark.parametrize("text", [
-    "state too large",
     "MCP error -32602: Invalid arguments for tool jev_evaluate: questions",
+    "Unknown tool: jev_evalute",
 ])
 def test_a_tool_error_about_the_input_fails_fast(text):
     fake = FakeJev(lambda name, args: tool_error(text))
@@ -1108,7 +1111,8 @@ def test_one_deliberation_is_sixteen_jev_calls_in_desk_order():
     assert "지금까지의 토론" in bear_evidence and "매수 논거 강도" in bear_evidence
     head_state = evaluations[15]["params"]["arguments"]["state"]
     assert "강세 90%" in head_state["evidence"]
-    assert "지정가 대기" in head_state["evidence"]
+    assert '"entry_style": "limit_patient"' in head_state["evidence"]
+    assert "매수(buy) 90%" in head_state["evidence"]
     assert "트레이더 실행안" in head_state["glossary"]
 
     decision = desk.history[-1]
@@ -1156,7 +1160,13 @@ def test_a_rejected_key_disables_the_desk_with_the_jev_name():
 @pytest.mark.parametrize("failure", [
     tool_error("upstream gateway timeout"),
     rpc_error(-32603, "Internal error"),
-], ids=["isError", "rpc-32603"])
+    # 예전의 넓은 "입력 오류" 낱말("too long", "exceeds", "validation")이 걸리던 문장,
+    # 그리고 서버 문장 속의 상태 코드 — 둘 다 422 로 읽혀 재시도 없이 팔았습니다.
+    tool_error("The upstream model took too long to respond, please try again"),
+    tool_error("Upstream error: output validation failed, retry"),
+    rpc_error(-32603, "Internal error: upstream returned 400: overloaded"),
+], ids=["isError", "rpc-32603", "isError-too-long", "isError-validation",
+        "rpc-embedded-400"])
 def test_one_transient_head_failure_does_not_sell_a_held_position(failure, no_backoff):
     """보유 중 · 분석가는 약세 · 헤드는 반반(보류 → 관망) 인 자리.
 
@@ -1223,3 +1233,525 @@ def test_a_wrong_jev_address_is_not_diagnosed_as_a_model_name(base_url):
         assert "secret" not in reason              # 직접 적은 주소는 옮기지 않습니다
     else:
         assert JEV_DEFAULT_URL in reason
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1차 점검에서 고친 것들 — 각 테스트는 고치기 전 코드에서 실패합니다
+# ─────────────────────────────────────────────────────────────────────────────
+def held_desk(answer, **kw):
+    """보유 100주 · 토론·리스크 1라운드 · 가짜 Jev 로 도는 데스크."""
+    fake = FakeJev(answer)
+    desk = TradingDesk(LLMConfig(provider="jev", api_key="test"), debate_rounds=1,
+                       risk_debate_rounds=1, memory=False, **kw)
+    desk.client._client = httpx.AsyncClient(transport=httpx.MockTransport(fake))
+    return desk, fake
+
+
+# ── 오류 분류: 일시 장애는 다시 묻는다 ───────────────────────────────────────
+@pytest.mark.parametrize("failure", [
+    tool_error("The upstream model took too long to respond, please try again"),
+    tool_error("Gateway timeout: response time exceeds the 25s limit"),
+    tool_error("Upstream error: output validation failed, retry"),
+    tool_error("Upstream provider returned 400: overloaded, retry later"),
+    rpc_error(-32603, "Internal error: gateway status 404: upstream"),
+], ids=["too-long", "exceeds", "validation", "embedded-400", "embedded-404"])
+def test_transient_wording_is_asked_again_not_read_as_bad_input(failure, no_backoff):
+    """입력 오류를 일시 장애로 읽으면 재시도 두 번이 더 들 뿐입니다. 반대로 읽으면
+    헤드에서 한 번에 떨어져 분석가 합의로 물러서고, 그 합의가 매도였습니다."""
+    fake = FakeJev(fail_once(failure))
+    assert ask_technical(jev_client(fake))["stance"] == "bullish"
+    assert len(fake.tool_calls()) == 2
+
+
+def test_the_status_tag_is_read_only_at_the_front():
+    assert llm_client._status_of("jev 503: Upstream provider returned 400: x") == 503
+    assert llm_client._status_of("google 429: Quota exceeded") == 429
+    assert llm_client._status_of("Upstream provider returned 400: x") is None
+
+
+# ── 돈·할당량 소진: 곧바로 멈춘다 ────────────────────────────────────────────
+@pytest.mark.parametrize("text", [
+    "Quota exceeded for this token",
+    "Insufficient funds: add credits to continue",
+    "Payment required",
+    "Your credit balance is too low",
+    "Billing: card declined",
+])
+def test_money_or_quota_exhaustion_from_jev_stops_at_once(text, no_backoff):
+    fake = FakeJev(lambda name, args: tool_error(text))
+    with pytest.raises(QuotaExhausted):
+        ask_technical(jev_client(fake))
+    assert len(fake.tool_calls()) == 1              # 재시도하지 않았고
+    assert no_backoff == []                          # 기다리지도 않았다
+
+
+def test_http_402_is_quota_exhausted(no_backoff):
+    fake = FakeJev(lambda name, args: httpx.Response(402, json={"error": "payment_required"}))
+    with pytest.raises(QuotaExhausted, match="jev 402"):
+        ask_technical(jev_client(fake))
+    assert len(fake.tool_calls()) == 1 and no_backoff == []
+
+
+def test_an_http_429_about_credits_is_quota_exhausted(no_backoff):
+    fake = FakeJev(lambda name, args: httpx.Response(
+        429, json={"error": {"message": "Insufficient credits"}}))
+    with pytest.raises(QuotaExhausted):
+        ask_technical(jev_client(fake))
+    assert len(fake.tool_calls()) == 1
+
+
+def test_a_per_minute_quota_is_still_waited_out(no_backoff):
+    """짧은 창을 말하는 한도는 기다리면 풀립니다 — 데스크를 세울 일이 아닙니다."""
+    fake = FakeJev(fail_once(tool_error("Quota exceeded: 60 requests per minute")))
+    assert ask_technical(jev_client(fake))["stance"] == "bullish"
+    assert len(fake.tool_calls()) == 2
+    # 제미나이가 쓰는 공용 규칙은 그대로 — 분 단위 할당량은 일시 429 입니다.
+    assert not llm_client._is_long_exhaustion(
+        "google 429: Quota exceeded for quota metric 'requests' per minute")
+
+
+def test_credits_running_out_mid_deliberation_stop_the_desk_without_selling(no_backoff):
+    """분석가는 약세로 답했고, 그 뒤 잔액이 떨어졌습니다. 예전에는 뒷좌석이 각자
+    세 번씩 실패하고 헤드도 실패해 분석가 합의(매도)로 보유를 닫았고, 데스크는
+    켜진 채로 다음 봉에 또 16석을 돌렸습니다."""
+    bearish = desk_answers("bearish")
+
+    def answer(name, args):
+        if name == "jev_evaluate" and "stance" not in args["questions"]:
+            return tool_error("Insufficient funds: add credits to continue")
+        return bearish(name, args)
+
+    desk, fake = held_desk(answer)
+    assert run_desk(desk, make_ctx(invested=100)) == []
+    assert desk.history == []
+    status = desk.status()
+    assert status["enabled"] is False
+    assert "기다려도 풀리지 않습니다" in status["disabled_reason"]
+    assert "다시 시작" in status["disabled_reason"]
+    assert len(fake.tool_calls("jev_evaluate")) == 8 + 1   # 분석가 8석 + 강세론자 한 번
+    assert no_backoff == []
+
+
+# ── 마지막 시도에서 온 한도 소진 ─────────────────────────────────────────────
+def long_wait_429(name, args):
+    return httpx.Response(429, json={"error": {"message": "Too many requests, retry in 60s"}})
+
+
+def test_a_long_wait_429_with_one_attempt_is_quota_exhausted(no_backoff):
+    fake = FakeJev(long_wait_429)
+    with pytest.raises(QuotaExhausted):
+        ask_technical(jev_client(fake, max_retries=1))
+
+
+def test_a_long_wait_429_after_two_blips_is_quota_exhausted(no_backoff):
+    calls = []
+
+    def answer(name, args):
+        calls.append(1)
+        return (tool_error("upstream gateway timeout") if len(calls) < 3
+                else long_wait_429(name, args))
+
+    with pytest.raises(QuotaExhausted):
+        ask_technical(jev_client(FakeJev(answer)))
+    assert len(calls) == 3
+
+
+def test_the_last_attempt_rule_holds_for_every_provider(no_backoff):
+    def handler(request):
+        return httpx.Response(429, json={"error": {
+            "message": "Quota exceeded for quota metric per day"}})
+
+    client = LLMClient(LLMConfig(provider="google", api_key="k", max_retries=1))
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(QuotaExhausted):
+        asyncio.run(client.complete("s", "u", {"type": "object", "properties": {}}))
+
+
+def test_quota_at_the_head_after_two_blips_stops_the_desk_instead_of_selling(no_backoff):
+    bearish = desk_answers("bearish")
+    head: list[int] = []
+
+    def answer(name, args):
+        if name != "jev_evaluate" or args["state"]["seat"] != "Head of Desk":
+            return bearish(name, args)
+        head.append(1)
+        return (tool_error("upstream gateway timeout") if len(head) < 3
+                else tool_error("Daily quota exceeded for this token"))
+
+    desk, _ = held_desk(answer)
+    assert run_desk(desk, make_ctx(invested=100)) == []     # 매도하지 않았다
+    assert len(head) == 3 and desk.history == []
+    assert desk.status()["enabled"] is False                # 그리고 데스크가 섰다
+    assert "한도" in desk.status()["disabled_reason"]
+
+
+def test_quota_at_the_head_disables_the_desk():
+    """헤드는 `_safe_ask` 를 거치지 않아, 헤드에서 온 소진은 데스크를 끄지 않았습니다."""
+    split = desk_answers("split")
+
+    def answer(name, args):
+        if name == "jev_evaluate" and args["state"]["seat"] == "Head of Desk":
+            return tool_error("Daily quota exceeded for this token")
+        return split(name, args)
+
+    desk, fake = held_desk(answer)
+    assert run_desk(desk, make_ctx(invested=100)) == []
+    assert desk.status()["enabled"] is False
+    before = len(fake.tool_calls())
+    ctx = make_ctx(invested=100)
+    assert asyncio.run(desk.update(ctx, {SYM.key: ctx.history(SYM, 1)[0]})) == []
+    assert len(fake.tool_calls()) == before                 # 다음 봉에 다시 돌지 않는다
+
+
+# ── 판단 보류 기준값 ─────────────────────────────────────────────────────────
+@pytest.mark.parametrize("value", [65, -0.65, 1.5, float("inf"), "65%"])
+def test_an_out_of_range_undecided_knob_is_refused_at_startup(value):
+    """65 (백분율로 잘못 적음) 를 1.0 으로 잘라 쓰면 95% 거부도 무시됩니다.
+    -0.65 를 0 으로 잘라 쓰면 규칙이 꺼져 34% 매도가 그대로 나갑니다."""
+    with pytest.raises(LLMError, match="undecided_below"):
+        LLMClient(LLMConfig(provider="jev", api_key="k", extra={"undecided_below": value}))
+
+
+@pytest.mark.parametrize("value", [0, 0.5, 0.65, 1.0])
+def test_in_range_undecided_values_are_still_accepted(value):
+    client = LLMClient(LLMConfig(provider="jev", api_key="k",
+                                 extra={"undecided_below": value}))
+    assert client._undecided_below == value
+
+
+# ── 공매도와 위원회 ──────────────────────────────────────────────────────────
+def test_a_jev_desk_cannot_turn_on_short_selling():
+    """헤드는 sell 을 '보유 청산' 으로 묻는데, 공매도가 켜지면 빈 장부에서 공매도를 엽니다."""
+    from quant.config.schema import ModelSpec
+    from quant.strategy.builder import _build_desk
+
+    with pytest.raises(ValueError, match="allow_short"):
+        TradingDesk(LLMConfig(provider="jev", api_key="k"), allow_short=True)
+    with pytest.raises(ValueError, match="allow_short"):
+        TradingDesk(ScriptedLLM(), decision_llm=LLMConfig(provider="jev", api_key="k"),
+                    allow_short=True)
+    with pytest.raises(ValueError, match="allow_short"):
+        _build_desk(ModelSpec(type="desk", params={
+            "llm": {"provider": "jev", "api_key": "k"}, "allow_short": True}), None)
+    TradingDesk(LLMConfig(provider="jev", api_key="k"), memory=False)     # 끄면 그대로
+    TradingDesk(ScriptedLLM(), allow_short=True, memory=False)           # 다른 제공자도
+
+
+def test_the_council_refuses_jev():
+    """위원회의 리스크 검토는 숫자 칸을 요구해 Jev 로는 한 번도 거부하지 못합니다."""
+    from quant.alpha.council import ResearchCouncilAlpha
+    from quant.config.schema import ModelSpec
+    from quant.strategy.builder import _build_council
+
+    with pytest.raises(ValueError, match="council"):
+        _build_council(ModelSpec(type="council",
+                                 params={"llm": {"provider": "jev", "api_key": "k"}}))
+    with pytest.raises(ValueError, match="council"):
+        ResearchCouncilAlpha(jev_client(FakeJev()))
+    ResearchCouncilAlpha(ScriptedLLM())                                   # 다른 제공자는 그대로
+
+
+# ── 시간 초과는 시간 초과라고 말한다 ─────────────────────────────────────────
+def test_a_timed_out_call_says_it_was_a_timeout(no_backoff):
+    def handler(request):
+        raise httpx.ReadTimeout("", request=request)
+
+    with pytest.raises(LLMError) as err:
+        ask_technical(jev_client(handler))
+    assert str(err.value).endswith("attempts: ReadTimeout")
+    assert isinstance(err.value.__cause__, httpx.ReadTimeout)
+
+
+# ── 선택지 설명은 데스크가 하는 일이다 ───────────────────────────────────────
+def test_head_options_say_what_the_desk_does_to_other_models():
+    """보유가 없는 종목이 대부분입니다. hold 는 다른 모델에게 맡기고, 청산 쪽은
+    그 종목의 매수를 모든 모델에게서 막습니다(FLAT 은 포트폴리오의 거부권)."""
+    criteria = request("head").questions["action"]["criteria"]
+    assert "no order" in criteria["hold"] and "other models" in criteria["hold"]
+    for exit_ in ("reduce", "sell", "strong_sell"):
+        assert "whole position" in criteria[exit_]
+        assert "block every model from buying" in criteria[exit_]
+    assert "not held" in jev.LENSES["head"]
+
+    ctx = make_ctx()                                        # 보유 없음
+    desk, _ = jev_desk("bearish")
+    insights = run_desk(desk, ctx)
+    assert len(insights) == 1 and insights[0].direction is Direction.FLAT
+    horizon = desk.history[-1].horizon_bars
+    assert insights[0].period == ctx.bar_delta * max(horizon // 2, 2)
+    desk, _ = jev_desk("split")                             # 관망 → 아무것도 내지 않는다
+    assert run_desk(desk, make_ctx()) == []
+
+
+def test_the_tick_ladder_rule_is_conditional_on_korean_stocks():
+    lens = jev.LENSES["microstructure"]
+    assert "for Korean stocks" in lens
+    assert "(the Korean tick ladder)" not in lens
+
+
+# ── 용어집 ───────────────────────────────────────────────────────────────────
+def test_every_template_word_later_seats_read_is_glossed():
+    """뒷좌석은 앞좌석의 Jev 출력(한국어 템플릿)을 증거로 읽습니다."""
+    terms = [*jev.CASE_LEVELS_KO, *jev.SIZE_LEVELS_KO, *jev.HAZARD_KO.values(),
+             *jev.VETO_REASON_KO.values(), *jev.ENTRY_KO.values(),
+             *jev.WINNER_KO.values(), *jev.STANCE_KO.values(), *jev.ACTION_KO.values(),
+             *jev._GROUP_KO.values(), *jev._HEAD_GROUP_KO.values(),
+             "실패", "논거", "강도", "제안 배율", "가장 유력", "거부", "재심의"]
+    missing = [t for t in terms if t not in jev.GLOSSARY]
+    assert not missing, missing
+
+
+def test_a_concentration_veto_is_not_glossed_as_excess_return():
+    """"초과" 는 용어집에서 '벤치 대비 초과 수익' 입니다. 거부 사유에 쓰면 뒷좌석이
+    그 뜻으로 읽습니다."""
+    assert all("초과" not in text for text in jev.VETO_REASON_KO.values())
+    out = verdict(0.9, reason="concentration_breach")
+    g = jev.glossary_for(json.dumps(out, ensure_ascii=False))
+    assert "초과" not in g
+    assert "포트폴리오 집중도 한도를 넘음" in g
+
+
+# ── 판단 보류의 확신도 ───────────────────────────────────────────────────────
+def test_an_undecided_plan_states_the_hold_sides_probability():
+    """계획 JSON 은 트레이더·헤드의 증거입니다. "rating hold, conviction 0.6" 은
+    관망에 60% 를 건 것으로 읽힙니다 — 실제로는 관망 20%."""
+    out = mapped("research_manager", {
+        "rating": choice({"strong_buy": 0.1, "buy": 0.5, "hold": 0.2, "sell": 0.2,
+                          "strong_sell": 0.0}),
+        "winner": choice({"bull": 0.4, "bear": 0.4, "balanced": 0.2}),
+    })
+    assert out["rating"] == "hold" and "판단 보류" in out["rationale"]
+    assert out["conviction"] == pytest.approx(0.2)
+    assert "60%" in out["rationale"]                        # 얼마나 가까웠나는 근거에
+
+
+# ── 다음 봉이라고 약속하지 않는다 ───────────────────────────────────────────
+def test_no_template_promises_the_next_bar():
+    """live_crypto 는 cadence_bars: 3 — 두 봉은 심의하지 않습니다."""
+    outs = [mapped("head", head_answers(a)) for a in (
+        {"buy": 1.0}, {"sell": 1.0}, {"hold": 1.0},
+        {"strong_buy": 0.3, "buy": 0.25, "sell": 0.45})]
+    outs.append(mapped("research_manager", {
+        "rating": choice({"buy": 0.5, "hold": 0.2, "sell": 0.3}),
+        "winner": choice({"balanced": 1.0})}))
+    for out in outs:
+        text = json.dumps(out, ensure_ascii=False)
+        assert "다음 봉" not in text, text
+    assert "재심의" in outs[0]["invalidation"]
+
+
+# ── 화면의 말풍선 ────────────────────────────────────────────────────────────
+def one_line(text: str) -> str:
+    """index.html `oneLine` 과 같습니다 — 첫 문장만, 64자에서 자릅니다."""
+    import re
+
+    t = text.strip()
+    m = re.search(r"[.!?。]\s|[.!?。]$", t)
+    first = t[:m.start() + 1] if m and m.start() > 0 else t
+    return first if len(first) <= 64 else first[:63].rstrip() + "…"
+
+
+def risk_bubble(out: dict) -> str:
+    """index.html 의 중립 리스크 말풍선과 같은 조립."""
+    if out["veto"]:
+        reason = out["veto_reason"].strip()
+        joint = "" if not reason else " " if reason[-1] in ".!?。" else ". "
+        return "⛔ 거부: " + reason + joint + out["reasoning"]
+    return f"최종 배율 {round(out['position_scale'] * 100)}% — " + out["reasoning"]
+
+
+def test_risk_and_trader_bubbles_have_a_short_first_sentence():
+    html = open("quant/api/static/index.html", encoding="utf-8").read()
+    assert '"⛔ 거부: " + reason + joint' in html          # 사유와 설명 사이를 띄운다
+
+    cases = [verdict(0.9), verdict(0.9, reason="none_applies"), verdict(0.5),
+             verdict(0.1)]
+    for out in cases:
+        assert "거부 확률" not in out["veto_reason"]          # 설명이 이미 말합니다
+        bubble = risk_bubble(out)
+        assert bubble.count("거부 확률") <= 1, bubble
+        assert not one_line(bubble).endswith("…"), bubble
+
+    ui_entry = {"market_now": "지금 시장가", "limit_patient": "지정가로 기다림",
+                "scale_in": "나눠서 진입", "wait_for_pullback": "눌림목 기다림"}
+    for action in ({"buy": 0.34, "hold": 0.33, "sell": 0.33}, {"buy": 0.8, "hold": 0.2}):
+        out = mapped("trader", {"action": choice(action),
+                                "entry_style": choice({"limit_patient": 1.0}),
+                                "tranches": score([0, 0, 0, 1])})
+        note = out["execution_note"]
+        assert "지정가 대기" not in note and "회 분할" not in note   # 화면이 앞에 붙입니다
+        bubble = f"{ui_entry[out['entry_style']]} · {out['tranches']}분할 — {note}"
+        assert not one_line(bubble).endswith("…"), bubble
+
+
+def test_templates_name_actions_in_korean_with_the_value_in_parentheses():
+    out = mapped("head", head_answers({"strong_sell": 0.7, "hold": 0.3}))
+    assert "적극 매도(strong_sell)" in out["rationale"]
+    assert "→ strong_sell" not in out["rationale"]
+    plan = mapped("research_manager", {"rating": choice({"sell": 1.0}),
+                                       "winner": choice({"bear": 1.0})})
+    assert "매도(sell)" in plan["strategic_actions"]
+    assert "방향 sell" not in plan["strategic_actions"]
+
+
+# ── 동시 심의의 호출 수 ──────────────────────────────────────────────────────
+def test_each_concurrent_decision_counts_only_its_own_sixteen_calls():
+    """출하 설정은 4종목을 동시에 심의합니다. 누적의 앞뒤 차이로 세면 종목마다
+    64회로 적혔습니다 — 화면의 "AI 호출" 과 로그가 그 숫자를 보여 줬습니다."""
+    from datetime import timedelta
+    from decimal import Decimal
+
+    from quant.core.account import Portfolio
+    from quant.core.clock import SimClock
+    from quant.core.context import Context
+    from quant.core.events import EventBus
+    from quant.core.types import Bar, RunMode, Symbol
+    from quant.live.spend import SpendMeter
+    from tests.test_desk import T0
+
+    symbols = [Symbol(t, venue="kis", quote_currency="KRW", tick_size=Decimal("100"))
+               for t in ("005930", "000660", "035420", "051910")]
+    ctx = Context(SimClock(T0 + timedelta(days=260)), Portfolio(10_000_000.0, "KRW"),
+                  EventBus(), timeframe="1d", run_mode=RunMode.DRY_RUN)
+    ctx.universe = list(symbols)
+    for i in range(260):
+        for k, sym in enumerate(symbols):
+            p = 70_000.0 * (1 + 0.0004 * i) * (1 + 0.1 * k)
+            ctx.push_bar(Bar(sym, T0 + timedelta(days=i), p, p * 1.012, p * 0.988, p,
+                             1e6, "1d"))
+
+    fake = FakeJev(desk_answers("bullish"))
+    desk = TradingDesk(LLMConfig(provider="jev", api_key="test"), debate_rounds=1,
+                       risk_debate_rounds=1, memory=False, concurrent_symbols=4,
+                       max_symbols_per_run=4)
+    desk.client._client = httpx.AsyncClient(transport=httpx.MockTransport(yielding(fake)))
+    metered: list[tuple[int, float]] = []
+    desk.meter = SpendMeter(allow=lambda: (True, ""),
+                            record=lambda c, s: metered.append((c, s)))
+    asyncio.run(desk.on_start(ctx))
+    asyncio.run(desk.update(ctx, {s.key: ctx.history(s, 1)[0] for s in symbols}))
+
+    assert len(fake.tool_calls("jev_evaluate")) == 64
+    assert sorted(d.symbol_key for d in desk.history) == sorted(s.key for s in symbols)
+    assert [d.llm_calls for d in desk.history] == [16] * 4
+    per_symbol = 16 * 677 / 1e6 * 0.042
+    assert all(d.cost_usd == pytest.approx(per_symbol) for d in desk.history)
+    assert metered == [(64, pytest.approx(4 * per_symbol))]   # 봉 계량은 합
+
+
+# ── MCP 전송 — 시험되지 않던 길 ─────────────────────────────────────────────
+def test_a_400_server_not_initialized_reinitialises_once():
+    """상태를 가진 서버의 새 인스턴스는 404 가 아니라 400 "Server not initialized"
+    를 돌려줍니다. 이 길이 없으면 좌석마다 재시도 없는 'jev 400' 입니다."""
+    calls = []
+
+    def answer(name, args):
+        calls.append(name)
+        if len(calls) == 1:
+            return httpx.Response(400, json={"jsonrpc": "2.0", "id": None, "error": {
+                "code": -32000, "message": "Bad Request: Server not initialized"}})
+        return {"answers": ANALYST_ANSWERS}
+
+    fake = FakeJev(answer)
+    assert ask_technical(jev_client(fake))["stance"] == "bullish"
+    assert fake.methods().count("initialize") == 2
+    assert len(fake.tool_calls()) == 2
+
+
+def test_the_negotiated_protocol_version_is_sent_afterwards():
+    fake = FakeJev()
+
+    def handler(request):
+        response = fake(request)
+        if json.loads(request.content).get("method") == "initialize":
+            message = response.json()
+            message["result"]["protocolVersion"] = "2025-03-26"
+            return httpx.Response(200, headers={"mcp-session-id": fake.current},
+                                  json=message)
+        return response
+
+    ask_technical(jev_client(handler))
+    assert [m for m, _, _ in fake.log] == ["initialize", "notifications/initialized",
+                                           "tools/call"]
+    for _, headers, _ in fake.log[1:]:
+        assert headers["mcp-protocol-version"] == "2025-03-26"
+
+
+def test_an_initialize_error_fails_without_calling_the_tool():
+    fake = FakeJev()
+
+    def handler(request):
+        body = json.loads(request.content)
+        if body.get("method") == "initialize":
+            fake.log.append(("initialize", dict(request.headers), body))
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "error": {
+                "code": -32602, "message": "Unsupported protocol version"}})
+        return fake(request)
+
+    with pytest.raises(LLMError, match="jev 422: initialize"):
+        ask_technical(jev_client(handler))
+    assert fake.tool_calls() == [] and fake.methods() == ["initialize"]
+
+
+def test_a_rejected_initialized_notification_is_an_error():
+    fake = FakeJev()
+
+    def handler(request):
+        if json.loads(request.content).get("method") == "notifications/initialized":
+            return httpx.Response(400, json={"error": "bad_notification"})
+        return fake(request)
+
+    with pytest.raises(LLMError, match="jev 400"):
+        ask_technical(jev_client(handler))
+    assert fake.tool_calls() == []
+
+
+# ── 거절 규칙의 경계 ─────────────────────────────────────────────────────────
+def test_a_small_but_real_share_on_an_unknown_key_is_refused():
+    """10% 가 모르는 이름에 가 있으면 반올림 오차가 아닙니다."""
+    with pytest.raises(LLMError):
+        jev.read_choice({"q": {"probabilities": {"buy": 0.5, "hold": 0.4, "HOLD": 0.1}}},
+                        "q", ("buy", "hold", "sell"))
+
+
+def test_a_six_option_head_answer_summing_to_ninety_percent_is_refused():
+    probs = {"strong_buy": 0.3, "buy": 0.3, "hold": 0.1, "reduce": 0.1, "sell": 0.05,
+             "strong_sell": 0.05}
+    with pytest.raises(LLMError):
+        jev.read_choice({"action": {"probabilities": probs}}, "action",
+                        tuple(jev.HEAD_ACTIONS))
+
+
+@pytest.mark.parametrize("p", [1.2, 1.5])
+def test_a_boolean_above_one_is_refused_not_clipped(p):
+    """예/아니오에는 합 검사가 없습니다 — 1 을 넘는 거부 확률은 여기서만 걸립니다."""
+    with pytest.raises(LLMError):
+        jev.read_boolean({"veto": {"probability": p}}, "veto")
+    with pytest.raises(LLMError):
+        verdict(p)
+
+
+# ── 운영자에게 가는 문장 ─────────────────────────────────────────────────────
+def test_the_quota_message_counts_the_calls_this_desk_actually_makes():
+    desk, fake = jev_desk("bullish")
+    said = desk._exhausted_reason(QuotaExhausted("jev 429: Daily quota exceeded"))
+    assert "호출 16회" in said and "19회" not in said
+    assert "다시 시작" in said                               # 저절로 켜지지 않습니다
+    run_desk(desk, make_ctx())
+    assert desk.calls_per_symbol() == len(fake.tool_calls("jev_evaluate")) == 16
+    assert TradingDesk(ScriptedLLM(), memory=False).calls_per_symbol() == 18  # 토론 2라운드
+
+
+def test_a_jev_preflight_timeout_points_at_the_address_not_a_model():
+    class Hang:
+        usage = llm_client.LLMUsage()
+        config = LLMConfig(provider="jev", api_key="x")
+
+        async def complete(self, *args, **kwargs):
+            await asyncio.sleep(5)
+
+    desk = TradingDesk(Hang(), deadline_s=0.05, memory=False)
+    asyncio.run(desk.on_start(make_ctx()))
+    reason = desk.status()["disabled_reason"]
+    assert reason.startswith("Jev 응답이 없습니다")
+    assert "llm.base_url" in reason and "모델" not in reason

@@ -132,9 +132,10 @@ LENSES: dict[str, str] = {
         "whether the idea can actually be executed at target size and whether costs eat "
         "the expected edge: spread versus expected return (a round trip costs at least "
         "twice the spread), target size versus average volume (above about 10% market "
-        "impact grows non-linearly), and whether lot and tick sizes (the Korean tick "
-        "ladder) allow the intended order. Execution problems make the stance neutral, "
-        "not bearish: they are conditions on size and method, not a view on direction."
+        "impact grows non-linearly), and whether lot and tick sizes allow the intended "
+        "order (for Korean stocks, orders off the price-band tick ladder are rejected). "
+        "Execution problems make the stance neutral, not bearish: they are conditions "
+        "on size and method, not a view on direction."
     ),
     "quant": (
         "Quantitative researcher and the desk's statistical skeptic: is the claimed "
@@ -203,7 +204,10 @@ LENSES: dict[str, str] = {
         "Hold only when the evidence is balanced. This desk cannot cut a position "
         "partially: both reduce and sell close the whole position; reduce is for a case "
         "that has weakened but not reversed, sell for evidence that points to a fall. "
-        "Lower confidence when investor flow "
+        "Hold places no order and leaves the stock to the desk's other models, which "
+        "may still open or close a position; on a stock that is not held, reduce, sell "
+        "and strong sell block every model from buying it for about half the holding "
+        "horizon. Lower confidence when investor flow "
         "(foreigners and institutions) opposes the direction. If outcomes of past "
         "decisions are given, learn from them; repeating the same mistake is the most "
         "common failure in this seat."
@@ -310,6 +314,7 @@ GLOSSARY: dict[str, str] = {
     "기본 보유기간": "default holding period",
     # 과거 판단 결과(교훈)
     "적중": "the call was right",
+    "실패": "failed (in past-decision outcomes: the call was wrong)",
     "확신": "conviction",
     "벤치": "benchmark return",
     "초과": "excess return over the benchmark",
@@ -330,6 +335,68 @@ GLOSSARY: dict[str, str] = {
     "거부 확률": "probability of a risk veto",
     "기대값": "expected value",
     "Jev 확률 판정": "Jev probability judgment",
+    # 토론 좌석의 출력 — 논거 강도 (`CASE_LEVELS_KO`)
+    "논거": "case / argument",
+    "강도": "strength",
+    "단계": "level on the graded scale",
+    "트레이더": "trader seat",
+    "매수 반대": "against buying",
+    "논거 없음": "no credible case",
+    "약함": "weak",
+    "보통": "moderate",
+    "강함": "strong",
+    "매우 강함": "very strong",
+    # 리스크 토론 좌석의 출력 — 제안 배율과 위험 (`SIZE_LEVELS_KO`, `HAZARD_KO`)
+    "제안 배율": "proposed position-size multiplier",
+    "가장 유력": "most likely level",
+    "가장 뚜렷한 위험": "most evident hazard",
+    "진입 안 함(0%)": "no position (0% of the intended size)",
+    "1/4 사이즈": "quarter of the intended size",
+    "1/2 사이즈": "half of the intended size",
+    "3/4 사이즈": "three quarters of the intended size",
+    "풀 사이즈": "the full intended size",
+    "실적·공시 이벤트 임박": "an earnings or disclosure event is imminent",
+    "유동성 부족": "liquidity is too thin for the intended size",
+    "기존 보유와 높은 상관": "highly correlated with existing holdings",
+    "손절폭이 ATR 대비 과도": "the stop is too wide relative to ATR",
+    "관측보다 추론 의존": "relies on inference rather than observation",
+    "없음": "none",
+    # 리스크 판정의 출력 (`VETO_REASON_KO`)
+    "거부": "risk veto",
+    "기준": "threshold",
+    "제한": "capped",
+    "사유 확률": "probability of that veto reason",
+    "손실 한도를 계산할 수 없음": "the loss limit cannot be determined",
+    "유동성이 목표 사이즈를 감당하지 못함": "liquidity cannot absorb the target size",
+    "포트폴리오 집중도 한도를 넘음": "a portfolio concentration limit would be breached",
+    "근거 전체가 관측 없는 추론": "the whole case is inference with no observation",
+    "해당 사유 없음": "none of the veto conditions applies",
+    # 계획·트레이더·헤드의 출력 (`WINNER_KO`, `ENTRY_KO`, `ACTION_KO`)
+    "토론": "debate",
+    "강세 측 우세": "the bull side carried the debate",
+    "약세 측 우세": "the bear side carried the debate",
+    "팽팽함": "the debate was balanced",
+    "방향": "direction",
+    "신규 주문": "new order",
+    "신규 진입": "new entry",
+    "정리": "close the position",
+    "진입 방식": "entry style",
+    "분할": "split into several orders",
+    "즉시 시장가": "market order now",
+    "지정가 대기": "patient limit order",
+    "분할 진입": "scale in",
+    "눌림 대기": "wait for a pullback",
+    "적극 매수": "strong buy",
+    "매수": "buy",
+    "축소": "reduce (closes the whole position)",
+    "매도": "sell",
+    "적극 매도": "strong sell",
+    "기대 변동": "expected price move",
+    "보유": "holding / held",
+    "봉": "bar",
+    "재심의": "the next deliberation on this stock",
+    "무효": "invalidated",
+    "반대": "dissents",
 }
 
 #: 수급 요약·일별 기록의 영어 키. 이름만으로는 부호·기준이 안 보이는 것들입니다.
@@ -416,7 +483,9 @@ VETO_REASONS = {
 VETO_REASON_KO = {
     "loss_limit_unknown": "손실 한도를 계산할 수 없음",
     "illiquid": "유동성이 목표 사이즈를 감당하지 못함",
-    "concentration_breach": "포트폴리오 집중도 한도 초과",
+    # "초과" 는 쓰지 않습니다 — 용어집이 그 말을 과거 판단 결과의 "벤치 대비 초과
+    # 수익" 으로 풀어 줘서, 뒷좌석이 이 거부 사유를 수익 얘기로 읽었습니다.
+    "concentration_breach": "포트폴리오 집중도 한도를 넘음",
     "inference_only": "근거 전체가 관측 없는 추론",
     "none_applies": "해당 사유 없음",
 }
@@ -474,15 +543,32 @@ TRANCHE_LEVELS = (
 #: 45% 가 청산 쪽 묶음을 65% 위로 올려 전량 청산이 나갔습니다 — 묻지 않은
 #: 질문에 답한 셈입니다. 부분 축소를 만들면 이 설명과 `_HEAD_GROUPS` 를 같이
 #: 고쳐야 합니다.
+#:
+#: **다른 모델에게 미치는 효과도** 데스크가 하는 일입니다. hold 는 인사이트를
+#: 내지 않아 종목을 규칙 알파(investor_flow·ema_cross …)에게 맡깁니다 — 그들이
+#: 살 수도 있습니다. reduce·sell·strong_sell 은 FLAT 을 보유기간의 절반(최소
+#: 2봉) 동안 내고, 포트폴리오 층은 FLAT 을 **모든 모델의 매수를 0 으로 만드는
+#: 거부권** 으로 읽습니다(`portfolio/base.py`). 보유가 없는 종목에서도 그렇습니다.
+#: 심의 후보는 대부분 보유가 없는 종목이라, "청산" 만 말하는 설명은 대부분의
+#: 자리에서 묻는 것과 하는 것이 달랐습니다. 공매도 데스크는 sell 로 공매도를
+#: 열지만, Jev 데스크는 공매도를 켤 수 없게 막아 두었습니다(`TradingDesk`).
 HEAD_ACTIONS = {
     "strong_buy": "Strong buy: open or add a full position; the evidence strongly and "
                   "independently supports a rise",
     "buy": "Buy: open or add a position; the evidence on balance supports a rise",
-    "hold": "Hold: change nothing; only when the evidence is genuinely balanced",
-    "reduce": "Reduce: close the whole position (this desk cannot cut a position "
-              "partially); the case for holding has weakened but not reversed",
-    "sell": "Sell: exit the position entirely; the evidence on balance points to a fall",
-    "strong_sell": "Strong sell: exit immediately; the evidence strongly points to a "
+    "hold": "Hold: this desk places no order and leaves the stock to the desk's other "
+            "models, which may still open or close a position; only when the evidence "
+            "is genuinely balanced",
+    "reduce": "Reduce: close the whole position if one is held (this desk cannot cut "
+              "a position partially); if none is held, block every model from buying "
+              "this stock for about half the holding horizon; the case for holding "
+              "has weakened but not reversed",
+    "sell": "Sell: close the whole position if one is held; if none is held, block "
+            "every model from buying this stock for about half the holding horizon; "
+            "the evidence on balance points to a fall",
+    "strong_sell": "Strong sell: close the whole position immediately if one is held; "
+                   "if none is held, block every model from buying this stock for "
+                   "about half the holding horizon; the evidence strongly points to a "
                    "fall",
 }
 HORIZON_LEVELS = (
@@ -517,6 +603,10 @@ _PLAN_GROUPS = (("hold", ("hold",)),
                 ("buy", ("buy", "strong_buy")))
 _TRADE_GROUPS = (("hold", ("hold",)), ("exit", ("sell",)), ("buy", ("buy",)))
 _GROUP_KO = {"buy": "매수 측", "hold": "관망", "exit": "매도 측"}
+#: 행동의 한국어 이름 — 화면(`ACTION_STYLE`)과 같은 말. 템플릿에는 뒷좌석이
+#: 영어 선택지와 맞춰 읽도록 `매수(buy)` 처럼 괄호에 원래 값을 붙입니다.
+ACTION_KO = {"strong_buy": "적극 매수", "buy": "매수", "hold": "관망",
+             "reduce": "축소", "sell": "매도", "strong_sell": "적극 매도"}
 _HEAD_GROUP_KO = {"buy": "매수 측", "hold": "관망", "exit": "축소·청산 측"}
 
 _SOURCE = "Jev 확률 판정"
@@ -874,7 +964,14 @@ def undecided_threshold(value: Any) -> float:
         raise LLMError(f"jev: undecided_below 는 숫자여야 합니다: {value!r}") from exc
     if math.isnan(u):
         raise LLMError("jev: undecided_below 가 NaN 입니다")
-    return min(max(u, 0.0), 1.0)
+    # 범위 밖은 잘라 쓰지 않고 거절합니다. 잘라 쓰면 백분율로 잘못 적은 65 가
+    # 1.0 이 되어 **모든 거부가 무시** 되고(95% 거부도 배율 절반일 뿐), 부호를
+    # 잘못 적은 -0.65 는 0 이 되어 규칙이 꺼집니다(34% 매도가 그대로 나갑니다).
+    # 둘 다 시작 점검을 조용히 통과했습니다.
+    if not 0.0 <= u <= 1.0:
+        raise LLMError(f"jev: undecided_below 는 0~1 사이의 확률이어야 합니다 "
+                       f"(예: 0.65, 끄려면 0): {value!r}")
+    return u
 
 
 # ── 답 읽기 ──────────────────────────────────────────────────────────────────
@@ -1009,6 +1106,11 @@ def _grouped(probs: dict, groups, u: float) -> tuple[str, str, dict, bool]:
     return action, winner, masses, False
 
 
+def _act(action: str) -> str:
+    """`매수(buy)` — 사람은 한국어를, 뒷좌석(Jev)은 괄호의 선택지 값을 읽습니다."""
+    return f"{ACTION_KO.get(action, action)}({action})"
+
+
 def _threshold_ko(u: float) -> str:
     return _pct(u) if u > 0.5 else "과반"
 
@@ -1113,20 +1215,23 @@ def _map_risk_verdict(request: JevRequest, answers: dict, u: float) -> dict:
     veto_reason = ""
     if veto:
         reason = _argmax(reasons, prefer=tuple(VETO_REASONS))
+        # 거부 확률은 reasoning 이 첫 문장에 말합니다. 화면은 사유와 reasoning 을
+        # 이어 붙이므로, 여기서 또 적으면 같은 숫자가 두 번 읽힙니다.
         if reason == "none_applies":
-            veto_reason = (f"거부 확률 {_pct(p_veto)} — 네 가지 거부 사유 중 뚜렷한 것은 "
-                           f"없음 (해당 없음 {_pct(reasons[reason])})")
+            veto_reason = (f"네 가지 거부 사유 중 뚜렷한 것은 없음 "
+                           f"(해당 없음 {_pct(reasons[reason])})")
         else:
-            veto_reason = (f"{VETO_REASON_KO[reason]} (사유 확률 {_pct(reasons[reason])}, "
-                           f"거부 확률 {_pct(p_veto)})")
+            veto_reason = f"{VETO_REASON_KO[reason]} (사유 확률 {_pct(reasons[reason])})"
         reasoning = (f"거부 확률 {_pct(p_veto)} ≥ 기준 {_threshold_ko(u)} → 거부. "
                      f"배율 기대값 {scale:.2f} ({_SOURCE})")
         position_scale = scale
     elif band == "undecided":
         position_scale = min(scale, 0.5)
-        reasoning = (f"거부 확률 {_pct(p_veto)} — 판단 보류 구간"
-                     f"({_pct(round(1 - u, 9))}~{_pct(u)})이라 거부하지 않고 배율을 "
-                     f"{position_scale:.2f} 로 제한 (기대값 {scale:.2f}) ({_SOURCE})")
+        # 첫 문장은 짧게 — 화면 말풍선이 첫 문장만, 64자까지 보여 줍니다.
+        reasoning = (f"판단 보류 — 거부하지 않고 배율 {position_scale:.2f} 로 제한. "
+                     f"거부 확률 {_pct(p_veto)} 가 보류 구간"
+                     f"({_pct(round(1 - u, 9))}~{_pct(u)}) 안 (기대값 {scale:.2f}) "
+                     f"({_SOURCE})")
     else:
         position_scale = scale
         reasoning = (f"거부 확률 {_pct(p_veto)} → 거부 안 함. 배율 {scale:.2f} "
@@ -1147,31 +1252,36 @@ def _map_plan(request: JevRequest, answers: dict, u: float) -> dict:
     ratings = read_choice(answers, "rating", RATINGS)
     winners = read_choice(answers, "winner", WINNERS)
     rating, group, masses, undecided = _grouped(ratings, _PLAN_GROUPS, u)
-    # 확신도는 가장 큰 묶음의 확률입니다 — 보류로 관망이 되었어도 같습니다.
-    # 관망은 주문이 되지 않으므로 이 값은 "얼마나 가까웠나" 의 기록입니다.
+    # 확신도는 **최종 등급이 속한** 묶음의 확률입니다 — 트레이더와 같습니다.
+    # 예전에는 보류로 관망이 되어도 가장 큰 묶음의 확률을 적어서 "rating hold,
+    # conviction 0.6" 이 되었고, 그 JSON 을 읽는 트레이더·헤드와 화면은 그것을
+    # "관망에 60% 확신" 으로 읽었습니다. 얼마나 가까웠는지는 rationale 이
+    # 묶음마다 적습니다.
     winner = _argmax(winners, prefer=("balanced", "bear", "bull"))
     debate = f"토론: {WINNER_KO[winner]} {_pct(winners[winner])}"
     spread = _masses_ko(masses, _GROUP_KO)
     if undecided:
         rationale = (f"판단 보류 — 어느 쪽도 {_threshold_ko(u)}에 못 미칩니다. "
                      f"{spread}. {debate} ({_SOURCE})")
-        actions = "방향 없음 — 신규 주문 없이 다음 봉에 다시 심의"
+        # "다음 봉" 이 아닙니다 — cadence_bars 가 3 인 설정은 두 봉을 쉬고,
+        # 보유가 없는 종목은 후보에 다시 들어야 심의됩니다.
+        actions = "방향 없음 — 신규 주문 없이 다음 심의에서 다시 판단"
     else:
-        rationale = (f"{_GROUP_KO[group]} {_pct(masses[group])} → {rating}. "
+        rationale = (f"{_GROUP_KO[group]} {_pct(masses[group])} → {_act(rating)}. "
                      f"{spread}. {debate} ({_SOURCE})")
         if group == "buy":
-            actions = (f"방향 {rating} (매수 측 {_pct(masses[group])}). 진입 방식과 분할은 "
-                       "트레이더 좌석이 유동성·체결비용을 보고 정한다")
+            actions = (f"방향 {_act(rating)} (매수 측 {_pct(masses[group])}). 진입 방식과 "
+                       "분할은 트레이더 좌석이 유동성·체결비용을 보고 정한다")
         elif group == "exit":
-            actions = (f"방향 {rating} (매도 측 {_pct(masses[group])}). 신규 진입 없음, "
-                       "보유 중이면 정리")
+            actions = (f"방향 {_act(rating)} (매도 측 {_pct(masses[group])}). 신규 진입 "
+                       "없음, 보유 중이면 정리")
         else:
             actions = f"관망 ({_pct(masses[group])}) — 신규 주문 없음"
     return {
         "rating": rating,
         "rationale": rationale,
         "strategic_actions": actions,
-        "conviction": round(_clamp01(masses[group]), 3),
+        "conviction": round(_clamp01(masses["hold" if undecided else group]), 3),
     }
 
 
@@ -1183,11 +1293,17 @@ def _map_trade(request: JevRequest, answers: dict, u: float) -> dict:
     style = _argmax(styles, prefer=("limit_patient", "scale_in", "wait_for_pullback",
                                     "market_now"))
     tranches = min(max(_half_up(expected) + 1, 1), 4)
-    spread = " · ".join(f"{name} {_pct(actions[name])}" for name in TRADE_ACTIONS)
-    head = (f"판단 보류 — {spread} 중 {_threshold_ko(u)} 넘는 쪽 없음 → hold"
-            if undecided else f"{action} ({_pct(masses[group])})")
-    note = (f"{head} · 진입 {ENTRY_KO[style]} {_pct(styles[style])} · "
-            f"{tranches}회 분할 ({_SOURCE})")
+    spread = " · ".join(f"{ACTION_KO[name]} {_pct(actions[name])}"
+                        for name in TRADE_ACTIONS)
+    # 첫 문장은 짧게(화면 말풍선은 첫 문장만 보여 줍니다). 진입 방식과 분할
+    # 수는 적지 않습니다 — 각자 칸(`entry_style`, `tranches`)이 있고 화면이
+    # 앞에 붙입니다. 이름을 또 적으면 같은 말이 두 번 나옵니다.
+    if undecided:
+        note = (f"{_act('hold')} — 판단 보류. {spread} 중 {_threshold_ko(u)}에 이른 쪽 "
+                f"없음. 진입 방식 확률 {_pct(styles[style])} ({_SOURCE})")
+    else:
+        note = (f"{_act(action)} {_pct(masses[group])}. 진입 방식 확률 "
+                f"{_pct(styles[style])} ({_SOURCE})")
     return {
         "action": action,
         "entry_style": style,
@@ -1214,27 +1330,32 @@ def _map_head(request: JevRequest, answers: dict, u: float) -> dict:
     if undecided:
         rationale = (f"판단 보류 — 어느 쪽도 {_threshold_ko(u)}에 못 미칩니다. "
                      f"{spread}. {outlook} ({_SOURCE})")
-        invalidation = f"다음 봉 재심의에서 {_flip_ko('어느 한쪽', u)} 관망 종료"
+        invalidation = f"다음 재심의에서 {_flip_ko('어느 한쪽', u)} 관망 종료"
     else:
-        rationale = (f"{_HEAD_GROUP_KO[group]} {_pct(masses[group])} → {action}. "
-                     f"{spread}, 묶음 안에서 {action} {_pct(actions[action])}. "
+        rationale = (f"{_HEAD_GROUP_KO[group]} {_pct(masses[group])} → {_act(action)}. "
+                     f"{spread}, 묶음 안에서 {ACTION_KO[action]} {_pct(actions[action])}. "
                      f"{outlook} ({_SOURCE})")
+        # "다음 봉" 이라고 적지 않습니다 — 심의 주기(cadence_bars)가 1 이 아닐
+        # 수 있고, 보유가 없는 종목은 후보에 다시 들어야 심의됩니다.
         if group == "buy":
-            invalidation = f"다음 봉 재심의에서 {_flip_ko('축소·청산 측', u)} 무효"
+            invalidation = f"다음 재심의에서 {_flip_ko('축소·청산 측', u)} 무효"
         elif group == "exit":
-            invalidation = f"다음 봉 재심의에서 {_flip_ko('매수 측', u)} 무효"
+            invalidation = f"다음 재심의에서 {_flip_ko('매수 측', u)} 무효"
         else:
-            invalidation = f"다음 봉 재심의에서 {_flip_ko('어느 한쪽', u)} 관망 종료"
+            invalidation = f"다음 재심의에서 {_flip_ko('어느 한쪽', u)} 관망 종료"
 
     dissenter = _argmax(dissent_p, prefer=["none"] + seat_keys[:-1])
     dissent = ("" if dissenter == "none" else
                f"{SEATS_BY_KEY[dissenter].title_ko} 반대 (Jev {_pct(dissent_p[dissenter])})")
     return {
         "action": action,
-        # 가장 큰 묶음의 확률. 판단 보류로 관망이 되었어도 같습니다 — 관망은
-        # 주문이 되지 않으므로(`_to_insight`) 이 값은 얼마나 가까웠는지의 기록이고,
-        # 보류라는 사실은 rationale 첫 문장이 말합니다.
-        "conviction": round(_clamp01(masses[group]), 3),
+        # **최종 행동이 속한** 묶음의 확률 — 트레이더·계획과 같습니다. 보류로
+        # 관망이 되면 관망 쪽의 확률입니다. 예전에는 가장 큰 묶음의 확률이라
+        # 화면에 "관망 · 확신 60%" 가 떴습니다(실제로는 매수 측 60%, 관망 10%).
+        # 관망은 주문이 되지 않고(`_to_insight`) 회고에도 들지 않습니다
+        # (`DeskMemory.record`) — 바뀌는 것은 화면의 숫자뿐입니다. 얼마나
+        # 가까웠는지는 rationale 이 묶음마다 적습니다.
+        "conviction": round(_clamp01(masses["hold" if undecided else group]), 3),
         "expected_move_pct": move,
         "horizon_bars": horizon,
         "rationale": rationale,

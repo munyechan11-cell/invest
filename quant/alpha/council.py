@@ -151,6 +151,18 @@ class ResearchCouncilAlpha(AlphaModel):
         language: str = "en",
         concurrency: int = 4,
     ):
+        provider = (llm.provider if isinstance(llm, LLMConfig) else
+                    getattr(getattr(llm, "config", None), "provider", ""))
+        if provider == "jev":
+            # Jev 는 글도 숫자도 쓰지 못하고 확률만 줍니다. 위원회의 리스크
+            # 검토는 숫자 칸(adjusted_conviction, position_scale)을 요구해서
+            # 부르기도 전에 실패하고, 대체값(거부 없음·배율 0.5)이 들어가 **거부가
+            # 한 번도 나오지 않습니다**. 판정도 판단 보류 규칙 없이 가장 큰
+            # 선택지를 따릅니다(36% 짜리 strong_sell). 데스크의 단계별 규칙이
+            # 위원회에는 없으므로 시작부터 거절합니다 — `type: desk` 를 쓰세요.
+            raise ValueError(
+                "위원회(type: council)는 Jev 로 돌릴 수 없습니다 — 리스크 거부와 판단 "
+                "보류 규칙이 빠집니다. Jev 는 데스크(type: desk)로 쓰세요.")
         # duck-typed: an LLMConfig, an LLMClient, or any object exposing
         # `await complete(system, user, schema)` and a `.usage` counter
         self.client = llm if hasattr(llm, "complete") else LLMClient(llm)
