@@ -63,7 +63,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from starlette.concurrency import run_in_threadpool
 
-from quant.alpha.llm_client import LLMError, billing_hint, usage_tally
+from quant.alpha.llm_client import LLMError, MissingKey, billing_hint, usage_tally
 from quant.config.loader import load_config
 from quant.config.schema import StrategyConfig
 from quant.core.aio import LazyLock, LazySemaphore
@@ -676,6 +676,18 @@ def _desk_llm(cfg: StrategyConfig) -> tuple[str, bool]:
     if provider == "google":                              # _BYO_LLM_KEY 의 제공자
         return "Gemini", True
     return billing_hint(provider)[0], False
+
+
+def _missing_key(exc: Exception) -> bool:
+    """이 `LLMError` 가 "키가 없다" 인가. 형으로 보고, 형을 잃은 글도 받아 줍니다."""
+    return isinstance(exc, MissingKey) or "no API key" in str(exc)
+
+
+def _desk_setup_error(name: str, exc: Exception) -> str:
+    """키가 **있는데** 데스크를 세우지 못했을 때 사람이 읽을 한 줄 — 원문을 담습니다."""
+    who = f"'{name}' 의 " if name else ""
+    return (f"{who}AI 데스크를 준비하지 못했습니다 — 키가 없어서가 아닙니다. 전략 "
+            f"설정의 llm 값을 확인하세요: {one_line_error(exc, 240)}")
 
 
 #: 프로세스 환경에 남아 있으면 안 되는 이름들 — 계좌에 닿거나 사람에게 닿는 값.
@@ -1794,6 +1806,11 @@ class UserDesk(Desk):
             # 모르겠다" 가 반복됐습니다.
             log.warning("봇 시작 실패(LLM): %s", exc)
             has_desk = any(m.type in ("desk", "council") for m in cfg.alpha)
+            if has_desk and not _missing_key(exc):
+                # 키는 있습니다 — 설정이 틀렸습니다(예: `llm.extra.undecided_below`
+                # 를 65 로 적음). 예전에는 모든 LLMError 를 "쓸 수 있는 키가
+                # 없습니다" 로 적고 원문을 버려, 사람이 멀쩡한 키를 확인하러 갔습니다.
+                raise HTTPException(503, _desk_setup_error(cfg.name, exc)) from None
             who, byo = _desk_llm(cfg)
             fix = (f"마이페이지에서 본인 {who} 키를 넣거나" if byo else
                    f"서비스의 {who} 키 설정을 운영자에게 확인하거나")
@@ -1834,6 +1851,9 @@ class UserDesk(Desk):
             log.warning("그룹 시작 실패(LLM): %s", exc)
             desk_cfg = next((c for c in configs.values()
                              if any(m.type in ("desk", "council") for m in c.alpha)), None)
+            if not _missing_key(exc):
+                raise HTTPException(503, _desk_setup_error(
+                    desk_cfg.name if desk_cfg is not None else "", exc)) from None
             who, byo = _desk_llm(desk_cfg) if desk_cfg is not None else ("LLM", False)
             fix = (f"마이페이지에서 본인 {who} 키를 넣거나" if byo else
                    f"서비스의 {who} 키 설정을 운영자에게 확인하거나")
@@ -2713,7 +2733,23 @@ def create_app(config: StrategyConfig | None = None,
         그래서 요금제 한도를 먼저 확인하고, 끝난 뒤에는 실제 토큰 수로
         계량합니다 — 계량하지 않으면 한 사람의 반복 클릭이 운영자 카드로
         청구되고, 나중에 소급해서 만들 수도 없습니다.
+
+        봇이 없으면 요청마다 새 데스크 — 새 LLM 클라이언트와 연결 풀 — 를
+        세웁니다(`_evaluate`). 예전에는 닫지 않아, 요청마다 연결 여럿이 순환 참조
+        수거 때까지 열려 있었습니다. 이 요청이 세운 데스크만 닫습니다(돌고 있는
+        봇의 데스크는 그대로).
         """
+        opened: list = []
+        try:
+            return await _evaluate(req, seat, opened)
+        finally:
+            for model in opened:
+                close = getattr(model, "aclose", None)
+                if close is not None:
+                    await close()
+
+    async def _evaluate(req: EvaluateRequest, seat: Desk, opened: list):
+        """`/api/evaluate` 의 본문. 이 요청이 **새로 세운** 데스크를 `opened` 에 적습니다."""
         ticker = (req.ticker or "").strip().upper()
         if not ticker:
             raise HTTPException(400, "종목을 지정하세요")
@@ -2758,6 +2794,7 @@ def create_app(config: StrategyConfig | None = None,
             try:
                 model, own_key = await run_in_threadpool(
                     seat.registry.desk_for, seat.user.id, cfg)
+                opened.append(model)
             except Exception as exc:
                 log.warning("데스크 생성 실패: %s", exc)
                 # 사용자가 읽어야 하는 문장입니다. 원문이 영어면 무엇을 해야

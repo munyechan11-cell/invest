@@ -306,3 +306,33 @@ def test_cost_notes_use_the_jev_price():
     evaluate = evaluate[:evaluate.index('"""', evaluate.index('"""') + 3)]
     assert "$0.0013" in evaluate and "심의 한 번이 약 $0.06" not in evaluate
     assert "$0.0013" in usage and "심의 한 번이 약 $0.06 입니다" not in usage
+
+
+# ── 리스크 토론 좌석의 실패도 센다 (4차 점검) ────────────────────────────────
+class _OneSeatFails(ScriptedLLM):
+    """좌석 하나만(시스템 프롬프트로 가림) 실패하는 대역."""
+
+    def __init__(self, seat_key: str, **kw):
+        super().__init__(**kw)
+        from quant.alpha.seats import SEATS_BY_KEY
+
+        self.seat_key = seat_key
+        self.system = SEATS_BY_KEY[seat_key].system
+
+    async def complete(self, system, user, schema=None):
+        if system == self.system:
+            self.usage.add(0, 0)
+            raise LLMError(f"simulated failure for {self.seat_key}")
+        return await super().complete(system, user, schema)
+
+
+@pytest.mark.parametrize("seat, rounds", [("risk_aggressive", 1), ("risk_conservative", 2)])
+def test_a_failed_risk_debater_is_counted_as_a_failed_seat(seat, rounds):
+    """공격형·보수형 좌석의 실패를 세는 줄을 지워도 모든 테스트가 통과했습니다.
+    그러면 대체값("응답 실패", 배율 0.5·0.3)이 진짜 리스크 논거처럼 그려집니다."""
+    desk = TradingDesk(_OneSeatFails(seat), risk_debate_rounds=rounds, memory=False)
+    run_desk(desk, make_ctx())
+    out = desk.history[-1].to_dict()
+    assert out["seat_failures"] == rounds                    # 라운드마다 한 번
+    assert f"simulated failure for {seat}" in out["first_seat_error"]
+    assert [where for where, _ in desk.history[-1].seat_errors] == [seat] * rounds

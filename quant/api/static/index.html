@@ -1270,8 +1270,13 @@ async function playDeliberation(d, opts) {
     if (d.trade) {
       const how = ENTRY_STYLE_KO[d.trade.entry_style] || d.trade.entry_style || "";
       const failed = seatFailure(d.trade);
+      // 진입 방식·분할은 매수에만 있습니다. 매도·관망 옆에 "눌림목 기다림 · 3분할"
+      // 을 그리면 청산에 진입 계획이 붙은 것처럼 읽힙니다.
+      const entering = (d.trade.action || "") === "buy";
       say("trader",
-          failed || `${how} ${d.trade.tranches ? "· " + d.trade.tranches + "분할" : ""} — ${d.trade.execution_note || ""}`,
+          failed || (entering
+            ? `${how} ${d.trade.tranches ? "· " + d.trade.tranches + "분할" : ""} — ${d.trade.execution_note || ""}`
+            : (d.trade.execution_note || "")),
           failed ? "bad" : "neutral");
       if (!(await wait(1600))) return;
     }

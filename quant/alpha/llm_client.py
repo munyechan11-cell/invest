@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from quant.core.aio import LazyLock
+from quant.core.types import one_line_error
 
 log = logging.getLogger("quant.alpha.llm")
 
@@ -85,15 +86,24 @@ class LLMUsage:
     #: this counter. Cost lives here rather than in the desk because this is
     #: the only object that knows both halves of the multiplication.
     model: str = ""
+    #: 실패 뒤 다시 보낸 횟수(`complete()` 의 재시도). 재시도가 결국 성공하면
+    #: 호출 수에도 좌석 실패에도 남지 않아서, 흔들리는 제공자가 보이지 않았습니다.
+    retries: int = 0
 
-    def add(self, i: int, o: int) -> None:
+    def add(self, i: int, o: int, latency_ms: float = 0.0) -> None:
         self.input_tokens += i
         self.output_tokens += o
         self.calls += 1
         tally = _TALLY.get()
         if tally is not None:
             pin, pout = price_for(self.model)
-            tally.record(i, o, i / 1e6 * pin + o / 1e6 * pout)
+            tally.record(i, o, i / 1e6 * pin + o / 1e6 * pout, latency_ms)
+
+    def retry(self) -> None:
+        self.retries += 1
+        tally = _TALLY.get()
+        if tally is not None:
+            tally.record_retry()
 
     @property
     def cost_usd(self) -> float:
@@ -113,22 +123,37 @@ class UsageTally:
     같이 적힙니다 — 봉 전체의 합과 종목 하나의 몫을 함께 셀 수 있게.
     """
 
-    __slots__ = ("calls", "input_tokens", "output_tokens", "cost_usd", "_parent")
+    __slots__ = ("calls", "input_tokens", "output_tokens", "cost_usd", "retries",
+                 "latency_ms", "latency_max_ms", "_parent")
 
     def __init__(self, parent: UsageTally | None = None):
         self.calls = 0
         self.input_tokens = 0
         self.output_tokens = 0
         self.cost_usd = 0.0
+        #: 재시도 횟수 — 이 작업의 소요 시간 가운데 백오프 대기가 있었는가.
+        self.retries = 0
+        #: 제공자가 스스로 밝힌 처리 시간(Jev 의 `latency_ms`)의 합과 최댓값.
+        #: 벽시계 시간에서 이것을 빼면 전송·대기 몫이 보입니다.
+        self.latency_ms = 0.0
+        self.latency_max_ms = 0.0
         self._parent = parent
 
-    def record(self, i: int, o: int, cost: float) -> None:
+    def record(self, i: int, o: int, cost: float, latency_ms: float = 0.0) -> None:
         tally: UsageTally | None = self
         while tally is not None:
             tally.calls += 1
             tally.input_tokens += i
             tally.output_tokens += o
             tally.cost_usd += cost
+            tally.latency_ms += latency_ms
+            tally.latency_max_ms = max(tally.latency_max_ms, latency_ms)
+            tally = tally._parent
+
+    def record_retry(self) -> None:
+        tally: UsageTally | None = self
+        while tally is not None:
+            tally.retries += 1
             tally = tally._parent
 
 
@@ -209,6 +234,16 @@ class QuotaExhausted(LLMError):
     wants the caller to stop entirely. Retrying the latter burns the deadline
     and then fails anyway — which is exactly what a sixteen-seat desk did for
     ten minutes before this existed.
+    """
+
+
+class MissingKey(LLMError):
+    """이 제공자의 키가 아예 없다(설정에도 환경 변수에도).
+
+    클라이언트를 만들 때 나는 `LLMError` 는 이것만이 아닙니다 — 잘못 적은
+    `llm.extra.undecided_below` 도 시작할 때 거절됩니다. 봇 시작 화면은 모든
+    `LLMError` 를 "쓸 수 있는 키가 없습니다" 로 적어서, 값을 잘못 적은 사람이
+    멀쩡한 키를 확인하러 갔습니다. 이 형으로 둘을 가릅니다.
     """
 
 
@@ -494,8 +529,15 @@ _JEV_THROTTLE_WORDS = ("rate limit", "rate-limit", "rate_limit", "ratelimit",
                        "too many requests")
 
 #: 한도 문구가 **짧은 창** 을 말하면 기다리면 풀립니다 — 데스크를 세울 일이 아닙니다.
-_SHORT_WINDOW_WORDS = ("per minute", "per-minute", "per second", "per-second",
-                       "/minute", "/second")
+#:
+#: 밑줄·하이픈을 공백으로 바꾼 글에서 찾습니다. 예전 목록("per minute",
+#: "/minute" …)은 Vertex 의 `generate_content_requests_per_minute_per_project`
+#: 나 "tokens per min (TPM)" 을 못 알아봐서, 분 단위 한도가 하루 한도처럼
+#: `QuotaExhausted` 가 되어 데스크가 재시작할 때까지 꺼졌습니다. 낱말 경계를
+#: 봅니다 — "/min" 이 주소 속 "/minimum" 에, "/sec" 이 "/secure" 에 걸리면 진짜
+#: 잔액 소진이 일시 제한으로 읽힙니다(헤드에서 그것은 합의 대체 → 매도입니다).
+_SHORT_WINDOW = re.compile(r"(?:\bper |/)(?:min(?:ute)?|sec(?:ond)?)s?\b"
+                           r"|\b(?:rpm|tpm)\b")
 
 #: 도구 오류(`isError`) 가운데 **입력이 틀렸다** 는 말. 도구 오류에는 코드가
 #: 없어서 글로 봅니다. SDK 는 입력 검증 실패를 "MCP error -32602: …" 로 적습니다.
@@ -511,8 +553,8 @@ _JEV_BAD_INPUT_WORDS = ("mcp error -32700", "mcp error -32600", "mcp error -3260
 
 
 def _short_window(text: str) -> bool:
-    lowered = text.lower()
-    if any(w in lowered for w in _SHORT_WINDOW_WORDS):
+    normalised = text.lower().replace("_", " ").replace("-", " ")
+    if _SHORT_WINDOW.search(normalised):
         return True
     wait = _retry_after(text)
     return wait is not None and wait < _LONG_WAIT_S
@@ -572,6 +614,31 @@ def _jev_raise_for_status(response: httpx.Response) -> None:
         raise _jev_failure(_jev_error_text(response), bad_request=False,
                            status=response.status_code)
     _raise_for_status(response, "jev")
+
+
+def _session_lost_failure(response: httpx.Response, where: str) -> LLMError:
+    """세션 유실 → "jev 503". 요청이 틀린 게 아니라 서버가 세션을 잊은 것입니다.
+
+    `_raise_for_status` 로 보내면 "jev 404"·"jev 400" 이 되어 `complete()` 가
+    재시도하지 않습니다(`_NO_RETRY_STATUS`).
+    """
+    return LLMError(f"jev 503: 세션을 잃었습니다 ({where}, HTTP {response.status_code}): "
+                    f"{_jev_error_text(response)[:300]}")
+
+
+def _shared_failure(exc: Exception) -> LLMError:
+    """잠금을 기다리던 좌석에게 앞 좌석의 세션 열기 실패를 **새 예외로** 건넨다.
+
+    같은 예외 객체를 여러 태스크에서 다시 올리면 traceback 이 서로 이어 붙습니다.
+    꼬리표는 그대로 둡니다 — 키 거절(401)이면 기다린 좌석도 재시도하지 않고,
+    시간 초과·일시 장애면 기다린 좌석도 백오프 뒤 다시 묻습니다.
+    """
+    if isinstance(exc, LLMError):
+        try:
+            return type(exc)(str(exc))
+        except Exception:  # noqa: BLE001 — 생성자가 다른 하위 형
+            return LLMError(str(exc))
+    return LLMError(f"jev 503: 세션을 열지 못했습니다 — {_describe(exc)}")
 
 
 def _rpc_failure(error: Any, prefix: str = "") -> LLMError:
@@ -635,7 +702,7 @@ class LLMClient:
         self.usage.model = config.resolved_model()
         self._client = httpx.AsyncClient(timeout=config.timeout)
         if not config.resolved_key():
-            raise LLMError(
+            raise MissingKey(
                 f"no API key for provider {config.provider!r} — set the matching env var"
             )
         # ── Jev(MCP) 세션 ──
@@ -649,6 +716,10 @@ class LLMClient:
         self._jev_session = ""
         self._jev_protocol = ""
         self._jev_generation = 0
+        # 끝난 세션 열기 시도의 수와 마지막 실패. 잠금을 **기다리는 동안** 앞
+        # 시도가 실패했으면 그 실패를 같이 받습니다(`_jev_connect`).
+        self._jev_connects_done = 0
+        self._jev_connect_error: Exception | None = None
         self._jev_ids = itertools.count(1)
         self._undecided_below = 0.65
         if config.provider == "jev":
@@ -711,7 +782,15 @@ class LLMClient:
                 # A 429 usually carries the provider's own suggested delay.
                 # Guessing a shorter one just burns another rejected request.
                 wait = _retry_after(text) if status == 429 else None
-                await asyncio.sleep(wait if wait is not None else 1.5 * (2 ** attempt))
+                delay = wait if wait is not None else 1.5 * (2 ** attempt)
+                # 재시도가 결국 성공하면 좌석 실패로도 호출 수로도 남지 않습니다.
+                # 그래서 여기서 적고 셉니다 — 그 대기는 심의의 소요 시간에 그대로
+                # 들어가, 세지 않으면 "제공자가 느리다" 로 읽힙니다.
+                log.info("%s 호출 재시도 %d/%d — %.1f초 뒤 (%s)",
+                         self.config.provider, attempt + 2, self.config.max_retries,
+                         delay, one_line_error(_describe(exc), 160))
+                self.usage.retry()
+                await asyncio.sleep(delay)
         raise LLMError(f"LLM call failed after {self.config.max_retries} attempts: "
                        f"{_describe(last)}") from last
 
@@ -858,37 +937,87 @@ class LLMClient:
             headers["Mcp-Session-Id"] = session
         if protocol:
             headers["MCP-Protocol-Version"] = protocol
-        return await self._client.post(self._jev_url(), json=body, headers=headers)
+        # `timeout` 은 httpx 에서 **단계마다**(연결, 읽기 한 번 …) 따로 걸립니다.
+        # 읽기 시간 초과는 바이트가 올 때마다 다시 세서, `: keepalive` 를 조금씩
+        # 흘리는 SSE 응답이나 느리게 새어 나오는 본문은 설정한 시간을 넘겨도
+        # 끝나지 않았습니다(시간 초과 1초에 8초짜리 호출이 성공). 호출 하나의
+        # **전체** 시간을 여기서 묶고, 넘기면 일시 장애(503)로 올려 `complete()`
+        # 가 다시 묻게 합니다.
+        limit = self.config.timeout if self.config.timeout and self.config.timeout > 0 else None
+        try:
+            return await asyncio.wait_for(
+                self._client.post(self._jev_url(), json=body, headers=headers),
+                timeout=limit)
+        except asyncio.TimeoutError:
+            raise LLMError(f"jev 503: 응답이 {limit:g}초 안에 끝나지 않았습니다 "
+                           "(호출 하나의 전체 시간 상한 — llm.timeout)") from None
 
     async def _jev_connect(self) -> int:
-        """세션이 없으면 한 번만 연다. 지금 세션의 세대 번호를 돌려준다."""
+        """세션이 없으면 한 번만 연다. 지금 세션의 세대 번호를 돌려준다.
+
+        **실패도 한 번입니다.** 잠금을 기다리던 좌석들은, 기다리는 사이 앞
+        시도가 실패했으면 각자 initialize 를 다시 보내지 않고 그 실패를 같이
+        받습니다. 예전에는 성공만 나눠 가져서, 멈춘 서버 앞에 좌석 8개 ×
+        재시도 3번 = initialize 24번이 **하나씩 차례로** 줄을 섰습니다(마지막
+        좌석은 시간 초과의 24배 뒤에 실패). 기다리기 시작한 **뒤에** 끝난 시도만
+        나눕니다 — 백오프를 마치고 새로 부르는 쪽은 새로 엽니다.
+        """
         if self._jev_ready:
             return self._jev_generation
+        seen = self._jev_connects_done
         async with self._jev_lock:
             if self._jev_ready:                 # 기다리는 사이 누가 열었다
                 return self._jev_generation
-            rid = next(self._jev_ids)
-            r = await self._jev_post({
-                "jsonrpc": "2.0", "id": rid, "method": "initialize",
-                "params": {"protocolVersion": MCP_PROTOCOL_VERSION, "capabilities": {},
-                           "clientInfo": {"name": "quant-desk", "version": "1"}},
-            })
-            _jev_raise_for_status(r)
-            message = _jev_message(r, rid)
-            if message.get("error") is not None:
-                raise _rpc_failure(message["error"], "initialize 거부: ")
-            result = message.get("result") if isinstance(message.get("result"), dict) else {}
-            # 상태 없는(stateless) 서버는 세션 id 를 주지 않습니다. 그때는 안 보냅니다.
-            session = r.headers.get("mcp-session-id", "")
-            protocol = str(result.get("protocolVersion") or MCP_PROTOCOL_VERSION)
-            ack = await self._jev_post({"jsonrpc": "2.0",
-                                        "method": "notifications/initialized"},
-                                       session, protocol)
-            _jev_raise_for_status(ack)   # 200·202·204 무엇이든, 본문은 없다
-            self._jev_session, self._jev_protocol = session, protocol
-            self._jev_generation += 1
-            self._jev_ready = True
-            return self._jev_generation
+            failed = self._jev_connect_error
+            if self._jev_connects_done != seen and failed is not None:
+                # 기다리는 사이 누가 열다 실패했다 — 같은 서버에 또 줄 서지 않는다.
+                raise _shared_failure(failed) from failed
+            try:
+                generation = await self._jev_initialize()
+            except Exception as exc:
+                self._jev_connect_error = exc
+                self._jev_connects_done += 1
+                raise
+            except BaseException:
+                # 취소는 이 좌석의 사정입니다 — 기다리던 좌석은 스스로 엽니다.
+                self._jev_connect_error = None
+                raise
+            self._jev_connect_error = None
+            self._jev_connects_done += 1
+            return generation
+
+    async def _jev_initialize(self) -> int:
+        """initialize → notifications/initialized. 잠금 안에서만 부릅니다."""
+        rid = next(self._jev_ids)
+        r = await self._jev_post({
+            "jsonrpc": "2.0", "id": rid, "method": "initialize",
+            "params": {"protocolVersion": MCP_PROTOCOL_VERSION, "capabilities": {},
+                       "clientInfo": {"name": "quant-desk", "version": "1"}},
+        })
+        _jev_raise_for_status(r)
+        message = _jev_message(r, rid)
+        if message.get("error") is not None:
+            raise _rpc_failure(message["error"], "initialize 거부: ")
+        result = message.get("result") if isinstance(message.get("result"), dict) else {}
+        # 상태 없는(stateless) 서버는 세션 id 를 주지 않습니다. 그때는 안 보냅니다.
+        session = r.headers.get("mcp-session-id", "")
+        protocol = str(result.get("protocolVersion") or MCP_PROTOCOL_VERSION)
+        ack = await self._jev_post({"jsonrpc": "2.0",
+                                    "method": "notifications/initialized"},
+                                   session, protocol)
+        # 서버리스 배포는 initialize 와 이 알림을 **다른 인스턴스** 로 보낼 수
+        # 있습니다. 그때의 "Session not found" 는 도구 호출에서와 같은 세션
+        # 유실입니다 — 예전에는 여기서만 "jev 404"(재시도 없음)로 올라가, 헤드
+        # 좌석이면 분석가 합의로, 시작 점검이면 "llm.base_url 을 확인하세요" 로
+        # 끝났습니다. 503 으로 올려 `complete()` 가 새로 열어 다시 묻게 합니다.
+        if ack.status_code >= 400 and ((ack.status_code == 404 and session)
+                                       or _session_lost(_jev_error_text(ack))):
+            raise _session_lost_failure(ack, "notifications/initialized")
+        _jev_raise_for_status(ack)   # 200·202·204 무엇이든, 본문은 없다
+        self._jev_session, self._jev_protocol = session, protocol
+        self._jev_generation += 1
+        self._jev_ready = True
+        return self._jev_generation
 
     def _jev_drop(self, generation: int) -> None:
         """그 세션이 아직 지금 세션이면 버린다. 이미 누가 다시 열었으면 그대로."""
@@ -901,7 +1030,13 @@ class LLMClient:
 
         서버리스 배포(Vercel)는 인스턴스가 바뀌면 세션을 잊습니다. 그건 우리
         요청이 틀린 게 아니므로 좌석 실패로 넘기지 않고 조용히 다시 엽니다.
-        두 번째에도 거절되면 그때는 진짜 실패입니다.
+
+        두 번째에도 세션을 잃으면 여기서는 그만 묻되, **일시 장애(503)** 로
+        올립니다. 예전에는 HTTP 404 로 온 두 번째 유실이 "jev 404"(재시도 없음)
+        가 되어, 헤드 좌석이면 분석가 합의로 물러서 보유를 팔았고 시작 점검이면
+        "llm.base_url 을 확인하세요" 로 데스크를 껐습니다 — 같은 유실이 200 안의
+        JSON-RPC 오류로 오면 503 으로 재시도되던 것과도 달랐습니다. `complete()`
+        가 백오프 뒤 다시 부르면 그 시도는 또 한 번 새로 엽니다.
         """
         for attempt in range(2):
             generation = await self._jev_connect()
@@ -911,22 +1046,27 @@ class LLMClient:
                 "jsonrpc": "2.0", "id": rid, "method": "tools/call",
                 "params": {"name": name, "arguments": arguments},
             }, session, self._jev_protocol)
-            if (r.status_code >= 400 and attempt == 0
+            if (r.status_code >= 400
                     and ((r.status_code == 404 and session)
                          or _session_lost(_jev_error_text(r)))):
-                log.info("jev 세션이 만료되어 다시 엽니다 (%d)", r.status_code)
                 self._jev_drop(generation)
-                continue
+                if attempt == 0:
+                    log.info("jev 세션이 만료되어 다시 엽니다 (%d)", r.status_code)
+                    continue
+                raise _session_lost_failure(r, "tools/call")
             # 3xx·4xx·5xx 는 꼬리표를 붙여 올립니다. 2xx 만 본문으로 갑니다.
             _jev_raise_for_status(r)
             message = _jev_message(r, rid)
             error = message.get("error")
             if error is not None:
                 text = _rpc_error_text(error)
-                if attempt == 0 and _session_lost(text):
-                    log.info("jev 세션이 만료되어 다시 엽니다: %s", text[:120])
+                if _session_lost(text):
                     self._jev_drop(generation)
-                    continue
+                    if attempt == 0:
+                        log.info("jev 세션이 만료되어 다시 엽니다: %s", text[:120])
+                        continue
+                    raise LLMError(f"jev 503: 세션을 다시 열었지만 또 잃었습니다 "
+                                   f"(tools/call): {text[:300]}")
                 # 요청이 틀렸다는 코드(-32602 …)만 422 — 재시도하지 않습니다.
                 # 내부·서버 오류(-32603, -32000~-32099)는 503 으로 적어
                 # `complete()` 가 한 번 더 묻게 하고, 한도를 말하면 429 입니다.
@@ -956,12 +1096,27 @@ class LLMClient:
                     payload = json.loads(texts[0])
                 except ValueError:
                     payload = None
+        # 오류가 `isError` 없이 **보통 결과** 로 올 수 있습니다 — `{"error": …}`
+        # 객체나 JSON 이 아닌 글. 예전에는 그 둘이 꼬리표 없는 오류("JSON 객체가
+        # 아닙니다", map_answers 의 "answers 가 없습니다")가 되어 분류를 건너뛰었
+        # 습니다: 잔액 소진이 `QuotaExhausted` 가 되지 않아 뒷좌석마다 세 번씩
+        # 실패했고, 헤드가 분석가 합의(매도)로 물러서 보유를 팔았으며, 데스크는
+        # 켜진 채 다음 봉에 또 돌았습니다. `isError` 와 같은 분류를 태웁니다.
         if not isinstance(payload, dict):
             self.usage.add(0, 0)
-            raise LLMError(f"jev: 도구 응답이 JSON 객체가 아닙니다: "
-                           f"{(texts[0] if texts else str(result))[:200]}")
+            text = texts[0] if texts else str(result)
+            raise _tool_failure(f"도구 응답이 JSON 객체가 아닙니다: {text}")
+        if "answers" not in payload:
+            error = payload.get("error") or payload.get("message")
+            if error:
+                self.usage.add(0, 0)
+                raise _tool_failure(_rpc_error_text(error))
         u = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-        self.usage.add(_as_int(u.get("inputTokens")), _as_int(u.get("outputTokens")))
+        latency = payload.get("latency_ms")
+        latency_ms = (float(latency) if isinstance(latency, (int, float))
+                      and not isinstance(latency, bool) and 0 <= latency < 1e9 else 0.0)
+        self.usage.add(_as_int(u.get("inputTokens")), _as_int(u.get("outputTokens")),
+                       latency_ms)
         return payload
 
     async def list_models(self) -> list[str]:

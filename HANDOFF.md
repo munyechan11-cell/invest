@@ -1172,7 +1172,10 @@ live` 는 거절하고, 모르는 값도 추측하지 않고 거절합니다.
   MCP streamable HTTP 를 httpx 로 직접. **initialize → notifications/initialized →
   tools/call 과 세션 헤더는 MCP 스펙에서 가져온 가정이고, 진짜 토큰으로는 아직
   확인하지 않았습니다.** 첫 실측은 `python scripts/desk_live_check.py --provider jev`.
-- **호출 수** 좌석당 `jev_evaluate` 1회 = 종목당 16회, 시작 때 `jev_check` 1회.
+- **호출 수** 좌석당 `jev_evaluate` 1회 = 종목당 16회. 시작 점검도 작은 `jev_evaluate`
+  1회입니다(`jev.preflight_arguments()` — 선택·예/아니오·단계 점수 한 문항씩).
+  키·연결만이 아니라 좌석의 **질문 형식** 과 답이 정해진 두 문항의 **확률 방향**
+  까지 봅니다(`jev.read_preflight`). `jev_check` 는 쓰지 않습니다.
 - **Jev 는 확률만 줍니다.** 숫자는 `quant/alpha/jev.py` 가 계산하고, 서술 칸은
   확률을 적은 템플릿입니다. 좌석은 시스템 프롬프트가 `seats.py` 와 정확히 같을 때
   알아보고, 다르면 스키마로 **단계** 만 알아봅니다(판단 보류·거부 기준은 유지).
@@ -1183,7 +1186,13 @@ live` 는 거절하고, 모르는 값도 추측하지 않고 거절합니다.
   `llm_client.MODEL_PRICES["typesafe-ai/jev"]`.
 - **Jev 오류** 요청이 틀렸다는 것(JSON-RPC -32700/-32600/-32601/-32602, 입력 검증을
   말하는 도구 오류)만 재시도 없이 실패합니다. 내부·서버 오류와 그 밖의 도구 오류는
-  503 처럼 다시 묻고, 한도·과금을 말하면 429 경로(하루 한도면 데스크 정지)입니다.
+  503 처럼 다시 묻습니다. 잔액·결제·크레딧·지출 한도를 말하는 글(또는 HTTP 402)은
+  재시도 없이 곧바로 `QuotaExhausted`("jev 402")이고, 짧은 창(분·초, RPM/TPM)을
+  말하지 않는 할당량 소진도 `QuotaExhausted`("jev 429")입니다 — 둘 다 데스크를
+  **재시작할 때까지** 끕니다. 짧은 창의 제한은 평범한 429 로 기다렸다 다시 묻습니다.
+  이 분류는 `isError` 결과뿐 아니라 보통 결과에 실려 온 `{"error": …}` 나 JSON 이
+  아닌 글에도 같게 걸립니다. 세션 유실("Session not found")은 한 번 다시 열고,
+  또 잃으면 503 으로 올려 `complete()` 가 다시 묻습니다.
 - **reduce** 데스크에는 부분 축소가 없어 reduce 도 sell 처럼 보유 전체를 닫습니다
   (`desk._to_insight`). Jev 에게도 그렇게 설명합니다. 부분 축소를 원하면 그건 제품
   결정이고, 만들 때 `jev.HEAD_ACTIONS`·`_HEAD_GROUPS` 와 `seats.py` 헤드 프롬프트

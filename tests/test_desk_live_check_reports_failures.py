@@ -24,7 +24,7 @@ import httpx
 import pytest
 
 import quant.live.credentials as credentials
-from tests.test_jev import FakeJev, desk_answers, seat_calls
+from tests.test_jev import FakeJev, desk_answers, no_backoff, seat_calls  # noqa: F401
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "desk_live_check.py"
 
@@ -97,3 +97,26 @@ def test_a_single_failed_seat_after_the_analysts_still_exits_nonzero(monkeypatch
     assert re.search(r"좌석 \d+곳 실패", out), out
     assert "-32602" in out
     assert "실시간 적용 판정" not in out
+
+
+# ── 재시도 대기가 속도 판정에 섞이지 않는다 (4차 점검) ──────────────────────
+def test_retries_are_printed_and_qualify_the_speed_verdict(monkeypatch, no_backoff):  # noqa: F811
+    """헤드가 503 을 두 번 받고 답했습니다. 좌석 실패는 0 이라 예전에는 백오프
+    4.5초가 든 소요 시간으로 "실시간 적용 판정" 을 그대로 찍었습니다."""
+    bullish = desk_answers("bullish")
+    head: list[int] = []
+
+    def answer(name, args):
+        if name == "jev_evaluate" and args["state"].get("seat") == "Head of Desk":
+            head.append(1)
+            if len(head) <= 2:
+                return httpx.Response(503, text="Service Unavailable")
+        return bullish(name, args)
+
+    code, out, _ = run_script(monkeypatch, answer)
+    assert code == 0, out
+    assert "재시도 2회" in out and "Jev 처리 시간 합 8.0초" in out, out
+    assert "속도 판정은 참고용" in out
+    healthy_code, healthy, _ = run_script(monkeypatch, desk_answers("bullish"))
+    assert healthy_code == 0 and "재시도 0회" in healthy
+    assert "참고용" not in healthy

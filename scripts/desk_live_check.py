@@ -186,6 +186,11 @@ async def run(args: argparse.Namespace) -> int:
     print(f"  소요 {decision.elapsed_s:.1f}초 · LLM {decision.llm_calls}회 · "
           f"추정 ${decision.cost_usd:.5f} (종목 1개)")
     print(f"  시작 점검: LLM {preflight_calls}회 · 추정 ${preflight_cost:.5f}")
+    # 재시도가 결국 성공하면 좌석 실패로 남지 않고, 그 백오프 대기는 소요 시간에
+    # 그대로 들어갑니다. 서버가 밝힌 처리 시간과 나란히 적어 둘을 가를 수 있게.
+    print(f"  재시도 {decision.retries}회 · Jev 처리 시간 합 "
+          f"{decision.jev_latency_ms / 1000:.1f}초 (호출 하나 최대 "
+          f"{decision.jev_latency_max_ms:.0f}ms)")
     print(f"  토큰 in {usage.input_tokens:,} / out {usage.output_tokens:,} (점검 포함)")
     failures = seat_failures(decision)
     if failures:
@@ -232,6 +237,7 @@ async def run(args: argparse.Namespace) -> int:
             "ticker": symbol.ticker, "close": bars[-1].close,
             "provider": provider, "model": model,
             "elapsed_s": decision.elapsed_s, "llm_calls": decision.llm_calls,
+            "retries": decision.retries, "jev_latency_ms": decision.jev_latency_ms,
             "cost_usd": decision.cost_usd, "preflight_cost_usd": preflight_cost,
             "seat_failures": failures, "action": decision.action,
             "conviction": decision.conviction, "scale": decision.position_scale,
@@ -260,6 +266,9 @@ async def run(args: argparse.Namespace) -> int:
             print(f"    - {where}: {error[:140]}")
         print(BAR)
         return 1
+    if decision.retries:
+        print(f"  ⚠ 재시도 {decision.retries}회 — 소요 시간에 재시도 대기가 들어 있어 "
+              "아래 속도 판정은 참고용입니다. 다시 재 보세요.")
     print(f"  실시간 적용 판정: 심의 {decision.elapsed_s:.0f}초 → "
           f"최소 봉 주기 {_min_timeframe(decision.elapsed_s)} 이상 권장")
     print(f"  10종목을 매 봉 심의하면 한 봉에 약 ${decision.cost_usd * 10:.5f} "

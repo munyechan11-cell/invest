@@ -58,6 +58,23 @@ from quant.alpha.seats import (
 #: `MAX_UNDECIDED_BELOW` 이상은 시작할 때 거절합니다.
 DEFAULT_UNDECIDED_BELOW = 0.65
 
+#: 중립 리스크 좌석의 네 가지 거부 사유 — 렌즈와 질문이 같은 문장을 씁니다.
+#:
+#: 조건은 그대로이고 **무엇을 보고 판단하는지** 만 적었습니다. 어느 좌석의 증거에도
+#: 손절가·손실 한도·집중도 한도는 없습니다(손절은 엔진이 ATR 로 정합니다). 그래서
+#: "증거로 손실 한도를 정할 수 없다" 를 글자 그대로 읽으면 **모든 브리프에서 참**
+#: 이고, 그 거부는 보유를 청산합니다. 원래 한국어 규칙은 "계산할 수 없다" —
+#: 가격과 ATR 이 있으면 계산할 수 있다는 뜻이었습니다.
+VETO_CONDITIONS = (
+    "(1) the loss limit cannot be determined: the evidence lacks the price or the "
+    "volatility (ATR) needed to place a stop; stops are set by the engine from ATR, so "
+    "a present ATR means the loss limit can be determined; (2) liquidity cannot absorb "
+    "the target size; (3) a portfolio concentration limit is breached: the limits "
+    "themselves are not in the evidence, so this applies only when this stock's "
+    "holding is visibly most of the book; or (4) the whole case is inference with no "
+    "observation"
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 좌석별 영어 렌즈
@@ -73,9 +90,10 @@ LENSES: dict[str, str] = {
         "trend, 20 or below is a range, in between is a transition. The same indicator "
         "means opposite things by regime: RSI 70 confirms strength in a trend but warns "
         "of a pullback in a range. Evidence: alignment and slope of the 20/50/200 moving "
-        "averages and price versus the 200-day line; MACD histogram sign and slope; "
-        "consistency of 5/20/60-bar returns; ATR ratio, Bollinger %B and squeezes; "
-        "distance from the 52-week high and low. Correlated indicators pointing the same "
+        "averages and price versus the 200-bar average (the 200-day line on daily bars); "
+        "MACD histogram sign and slope; consistency of 5/20/60-bar returns; ATR ratio, "
+        "Bollinger %B and squeezes; distance from the 252-bar high and low (the 52-week "
+        "range on daily bars). Correlated indicators pointing the same "
         "way are one piece of evidence, not three. Never claim chart patterns the numbers "
         "do not show. Confidence should track how clear the regime is. Needs the price "
         "and technical-indicator sections."
@@ -87,11 +105,16 @@ LENSES: dict[str, str] = {
         "a streak shorter than 3 sessions says nothing. Judge strength only relative to "
         "participation (net volume as a share of traded volume) and the stock's own "
         "history (z-score), never raw share counts. Price/flow divergence is the "
-        "strongest signal: price falling while foreigners and institutions buy is "
-        "accumulation (bullish), price rising while they sell is distribution (bearish); "
-        "price and flow moving together is confirmation, not new information. Retail "
-        "net buying at an extreme (z of +2 or more) is roughly a contrarian sign, but it "
-        "mirrors foreign and institutional flow, so do not count it twice. Program "
+        "strongest signal: price falling while foreigners and institutions buy is a "
+        "bullish divergence, price rising while they sell is a bearish divergence (the "
+        "divergence field); price and flow moving together is confirmation, not new "
+        "information. Accumulation days and a session pattern of accumulation mean only "
+        "that foreigners and institutions bought while retail sold, whatever the price "
+        "did; with a rising price that is confirmation, not divergence. Heavy retail net "
+        "buying against them is roughly a contrarian sign, but it mirrors foreign and "
+        "institutional flow, so do not count it twice. The evidence has no retail "
+        "z-score: participation_zscore is foreign plus institutional net participation "
+        "(high = unusually heavy smart-money buying), not a contrarian extreme. Program "
         "trading (index rebalancing, arbitrage, baskets) is not a view on the stock; "
         "discount the signal when program flow explains most of the foreign flow. "
         "Foreigners and institutions on opposite sides lowers conviction. If the flow "
@@ -136,7 +159,7 @@ LENSES: dict[str, str] = {
         "Market-microstructure analyst. This seat does NOT call direction. It judges "
         "whether the idea can actually be executed at target size and whether costs eat "
         "the expected edge: spread versus expected return (a round trip costs at least "
-        "twice the spread), target size versus average volume (above about 10% market "
+        "twice the spread), target size versus average volume per bar (above about 10% market "
         "impact grows non-linearly), and whether lot and tick sizes allow the intended "
         "order (for Korean stocks, orders off the price-band tick ladder are rejected). "
         "Execution problems make the stance neutral, not bearish: they are conditions "
@@ -145,7 +168,7 @@ LENSES: dict[str, str] = {
     "quant": (
         "Quantitative researcher and the desk's statistical skeptic: is the claimed "
         "effect distinguishable from noise? Fewer than about 20 observations is usually "
-        "chance; an effect smaller than about 0.3x the daily volatility does not survive "
+        "chance; an effect smaller than about 0.3x the per-bar volatility (ATR) does not survive "
         "costs; scanning many indicators and keeping the one that fits is multiple "
         "testing; high correlation with existing holdings is concentration, not "
         "diversification. The stance is usually neutral, and bullish or bearish only "
@@ -182,14 +205,13 @@ LENSES: dict[str, str] = {
     "risk_neutral": (
         "Neutral risk seat: reconciles the aggressive and conservative arguments into "
         "one position-size multiplier between 0 and 1. Never take a mechanical "
-        "midpoint; weight toward whichever side gave more concrete, nameable evidence. "
+        "midpoint; weight toward whichever proposed size the brief's liquidity, cost and "
+        "volatility numbers support better. "
         "On this desk a veto overrides the head of desk: it closes the whole position "
         "if one is held and blocks every model from buying this stock for the next "
         f"{VETO_BLOCK_BARS} bars. This seat answers before the direction is decided, so "
         "a veto is not a veto of one new order. "
-        "Veto only if the loss limit cannot be determined, liquidity cannot absorb the "
-        "target size, a portfolio concentration limit is breached, or the whole case is "
-        "inference with no observation. Any other discomfort, including a concern that "
+        f"Veto only if {VETO_CONDITIONS}. Any other discomfort, including a concern that "
         "only argues for adding less, is expressed by a smaller size; veto and size "
         "reduction are different tools."
     ),
@@ -203,14 +225,15 @@ LENSES: dict[str, str] = {
     "trader": (
         "Trader: translates the research plan into an executable order. Direction was "
         "decided in the research plan and must not be re-argued. Judge only from what "
-        "the evidence shows: recent returns, distance from the 52-week high, volume, "
-        "the spread, the estimated round-trip cost and the position's share of daily "
-        "volume. Entry style: market now when costs are small and waiting gains little; "
-        "a patient limit order when the spread or round-trip cost is material; scale in "
-        "if the size is large relative to liquidity; wait for a pullback if the price "
-        "has just run up sharply near its 52-week high. Use more tranches (1 to 4) for "
-        "larger recent moves or a larger share of daily volume. Heed the execution-cost "
-        "section of the evidence."
+        "the evidence shows: recent returns, distance from the 252-bar high (the 52-week "
+        "high on daily bars), volume, the spread, the estimated round-trip cost and the "
+        "position's share of average volume per bar. Entry style: market now when costs "
+        "are small and waiting gains little; a patient limit order when the spread or "
+        "round-trip cost is material; scale in if the size is large relative to "
+        "liquidity; wait for a pullback if the price has just run up sharply near its "
+        "252-bar high. Use more tranches (1 to 4) for larger recent moves or a larger "
+        "share of volume per bar. Entry style and tranches only matter for a buy. Heed "
+        "the execution-cost section of the evidence."
     ),
     "head": (
         "Head of desk: combines all seats into the final decision, which becomes a real "
@@ -243,7 +266,8 @@ GLOSSARY: dict[str, str] = {
     "거래소": "exchange / venue",
     "통화": "quote currency",
     "기준시각": "as-of time (anything after it does not exist)",
-    "봉주기": "bar timeframe",
+    "봉주기": "bar timeframe (1d = daily bars, 4h = four-hour bars); every N-bar or "
+            "N-day window below counts these bars",
     # 가격
     "가격": "price section",
     "종가": "close",
@@ -252,11 +276,18 @@ GLOSSARY: dict[str, str] = {
     "5봉수익률%": "5-bar return %",
     "20봉수익률%": "20-bar return %",
     "60봉수익률%": "60-bar return %",
-    "52주고점대비%": "% from the 52-week high (negative = below the high)",
-    "52주저점대비%": "% above the 52-week low",
+    # 브리프의 창은 **봉 수** 입니다(252봉·200봉·20봉·ATR14). 이름은 일봉 기준이라
+    # 4시간봉(live_crypto)에서는 "52주" 가 약 6주, "일별변동성" 이 4시간 변동성
+    # 입니다. 이름대로 풀면 6주 고점을 연 고점으로, 4시간 ATR 을 하루 변동성으로
+    # 읽습니다 — 그래서 봉 수로 풀고, 일봉에서의 이름은 괄호에 둡니다.
+    "52주고점대비%": "% from the highest close of the last 252 bars (the 52-week high "
+                "on daily bars; negative = below it)",
+    "52주저점대비%": "% above the lowest close of the last 252 bars (the 52-week low on "
+                "daily bars)",
     # 기술지표
     "기술지표": "technical indicators section",
-    "200일선위": "close is above the 200-day SMA (true/false)",
+    "200일선위": "close is above the 200-bar SMA (the 200-day line on daily bars; "
+              "true/false)",
     "MACD히스토그램": "MACD histogram",
     "ADX14": "ADX(14), trend strength",
     "국면": "regime, derived from ADX",
@@ -269,8 +300,9 @@ GLOSSARY: dict[str, str] = {
     # 유동성
     "유동성": "liquidity section",
     "당일거래량": "this bar's volume",
-    "20일평균거래량": "20-day average volume",
-    "거래량배수": "volume as a multiple of the 20-day average",
+    "20일평균거래량": "average volume per bar over the last 20 bars (the 20-day average "
+                "on daily bars)",
+    "거래량배수": "this bar's volume as a multiple of the 20-bar average",
     "호가스프레드%": "bid-ask spread %",
     # 체결비용
     "체결비용": "execution cost section",
@@ -278,7 +310,15 @@ GLOSSARY: dict[str, str] = {
     "호가단위": "tick size",
     "최소주문금액": "minimum order value",
     "왕복비용추정%": "estimated round-trip cost %",
-    "1%포지션의거래량비중%": "a 1%-of-equity position as % of average daily volume",
+    # 크기는 **기준값** 입니다 — 실제 포지션이 아닙니다. 좌석 질문은 "의도한
+    # 사이즈" 를 묻는데 증거에 크기 숫자는 이것 하나뿐이라, 1% 짜리를 포지션으로
+    # 읽으면 체결 충격을 수십 배 작게 봅니다. 배수는 출하 설정의
+    # `max_position_weight`(0.30~0.35)에서 왔고 테스트가 설정과 맞춰 봅니다.
+    "1%포지션의거래량비중%": "reference only: the share of the 20-bar average volume "
+                      "that a position worth 1% of the strategy book would take; it is "
+                      "not the intended position. These desks cap one position at "
+                      "30-35% of the book, so a full position takes up to about 30-35 "
+                      "times this share",
     # 포트폴리오
     "포트폴리오": "portfolio section",
     "전략 장부 평가액": "strategy book equity (not the whole brokerage account)",
@@ -293,7 +333,7 @@ GLOSSARY: dict[str, str] = {
     # 통계
     "통계": "statistics section",
     "관측봉수": "number of bars observed",
-    "일별변동성%": "daily volatility % (ATR based)",
+    "일별변동성%": "ATR(14) as % of price, per bar (daily volatility on daily bars)",
     "최근20봉승률%": "% of up bars among the last 20",
     "포트폴리오누적수익%": "portfolio cumulative return %",
     "누적매매수": "number of closed trades",
@@ -385,7 +425,8 @@ GLOSSARY: dict[str, str] = {
     "기준": "threshold",
     "제한": "capped",
     "사유 확률": "probability of that veto reason",
-    "손실 한도를 계산할 수 없음": "the loss limit cannot be determined",
+    "손실 한도를 계산할 수 없음": "the loss limit cannot be determined (no price or ATR "
+                        "to place a stop)",
     "유동성이 목표 사이즈를 감당하지 못함": "liquidity cannot absorb the target size",
     "포트폴리오 집중도 한도를 넘음": "a portfolio concentration limit would be breached",
     "근거 전체가 관측 없는 추론": "the whole case is inference with no observation",
@@ -430,23 +471,32 @@ FLOW_TERMS: dict[str, str] = {
     "foreign_streak": "consecutive sessions of foreign net buying (+) or selling (-)",
     "institution_streak": "consecutive sessions of institutional net buying (+) or "
                           "selling (-)",
-    "participation_zscore": "latest smart-money participation versus this stock's own "
-                            "history (z-score)",
+    "participation_zscore": "latest foreign+institution net participation versus this "
+                            "stock's own history (z-score; high = unusually heavy "
+                            "smart-money net buying, negative = net selling; not a "
+                            "retail measure)",
     "avg_participation_pct": "average net foreign+institution volume as % of volume",
     "turnover_ratio_pct": "net foreign+institution volume as % of total volume",
     "smart_money_net_value": "foreign + institution net value (null = source gives "
                              "quantities only)",
     "accumulation_days": "sessions where foreigners and institutions bought while "
-                         "retail sold",
+                         "retail sold (no price condition; not a divergence)",
     "distribution_days": "sessions where foreigners and institutions sold while "
-                         "retail bought",
+                         "retail bought (no price condition)",
     "divergence": "flow versus price: bullish_divergence = smart money buying a "
                   "falling price; bearish_divergence = selling a rising price; "
                   "confirmed_* = flow and price agree",
     "program_qty": "program-trading net quantity (index/arbitrage baskets, not a view "
                    "on the stock; null = the source does not report program trading)",
     "participation_pct": "net foreign+institution volume as % of that session's volume",
-    "pattern": "accumulation / distribution / mixed for that session",
+    # 렌즈의 "다이버전스" 와 데이터의 "accumulation" 은 다른 말입니다 — 데이터의
+    # 매집은 가격 조건이 없습니다(`InvestorFlow.is_accumulation`).
+    "pattern": "that session: accumulation = foreigners and institutions both net "
+               "bought while retail net sold; distribution = the reverse; mixed = "
+               "anything else (no price condition)",
+    "foreign_qty": "foreign net quantity that session (+ bought, - sold)",
+    "institution_qty": "institutional net quantity that session (+ bought, - sold)",
+    "retail_qty": "retail net quantity that session (+ bought, - sold)",
 }
 
 
@@ -503,11 +553,11 @@ HAZARD_KO = {
 #: 뒷좌석은 체결 가능성에 대한 판단을 한 번도 읽지 못했습니다.
 EXECUTION = {
     "executable": "Executable at the target size: the round-trip cost and the "
-                  "position's share of average daily volume are small next to a "
+                  "position's share of average volume per bar are small next to a "
                   "typical recent move, and lot and tick sizes allow the order",
     "conditional": "Executable only with conditions (a smaller size, limit orders or "
                    "splitting the order), because the spread, the round-trip cost or "
-                   "the position's share of daily volume is material",
+                   "the position's share of volume per bar is material",
     "not_executable": "Not executable as intended: costs or market impact would "
                       "consume the expected edge, or lot, tick or minimum-order "
                       "constraints prevent the intended order",
@@ -516,10 +566,13 @@ EXECUTION_KO = {"executable": "목표 사이즈로 체결 가능", "conditional"
                 "not_executable": "체결 곤란"}
 
 VETO_REASONS = {
-    "loss_limit_unknown": "The loss limit for this position cannot be determined from "
-                          "the evidence",
+    "loss_limit_unknown": "The loss limit for this position cannot be determined: the "
+                          "evidence lacks the price or volatility (ATR) needed to place "
+                          "a stop",
     "illiquid": "Liquidity cannot absorb the target size",
-    "concentration_breach": "The position would breach a portfolio concentration limit",
+    "concentration_breach": "The position would breach a portfolio concentration limit "
+                            "(the limits are not in the evidence; only when this "
+                            "stock's holding is visibly most of the book)",
     "inference_only": "The whole case is inference with no supporting observation",
     "none_applies": "None of these four conditions applies",
 }
@@ -545,10 +598,13 @@ RATINGS = {
                    "little credible counter-evidence",
 }
 WINNERS = {
-    "bull": "The bull side (buy) carried: its evidence was more concrete and better "
-            "supported by observed numbers",
-    "bear": "The bear side (sell or stay out) carried: its evidence was more concrete "
-            "and better supported by observed numbers",
+    # 토론 좌석은 숫자를 인용하지 않습니다(Jev 의 논거 강도와 확률뿐). "각 편이
+    # 인용한 증거로" 물으면 Jev 는 앞서 자기가 매긴 강도를 되풀이할 뿐입니다.
+    # 그래서 브리프와 분석가 리포트를 **직접** 보고 어느 쪽이 맞는지 묻습니다.
+    "bull": "The bull side (buy) carried: the brief and the analyst reports better "
+            "support a rise",
+    "bear": "The bear side (sell or stay out) carried: the brief and the analyst "
+            "reports better support a fall or staying out",
     "balanced": "Neither side carried: the evidence is genuinely balanced",
 }
 WINNER_KO = {"bull": "강세 측 우세", "bear": "약세 측 우세", "balanced": "팽팽함"}
@@ -569,20 +625,21 @@ ENTRY_STYLES = {
     "limit_patient": "Patient limit order: the spread or the estimated round-trip cost "
                      "is material, so post inside the spread and wait",
     "scale_in": "Scale in: the size is large relative to liquidity (the position is a "
-                "noticeable share of average daily volume), so enter in several pieces",
+                "noticeable share of average volume per bar), so enter in several "
+                "pieces",
     "wait_for_pullback": "Wait for a pullback: the price has just run up sharply (large "
-                         "recent 5-bar and 20-bar returns) and sits near its 52-week "
+                         "recent 5-bar and 20-bar returns) and sits near its 252-bar "
                          "high, so wait for a retracement before entering",
 }
 ENTRY_KO = {"market_now": "즉시 시장가", "limit_patient": "지정가 대기",
             "scale_in": "분할 진입", "wait_for_pullback": "눌림 대기"}
 TRANCHE_LEVELS = (
     "One order: recent 5-bar and 20-bar returns are small and the position is a tiny "
-    "share of average daily volume",
+    "share of average volume per bar",
     "Two orders: recent returns are moderate, or the position is a noticeable share of "
-    "average daily volume",
+    "average volume per bar",
     "Three orders: recent returns are large, or the position is a large share of "
-    "average daily volume",
+    "average volume per bar",
     "Four orders: recent returns are very large, or the position would move the price "
     "if sent at once",
 )
@@ -797,8 +854,9 @@ def _analyst_questions(seat: Seat | None) -> dict:
         questions["execution"] = _choice(
             "This seat does not call direction. Can an order of the intended size be "
             "executed without costs eating the edge? Judge the spread, the estimated "
-            "round-trip cost, the position's share of average daily volume, and the lot "
-            "and tick sizes against a typical recent move (the 5-bar and 20-bar "
+            "round-trip cost, the position's share of average volume per bar (the "
+            "evidence gives it for a 1%-of-book reference size; see the glossary), and "
+            "the lot and tick sizes against a typical recent move (the 5-bar and 20-bar "
             "returns).", EXECUTION)
     return questions
 
@@ -884,17 +942,16 @@ def _risk_verdict_questions(seat: Seat | None) -> dict:
             "holding in this stock) and blocks every model from buying this stock for "
             f"the next {VETO_BLOCK_BARS} bars. The risk seat answers before the "
             "direction is decided, so this is not a veto of one new order. Veto ONLY if "
-            "the loss limit cannot be determined, liquidity cannot absorb the target "
-            "size, a portfolio concentration limit is breached, or the whole case is "
-            "inference with no observation. Other discomfort, including a concern that "
+            f"{VETO_CONDITIONS}. Other discomfort, including a concern that "
             "only argues for adding less, is not a veto: the size multiplier handles it.",
             "At least one of the four veto conditions is true",
             "None of the four veto conditions is true; any concern is a matter of size",
         ),
         "scale": _score(
-            "What reconciled position size is justified? Weigh the aggressive and "
-            "conservative arguments by which gave more concrete, nameable evidence, "
-            "not by a mechanical midpoint.", SIZE_LEVELS),
+            "What reconciled position size is justified? Weigh the sizes the aggressive "
+            "and conservative seats proposed, and any hazard they named, against the "
+            "brief's liquidity, cost and volatility numbers, not by a mechanical "
+            "midpoint.", SIZE_LEVELS),
         "veto_reason": _choice(
             "Which of these veto conditions best describes the evidence?",
             VETO_REASONS),
@@ -908,8 +965,10 @@ def _plan_questions(seat: Seat | None) -> dict:
             "the bull/bear debate support? Hold only if the evidence is genuinely "
             "balanced.", RATINGS),
         "winner": _choice(
-            "Which side of the bull/bear debate carried, judged by the evidence each "
-            "side cited rather than by volume?", WINNERS),
+            "Judging the brief and the analyst reports yourself, which side of the "
+            "bull/bear debate is better supported: a rise (bull) or a fall or staying "
+            "out (bear)? The debaters' strength levels in the evidence are opinions, "
+            "not cited evidence; do not simply repeat them.", WINNERS),
     }
 
 
@@ -918,15 +977,20 @@ def _trade_questions(seat: Seat | None) -> dict:
         "action": _choice(
             "Translate the research plan into an order direction. Do not re-argue the "
             "direction; follow the plan (and a risk veto, if any).", TRADE_ACTIONS),
+        # 진입 방식과 분할은 **매수** 에만 뜻이 있습니다(주문으로는 가지 않고 화면과
+        # 헤드의 증거에만 갑니다). 매도·관망에도 "눌림 대기 · 3분할" 을 고르게 하면
+        # 청산 옆에 진입 계획이 적혔습니다. 매수가 아니면 정해진 답을 고르게 합니다.
         "entry_style": _choice(
-            "Which entry style fits the spread and the estimated round-trip cost, the "
-            "size relative to liquidity, and how far the price has recently run (the "
-            "5-bar and 20-bar returns and the distance from the 52-week high)?",
-            ENTRY_STYLES),
+            "If the order direction is a buy, which entry style fits the spread and the "
+            "estimated round-trip cost, the size relative to liquidity, and how far the "
+            "price has recently run (the 5-bar and 20-bar returns and the distance from "
+            "the 252-bar high)? If it is hold or sell there is no entry to plan: choose "
+            "the patient limit order.", ENTRY_STYLES),
         "tranches": _score(
-            "Into how many orders should the entry be split, given the size of recent "
-            "5-bar and 20-bar returns and the position's share of average daily "
-            "volume?", TRANCHE_LEVELS),
+            "If the order direction is a buy, into how many orders should the entry be "
+            "split, given the size of recent 5-bar and 20-bar returns and the "
+            "position's share of average volume per bar? If it is hold or sell, choose "
+            "one order.", TRANCHE_LEVELS),
     }
 
 
@@ -1476,12 +1540,15 @@ def _map_trade(request: JevRequest, answers: dict, u: float) -> dict:
     # 첫 문장은 짧게(화면 말풍선은 첫 문장만 보여 줍니다). 진입 방식과 분할
     # 수는 적지 않습니다 — 각자 칸(`entry_style`, `tranches`)이 있고 화면이
     # 앞에 붙입니다. 이름을 또 적으면 같은 말이 두 번 나옵니다.
+    # 진입 방식은 매수에만 뜻이 있습니다 — 관망·매도의 설명에는 적지 않습니다.
     if undecided:
         note = (f"{_act('hold')} — 판단 보류. {spread} 중 {_threshold_ko(u)}에 이른 쪽 "
-                f"없음. 진입 방식 확률 {_pct(styles[style])} ({_SOURCE})")
-    else:
+                f"없음. 신규 진입 없음 ({_SOURCE})")
+    elif action == "buy":
         note = (f"{_act(action)} {_pct(masses[group])}. 진입 방식 확률 "
                 f"{_pct(styles[style])} ({_SOURCE})")
+    else:
+        note = f"{_act(action)} {_pct(masses[group])}. 신규 진입 없음 ({_SOURCE})"
     return {
         "action": action,
         "entry_style": style,

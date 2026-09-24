@@ -261,3 +261,39 @@ def test_every_no_key_503_asks_the_desk_which_provider_it_uses():
         body = max(found, key=len)            # 추상 선언이 아니라 구현
         assert "_desk_llm(" in body, name
         assert "Gemini" not in body, name     # 제공자를 박아 둔 문구가 없다
+
+
+# ── 키가 아니라 설정이 틀렸을 때 (4차 점검) ─────────────────────────────────
+#: `llm.extra.undecided_below: 65` 로 데스크를 세울 때 나는 실패 — 키는 있습니다.
+_BAD_KNOB = LLMError("jev: undecided_below 는 0~1 사이의 확률이어야 합니다 "
+                     "(예: 0.65, 끄려면 0): 65")
+
+
+class _BadKnobRegistry:
+    async def start(self, *args, **kwargs):
+        raise _BAD_KNOB
+
+    async def start_group(self, *args, **kwargs):
+        raise _BAD_KNOB
+
+
+def test_a_desk_config_error_is_not_reported_as_a_missing_key():
+    """예전에는 봇 시작이 모든 `LLMError` 를 "쓸 수 있는 Jev 키가 없습니다" 로 적고
+    원문을 버렸습니다(그룹 시작은 원문을 괄호에 붙였지만 같은 틀린 문장으로 시작)."""
+    from fastapi import HTTPException
+
+    from quant.api.server import GroupStartRequest, StartRequest, UserDesk
+
+    hub = SimpleNamespace(publish=lambda *a, **k: None)
+    state = SimpleNamespace(hub_for=lambda uid: hub)
+    desk = UserDesk(SimpleNamespace(id=1), state, None, _BadKnobRegistry())
+    with pytest.raises(HTTPException) as single:
+        asyncio.run(desk.start(StartRequest(config_path="kr_desk_gemini")))
+    with pytest.raises(HTTPException) as group:
+        asyncio.run(desk.start_group(GroupStartRequest(agents=[{
+            "agent_id": "a", "label": "A", "config_path": "kr_desk_gemini",
+            "capital_weight": 1.0}])))
+    for err in (single.value, group.value):
+        assert err.status_code == 503
+        assert "키가 없습니다" not in err.detail, err.detail
+        assert "키가 없어서가 아닙니다" in err.detail and "undecided_below" in err.detail

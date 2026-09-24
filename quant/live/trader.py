@@ -34,6 +34,29 @@ from quant.strategy.builder import build_engine
 log = logging.getLogger("quant.live")
 
 
+def _desk_run_trouble(desk) -> str:
+    """데스크의 마지막 심의(`TradingDesk.last_run`)가 실패했으면 그 한 줄, 아니면 "".
+
+    데스크가 꺼졌으면(잔액 소진 등) 꺼진 이유가 먼저입니다 — 사람이 할 일은
+    그쪽에 적혀 있습니다.
+    """
+    run = getattr(desk, "last_run", None) or {}
+    if not run.get("attempted"):
+        return ""
+    disabled = (desk.status() or {}).get("disabled_reason") or ""
+    if disabled:
+        return disabled
+    first = run.get("first_error") or ""
+    if not run.get("decided"):
+        return ("결론에 이르지 못했습니다 — "
+                + (first or "마감 안에 분석 단계가 끝나지 않았습니다"))
+    if run.get("seat_failures") or run.get("degraded"):
+        return (f"AI 호출이 실패했습니다 (좌석 {run.get('seat_failures', 0)}곳"
+                + (f", 분석가 합의로 대체 {run['degraded']}건" if run.get("degraded") else "")
+                + f") — {first}")
+    return ""
+
+
 class LiveTrader:
     #: How often a sleeping loop re-checks `running`. The stop *event* wakes it
     #: instantly, but `/api/trader/stop` only clears the flag, so the poll is
@@ -538,6 +561,8 @@ class LiveTrader:
             return
         log.info("%s 심의 — 봉을 기다리지 않고 지금 상태로 한 번 봅니다", reason)
         before = desk.status()["llm_calls"], desk.estimated_cost_usd
+        runs_before = getattr(desk, "runs", None)
+        raised = False
         try:
             fresh = await desk.update(ctx, last)
             if fresh:
@@ -554,13 +579,26 @@ class LiveTrader:
         except Exception as exc:
             # 여기서 죽으면 봇이 아예 안 뜹니다. 첫인상보다 돌아가는 쪽이
             # 중요하므로, 실패는 알리고 넘어갑니다.
+            raised = True
             log.warning("%s 심의 실패: %s", reason, exc)
             self.desk_note = f"{reason} 심의 실패 — {exc}"
             await ctx.bus.publish(EventType.ERROR,
                                   {"error": f"{reason} 심의 실패: {exc}"})
         finally:
+            # "새로 볼 것이 없었다" 는 **심의를 하지 않았다** 는 뜻이어야 합니다.
+            # 예전에는 LLM 호출 수가 그대로인 것으로 읽었는데, 그 수는 응답이 온
+            # 호출만 셉니다 — Jev 가 전부 503 이면 모든 좌석이 실패한 심의가
+            # "이 봉은 이미 심의했습니다" 로 적혔습니다. 데스크가 센 심의 횟수를
+            # 보고, 심의했는데 실패했으면 그렇게 말합니다. 심의가 멀쩡히 끝났으면
+            # 앞서 남은 "이미 심의했습니다" 도 지웁니다 — 방금 심의했습니다.
+            ran = (runs_before is not None
+                   and getattr(desk, "runs", runs_before) != runs_before)
+            if ran and not raised:
+                trouble = _desk_run_trouble(desk)
+                self.desk_note = f"{reason} 심의 — {trouble}" if trouble else ""
             after_calls = desk.status()["llm_calls"]
-            if after_calls == before[0] and not self.desk_note:
+            quiet = (not ran) if runs_before is not None else after_calls == before[0]
+            if quiet and not self.desk_note:
                 # 호출이 한 번도 안 나갔습니다. 요금제 때문에 쉰 것이면 그
                 # 사유를, 아니면 "이번 봉에는 새로 볼 것이 없었다" 를 말합니다 —
                 # 조용한 데스크와 고장 난 데스크는 화면에서 구별되지 않습니다.
@@ -1455,6 +1493,7 @@ class LiveTrader:
             ("broker", self.engine.brokerage.close),
             ("notifier", self.notifier.close),
             ("provider", self.provider.close),
+            ("desk", self._close_desk),
         ):
             try:
                 await close()
@@ -1561,6 +1600,7 @@ class LiveTrader:
             for label, close in (
                 ("notifier", self.notifier.close),
                 ("provider", self.provider.close),
+                ("desk", self._close_desk),
             ):
                 try:
                     await close()
@@ -1596,6 +1636,15 @@ class LiveTrader:
                 loop.add_signal_handler(sig, stop)
             except NotImplementedError:      # Windows
                 signal.signal(sig, lambda *_: stop())
+
+    async def _close_desk(self) -> None:
+        """데스크의 LLM 연결을 닫는다. 멈춘 봇의 데스크는 다시 쓰이지 않습니다."""
+        engine = getattr(self, "engine", None)
+        if engine is None or getattr(engine, "alpha", None) is None:
+            return
+        close = getattr(self.desk(), "aclose", None)
+        if close is not None:
+            await close()
 
     def desk(self):
         """The TradingDesk instance if one is configured, else None."""
