@@ -167,13 +167,16 @@ class LLMConfig:
     def resolved_key(self) -> str:
         if self.api_key:
             return self.api_key
-        return os.environ.get(
-            {"anthropic": "ANTHROPIC_API_KEY",
-             "openai": "OPENAI_API_KEY",
-             "google": "GOOGLE_API_KEY",
-             "jev": "JEV_API_KEY"}.get(self.provider, ""),
-            "",
-        )
+        return os.environ.get(KEY_ENV.get(self.provider, ""), "")
+
+
+#: 제공자 → 키를 읽는 환경 변수(설정 화면의 칸 이름과 같습니다).
+KEY_ENV: dict[str, str] = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "google": "GOOGLE_API_KEY",
+    "jev": "JEV_API_KEY",
+}
 
 
 #: 제공자별 "여기서 충전/발급하세요". 이름과 주소가 한곳에 있어야 합니다 —
@@ -207,6 +210,39 @@ class QuotaExhausted(LLMError):
     and then fails anyway — which is exactly what a sixteen-seat desk did for
     ten minutes before this existed.
     """
+
+
+class UnsendableKey(LLMError):
+    """키에 HTTP 헤더로 보낼 수 없는 글자가 있다. 요청은 나가지 않았습니다.
+
+    "키가 거부되었다" 와 다릅니다 — 서버는 이 키를 본 적이 없습니다. 사전
+    점검은 이 구분으로 "다시 붙여 넣으세요" 라고 말합니다.
+    """
+
+
+def _header_key(config: LLMConfig, tag: str) -> str:
+    """헤더에 실을 키. ASCII 가 아닌 글자가 있으면 **보내기 전에** 꼬리표 달린 401.
+
+    httpx 는 헤더를 ASCII 로 인코딩합니다. 채팅 앱·문서에서 붙여 넣은 키에
+    섞인 보이지 않는 공백(U+200B)이나 둥근 따옴표는 `strip()` 으로 지워지지
+    않고, 요청이 나가기도 전에 `UnicodeEncodeError` 가 났습니다. 그 예외는
+    `LLMError` 가 아니라서 `complete()` 의 분류를 건너뛰었고, 사전 점검은
+    "'ascii' codec can't encode … position 20"(앞의 'Bearer ' 까지 센 위치)만
+    말했으며, `/api/evaluate` 는 키를 말하지 않는 502 였습니다.
+
+    401 은 재시도 대상이 아니고(`_NO_RETRY_STATUS`), 요청을 보내지 않았으니
+    청구도 없습니다. 글자 **위치와 코드포인트만** 적습니다 — 키의 다른 글자는
+    적지 않습니다.
+    """
+    key = config.resolved_key()
+    for i, ch in enumerate(key):
+        if not ch.isascii():
+            name = KEY_ENV.get(config.provider) or "API 키"
+            raise UnsendableKey(
+                f"{tag} 401: {name} 의 {i + 1}번째 글자가 ASCII 가 아닙니다"
+                f"(U+{ord(ch):04X} — 보이지 않는 공백·둥근 따옴표 등). 요청은 "
+                f"보내지 않았습니다 — 키를 다시 붙여 넣으세요")
+    return key
 
 
 def _raise_for_status(response: httpx.Response, provider: str) -> None:
@@ -256,6 +292,22 @@ _NO_RETRY_STATUS = frozenset({400, 401, 403, 404, 422})
 def _status_of(message: str) -> int | None:
     m = _STATUS_TAG.match(message)
     return int(m.group(1)) if m else None
+
+
+def failure_status(exc: BaseException) -> int | None:
+    """`complete()` 가 올린 실패의 상태 꼬리표. 없으면 None.
+
+    재시도 끝의 실패는 "LLM call failed after N attempts: …" 로 한 번 싸여
+    올라옵니다(원인은 `__cause__`). 그 글 **안** 에서 " 401:" 을 찾으면
+    "jev 503: Upstream provider returned 401: …" 같은 일시 장애가 키 거절로
+    읽힙니다. 그래서 싼 글이면 원인의 **맨 앞** 꼬리표만 읽습니다 —
+    `complete()` 가 재시도 여부를 정할 때와 같은 규칙입니다.
+    """
+    status = _status_of(str(exc))
+    cause = exc.__cause__
+    if status is None and isinstance(cause, LLMError):
+        status = _status_of(str(cause))
+    return status
 
 
 def _describe(exc: BaseException | None) -> str:
@@ -680,7 +732,7 @@ class LLMClient:
             body["tool_choice"] = {"type": "tool", "name": "emit"}
         r = await self._client.post(
             f"{self.config.base_url or 'https://api.anthropic.com'}/v1/messages",
-            headers={"x-api-key": self.config.resolved_key(),
+            headers={"x-api-key": _header_key(self.config, "anthropic"),
                      "anthropic-version": "2023-06-01",
                      "content-type": "application/json"},
             json=body,
@@ -715,7 +767,7 @@ class LLMClient:
             }
         r = await self._client.post(
             f"{self.config.base_url or 'https://api.openai.com/v1'}/chat/completions",
-            headers={"Authorization": f"Bearer {self.config.resolved_key()}"},
+            headers={"Authorization": f"Bearer {_header_key(self.config, 'openai')}"},
             json=body,
         )
         _raise_for_status(r, "openai")
@@ -746,7 +798,7 @@ class LLMClient:
         # a specific prefix goes stale. Only OAuth access tokens ("ya29....")
         # are bearer tokens; everything else is an API key. Guessing wrong
         # produces a 401 that reads like a bad key rather than a wrong scheme.
-        key = self.config.resolved_key()
+        key = _header_key(self.config, "google")
         auth_header = ({"Authorization": f"Bearer {key}"} if key.startswith("ya29.")
                        else {"x-goog-api-key": key})
         r = await self._client.post(
@@ -797,7 +849,7 @@ class LLMClient:
     async def _jev_post(self, body: dict, session: str = "",
                         protocol: str = "") -> httpx.Response:
         headers = {
-            "Authorization": f"Bearer {self.config.resolved_key()}",
+            "Authorization": f"Bearer {_header_key(self.config, 'jev')}",
             "Content-Type": "application/json",
             # 스펙이 둘 다 받겠다고 말하라고 요구합니다. 서버는 둘 중 하나로 답합니다.
             "Accept": "application/json, text/event-stream",
@@ -917,7 +969,7 @@ class LLMClient:
         if self.config.provider != "google":
             return []
         base = self.config.base_url or "https://generativelanguage.googleapis.com/v1beta"
-        key = self.config.resolved_key()
+        key = _header_key(self.config, "google")
         header = ({"Authorization": f"Bearer {key}"} if key.startswith("ya29.")
                   else {"x-goog-api-key": key})
         r = await self._client.get(f"{base}/models", headers=header,

@@ -79,6 +79,7 @@ from quant.live.credentials import (
     WRITABLE_KEYS,
     load_env_file,
     rejection_reason,
+    value_rejection_reason,
     venue_catalog,
 )
 from quant.live.profile import (
@@ -1708,9 +1709,12 @@ class UserDesk(Desk):
                 # 빈 칸은 "이미 저장된 것을 그대로 두라"는 뜻입니다. 설정 화면이
                 # 비밀 칸을 비운 채 폼을 제출할 수 있어야 하니까요.
                 continue
-            if "\n" in value or "\r" in value:
-                rejected[key] = "값에 줄바꿈이 있어 저장할 수 없습니다"
-                log.warning("설정 저장 거부: user=%s key=%r — 줄바꿈", self.user.id, key)
+            # 줄바꿈, 그리고 키·시크릿·토큰의 ASCII 아닌 글자(보이지 않는 공백 …).
+            reason = value_rejection_reason(key, value)
+            if reason:
+                rejected[key] = reason
+                log.warning("설정 저장 거부: user=%s key=%r — %s", self.user.id, key,
+                            reason)
                 continue
             self.accounts.put_secret(self.user.id, key, value)
             written.append(key)

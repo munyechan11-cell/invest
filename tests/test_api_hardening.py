@@ -163,6 +163,29 @@ def test_a_newline_in_a_value_cannot_smuggle_a_second_key(client, env_file):
     assert os.environ.get("HTTPS_PROXY") is None
 
 
+@pytest.mark.parametrize("value", ["jev_TESTTOKEN\u200b", "\u201cjev_TESTTOKEN\u201d"],
+                         ids=["zero-width-space", "smart-quotes"])
+def test_a_key_pasted_with_an_invisible_character_is_refused_on_save(client, value):
+    """보이지 않는 공백·둥근 따옴표는 `strip()` 으로 지워지지 않아 그대로
+    저장됐고, 그 뒤 **호출할 때마다** 헤더 인코딩에서 실패했습니다."""
+    body = client.post("/api/setup", json={"values": {
+        "JEV_API_KEY": value, "KIS_APP_KEY": "PSabc123-plain-ascii-key"}}).json()
+    assert "JEV_API_KEY" in body["rejected"]
+    assert "ASCII" in body["rejected"]["JEV_API_KEY"]
+    assert "TESTTOKEN" not in body["rejected"]["JEV_API_KEY"]
+    assert "JEV_API_KEY" not in stored(client)
+    assert body["written"] == ["KIS_APP_KEY"]                # 멀쩡한 키는 그대로 저장
+
+
+def test_the_file_store_refuses_a_non_ascii_credential_too(tmp_path):
+    store = CredentialStore(tmp_path / "env.test")
+    report = store.update({"KIS_APP_SECRET": "abc\u200bdef", "OPERATOR_NAME": "운영자"})
+    assert "KIS_APP_SECRET" in report.rejected
+    assert "4번째" in report.rejected["KIS_APP_SECRET"]
+    assert report.written == ["OPERATOR_NAME"]
+    assert "KIS_APP_SECRET" not in env_keys(tmp_path / "env.test")
+
+
 def test_a_blank_value_still_leaves_an_existing_credential_alone(tmp_path):
     store = CredentialStore(tmp_path / "env.test")
     store.update({"KIS_APP_KEY": "original"})

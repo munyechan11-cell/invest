@@ -47,14 +47,17 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from quant.alpha.base import AlphaModel
+from quant.alpha.jev import PreflightAnswerFlipped
 from quant.alpha.llm_client import (
     JEV_DEFAULT_URL,
     LLMClient,
     LLMConfig,
     LLMError,
     QuotaExhausted,
+    UnsendableKey,
     UsageTally,
     billing_hint,
+    failure_status,
     usage_tally,
 )
 from quant.alpha.seats import (
@@ -780,11 +783,22 @@ class TradingDesk(AlphaModel):
                     or "spending cap" in message.lower()
                     or "credits are depleted" in message.lower()):
                 return self._exhausted_reason(exc)
-            if " 401:" in message or " 403:" in message:
+            if isinstance(exc, UnsendableKey):
+                # 서버는 이 키를 본 적이 없습니다 — "거부되었습니다" 는 틀린
+                # 말입니다. 붙여 넣을 때 섞인 글자가 원인이고, 위치를 적습니다.
+                return (f"{who} API 키에 보낼 수 없는 글자가 있습니다 — 키를 다시 "
+                        f"붙여 넣으세요. ({message[:200]})")
+            # 원인은 꼬리표로만 읽습니다(`failure_status`). 예전에는 글 전체에서
+            # " 401:"·" 404:" 을 찾아, 재시도 끝에 싸여 온 "jev 503: Upstream
+            # provider returned 401: …" 같은 **일시 장애** 를 "키가 거부되었습니다"
+            # 나 "llm.base_url 을 확인하세요" 로 적었습니다. 사람은 멀쩡한 키를
+            # 바꾸러 갔습니다. `complete()` 는 이미 같은 규칙으로 재시도를 정합니다.
+            status = failure_status(exc)
+            if status in (401, 403):
                 return (f"{who} API 키가 거부되었습니다 — 키를 확인하세요."
                         + (f" 발급: {where}" if where else "")
                         + f" ({message[:160]})")
-            if " 404:" in message and provider == "jev":
+            if status == 404 and provider == "jev":
                 # Jev 에는 고를 모델이 없습니다(모델 설정을 보내지도 않습니다).
                 # 404 는 주소가 틀렸거나 배포가 옮겨졌다는 뜻이라, "모델 이름을
                 # 확인하세요" 는 있지도 않은 설정으로 사람을 보냅니다.
@@ -794,7 +808,7 @@ class TradingDesk(AlphaModel):
                              else f"기본 주소 {JEV_DEFAULT_URL}")
                 return (f"Jev 주소를 찾을 수 없습니다 — 설정의 llm.base_url 을 "
                         f"확인하세요({where_url}). ({message[:120]})")
-            if " 404:" in message:
+            if status == 404:
                 available = await self._list_models()
                 hint = f" 사용 가능: {', '.join(available[:8])}" if available else ""
                 return (f"모델을 찾을 수 없습니다 — 모델 이름을 확인하세요."
@@ -804,7 +818,13 @@ class TradingDesk(AlphaModel):
                 # 실패" 로 떨어졌고, 화면은 거기에 "LLM 키와 한도를 확인하세요"
                 # 를 붙였습니다 — 406·405·HTML 인증 페이지처럼 **주소나 배포**
                 # 문제일 때 사람을 키로 보냈습니다.
-                if message.startswith("jev 422:"):
+                if isinstance(exc, PreflightAnswerFlipped):
+                    return ("Jev 의 답이 정해진 답과 반대입니다 — Jev 서버에서 확률의 "
+                            "의미(방향)가 바뀌었을 수 있습니다. 이대로 켜면 '거부 없음' "
+                            "이 거부로 읽혀 보유가 청산될 수 있어 데스크를 켜지 "
+                            "않습니다. 기다려도 풀리지 않으니 데스크 코드를 확인하세요. "
+                            f"({message[:200]})")
+                if status == 422:
                     return ("Jev 가 데스크의 질문 형식을 거부했습니다 — Jev 서버의 "
                             "jev_evaluate 입력 형식이 바뀌었을 수 있습니다. 기다려도 "
                             "풀리지 않으니 데스크 코드를 확인하세요. "
@@ -843,16 +863,55 @@ class TradingDesk(AlphaModel):
             out[key] = bar
         return out
 
+    def on_universe_changed(self, ctx: Context, added: list[Symbol],
+                            removed: list[Symbol]) -> None:
+        """빠진 종목의 지표를 버린다. 돌아오면 `ctx.history` 로 다시 쌓습니다.
+
+        유니버스에서 빠진 종목에는 엔진이 봉을 넘겨주지 않습니다(`_active`).
+        지표를 그대로 두면, 몇 주 뒤 돌아왔을 때 그 사이 봉 없이 새 봉 하나만
+        이어 붙여 5봉 수익률·ATR·ADX 가 공백을 가로질러 계산됩니다 — 실제
+        +12.5% 가 +86% 로 적힌 브리프를 좌석들이 "사실로" 읽었습니다. 규칙
+        알파(`technical.py`)는 이미 이렇게 버립니다.
+        """
+        for sym in removed:
+            self._sets.pop(sym.key, None)
+            self._ingested.pop(sym.key, None)
+
+    def _feed(self, ctx: Context, bar: Bar) -> None:
+        """새 봉 하나를 지표에 넣는다. 그 사이 못 본 봉이 있으면 처음부터 다시 쌓는다.
+
+        데스크가 못 본 봉이 `ctx.history` 에 있는 경우는 유니버스 이탈 말고도
+        있습니다(일시정지 중에도 엔진은 봉을 쌓지만 알파는 부르지 않습니다).
+        스트리밍 지표는 빠진 봉을 끼워 넣을 수 없으니 이 봉 **앞까지** 의
+        기록으로 새로 쌓고 이 봉을 넣습니다.
+        """
+        key = bar.symbol.key
+        seen = self._ingested.get(key)
+        if seen is not None and key in self._sets:
+            history = ctx.history(bar.symbol)
+            if any(seen < b.ts < bar.ts for b in history):
+                log.info("%s: 데스크가 보지 못한 봉이 있어 지표를 다시 쌓습니다 "
+                         "(마지막으로 본 봉 %s)", bar.symbol.ticker, seen)
+                iset = self._new_set(ctx)
+                iset.prime([b for b in history if b.ts < bar.ts])
+                self._sets[key] = iset
+        self._indicators(ctx, bar.symbol).update(bar)
+        self._ingested[key] = bar.ts
+
     # ── the shared brief ─────────────────────────────────────────────────
+    @staticmethod
+    def _new_set(ctx: Context) -> IndicatorSet:
+        return IndicatorSet(
+            rsi=RSI(14), sma20=SMA(20), sma50=SMA(50), sma200=SMA(200),
+            atr=ATR(14), macd=MACD(), adx=ADX(14), bb=BollingerBands(20, 2.0),
+            ret5=RollingReturn(5), ret20=RollingReturn(20), ret60=RollingReturn(60),
+            vol=RollingVolatility(20, periods_per_year(ctx.timeframe)),
+        )
+
     def _indicators(self, ctx: Context, symbol: Symbol) -> IndicatorSet:
         iset = self._sets.get(symbol.key)
         if iset is None:
-            iset = IndicatorSet(
-                rsi=RSI(14), sma20=SMA(20), sma50=SMA(50), sma200=SMA(200),
-                atr=ATR(14), macd=MACD(), adx=ADX(14), bb=BollingerBands(20, 2.0),
-                ret5=RollingReturn(5), ret20=RollingReturn(20), ret60=RollingReturn(60),
-                vol=RollingVolatility(20, periods_per_year(ctx.timeframe)),
-            )
+            iset = self._new_set(ctx)
             history = ctx.history(symbol)
             if history:
                 iset.prime(history[:-1])   # the newest bar arrives via update()
@@ -1347,8 +1406,7 @@ class TradingDesk(AlphaModel):
         fresh = self._fresh_bars(bars)
         if fresh:
             for bar in fresh.values():
-                self._indicators(ctx, bar.symbol).update(bar)
-                self._ingested[bar.symbol.key] = bar.ts
+                self._feed(ctx, bar)
             self._covered.clear()          # 새 봉 — 다시 전부 볼 수 있습니다
             bars = fresh
         else:

@@ -1454,11 +1454,33 @@ def test_an_out_of_range_undecided_knob_is_refused_at_startup(value):
         LLMClient(LLMConfig(provider="jev", api_key="k", extra={"undecided_below": value}))
 
 
-@pytest.mark.parametrize("value", [0, 0.5, 0.65, 1.0])
+@pytest.mark.parametrize("value", [0, 0.5, 0.65, 0.9, "0.7"])
 def test_in_range_undecided_values_are_still_accepted(value):
     client = LLMClient(LLMConfig(provider="jev", api_key="k",
                                  extra={"undecided_below": value}))
-    assert client._undecided_below == value
+    assert client._undecided_below == float(value)
+
+
+@pytest.mark.parametrize("value", [1.0, 1, 0.99, 0.95, True, False])
+def test_an_undecided_knob_that_silences_the_veto_is_refused_at_startup(value):
+    """이 값은 거부 문턱이기도 합니다(P(거부) ≥ 이 값일 때만 거부).
+
+    1.0 은 범위 안이라 통과했고, 그러면 99% 거부도 청산 대신 "배율 절반" 이었습니다.
+    YAML 의 `undecided_below: yes`·`true` 는 bool 이라 `float()` 로 1.0 이 되어 같은
+    결과였고(`no`·`off` 는 0 — 규칙이 조용히 꺼집니다), `_prob` 는 같은 bool 을
+    확률로 받지 않습니다.
+    """
+    with pytest.raises(LLMError, match="undecided_below"):
+        LLMClient(LLMConfig(provider="jev", api_key="k", extra={"undecided_below": value}))
+
+
+def test_raising_undecided_below_raises_the_veto_bar_too():
+    """방향 문턱과 거부 문턱은 같은 값입니다 — "덜 사고팔게" 올리면 거부도 약해집니다.
+    이 결합은 사용자가 정한 설계(둘 다 0.65)이고, 문서와 이 테스트가 그것을 적어 둡니다."""
+    assert verdict(0.7)["veto"] is True                       # 기본 0.65
+    weakened = verdict(0.7, u=0.8)
+    assert weakened["veto"] is False and weakened["position_scale"] == 0.5
+    assert verdict(0.85, u=0.8)["veto"] is True
 
 
 # ── 공매도와 위원회 ──────────────────────────────────────────────────────────
@@ -2071,3 +2093,143 @@ def test_a_short_window_limit_is_waited_out_not_read_as_exhaustion(text, wait, n
     assert ask_technical(client)["stance"] == "bullish"      # QuotaExhausted 가 아니다
     assert len(fake.tool_calls()) == 2
     assert no_backoff == [wait]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3차 점검 — 각 테스트는 고치기 전 코드에서 실패합니다
+# ─────────────────────────────────────────────────────────────────────────────
+# ── 시작 점검은 원인을 꼬리표로만 읽는다 ────────────────────────────────────
+@pytest.mark.parametrize("upstream", [
+    "Upstream provider returned 401: invalid x-api-key (gateway)",
+    "Upstream provider returned 403: forbidden by upstream policy",
+    "Upstream provider returned 404: model route not deployed",
+])
+def test_an_upstream_status_inside_a_transient_failure_is_not_read_as_ours(upstream,
+                                                                         no_backoff):
+    """게이트웨이의 일시 장애는 "jev 503" 으로 세 번 재시도됩니다(`complete()` 는
+    맨 앞 꼬리표만 읽습니다). 사전 점검은 싸인 글 **안** 에서 " 401:"·" 404:" 을
+    찾아, 멀쩡한 키를 "거부되었습니다" 로, 멀쩡한 주소를 "llm.base_url 을
+    확인하세요" 로 적었습니다."""
+    fake = FakeJev(lambda name, args: tool_error(upstream))
+    desk = TradingDesk(LLMConfig(provider="jev", api_key="k"), memory=False)
+    desk.client._client = httpx.AsyncClient(transport=httpx.MockTransport(fake))
+    asyncio.run(desk.on_start(make_ctx()))
+    reason = desk.status()["disabled_reason"]
+    assert len(fake.tool_calls()) == 3                        # 일시 장애로 재시도했다
+    assert reason.startswith("Jev 연결 실패"), reason
+    assert "키가 거부" not in reason and "주소를 찾을 수 없습니다" not in reason
+    assert upstream[:30] in reason                            # 원문은 남깁니다
+
+
+def test_a_real_401_at_startup_still_says_the_key_was_rejected(no_backoff):
+    """회귀 방지: 꼬리표가 401 이면 여전히 키를 가리킵니다(재시도 없음)."""
+    desk = TradingDesk(LLMConfig(provider="jev", api_key="k"), memory=False)
+    desk.client._client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(401, json={"error": {"message": "bad token"}})))
+    asyncio.run(desk.on_start(make_ctx()))
+    reason = desk.status()["disabled_reason"]
+    assert reason.startswith("Jev API 키가 거부되었습니다"), reason
+    assert no_backoff == []
+
+
+def test_failure_status_reads_the_cause_of_a_retry_wrapper_not_its_text():
+    cause = LLMError("jev 503: Upstream provider returned 401: invalid key")
+    try:
+        raise LLMError(f"LLM call failed after 3 attempts: {cause}") from cause
+    except LLMError as wrapped:
+        assert llm_client.failure_status(wrapped) == 503
+    assert llm_client.failure_status(LLMError("google 403: API key not valid")) == 403
+    assert llm_client.failure_status(LLMError("no tag: returned 401: x")) is None
+
+
+# ── 시작 점검은 답이 정해진 질문의 답까지 본다 ──────────────────────────────
+@pytest.mark.parametrize("flipped", [
+    {"check_boolean": boolean(0.02)},                          # probability 가 P(아니오)로
+    {"check_choice": choice({"blue": 0.02, "other": 0.98})},
+], ids=["boolean", "choice"])
+def test_a_flipped_answer_meaning_keeps_the_desk_off(flipped, no_backoff):
+    """모양만 보던 점검은 서버가 예/아니오의 방향을 바꿔도 통과했습니다. 그러면
+    리스크 좌석의 "거부 없음 5%" 가 P(거부)=0.95 로 읽혀, 봉마다 보유가 청산되고
+    매수가 막힙니다."""
+    answers = {**PREFLIGHT_ANSWERS, **flipped}
+    fake = FakeJev(lambda name, args: {"answers": answers if is_preflight(args)
+                                       else ANALYST_ANSWERS})
+    desk = TradingDesk(LLMConfig(provider="jev", api_key="k"), memory=False)
+    desk.client._client = httpx.AsyncClient(transport=httpx.MockTransport(fake))
+    assert run_desk(desk, make_ctx(invested=100)) == []
+    status = desk.status()
+    assert status["enabled"] is False
+    assert status["disabled_reason"].startswith("Jev 의 답이 정해진 답과 반대입니다")
+    assert "질문 형식을 거부" not in status["disabled_reason"]
+    assert len(fake.tool_calls()) == 1 and no_backoff == []    # 다시 묻지 않았다
+    assert seat_calls(fake) == []
+
+
+def test_the_known_answer_check_is_loose_enough_for_honest_answers():
+    """과반이면 통과합니다. 단계 점수는 모양만 봅니다 — "Partly" 도 정당한 판단입니다."""
+    jev.read_preflight({"answers": {
+        "check_choice": choice({"blue": 0.55, "other": 0.45}),
+        "check_boolean": boolean(0.5),
+        "check_score": score([0.1, 0.8, 0.1]),
+    }})
+    with pytest.raises(jev.PreflightAnswerFlipped, match="jev 422"):
+        jev.read_preflight({"answers": {**PREFLIGHT_ANSWERS,
+                                        "check_boolean": boolean(0.49)}})
+
+
+# ── 붙여 넣다 섞인 글자가 있는 키 ───────────────────────────────────────────
+NON_ASCII_KEYS = [
+    ("zero-width-space", "jev_TESTTOKEN\u200b", "14번째", "U+200B"),
+    ("smart-quotes", "\u201cjev_TESTTOKEN\u201d", "1번째", "U+201C"),
+]
+
+
+@pytest.mark.parametrize("label, key, where, codepoint", NON_ASCII_KEYS,
+                         ids=[k[0] for k in NON_ASCII_KEYS])
+def test_a_key_with_a_non_ascii_character_fails_as_a_key_error_before_sending(
+        label, key, where, codepoint, no_backoff):
+    """httpx 는 헤더를 ASCII 로 인코딩합니다. 예전에는 요청이 나가기도 전에
+    `UnicodeEncodeError` 가 났고, 그것은 `LLMError` 가 아니라 분류를 건너뛰었습니다
+    (사전 점검은 'position 20' 만, `/api/evaluate` 는 키를 말하지 않는 502)."""
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        return FakeJev()(request)
+
+    client = LLMClient(LLMConfig(provider="jev", api_key=key))
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(llm_client.UnsendableKey) as err:
+        asyncio.run(client.complete("Reply with the single word OK.", "ping", None))
+    message = str(err.value)
+    assert message.startswith("jev 401: JEV_API_KEY")
+    assert where in message and codepoint in message
+    assert "TESTTOKEN" not in message                         # 키의 다른 글자는 적지 않는다
+    assert sent == [] and no_backoff == []                    # 보내지도, 재시도하지도 않았다
+
+    desk = TradingDesk(LLMConfig(provider="jev", api_key=key), memory=False)
+    desk.client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ctx = make_ctx()
+    asyncio.run(desk.on_start(ctx))
+    reason = desk.status()["disabled_reason"]
+    assert reason.startswith("Jev API 키에 보낼 수 없는 글자가 있습니다"), reason
+    assert "거부되었습니다" not in reason and where in reason
+
+    # 사전 점검 없이 심의하는 길(`/api/evaluate`): 예외가 새지 않고 좌석 실패가 된다.
+    fresh = TradingDesk(LLMConfig(provider="jev", api_key=key), memory=False)
+    fresh.client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    decision = asyncio.run(fresh.deliberate(ctx, SYM))
+    assert decision is not None and decision.action == "hold"
+    assert decision.analysts["technical"]["error"].startswith("jev 401: JEV_API_KEY")
+    assert sent == []
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "google"])
+def test_every_provider_checks_its_header_key_the_same_way(provider, no_backoff):
+    sent = []
+    client = LLMClient(LLMConfig(provider=provider, api_key="sk-TEST\u200b"))
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: sent.append(request) or httpx.Response(500)))
+    with pytest.raises(llm_client.UnsendableKey, match=f"^{provider} 401: "):
+        asyncio.run(client.complete("s", "u", None))
+    assert sent == []

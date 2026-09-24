@@ -241,6 +241,32 @@ def rejection_reason(key: str) -> str:
     return ""
 
 
+#: 헤더·서명에 그대로 실리는 자격증명의 이름 꼬리. 이런 값은 ASCII 뿐입니다.
+_CREDENTIAL_SUFFIXES = ("_KEY", "_SECRET", "_TOKEN")
+
+
+def value_rejection_reason(key: str, value: str) -> str:
+    """이 **값** 을 그 키로 저장할 수 없는 이유. 저장해도 되면 빈 문자열.
+
+    채팅 앱·문서에서 붙여 넣은 키에는 보이지 않는 공백(U+200B)이나 둥근
+    따옴표가 섞여 옵니다. `strip()` 은 그것을 지우지 않아 그대로 저장됐고,
+    HTTP 헤더는 ASCII 만 실을 수 있어 **호출할 때마다** 요청이 나가기도 전에
+    실패했습니다 — 그때의 오류는 키를 말하지 않았습니다. 위치와 코드포인트만
+    적고 값의 다른 글자는 적지 않습니다.
+    """
+    if "\n" in value or "\r" in value:
+        # One line per key: a newline inside a value is a second key,
+        # and that is the allow-list bypassed from the value side.
+        return "값에 줄바꿈이 있어 저장할 수 없습니다"
+    if key.strip().upper().endswith(_CREDENTIAL_SUFFIXES):
+        for i, ch in enumerate(value):
+            if not ch.isascii():
+                return (f"값의 {i + 1}번째 글자가 ASCII 가 아닙니다(U+{ord(ch):04X} — "
+                        f"보이지 않는 공백·둥근 따옴표 등). 키는 영문·숫자·기호로만 "
+                        f"되어 있습니다 — 다시 붙여 넣으세요")
+    return ""
+
+
 @dataclass
 class WriteReport:
     """`update()` 의 결과 — 무엇이 저장됐고, 무엇이 왜 거절됐는지.
@@ -352,10 +378,8 @@ class CredentialStore:
             value = (value or "").strip()
             if not value:
                 continue
-            if "\n" in value or "\r" in value:
-                # One line per key: a newline inside a value is a second key,
-                # and that is the allow-list bypassed from the value side.
-                reason = "값에 줄바꿈이 있어 저장할 수 없습니다"
+            reason = value_rejection_reason(key, value)
+            if reason:
                 report.rejected[key] = reason
                 log.warning("설정 저장 거부: %r — %s", key, reason)
                 continue

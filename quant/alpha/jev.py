@@ -52,6 +52,10 @@ from quant.alpha.seats import (
 #: 그대로 주문으로 옮기면 동전 던지기에 돈을 거는 셈이라, 방향은 관망으로,
 #: 거부는 "거부하지 않되 사이즈 절반 이하" 로 바꿉니다. 0 으로 두면 이 규칙이
 #: 꺼집니다(가장 큰 쪽을 그대로 따르고, 거부는 P ≥ 0.5).
+#:
+#: **올리면 거부가 약해집니다.** 같은 값이 거부 문턱(P(거부) ≥ 이 값)이라, "덜
+#: 사고팔게" 0.8 로 올리면 70% 거부는 청산 대신 배율 절반이 됩니다.
+#: `MAX_UNDECIDED_BELOW` 이상은 시작할 때 거절합니다.
 DEFAULT_UNDECIDED_BELOW = 0.65
 
 
@@ -966,7 +970,9 @@ _QUESTIONS = {
 #: 예전 점검은 `jev_check` 하나였습니다 — 키와 연결만 확인하고, 좌석이 실제로
 #: 보내는 질문 형식은 한 번도 확인하지 않았습니다. 서버가 그 형식을 거절하면
 #: (-32602) 점검은 통과하고 데스크는 "켜짐" 인 채 봉마다 16석이 전부 실패했습니다.
-#: 답은 쓰지 않습니다. 좌석과 같은 읽기(`read_choice` …)를 통과하는지만 봅니다.
+#: 답은 매매에 쓰지 않습니다. 좌석과 같은 읽기(`read_choice` …)를 통과하는지,
+#: 그리고 답이 정해진 두 질문(파랑, 예)의 확률이 **맞는 쪽** 인지 봅니다
+#: (`read_preflight`).
 PREFLIGHT_STATE = {
     "purpose": "Startup check of a trading desk: confirms the connection and the "
                "question format. The answers are not used for any decision.",
@@ -994,15 +1000,36 @@ def preflight_arguments() -> dict:
             "questions": {k: dict(v) for k, v in PREFLIGHT_QUESTIONS.items()}}
 
 
+class PreflightAnswerFlipped(LLMError):
+    """시작 점검의 답이 정해진 답과 반대다. 답의 **의미** 가 바뀌었을 수 있다."""
+
+
 def read_preflight(payload: Any) -> None:
-    """좌석과 같은 읽기로 답을 읽는다. 모양이 어긋나면 `LLMError`."""
+    """좌석과 같은 읽기로 답을 읽고, 답이 정해진 두 질문은 답까지 본다.
+
+    모양이 어긋나면 `LLMError`, 답이 뒤집혔으면 `PreflightAnswerFlipped`.
+
+    모양만 보던 때는 서버가 예/아니오의 `probability` 를 P(아니오)로 바꿔도
+    점검을 통과했습니다. 그러면 리스크 좌석의 "거부 없음 5%" 가 P(거부)=0.95
+    로 읽혀 **봉마다 보유가 청산되고 매수가 막힙니다.** 하늘의 색(파랑)과
+    "시작 점검인가"(예)는 답이 정해져 있고 이미 묻고 있으니, 추가 비용 없이
+    확률의 방향을 확인할 수 있습니다. 문턱은 느슨하게(과반) 둡니다. 단계
+    점수는 모양만 봅니다 — "Partly" 와 "Clearly" 사이는 정당한 판단이라 그걸로
+    데스크를 끄면 멀쩡한 날에도 꺼질 수 있습니다.
+    """
     answers = payload.get("answers") if isinstance(payload, dict) else None
     if not isinstance(answers, dict):
         raise LLMError(f"jev: 시작 점검 응답에 answers 가 없습니다: {str(payload)[:200]}")
-    read_choice(answers, "check_choice",
-                tuple(PREFLIGHT_QUESTIONS["check_choice"]["criteria"]))
-    read_boolean(answers, "check_boolean")
+    sky = read_choice(answers, "check_choice",
+                      tuple(PREFLIGHT_QUESTIONS["check_choice"]["criteria"]))
+    p_yes = read_boolean(answers, "check_boolean")
     read_score(answers, "check_score", len(PREFLIGHT_QUESTIONS["check_score"]["criteria"]))
+    if sky["blue"] < 0.5 or p_yes < 0.5:
+        # 422: 다시 물어도 같은 답이 옵니다(`complete()` 가 재시도하지 않습니다).
+        raise PreflightAnswerFlipped(
+            f"jev 422: 시작 점검의 답이 정해진 답과 반대입니다 — 하늘이 파랑 "
+            f"{_pct(sky['blue'])}(정답: 파랑), '시작 점검인가' 예 {_pct(p_yes)}"
+            f"(정답: 예). Jev 답의 확률 방향이 바뀌었을 수 있습니다")
 
 
 # ── 데스크 밖의 호출 ─────────────────────────────────────────────────────────
@@ -1078,7 +1105,19 @@ def map_answers(request: JevRequest, payload: Any, *,
     return out
 
 
+#: `undecided_below` 가 이 값 이상이면 거절합니다. 이 값은 **거부 문턱이기도**
+#: 합니다(`veto_band`: P(거부) ≥ u 일 때만 거부). 1.0 이면 99% 거부도 나가지
+#: 않고, 0.95 면 94% 거부가 "배율 절반" 으로 끝납니다.
+MAX_UNDECIDED_BELOW = 0.95
+
+
 def undecided_threshold(value: Any) -> float:
+    # bool 은 float 로 읽히면 1.0 입니다. YAML 의 `undecided_below: yes`·`true`·
+    # `on` 이 그대로 "모든 거부를 무시" 가 되었습니다. `_prob` 도 bool 을
+    # 확률로 받지 않습니다.
+    if isinstance(value, bool):
+        raise LLMError(f"jev: undecided_below 는 숫자여야 합니다(참/거짓이 아니라 "
+                       f"예: 0.65): {value!r}")
     try:
         u = float(value)
     except (TypeError, ValueError) as exc:
@@ -1092,6 +1131,13 @@ def undecided_threshold(value: Any) -> float:
     if not 0.0 <= u <= 1.0:
         raise LLMError(f"jev: undecided_below 는 0~1 사이의 확률이어야 합니다 "
                        f"(예: 0.65, 끄려면 0): {value!r}")
+    # 1.0 도 같은 결과였습니다. 이 값은 방향의 판단 보류 문턱이면서 **거부
+    # 문턱** 이라, "덜 사고팔게" 올린 값이 거부를 약하게 합니다. 끝까지 올리면
+    # 거부가 사라집니다.
+    if u >= MAX_UNDECIDED_BELOW:
+        raise LLMError(f"jev: undecided_below 가 {MAX_UNDECIDED_BELOW} 이상이면 리스크 "
+                       f"거부가 사실상 나가지 않습니다 — 이 값은 거부 문턱이기도 합니다"
+                       f"(P(거부) ≥ 이 값일 때만 거부): {value!r}")
     return u
 
 
