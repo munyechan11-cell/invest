@@ -23,7 +23,6 @@ from quant.alpha import jev, llm_client
 from quant.alpha.desk import TradingDesk
 from quant.alpha.llm_client import (
     _FALLBACK_PRICE,
-    JEV_DEFAULT_URL,
     LLMClient,
     LLMConfig,
     LLMError,
@@ -33,6 +32,7 @@ from quant.alpha.llm_client import (
 )
 from quant.alpha.seats import ALL_SEATS, SEATS_BY_KEY
 from quant.core.types import Direction
+from tests.conftest import DUMMY_JEV_MCP_URL
 from tests.test_desk import SYM, ScriptedLLM, make_ctx, run_desk
 
 USER = '결정론적으로 계산된 시장 브리프다.\n{"가격": {"종가": 70000}, "기술지표": {"국면": "추세"}}'
@@ -779,7 +779,7 @@ def test_the_handshake_runs_once_and_later_calls_carry_the_session():
     call = fake.tool_calls()[0]
     assert call["params"]["name"] == "jev_evaluate"
     assert set(call["params"]["arguments"]) == {"state", "questions"}
-    assert fake.urls[0] == JEV_DEFAULT_URL
+    assert fake.urls[0] == DUMMY_JEV_MCP_URL      # 운영자 환경의 JEV_MCP_URL
 
     ask_technical(client)                         # 두 번째는 핸드셰이크 없이
     assert fake.methods().count("initialize") == 1
@@ -842,7 +842,7 @@ def test_a_burst_of_dead_session_reports_reopens_once():
     assert client.usage.calls == 1 + 6              # 거절된 호출은 과금되지 않았다
 
 
-def test_base_url_overrides_the_default_endpoint():
+def test_base_url_overrides_the_environment_endpoint():
     fake = FakeJev()
     ask_technical(jev_client(fake, base_url="https://jev.example.test/api/mcp"))
     assert all(u == "https://jev.example.test/api/mcp" for u in fake.urls)
@@ -1272,8 +1272,12 @@ def test_a_wrong_jev_address_is_not_diagnosed_as_a_model_name(base_url):
     assert "NOT_FOUND" in reason                   # 원문도 남깁니다
     if base_url:
         assert "secret" not in reason              # 직접 적은 주소는 옮기지 않습니다
+        assert "지금은 전략의 llm.base_url" in reason
     else:
-        assert JEV_DEFAULT_URL in reason
+        # 코드에 기본 주소가 없습니다 — 고칠 곳(JEV_MCP_URL)을 말하되, 운영자가
+        # 넣은 주소 자체는 화면에 옮기지 않습니다.
+        assert "지금은 JEV_MCP_URL" in reason
+        assert "jev.example.invalid" not in reason and "/api/mcp" not in reason
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1859,7 +1863,8 @@ def test_a_redirect_on_the_tool_call_is_not_retried_either(no_backoff):
 
 
 def test_a_redirect_at_startup_points_at_the_address(no_backoff):
-    """`http://` 로 적은 주소에 Vercel 은 308 → https 로 답합니다."""
+    """옮겨 간 배포는 308 로 답합니다. (원격 `http://` 주소는 이제 클라이언트를
+    만들 때 거절됩니다 — 토큰이 평문으로 나가기 전에.)"""
     posts: list = []
 
     def handler(request):
@@ -1867,7 +1872,7 @@ def test_a_redirect_at_startup_points_at_the_address(no_backoff):
         return httpx.Response(308, headers={"location": "https://jev.example.com/api/mcp"})
 
     desk = TradingDesk(LLMConfig(provider="jev", api_key="k",
-                                 base_url="http://jev.example.com/api/mcp"), memory=False)
+                                 base_url="https://jev.example.test/api/mcp"), memory=False)
     desk.client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     assert run_desk(desk, make_ctx()) == []
     reason = desk.status()["disabled_reason"]

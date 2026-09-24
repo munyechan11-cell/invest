@@ -24,16 +24,21 @@ import httpx
 import pytest
 
 import quant.live.credentials as credentials
+from tests.conftest import DUMMY_JEV_MCP_URL
 from tests.test_jev import FakeJev, desk_answers, no_backoff, seat_calls  # noqa: F401
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "desk_live_check.py"
 
 
-def run_script(monkeypatch, answer) -> tuple[int, str, FakeJev]:
+def run_script(monkeypatch, answer, url=DUMMY_JEV_MCP_URL) -> tuple[int, str, FakeJev]:
     monkeypatch.setattr(credentials, "load_env_file", lambda *a, **k: None)
     for var in ("ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("JEV_API_KEY", "offline-test")
+    if url:
+        monkeypatch.setenv("JEV_MCP_URL", url)
+    else:
+        monkeypatch.delenv("JEV_MCP_URL", raising=False)
     fake = FakeJev(answer)
     original = httpx.AsyncClient.__init__
 
@@ -120,3 +125,15 @@ def test_retries_are_printed_and_qualify_the_speed_verdict(monkeypatch, no_backo
     healthy_code, healthy, _ = run_script(monkeypatch, desk_answers("bullish"))
     assert healthy_code == 0 and "재시도 0회" in healthy
     assert "참고용" not in healthy
+
+
+@pytest.mark.parametrize("url", ["", "http://jev.example.invalid/s3cr3t/mcp"],
+                         ids=["no-address", "cleartext"])
+def test_without_a_usable_address_nothing_is_sent(monkeypatch, url):
+    """주소는 코드에 없습니다 — `.env` 의 `JEV_MCP_URL` 입니다. 없거나 평문
+    원격 주소면 과금되는 호출을 하나도 보내지 않고 이유를 말하며 끝납니다."""
+    code, out, fake = run_script(monkeypatch, desk_answers("bullish"), url=url)
+    assert code == 2, out
+    assert "JEV_MCP_URL" in out, out
+    assert "s3cr3t" not in out
+    assert fake.log == []

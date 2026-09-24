@@ -50,7 +50,7 @@ from datetime import datetime
 from quant.alpha.base import AlphaModel
 from quant.alpha.jev import PreflightAnswerFlipped
 from quant.alpha.llm_client import (
-    JEV_DEFAULT_URL,
+    JEV_URL_ENV,
     LLMClient,
     LLMConfig,
     LLMError,
@@ -99,6 +99,12 @@ from quant.indicators.streaming import (
 )
 
 log = logging.getLogger("quant.alpha.desk")
+
+#: 사전 점검이 Jev 주소 문제를 말할 때 가리키는 곳. **주소 자체는 적지
+#: 않습니다** — 운영자만 정하는 값이고(`JEV_MCP_URL`), 경로·쿼리에 무엇이 들어
+#: 있을지 모릅니다. 이 문장은 사용자 화면(데스크가 꺼진 이유)에도 뜹니다.
+_JEV_ADDRESS = (f"Jev 주소 설정(운영자 환경 변수 {JEV_URL_ENV} — 전략에 "
+                "llm.base_url 이 있으면 그 값)")
 
 
 def _as_client(llm):
@@ -783,7 +789,7 @@ class TradingDesk(AlphaModel):
             provider = getattr(config, "provider", "")
             if provider == "jev":
                 return ("Jev 응답이 없습니다 (사전 점검 시간 초과) — 네트워크나 "
-                        "llm.base_url 을 확인하세요")
+                        f"{_JEV_ADDRESS}을 확인하세요")
             who = billing_hint(provider)[0] if provider else "LLM"
             return (f"{who} 응답이 없습니다 (사전 점검 시간 초과) — 네트워크나 모델 "
                     "설정을 확인하세요")
@@ -826,12 +832,13 @@ class TradingDesk(AlphaModel):
                 # Jev 에는 고를 모델이 없습니다(모델 설정을 보내지도 않습니다).
                 # 404 는 주소가 틀렸거나 배포가 옮겨졌다는 뜻이라, "모델 이름을
                 # 확인하세요" 는 있지도 않은 설정으로 사람을 보냅니다.
-                # 직접 적은 주소는 화면에 옮기지 않습니다 — 쿼리에 무엇이 들어
-                # 있을지 모릅니다. 기본 주소는 코드에 공개된 값입니다.
-                where_url = ("직접 적은 주소를 쓰는 중" if getattr(config, "base_url", "")
-                             else f"기본 주소 {JEV_DEFAULT_URL}")
-                return (f"Jev 주소를 찾을 수 없습니다 — 설정의 llm.base_url 을 "
-                        f"확인하세요({where_url}). ({message[:120]})")
+                # 주소는 화면에 옮기지 않습니다 — 운영자만 정하는 값이고, 경로·
+                # 쿼리에 무엇이 들어 있을지 모릅니다. 코드에는 기본 주소가 없어
+                # 고칠 곳은 둘 중 하나이고, 지금 어느 쪽을 쓰는지만 적습니다.
+                which = ("지금은 전략의 llm.base_url" if getattr(config, "base_url", "")
+                         else f"지금은 {JEV_URL_ENV}")
+                return (f"Jev 주소를 찾을 수 없습니다 — {_JEV_ADDRESS}을 확인하세요"
+                        f"({which}). ({message[:120]})")
             if status == 404:
                 available = await self._list_models()
                 hint = f" 사용 가능: {', '.join(available[:8])}" if available else ""
@@ -861,8 +868,8 @@ class TradingDesk(AlphaModel):
                             "소진이 아니라 짧은 창의 제한이라 기다리면 풀립니다. "
                             "데스크는 저절로 다시 켜지지 않으니 잠시 뒤 봇을 다시 "
                             f"시작하세요. ({message[:200]})")
-                return ("Jev 연결 실패 (MCP 응답 형식·주소) — llm.base_url 과 Jev 배포 "
-                        f"상태를 확인하세요. ({message[:200]})")
+                return (f"Jev 연결 실패 (MCP 응답 형식·주소) — {_JEV_ADDRESS}과 Jev "
+                        f"배포 상태를 확인하세요. ({message[:200]})")
             return (f"LLM 사전 점검 실패: {message[:200]} — AI 데스크의 LLM 키와 한도를 "
                     "확인하세요.")
         except Exception as exc:                      # pragma: no cover - defensive

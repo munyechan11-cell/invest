@@ -326,8 +326,13 @@ universe:
 **Jev 로 도는 데스크 (출하 설정).** `configs/` 의 데스크 설정 6개는 전부
 `llm: {provider: jev, timeout: 30}` 입니다(`kr_desk_gemini.yaml` 의 이름은 옛 이름).
 
-- 키는 `JEV_API_KEY`. 주소 기본값은 `https://jev-mcp-rose.vercel.app/api/mcp`
-  (MCP streamable HTTP)이고 `llm.base_url` 로 바꿀 수 있습니다.
+- 키는 `JEV_API_KEY`, 주소는 `JEV_MCP_URL` — 둘 다 운영자 프로세스 환경(`.env`)에
+  둡니다. 주소는 Jev 의 MCP streamable HTTP 엔드포인트이고 **코드에 기본값이
+  없습니다**. 비어 있으면 데스크가 있는 전략은 시작할 때 `JEV_MCP_URL` 을 말하며
+  멈춥니다. `https://` 만 받습니다(토큰이 평문으로 나가지 않게 — `http://` 는
+  localhost·127.0.0.1·::1 뿐). 전략 설정에 `llm.base_url` 을 적으면 그 값이
+  먼저입니다. 이 주소는 운영자 토큰이 가는 곳이라 **사용자 계정에는 저장할 수
+  없고**, 계정에 저장된 어떤 값도 이 주소를 바꾸지 못합니다.
 - Jev 는 판단 모델이라 **확률만** 돌려줍니다. 좌석 하나가 `jev_evaluate` 한 번이고,
   확신도·배율·보유기간·기대 변동은 코드가 그 확률로 계산합니다
   ([quant/alpha/jev.py](quant/alpha/jev.py)). 근거·무효화 조건 같은 서술 칸은

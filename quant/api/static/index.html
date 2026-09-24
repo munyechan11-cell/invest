@@ -5604,7 +5604,7 @@ function deskWaitReason() {
   if (why) {
     return {kind: "broken", who: "데스크가 꺼졌습니다",
             // 꺼진 이유(why)를 그대로 씁니다. 서버가 이유마다 할 일까지 적어
-            // 둡니다 — 키 거절이면 키, 주소·배포 문제면 llm.base_url, 백테스트면
+            // 둡니다 — 키 거절이면 키, 주소·배포 문제면 JEV_MCP_URL·llm.base_url, 백테스트면
             // 설정. 예전에는 무엇이든 뒤에 "LLM 키와 한도를 확인하세요" 를 붙여,
             // 주소가 틀린 사람도 키를 보러 갔습니다.
             line: why};

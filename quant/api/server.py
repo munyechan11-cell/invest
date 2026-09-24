@@ -63,7 +63,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from starlette.concurrency import run_in_threadpool
 
-from quant.alpha.llm_client import LLMError, MissingKey, billing_hint, usage_tally
+from quant.alpha.llm_client import (
+    BadEndpoint,
+    LLMError,
+    MissingKey,
+    billing_hint,
+    usage_tally,
+)
 from quant.config.loader import load_config
 from quant.config.schema import StrategyConfig
 from quant.core.aio import LazyLock, LazySemaphore
@@ -623,10 +629,15 @@ def user_data_root(state_path: str = "quant_state.db") -> str:
 #: 들어갈 수 없습니다. 여기가 비어 있으면 가입자 한 명이 `QUANT_API_TOKEN` 을
 #: 저장해 전체 배포의 토큰을 정하거나, `QUANT_LIMIT_DAILY_*` 로 모두의 하루
 #: 한도를 바꿉니다 — 후자는 실제로 예전 `/api/limits` 가 하던 일입니다.
+#:
+#: `JEV_MCP_URL` 은 운영자의 `JEV_API_KEY` 가 실려 가는 주소입니다. 계정에 저장할
+#: 수 있으면 가입자가 자기 서버 주소를 넣어 운영자 토큰을 받아 갈 길이 됩니다
+#: (지금 클라이언트는 계정의 값을 읽지 않지만, 저장부터 막아 둡니다).
 _SERVICE_SCOPED = frozenset({
     "OPERATOR_NAME", "QUANT_API_TOKEN", "CORS_ORIGINS",
     "QUANT_LIMIT_DAILY_NOTIONAL", "QUANT_LIMIT_DAILY_ORDERS",
     "QUANT_LIMIT_DAILY_LOSS", "QUANT_LIMIT_DAILY_LOSS_PCT",
+    "JEV_MCP_URL",
 })
 
 #: 계정에 저장할 수 있는 이름 전부. `WRITABLE_KEYS` 에서 빼는 방식이라,
@@ -686,6 +697,13 @@ def _missing_key(exc: Exception) -> bool:
 def _desk_setup_error(name: str, exc: Exception) -> str:
     """키가 **있는데** 데스크를 세우지 못했을 때 사람이 읽을 한 줄 — 원문을 담습니다."""
     who = f"'{name}' 의 " if name else ""
+    if isinstance(exc, BadEndpoint):
+        # Jev 주소(`JEV_MCP_URL`)는 운영자만 정합니다. "전략 설정의 llm 값" 으로
+        # 보내면 사용자는 고칠 수 없는 곳을 찾아다닙니다. 원문은 주소의 호스트
+        # 까지만 담습니다(`jev_endpoint`).
+        return (f"{who}AI 데스크를 준비하지 못했습니다 — 키가 없어서가 아니라 서비스의 "
+                f"Jev 서버 주소 설정 문제입니다. 운영자에게 확인하세요: "
+                f"{one_line_error(exc, 240)}")
     return (f"{who}AI 데스크를 준비하지 못했습니다 — 키가 없어서가 아닙니다. 전략 "
             f"설정의 llm 값을 확인하세요: {one_line_error(exc, 240)}")
 
@@ -2800,6 +2818,9 @@ def create_app(config: StrategyConfig | None = None,
                 # 사용자가 읽어야 하는 문장입니다. 원문이 영어면 무엇을 해야
                 # 하는지 알 수 없으므로, 가장 흔한 원인은 한국어로 바꿔 줍니다.
                 text = str(exc)
+                if isinstance(exc, BadEndpoint):
+                    # 운영자의 Jev 주소 문제 — 사용자의 키와는 무관합니다.
+                    raise HTTPException(503, _desk_setup_error(cfg.name, exc)) from None
                 if "no API key" in text or "api key" in text.lower():
                     # 이미 자기 키를 넣은 사람에게 "키를 넣으세요" 라고 말하면,
                     # 맞는 말도 아니고 고칠 방법도 알려주지 못합니다.

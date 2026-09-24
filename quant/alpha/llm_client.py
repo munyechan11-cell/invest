@@ -255,6 +255,15 @@ class UnsendableKey(LLMError):
     """
 
 
+class BadEndpoint(LLMError):
+    """Jev 주소가 없거나 받을 수 없는 모양이다. 클라이언트를 만들 때 납니다.
+
+    키가 없는 것(`MissingKey`)과 다릅니다. 봇 시작 화면이 이것을 "키를
+    넣으세요" 로 적으면 사람은 멀쩡한 키를 보러 갑니다 — 고칠 것은 운영자의
+    `JEV_MCP_URL` 입니다. 요청은 한 번도 나가지 않았습니다.
+    """
+
+
 def _header_key(config: LLMConfig, tag: str) -> str:
     """헤더에 실을 키. ASCII 가 아닌 글자가 있으면 **보내기 전에** 꼬리표 달린 401.
 
@@ -423,10 +432,111 @@ def _extract_json(text: str) -> dict:
 
 
 # ── Jev 전송 (MCP streamable HTTP, SDK 없이 httpx 만) ────────────────────────
-#: `LLMConfig.base_url` 이 비어 있을 때의 주소.
-JEV_DEFAULT_URL = "https://jev-mcp-rose.vercel.app/api/mcp"
+#: Jev MCP 엔드포인트를 읽는 **운영자 프로세스** 환경 변수.
+#:
+#: 코드에는 기본 주소가 없습니다. 저장소가 공개라 운영자의 서버 주소를 박아
+#: 둘 수 없고, 이 주소는 운영자의 `JEV_API_KEY` 가 실려 가는 곳이라 운영자만
+#: 정합니다 — 사용자 계정에는 저장할 수 없고(`quant/api/server.py` 의
+#: `_SERVICE_SCOPED`), 클라이언트도 계정의 값을 읽지 않습니다(`jev_endpoint`).
+#: 전략 설정의 `llm.base_url`(운영자가 둔 YAML)이 있으면 그쪽이 먼저입니다.
+JEV_URL_ENV = "JEV_MCP_URL"
+#: `http://` 를 받아 주는 호스트 — 이 컴퓨터 안의 테스트·개발 서버뿐입니다.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 #: 우리가 제안하는 MCP 버전. 서버가 initialize 에서 다른 값을 고르면 그 값을 씁니다.
 MCP_PROTOCOL_VERSION = "2025-06-18"
+
+
+def _origin(scheme: str, host: str, port: int | None) -> str:
+    """`scheme://host[:port]` — 경로·쿼리·사용자 정보는 적지 않습니다."""
+    shown = f"[{host}]" if ":" in host else host
+    return f"{scheme}://{shown}" + (f":{port}" if port else "")
+
+
+def jev_endpoint(config: LLMConfig) -> str:
+    """Jev 토큰을 보낼 주소. 없거나 안전하지 않으면 **만들 때** `BadEndpoint`.
+
+    `llm.base_url`(운영자가 둔 전략 YAML) → 프로세스 환경 변수 `JEV_MCP_URL`.
+    다른 곳은 보지 않습니다. 사용자별 자격증명은 `os.environ` 에 올라가지
+    않고(`quant/webapp/registry.py`), `_with_credentials` 가 데스크 설정에
+    넣는 것은 `api_key` 뿐이라 — 계정에 무엇이 저장돼 있든 운영자의 토큰이
+    가는 곳을 바꾸지 못합니다.
+
+    **`https://` 만 받습니다.** `Authorization: Bearer <JEV_API_KEY>` 가 평문으로
+    나가면 안 되기 때문입니다. `http://` 는 이 컴퓨터(localhost·127.0.0.1·::1)
+    에만 씁니다. 주소가 없을 때 첫 심의가 아니라 시작할 때 실패해야, 잘못
+    배포된 서버가 이유를 말하며 멈춥니다.
+
+    오류 문장에는 주소의 **스킴과 호스트까지만** 적습니다. 경로·쿼리·사용자
+    정보에 무엇이 들어 있을지 모릅니다.
+    """
+    configured = (config.base_url or "").strip()
+    source = "llm.base_url" if configured else JEV_URL_ENV
+    raw = configured or os.environ.get(JEV_URL_ENV, "").strip()
+    if not raw:
+        raise BadEndpoint(
+            f"Jev 서버 주소가 없습니다 — 운영자 환경 변수 {JEV_URL_ENV} 에 Jev MCP "
+            f"엔드포인트(https://…)를 넣으세요(.env 도 됩니다). 코드에는 기본 "
+            f"주소가 없습니다. 전략 설정에 llm.base_url 이 있으면 그 값이 먼저입니다")
+    try:
+        parts = urlsplit(raw)
+        scheme = parts.scheme.lower()
+        host = (parts.hostname or "").lower()
+        port = parts.port
+        has_userinfo = parts.username is not None or parts.password is not None
+    except ValueError:
+        scheme, host, port, has_userinfo = "", "", None, False
+    if not host or not scheme:
+        raise BadEndpoint(
+            f"{source} 이 https://호스트/경로 모양의 주소가 아닙니다 — Jev MCP "
+            f"엔드포인트 전체를 적으세요")
+    where = _origin(scheme, host, port)
+    if has_userinfo:
+        raise BadEndpoint(
+            f"{source} 에 사용자 정보(…@)가 들어 있습니다({where}) — Jev 인증은 "
+            f"JEV_API_KEY 토큰이 헤더로 합니다. 주소에서 빼세요")
+    if scheme == "https" or (scheme == "http" and host in _LOOPBACK_HOSTS):
+        return raw
+    raise BadEndpoint(
+        f"{source} 은 https:// 주소만 받습니다(지금 {where}) — JEV_API_KEY 토큰이 "
+        f"평문으로 나가면 안 됩니다. http:// 는 이 컴퓨터 안의 서버"
+        f"(localhost·127.0.0.1·::1)에만 씁니다")
+
+
+class _JevRequestLogFilter(logging.Filter):
+    """httpx 의 요청 로그에서 Jev 주소를 **호스트까지만** 남긴다.
+
+    httpx 는 요청마다 INFO 로 `HTTP Request: POST <전체 URL> "HTTP/1.1 200 OK"`
+    를 적습니다. `quant live`·`quant serve` 의 기본 로그 수준이 INFO 라, 운영자가
+    `JEV_MCP_URL` 의 경로·쿼리에 둔 것이 요청마다 로그 파일·수집기로 갔습니다.
+    Jev 클라이언트가 만들어질 때 그 호스트를 등록하고, 그 호스트로 가는 요청의
+    URL 만 `scheme://host/…` 로 바꿉니다. 다른 요청의 로그는 그대로입니다.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hosts: set[str] = set()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if not self.hosts or not isinstance(args, tuple) or len(args) < 2:
+            return True
+        url = args[1]
+        host = str(getattr(url, "host", "") or "").lower()
+        if host and host in self.hosts:
+            shown = _origin(str(getattr(url, "scheme", "") or "https"), host,
+                            getattr(url, "port", None))
+            record.args = (args[0], f"{shown}/…", *args[2:])
+        return True
+
+
+_JEV_REQUEST_LOG = _JevRequestLogFilter()
+logging.getLogger("httpx").addFilter(_JEV_REQUEST_LOG)
+
+
+def _hide_jev_path_in_logs(endpoint: str) -> None:
+    host = (urlsplit(endpoint).hostname or "").lower()
+    if host:
+        _JEV_REQUEST_LOG.hosts.add(host)
 
 
 def _sse_messages(text: str):
@@ -603,13 +713,14 @@ def _jev_raise_for_status(response: httpx.Response) -> None:
     없는 오류가 나서 일시 장애처럼 세 번 재시도했고, 사전 점검은 "JSON 이 아닌
     응답 (308): " 로 끝났습니다 — 어디로 옮겨 갔는지는 말하지 않고. 같은
     주소로 다시 보내면 같은 3xx 가 오므로 "jev 404"(재시도 없음)로 적어,
-    사전 점검이 llm.base_url 을 가리키게 합니다.
+    사전 점검이 Jev 주소 설정(`JEV_MCP_URL`·llm.base_url)을 가리키게 합니다.
     """
     status = response.status_code
     if 300 <= status < 400:
         where = _redirect_target(response.headers.get("location", ""))
         raise LLMError(f"jev 404: 엔드포인트가 옮겨졌습니다 ({status} → {where}) — "
-                       "llm.base_url 을 확인하세요")
+                       f"Jev 주소({JEV_URL_ENV}, 전략에 있으면 llm.base_url)를 "
+                       "확인하세요")
     if status in (402, 429):
         raise _jev_failure(_jev_error_text(response), bad_request=False,
                            status=response.status_code)
@@ -722,7 +833,14 @@ class LLMClient:
         self._jev_connect_error: Exception | None = None
         self._jev_ids = itertools.count(1)
         self._undecided_below = 0.65
+        self._jev_endpoint = ""
         if config.provider == "jev":
+            # 주소도 시작할 때 정합니다. 없거나 `https://` 가 아니면 여기서
+            # `BadEndpoint` — 첫 심의에서 16석이 같은 이유로 실패하는 것보다,
+            # 봇 시작이 "JEV_MCP_URL 을 넣으세요" 로 끝나는 편이 낫습니다.
+            # 이후 호출은 이 값만 씁니다(환경이 바뀌어도 도중에 옮겨 가지 않음).
+            self._jev_endpoint = jev_endpoint(config)
+            _hide_jev_path_in_logs(self._jev_endpoint)
             from quant.alpha.jev import DEFAULT_UNDECIDED_BELOW, undecided_threshold
             # 잘못 적은 설정은 첫 심의가 아니라 시작할 때 드러나야 합니다.
             self._undecided_below = undecided_threshold(
@@ -923,7 +1041,8 @@ class LLMClient:
         return jev.map_answers(request, payload, undecided_below=self._undecided_below)
 
     def _jev_url(self) -> str:
-        return self.config.base_url or JEV_DEFAULT_URL
+        """만들 때 확인해 둔 주소(`jev_endpoint`). 호출마다 다시 읽지 않습니다."""
+        return self._jev_endpoint
 
     async def _jev_post(self, body: dict, session: str = "",
                         protocol: str = "") -> httpx.Response:

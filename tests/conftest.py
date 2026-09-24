@@ -10,6 +10,22 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+#: 테스트가 쓰는 Jev 주소. `.invalid` 는 어디로도 해석되지 않는 예약 도메인이라,
+#: 가짜 전송을 빠뜨린 테스트가 있어도 요청은 어느 서버에도 닿지 않습니다.
+#: 운영자의 진짜 주소는 코드에도 테스트에도 두지 않습니다(저장소가 공개).
+DUMMY_JEV_MCP_URL = "https://jev.example.invalid/api/mcp"
+
+
+@pytest.fixture(autouse=True)
+def dummy_jev_endpoint(monkeypatch):
+    """Jev 클라이언트는 주소 없이는 만들어지지 않습니다(코드에 기본값이 없음).
+
+    개발자 셸에 진짜 `JEV_MCP_URL` 이 있어도 **덮어씁니다** — 테스트가 운영
+    서버를 가리키는 일이 없게. 주소가 없을 때를 보는 테스트는 스스로 지웁니다.
+    """
+    monkeypatch.setenv("JEV_MCP_URL", DUMMY_JEV_MCP_URL)
+
+
 @pytest.fixture(autouse=True)
 def isolate_process_local_toss_rate_gates():
     """A venue cooldown is process-global in production, not test-global."""
@@ -45,10 +61,10 @@ def shipped_configs(mode=None) -> list:
             "KIS_ACCOUNT_PRD_CD", "KIS_PAPER_ACCOUNT_PRD_CD",
             "BINANCE_KEY", "BINANCE_SECRET", "TELEGRAM_BOT_TOKEN",
             "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY",
-            "JEV_API_KEY")
+            "JEV_API_KEY", "JEV_MCP_URL")
     restore = {k: os.environ.get(k) for k in keys}
     for k in keys:
-        os.environ.setdefault(k, "x")
+        os.environ.setdefault(k, DUMMY_JEV_MCP_URL if k == "JEV_MCP_URL" else "x")
     try:
         out = []
         for path in sorted((ROOT / "configs").glob("*.yaml")):

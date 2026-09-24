@@ -26,6 +26,7 @@ import pytest
 from quant.cli import _load
 from quant.live.credentials import VENUES_BY_ID
 from quant.webapp.registry import _data_wiring, _flow_wiring, required_secrets
+from tests.conftest import DUMMY_JEV_MCP_URL
 
 PAPER = ("configs/kr_kis_paper.yaml", "configs/us_kis_paper.yaml")
 KIS_CONFIGS = [str(p) for p in sorted(Path("configs").glob("*.yaml"))
@@ -42,6 +43,7 @@ def test_quotes_never_come_from_the_mock_host(path, monkeypatch):
                 "KIS_PAPER_ACCOUNT_NO", "TELEGRAM_BOT_TOKEN",
                 "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY", "JEV_API_KEY"):
         monkeypatch.setenv(var, "x")
+    monkeypatch.setenv("JEV_MCP_URL", DUMMY_JEV_MCP_URL)
     config = _load(path)
     for label, section in (("data", config.data), ("flow", config.flow)):
         if section.provider != "kis":
@@ -82,6 +84,7 @@ def test_the_web_wiring_agrees_with_the_yaml(path, monkeypatch):
                 "KIS_PAPER_APP_SECRET", "KIS_PAPER_ACCOUNT_NO",
                 "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY", "JEV_API_KEY"):
         monkeypatch.setenv(var, "x")
+    monkeypatch.setenv("JEV_MCP_URL", DUMMY_JEV_MCP_URL)
     config = _load(path)
     assert _data_wiring(config).args["app_key"] == "KIS_APP_KEY"
     if config.flow.provider == "kis":
@@ -98,6 +101,7 @@ def test_a_live_config_still_demands_the_real_account_number(monkeypatch):
     for var in ("KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO",
                 "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY", "JEV_API_KEY"):
         monkeypatch.setenv(var, "x")
+    monkeypatch.setenv("JEV_MCP_URL", DUMMY_JEV_MCP_URL)
     needs = required_secrets(_load("configs/kr_desk_gemini.yaml"))
     assert "KIS_ACCOUNT_NO" in needs
 

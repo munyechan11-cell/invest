@@ -1168,7 +1168,11 @@ live` 는 거절하고, 모르는 값도 추측하지 않고 거절합니다.
 
 - **키** `JEV_API_KEY` (운영자 프로세스 환경). 없으면 데스크가 있는 전략은 조립되지
   않고 시작이 503 으로 끝납니다. CI 의 `quant validate` 도 이 이름을 넣고 돕니다.
-- **전송** 기본 주소 `https://jev-mcp-rose.vercel.app/api/mcp`(`llm.base_url` 로 변경),
+- **전송** 주소는 운영자 환경 변수 `JEV_MCP_URL`(전략에 `llm.base_url` 이 있으면
+  그쪽). **코드에 기본 주소가 없습니다**(저장소가 공개라 개인 서버 주소를 뺐습니다)
+  — 없으면 클라이언트를 만들 때 `BadEndpoint` 로 멈추고, `https://` 가 아닌 원격
+  주소도 거절합니다(`http://` 는 localhost·127.0.0.1·::1 만). 계정에는 저장할 수
+  없습니다(`_SERVICE_SCOPED`). 오류·로그에는 주소의 호스트까지만 적습니다.
   MCP streamable HTTP 를 httpx 로 직접. **initialize → notifications/initialized →
   tools/call 과 세션 헤더는 MCP 스펙에서 가져온 가정이고, 진짜 토큰으로는 아직
   확인하지 않았습니다.** 첫 실측은 `python scripts/desk_live_check.py --provider jev`.

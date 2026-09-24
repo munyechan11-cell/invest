@@ -7,9 +7,11 @@
     python scripts/desk_live_check.py                 # 기본 (1종목, 토론 1라운드)
     python scripts/desk_live_check.py --rounds 2      # 더 깊게
     python scripts/desk_live_check.py --model claude-sonnet-5   # 더 싸게
-    python scripts/desk_live_check.py --provider jev  # 출하 설정과 같은 Jev (JEV_API_KEY)
+    python scripts/desk_live_check.py --provider jev  # 출하 설정과 같은 Jev
+                                                      # (JEV_API_KEY + JEV_MCP_URL)
 
 Jev 는 16석을 좌석당 호출 한 번으로 판단합니다(종목당 16회 + 시작 때 점검 1회).
+Jev 의 주소는 코드에 없습니다 — `.env`(또는 환경)의 `JEV_MCP_URL` 에서 읽습니다.
 글을 쓰지 않고 확률만 돌려주므로 서술 칸은 확률을 적은 정해진 문장이고,
 `--max-tokens` 와 `--model` 은 쓰지 않습니다. **실제 호출이라 과금됩니다.**
 
@@ -34,7 +36,7 @@ from quant.live.credentials import load_env_file
 load_env_file()
 
 from quant.alpha.desk import TradingDesk
-from quant.alpha.llm_client import DEFAULT_MODELS, LLMConfig
+from quant.alpha.llm_client import DEFAULT_MODELS, JEV_URL_ENV, BadEndpoint, LLMConfig
 from quant.core.account import Portfolio
 from quant.core.clock import SimClock
 from quant.core.context import Context
@@ -134,6 +136,14 @@ async def run(args: argparse.Namespace) -> int:
     await feed.backfill([symbol], start, end)
 
     if provider == "jev":
+        # 주소는 출하 설정과 같은 곳 — 환경(.env)의 `JEV_MCP_URL` — 에서 읽습니다.
+        # 코드에는 기본 주소가 없습니다. 없으면 과금되는 호출을 하나도 보내지
+        # 않고 여기서 끝냅니다. `base_url` 로 옮겨 적지 않는 이유: 출하 설정도
+        # 적지 않고, 그래야 오류 문장이 고칠 곳(JEV_MCP_URL)을 가리킵니다.
+        if not os.environ.get(JEV_URL_ENV, "").strip():
+            print(f"{JEV_URL_ENV} 가 없습니다 — .env 에 Jev MCP 엔드포인트(https://…)"
+                  "를 넣으세요.", file=sys.stderr)
+            return 2
         # 출하 설정(`llm: {provider: jev, timeout: 30}`)과 같게. 토큰 한도·온도는
         # Jev 에 뜻이 없어 넘기지 않습니다.
         llm = LLMConfig(provider="jev", model=model, timeout=30.0,
@@ -143,16 +153,21 @@ async def run(args: argparse.Namespace) -> int:
         llm = LLMConfig(provider=provider, model=model, max_tokens=args.max_tokens,
                         temperature=0.2, requests_per_minute=args.rpm,
                         max_retries=5 if args.rpm else 3)
-    desk = TradingDesk(
-        llm,
-        flow_feed=feed,
-        debate_rounds=args.rounds,
-        risk_debate_rounds=args.risk_rounds,
-        max_symbols_per_run=1,
-        deadline_s=args.deadline,
-        allow_in_backtest=True,
-        seats=[x.strip() for x in args.seats.split(",") if x.strip()] or None,
-    )
+    try:
+        desk = TradingDesk(
+            llm,
+            flow_feed=feed,
+            debate_rounds=args.rounds,
+            risk_debate_rounds=args.risk_rounds,
+            max_symbols_per_run=1,
+            deadline_s=args.deadline,
+            allow_in_backtest=True,
+            seats=[x.strip() for x in args.seats.split(",") if x.strip()] or None,
+        )
+    except BadEndpoint as exc:
+        # `http://` 인 원격 주소 등 — 토큰을 싣기 전에 거절했습니다.
+        print(f"데스크를 만들 수 없습니다: {exc}", file=sys.stderr)
+        return 2
     await desk.on_start(ctx)
     # 시작 점검(Jev 는 작은 jev_evaluate 한 번)은 종목 심의와 따로 적습니다 — 합쳐 적으면
     # "LLM 16회" 옆의 비용이 17회분이 됩니다.

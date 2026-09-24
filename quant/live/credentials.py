@@ -198,6 +198,11 @@ OPERATOR_FIELDS = [
     # 출하된 데스크 설정은 전부 `provider: jev` 입니다. 이 값이 없으면 데스크가
     # 세워지지 않고, 데스크가 있는 전략은 시작되지 않습니다.
     ("JEV_API_KEY", "Jev API 토큰 (AI 데스크 16석이 이 토큰으로 판단합니다)", False),
+    # 위 토큰이 실려 가는 곳입니다. 코드에는 기본 주소가 없어서(저장소가 공개)
+    # 운영자가 여기 넣습니다. **계정에는 저장할 수 없습니다** — 사용자가 이 값을
+    # 정하면 운영자의 토큰을 자기 서버로 받을 수 있으므로, server.py 가
+    # `_SERVICE_SCOPED` 로 막습니다.
+    ("JEV_MCP_URL", "Jev 서버 주소 (MCP 엔드포인트, https://…) — 운영자 전용", False),
     ("TELEGRAM_BOT_TOKEN", "텔레그램 봇 토큰 (알림, 선택)", False),
     ("TELEGRAM_CHAT_ID", "텔레그램 챗 ID (알림, 선택)", False),
 ]
