@@ -190,9 +190,19 @@ class LLMConfig:
         return self.model or DEFAULT_MODELS.get(self.provider, "")
 
     def resolved_key(self) -> str:
-        if self.api_key:
-            return self.api_key
-        return os.environ.get(KEY_ENV.get(self.provider, ""), "")
+        """설정의 키, 없으면 환경 변수. **앞뒤 공백·줄바꿈은 뗍니다.**
+
+        호스팅 대시보드에 붙여 넣거나 파일에서 읽은 비밀에는 끝에 줄바꿈이
+        붙어 오는 일이 흔하고, 따옴표 친 `.env` 값은 끝 공백·탭을 지키고
+        있습니다. 그대로 두면 `Bearer <토큰>\\n` 을 h11 이 보내기 전에 거절하는데,
+        그 오류 문장(`Illegal header value b'Bearer …'`)에 토큰이 **통째로**
+        들어가 좌석 오류·사전 점검 사유·`/api/evaluate` 로 가입자에게 보였습니다.
+        공백뿐인 키는 없는 키입니다(`MissingKey`).
+        """
+        own = (self.api_key or "").strip()
+        if own:
+            return own
+        return os.environ.get(KEY_ENV.get(self.provider, ""), "").strip()
 
 
 #: 제공자 → 키를 읽는 환경 변수(설정 화면의 칸 이름과 같습니다).
@@ -277,16 +287,82 @@ def _header_key(config: LLMConfig, tag: str) -> str:
     401 은 재시도 대상이 아니고(`_NO_RETRY_STATUS`), 요청을 보내지 않았으니
     청구도 없습니다. 글자 **위치와 코드포인트만** 적습니다 — 키의 다른 글자는
     적지 않습니다.
+
+    **ASCII 라도 보이는 글자(0x21~0x7E)만 받습니다.** 예전에는 ASCII 가 아닌
+    글자만 봐서, 키 안의 공백·탭·줄바꿈·\\x0b 같은 제어 문자가 h11 까지 갔고,
+    h11 의 `LocalProtocolError("Illegal header value b'Bearer <토큰>…'")` 가
+    토큰을 통째로 오류 문장에 실었습니다. 앞뒤 공백은 `resolved_key()` 가 이미
+    뗐으니, 여기 걸리는 것은 키 **안쪽** 의 글자입니다. 어떤 제공자의 키에도
+    공백이나 제어 문자는 없습니다.
     """
     key = config.resolved_key()
     for i, ch in enumerate(key):
-        if not ch.isascii():
-            name = KEY_ENV.get(config.provider) or "API 키"
-            raise UnsendableKey(
-                f"{tag} 401: {name} 의 {i + 1}번째 글자가 ASCII 가 아닙니다"
-                f"(U+{ord(ch):04X} — 보이지 않는 공백·둥근 따옴표 등). 요청은 "
-                f"보내지 않았습니다 — 키를 다시 붙여 넣으세요")
+        if "\x21" <= ch <= "\x7e":
+            continue
+        name = KEY_ENV.get(config.provider) or "API 키"
+        what = ("ASCII 가 아닙니다(U+{:04X} — 보이지 않는 공백·둥근 따옴표 등)"
+                if not ch.isascii() else
+                "공백이나 제어 문자입니다(U+{:04X} — 공백·탭·줄바꿈 등)").format(ord(ch))
+        raise UnsendableKey(
+            f"{tag} 401: {name} 의 {i + 1}번째 글자가 {what}. 요청은 보내지 "
+            f"않았습니다 — 키를 다시 붙여 넣으세요")
     return key
+
+
+#: 이보다 짧은 글은 오류 문장에서 지우지 않습니다. 진짜 키는 이보다 길고,
+#: 테스트의 `api_key="k"` 같은 값을 지우면 멀쩡한 문장이 부서집니다.
+_MIN_SECRET_LEN = 8
+
+
+def _secret_forms(key: str) -> tuple[str, ...]:
+    """오류 문장에서 찾아 지울 키의 모양들 — 그대로, 그리고 `repr` 로 이스케이프된 것.
+
+    h11 은 헤더 값을 **바이트 repr** 로 적습니다(`b'Bearer abc\\x0b…'`). 긴 것부터
+    지워야 짧은 모양이 긴 모양의 일부만 지우고 나머지를 남기지 않습니다.
+    """
+    forms: set[str] = set()
+    for form in (key, key.strip()):
+        if len(form) < _MIN_SECRET_LEN:
+            continue
+        forms.add(form)
+        forms.add(repr(form)[1:-1])
+        forms.add(repr(form.encode("utf-8", "backslashreplace"))[2:-1])
+    return tuple(sorted(forms, key=len, reverse=True))
+
+
+def _scrub(text: str, forms: tuple[str, ...]) -> str:
+    for form in forms:
+        text = text.replace(form, "***")
+    return text
+
+
+def _mentions(exc: BaseException | None, forms: tuple[str, ...]) -> bool:
+    """예외 사슬(`__cause__`·`__context__`) 어딘가의 글에 키가 있는가."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen and forms:
+        seen.add(id(exc))
+        text = str(exc)
+        if any(form in text for form in forms):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _scrubbed_copy(exc: BaseException, forms: tuple[str, ...], depth: int = 0) -> Exception:
+    """키를 지운 **새** 예외. 형과 `__cause__` 사슬(꼬리표를 읽는 쪽)을 지킵니다.
+
+    원래 예외는 사슬에 남기지 않습니다 — `log.exception` 이 사슬을 그대로
+    적기 때문입니다. 한 인자로 만들 수 없는 형(`UnicodeEncodeError` 등)은
+    `LLMError` 로 바꿉니다(`_shared_failure` 와 같은 규칙).
+    """
+    try:
+        clean: Exception = type(exc)(_scrub(str(exc), forms))
+    except Exception:  # noqa: BLE001 — 생성자가 다른 형
+        clean = LLMError(_scrub(_describe(exc), forms))
+    cause = exc.__cause__
+    if cause is not None and depth < 4:
+        clean.__cause__ = _scrubbed_copy(cause, forms, depth + 1)
+    return clean
 
 
 def _raise_for_status(response: httpx.Response, provider: str) -> None:
@@ -450,6 +526,27 @@ def _origin(scheme: str, host: str, port: int | None) -> str:
     """`scheme://host[:port]` — 경로·쿼리·사용자 정보는 적지 않습니다."""
     shown = f"[{host}]" if ":" in host else host
     return f"{scheme}://{shown}" + (f":{port}" if port else "")
+
+
+def _plain_loopback(endpoint: str) -> bool:
+    """`http://` 로 이 컴퓨터 안의 서버에 가는가 — 프록시를 **쓰면 안 되는** 주소.
+
+    httpx 는 기본으로 환경의 `HTTP_PROXY`·`ALL_PROXY`(macOS 는 시스템 프록시
+    설정까지)를 따르고, localhost 도 `NO_PROXY` 가 없으면 프록시로 보냅니다.
+    그러면 `http://127.0.0.1…` 요청이 **평문 그대로** 프록시로 가고,
+    `Authorization: Bearer <토큰>` 도 같이 갑니다 — `jev_endpoint` 가 평문을
+    이 컴퓨터 안에만 허락한 이유가 사라집니다. `https://` 는 프록시를 거쳐도
+    CONNECT 터널 안이라 그대로 둡니다(회사 프록시·`SSL_CERT_FILE` 이 필요한
+    운영자가 있습니다).
+    """
+    if not endpoint:
+        return False
+    try:
+        parts = urlsplit(endpoint)
+        host = (parts.hostname or "").lower()
+    except ValueError:              # 부서진 주소 — 요청할 때 제 오류로 드러납니다
+        return False
+    return parts.scheme.lower() == "http" and host in _LOOPBACK_HOSTS
 
 
 def jev_endpoint(config: LLMConfig) -> str:
@@ -811,7 +908,6 @@ class LLMClient:
         self.usage = LLMUsage()
         self._limiter = _RateLimiter(config.requests_per_minute)
         self.usage.model = config.resolved_model()
-        self._client = httpx.AsyncClient(timeout=config.timeout)
         if not config.resolved_key():
             raise MissingKey(
                 f"no API key for provider {config.provider!r} — set the matching env var"
@@ -845,9 +941,44 @@ class LLMClient:
             # 잘못 적은 설정은 첫 심의가 아니라 시작할 때 드러나야 합니다.
             self._undecided_below = undecided_threshold(
                 (config.extra or {}).get("undecided_below", DEFAULT_UNDECIDED_BELOW))
+        # 주소를 정한 **뒤에** 만듭니다 — 프록시를 쓸지가 주소에 달렸습니다.
+        # 다른 제공자도 `base_url` 이 이 컴퓨터 안의 `http://` 면 같습니다.
+        endpoint = self._jev_endpoint or (config.base_url or "").strip()
+        self._client = httpx.AsyncClient(
+            timeout=config.timeout, trust_env=not _plain_loopback(endpoint))
+
+    def _secret_forms(self) -> tuple[str, ...]:
+        """이 클라이언트가 보낼 수 있는 키의 모양들 — 설정의 키와 환경의 키 **둘 다**.
+
+        호출마다 읽습니다(설정 화면이 환경의 키를 바꿉니다). 한쪽만 보면 놓칩니다:
+        설정의 키가 공백뿐이면 `resolved_key()` 는 환경의 키를 보냅니다.
+        """
+        env = os.environ.get(KEY_ENV.get(self.config.provider, ""), "")
+        forms = {form for raw in (self.config.api_key or "", env)
+                 for form in _secret_forms(raw)}
+        return tuple(sorted(forms, key=len, reverse=True))
 
     async def complete(self, system: str, user: str, schema: dict | None = None) -> Any:
-        """Return parsed JSON when `schema` is given, else raw text."""
+        """Return parsed JSON when `schema` is given, else raw text.
+
+        **여기서 나가는 예외와 로그에는 키가 없습니다.** 실패 문장은 좌석 오류·
+        사전 점검 사유·`/api/evaluate` 를 거쳐 가입자 화면까지 갑니다. 거기에
+        운영자의 토큰이 실린 적이 있습니다(h11 의 `Illegal header value
+        b'Bearer <토큰>\\n'`). 그 길은 `_header_key` 가 막았고, 이것은 다음
+        길(키를 되울리는 서버 오류 본문 등)을 위한 두 번째 그물입니다.
+        """
+        try:
+            return await self._complete(system, user, schema)
+        except Exception as exc:  # noqa: BLE001 — 형은 그대로, 글만 바꿉니다
+            forms = self._secret_forms()
+            if not _mentions(exc, forms):
+                raise
+            clean = _scrubbed_copy(exc, forms)
+        # except 밖에서 올립니다 — 안에서 올리면 원래 예외가 `__context__` 로
+        # 따라붙어 traceback 에 키가 다시 적힙니다.
+        raise clean
+
+    async def _complete(self, system: str, user: str, schema: dict | None) -> Any:
         last: Exception | None = None
         budget = self.config.max_tokens
         for attempt in range(self.config.max_retries):
@@ -906,7 +1037,8 @@ class LLMClient:
                 # 들어가, 세지 않으면 "제공자가 느리다" 로 읽힙니다.
                 log.info("%s 호출 재시도 %d/%d — %.1f초 뒤 (%s)",
                          self.config.provider, attempt + 2, self.config.max_retries,
-                         delay, one_line_error(_describe(exc), 160))
+                         delay, one_line_error(
+                             _scrub(_describe(exc), self._secret_forms()), 160))
                 self.usage.retry()
                 await asyncio.sleep(delay)
         raise LLMError(f"LLM call failed after {self.config.max_retries} attempts: "
@@ -1182,7 +1314,8 @@ class LLMClient:
                 if _session_lost(text):
                     self._jev_drop(generation)
                     if attempt == 0:
-                        log.info("jev 세션이 만료되어 다시 엽니다: %s", text[:120])
+                        log.info("jev 세션이 만료되어 다시 엽니다: %s",
+                                 _scrub(text, self._secret_forms())[:120])
                         continue
                     raise LLMError(f"jev 503: 세션을 다시 열었지만 또 잃었습니다 "
                                    f"(tools/call): {text[:300]}")

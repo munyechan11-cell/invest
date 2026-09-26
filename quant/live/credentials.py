@@ -269,6 +269,14 @@ def value_rejection_reason(key: str, value: str) -> str:
                 return (f"값의 {i + 1}번째 글자가 ASCII 가 아닙니다(U+{ord(ch):04X} — "
                         f"보이지 않는 공백·둥근 따옴표 등). 키는 영문·숫자·기호로만 "
                         f"되어 있습니다 — 다시 붙여 넣으세요")
+            # ASCII 라도 보이는 글자(0x21~0x7E)만. 공백·탭·\x0b·\x0c 같은 제어
+            # 문자는 헤더에 실을 수 없고, 예전에는 그 거절 문장(h11 의 "Illegal
+            # header value b'Bearer <키>…'")이 키를 통째로 로그에 적었습니다.
+            # 어떤 거래소·LLM 의 키에도 공백이나 제어 문자는 없습니다.
+            if not "\x21" <= ch <= "\x7e":
+                return (f"값의 {i + 1}번째 글자가 공백이나 제어 문자입니다"
+                        f"(U+{ord(ch):04X} — 공백·탭 등). 키는 영문·숫자·기호로만 "
+                        f"되어 있습니다 — 다시 붙여 넣으세요")
     return ""
 
 

@@ -3705,7 +3705,14 @@ _SECRET_HINTS = ("key", "secret", "token", "password", "passphrase")
 
 #: 어떤 거래소 배선표에도 없지만 사람을 가리키는 필드들. 알림은 사람의
 #: 텔레그램이고, `api_key` 는 AI 데스크 슬롯에 들어가는 LLM 키입니다.
-_ALWAYS_SECRET = frozenset({"telegram_bot_token", "telegram_chat_id", "api_key"})
+#:
+#: `base_url` 은 AI 데스크 슬롯의 주소입니다. Jev 에서는 운영자의 `JEV_API_KEY`
+#: 가 실려 가는 곳이고(`jev_endpoint`), 오류 문장·로그에는 호스트까지만
+#: 적습니다. 그런데 `/api/config` 가 운영자 YAML 의 `llm.base_url` 을 경로·
+#: 쿼리까지 가입자 누구에게나 돌려줬습니다. 이 이름을 쓰는 설정 자리는 LLM
+#: 슬롯뿐입니다.
+_ALWAYS_SECRET = frozenset({"telegram_bot_token", "telegram_chat_id", "api_key",
+                            "base_url"})
 
 #: 설정 트리에서 배선 파라미터가 사는 자리.
 _WIRING_SECTIONS = ("broker", "data", "flow")
