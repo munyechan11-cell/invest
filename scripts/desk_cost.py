@@ -61,6 +61,10 @@ MODELS = [
     Model("gemini-3.5-flash", 1.50, 9.00),
     Model("gemini-3.7-flash", 0.75, 3.75, "2026-12-31까지, 이후 $1.50/$7.50"),
     Model("gemini-3.5-flash-lite", 0.30, 2.50),
+    # 운영자가 알려 준 단가(2026-09-24). 출력은 무료 — Jev 는 확률만 돌려줍니다.
+    # 입력 토큰은 위 Gemini 실측을 그대로 쓴 근사치입니다(Jev 는 영어 역할·용어집·
+    # 질문을 보내고 서버 쪽 프롬프트가 호출마다 약 400 토큰 붙습니다).
+    Model("typesafe-ai/jev", 0.042, 0.0, "출력 무료, 입력 토큰은 근사"),
 ]
 BY_NAME = {m.name: m for m in MODELS}
 
@@ -87,9 +91,24 @@ def cost(model: Model, tin: int, tout: int) -> float:
     return tin / 1e6 * model.input_per_m + tout / 1e6 * model.output_per_m
 
 
+def usd(x: float) -> str:
+    """금액을 **읽을 수 있는** 자릿수로. Jev 는 심의 한 번이 $0.001 안팎입니다.
+
+    예전에는 `.3f`·`.2f` 로 고정해 Jev 행이 "$0.001 / $0.01 / $0.00" 이었습니다 —
+    하루 비용이 공짜처럼 읽히고, 곱해 볼 수도 없었습니다.
+    """
+    if x >= 1:
+        return f"${x:,.2f}"
+    if x >= 0.01:
+        return f"${x:.3f}"
+    return f"${x:.5f}"
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="데스크 비용 계산기")
-    p.add_argument("--debate-rounds", type=int, default=2)
+    # 출하 데스크 설정은 전부 토론 1라운드(16회)입니다. 2 를 기본으로 두면 아무도
+    # 돌리지 않는 18회 구성의 값을 보여 줍니다.
+    p.add_argument("--debate-rounds", type=int, default=1)
     p.add_argument("--risk-rounds", type=int, default=1)
     p.add_argument("--hold-bars", type=int, default=12,
                    help="한 포지션을 몇 봉 들고 있는가 (왕복 비용 = 이 값 × 심의 단가)")
@@ -114,8 +133,7 @@ def main() -> int:
         one = cost(m, tin, tout)
         trip = one * args.hold_bars * args.symbols
         daily = one * args.bars_per_day * args.symbols
-        print(f"  {m.name:<26}{'$' + format(one, '.3f'):>10}"
-              f"{'$' + format(trip, '.2f'):>10}{'$' + format(daily, '.2f'):>10}"
+        print(f"  {m.name:<26}{usd(one):>10}{usd(trip):>10}{usd(daily):>10}"
               f"   {m.note}")
 
     print(f"\n{BAR}\n  ② 혼합 — 분석·토론은 싼 모델, 판정 4석만 큰 모델\n{BAR}")
@@ -133,8 +151,7 @@ def main() -> int:
         trip = one * args.hold_bars * args.symbols
         daily = one * args.bars_per_day * args.symbols
         label = f"{cheap} / {strong}"
-        print(f"  {label:<44}{'$' + format(one, '.3f'):>10}"
-              f"{'$' + format(trip, '.2f'):>10}{'$' + format(daily, '.2f'):>10}")
+        print(f"  {label:<44}{usd(one):>10}{usd(trip):>10}{usd(daily):>10}")
 
     print(f"\n{BAR}")
     print(f"  '왕복' = 한 포지션을 {args.hold_bars}봉 보유 × {args.symbols}종목.")
@@ -145,7 +162,8 @@ def main() -> int:
     print("    · cadence_bars 를 올린다 (매 봉 대신 N봉마다 심의)")
     print(f"    · seats 로 분석 좌석을 줄인다 (8석 → 3석이면 입력 {STAGE_INPUT['analyst'][1]:,}"
           f" 토큰 중 약 {STAGE_INPUT['analyst'][1]*5//8:,} 절약)")
-    print("    · debate_rounds 를 1로 낮춘다")
+    if args.debate_rounds > 1:
+        print("    · debate_rounds 를 1로 낮춘다")
     print("    · max_symbols_per_run 을 줄인다")
     print("\n  가격은 2026-08 기준이며 바뀝니다. 실제 청구 전 제공사 페이지로 확인하세요.")
     print(BAR)

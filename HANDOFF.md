@@ -1155,3 +1155,53 @@ live` 는 거절하고, 모르는 값도 추측하지 않고 거절합니다.
 `tests/conftest.shipped_configs(mode=...)` 가 `configs/` 를 읽어 한 곳에서
 답합니다 — `strategy_catalog()` 과 같은 규칙입니다.
 
+---
+
+## AI 데스크를 Jev 로 (2026-09-24)
+
+출하 데스크 설정 6개 — 실거래 `kr_desk_gemini`·`kr_toss`·`us_toss`·`live_crypto`,
+연습 `kr_kis_paper`·`us_kis_paper` — 가 `llm: {provider: jev, timeout: 30}` 로
+돕니다. `decision_llm` 은 없습니다(Jev 에 모델 등급이 없고, 없으면 판정석도 같은
+클라이언트). 전략 `name` 과 파일 이름은 그대로입니다 — 저장된 상태가 `name` 에
+묶여 있고, `kr_desk_gemini` 의 "gemini" 는 옛 이름입니다. 16석 구조와 단계 순서도
+그대로입니다.
+
+- **키** `JEV_API_KEY` (운영자 프로세스 환경). 없으면 데스크가 있는 전략은 조립되지
+  않고 시작이 503 으로 끝납니다. CI 의 `quant validate` 도 이 이름을 넣고 돕니다.
+- **전송** 주소는 운영자 환경 변수 `JEV_MCP_URL`(전략에 `llm.base_url` 이 있으면
+  그쪽). **코드에 기본 주소가 없습니다**(저장소가 공개라 개인 서버 주소를 뺐습니다)
+  — 없으면 클라이언트를 만들 때 `BadEndpoint` 로 멈추고, `https://` 가 아닌 원격
+  주소도 거절합니다(`http://` 는 localhost·127.0.0.1·::1 만). 계정에는 저장할 수
+  없습니다(`_SERVICE_SCOPED`). 오류·로그에는 주소의 호스트까지만 적습니다.
+  MCP streamable HTTP 를 httpx 로 직접. **initialize → notifications/initialized →
+  tools/call 과 세션 헤더는 MCP 스펙에서 가져온 가정이고, 진짜 토큰으로는 아직
+  확인하지 않았습니다.** 첫 실측은 `python scripts/desk_live_check.py --provider jev`.
+- **호출 수** 좌석당 `jev_evaluate` 1회 = 종목당 16회. 시작 점검도 작은 `jev_evaluate`
+  1회입니다(`jev.preflight_arguments()` — 선택·예/아니오·단계 점수 한 문항씩).
+  키·연결만이 아니라 좌석의 **질문 형식** 과 답이 정해진 두 문항의 **확률 방향**
+  까지 봅니다(`jev.read_preflight`). `jev_check` 는 쓰지 않습니다.
+- **Jev 는 확률만 줍니다.** 숫자는 `quant/alpha/jev.py` 가 계산하고, 서술 칸은
+  확률을 적은 템플릿입니다. 좌석은 시스템 프롬프트가 `seats.py` 와 정확히 같을 때
+  알아보고, 다르면 스키마로 **단계** 만 알아봅니다(판단 보류·거부 기준은 유지).
+  `seats.py` 프롬프트를 고치면 `jev.LENSES` 의 영어 렌즈도 같이 고치세요.
+- **판단 보류** 기준 0.65 (`llm.extra.undecided_below`). 방향은 묶음(매수/관망/매도)
+  이 기준에 못 미치면 관망, 거부는 P ≥ 0.65 만, 0.35~0.65 면 거부 없이 배율 ≤ 0.5.
+- **단가** 입력 1M 토큰당 $0.042, 출력 무료(운영자 제공, 2026-09-24) —
+  `llm_client.MODEL_PRICES["typesafe-ai/jev"]`.
+- **Jev 오류** 요청이 틀렸다는 것(JSON-RPC -32700/-32600/-32601/-32602, 입력 검증을
+  말하는 도구 오류)만 재시도 없이 실패합니다. 내부·서버 오류와 그 밖의 도구 오류는
+  503 처럼 다시 묻습니다. 잔액·결제·크레딧·지출 한도를 말하는 글(또는 HTTP 402)은
+  재시도 없이 곧바로 `QuotaExhausted`("jev 402")이고, 짧은 창(분·초, RPM/TPM)을
+  말하지 않는 할당량 소진도 `QuotaExhausted`("jev 429")입니다 — 둘 다 데스크를
+  **재시작할 때까지** 끕니다. 짧은 창의 제한은 평범한 429 로 기다렸다 다시 묻습니다.
+  이 분류는 `isError` 결과뿐 아니라 보통 결과에 실려 온 `{"error": …}` 나 JSON 이
+  아닌 글에도 같게 걸립니다. 세션 유실("Session not found")은 한 번 다시 열고,
+  또 잃으면 503 으로 올려 `complete()` 가 다시 묻습니다.
+- **reduce** 데스크에는 부분 축소가 없어 reduce 도 sell 처럼 보유 전체를 닫습니다
+  (`desk._to_insight`). Jev 에게도 그렇게 설명합니다. 부분 축소를 원하면 그건 제품
+  결정이고, 만들 때 `jev.HEAD_ACTIONS`·`_HEAD_GROUPS` 와 `seats.py` 헤드 프롬프트
+  ("reduce 는 비중 축소")를 같이 고쳐야 합니다.
+- **열린 제품 결정** 계정 화면의 자기 키는 여전히 Gemini(`_BYO_LLM_KEY`)입니다.
+  그 키는 제공자가 google 인 데스크에만 들어가므로 출하 Jev 데스크의 한도를 풀지
+  않는데, 그 칸의 설명과 `quant/webapp/usage.py` 의 요금제 문구는 "본인 Gemini 키를
+  넣으면 …" 이라고 약속합니다. 메커니즘은 손대지 않았습니다.

@@ -13,6 +13,7 @@ from quant.cli import _load
 from quant.config.preflight import entry_window, preflight_warnings
 from quant.config.schema import StrategyConfig
 from tests.conftest import BACKTEST_CONFIGS as BACKTEST  # noqa: E402
+from tests.conftest import DUMMY_JEV_MCP_URL  # noqa: E402
 from tests.conftest import LIVE_CONFIGS as LIVE  # noqa: E402
 
 
@@ -21,8 +22,10 @@ def env(monkeypatch):
     for var in ("TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET", "TOSS_ACCOUNT_NO",
                 "KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO",
                 "BINANCE_KEY", "BINANCE_SECRET", "TELEGRAM_BOT_TOKEN",
-                "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY"):
+                "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY",
+                "JEV_API_KEY"):
         monkeypatch.setenv(var, "x")
+    monkeypatch.setenv("JEV_MCP_URL", DUMMY_JEV_MCP_URL)
 
 
 def cfg(**kw) -> StrategyConfig:

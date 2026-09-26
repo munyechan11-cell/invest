@@ -1157,6 +1157,19 @@ function cancelDeliberationReplay() {
   syncPlayBar();
 }
 
+/* 좌석이 **답하지 못했으면** 그 사실을 말합니다.
+
+   실패한 좌석은 대체값을 냅니다 — 분석가는 "판단 재료 부족·중립 0%", 트레이더는
+   "즉시 시장가", 리스크 토론은 "배율 50%". 화면이 그 값을 그대로 그리면 실패가
+   정직한 판단으로 읽힙니다: Jev 가 막혀 분석가 8석이 모두 실패해도 말풍선은
+   "데이터 부족 — 판단 보류" 였고, 좌석의 오류 문장은 어디에도 뜨지 않았습니다.
+   그래서 오류가 있으면 다른 무엇보다 먼저 그것을 말하고, 대체값의 숫자는
+   그리지 않습니다. */
+function seatFailure(r) {
+  if (!r || !r.error) return "";
+  return "응답 실패 — " + String(r.error).replace(/\s+/g, " ").trim();
+}
+
 async function playDeliberation(d, opts) {
   if (playing) return;
   const generation = ++playGeneration;
@@ -1181,6 +1194,12 @@ async function playDeliberation(d, opts) {
     for (const a of ANALYSTS) {
       const r = (d.analysts || {})[a.key];
       if (!r) continue;
+      const failed = seatFailure(r);
+      if (failed) {
+        say(a.key, failed, "bad");
+        if (!(await wait(850))) return;
+        continue;
+      }
       const stance = STANCE_KO[r.stance] || r.stance || "?";
       const line = !r.data_sufficient
         ? "데이터 부족 — 판단 보류"
@@ -1199,7 +1218,7 @@ async function playDeliberation(d, opts) {
         const r = rounds[i][side];
         if (!r) continue;
         hush(side === "bull" ? "bear" : "bull");
-        say(side, r.argument || "", side);
+        say(side, seatFailure(r) || r.argument || "", seatFailure(r) ? "bad" : side);
         if (!(await wait(1800))) return;
       }
     }
@@ -1214,35 +1233,51 @@ async function playDeliberation(d, opts) {
         const r = riskRounds[i][side];
         if (!r) continue;
         const scale = Math.round((r.proposed_scale || 0) * 100);
-        say(key, `배율 ${scale}% — ${r.argument || ""}`,
-            side === "aggressive" ? "bull" : "bear");
+        const failed = seatFailure(r);
+        say(key, failed || `배율 ${scale}% — ${r.argument || ""}`,
+            failed ? "bad" : side === "aggressive" ? "bull" : "bear");
         if (!(await wait(1600))) return;
       }
     }
     if (d.risk) {
       const scale = Math.round((d.position_scale || 0) * 100);
       $("#riskTag").textContent = d.vetoed ? "거부" : `배율 ${scale}%`;
+      /* 거부 사유와 판정 설명은 두 문장입니다. 사이를 띄우지 않고 붙이면
+         말풍선의 "첫 문장" 이 둘을 한 덩어리로 읽어 중간에서 잘립니다. */
+      const reason = (d.veto_reason || "").trim();
+      const joint = !reason ? "" : /[.!?。]$/.test(reason) ? " " : ". ";
+      /* 판정 좌석이 실패하면 데스크는 배율을 안전하게 낮춰 **실제로** 씁니다.
+         그 배율은 위의 배율 표시가 그대로 보여 주고, 말풍선은 실패를 말합니다. */
+      const failed = seatFailure(d.risk);
       say("risk_neutral",
-          (d.vetoed ? "⛔ 거부: " + (d.veto_reason || "") : `최종 배율 ${scale}% — `) +
-          (d.risk.reasoning || ""),
-          d.vetoed ? "bear" : "neutral");
+          failed || ((d.vetoed ? "⛔ 거부: " + reason + joint : `최종 배율 ${scale}% — `) +
+          (d.risk.reasoning || "")),
+          failed ? "bad" : d.vetoed ? "bear" : "neutral");
       if (!(await wait(1800))) return;
     }
     hush("risk_aggressive"); hush("risk_conservative");
 
     // 4) 결정 데스크 — plan, then execution, then the call
     if (d.plan) {
+      const failed = seatFailure(d.plan);
       say("research_manager",
-          `[${actionKo(d.plan.rating)}] ${d.plan.rationale || ""}`,
-          (d.plan.rating || "").includes("buy") ? "bull"
+          failed || `[${actionKo(d.plan.rating)}] ${d.plan.rationale || ""}`,
+          failed ? "bad"
+            : (d.plan.rating || "").includes("buy") ? "bull"
             : (d.plan.rating || "").includes("sell") ? "bear" : "neutral");
       if (!(await wait(1700))) return;
     }
     if (d.trade) {
       const how = ENTRY_STYLE_KO[d.trade.entry_style] || d.trade.entry_style || "";
+      const failed = seatFailure(d.trade);
+      // 진입 방식·분할은 매수에만 있습니다. 매도·관망 옆에 "눌림목 기다림 · 3분할"
+      // 을 그리면 청산에 진입 계획이 붙은 것처럼 읽힙니다.
+      const entering = (d.trade.action || "") === "buy";
       say("trader",
-          `${how} ${d.trade.tranches ? "· " + d.trade.tranches + "분할" : ""} — ${d.trade.execution_note || ""}`,
-          "neutral");
+          failed || (entering
+            ? `${how} ${d.trade.tranches ? "· " + d.trade.tranches + "분할" : ""} — ${d.trade.execution_note || ""}`
+            : (d.trade.execution_note || "")),
+          failed ? "bad" : "neutral");
       if (!(await wait(1600))) return;
     }
     say("head", `${actionKo(d.action || "hold")} · 확신 ${Math.round((d.conviction || 0) * 100)}% — ${d.rationale || ""}`,
@@ -1302,9 +1337,11 @@ function renderVerdict(d, demo) {
       확신 ${Math.round((d.conviction || 0) * 100)}% · 합의 ${(d.consensus >= 0 ? "+" : "")}${(d.consensus || 0).toFixed(2)}<br>
       투표 ${d.voting_seats != null ? d.voting_seats : "—"}/8석 · 반대 ${Math.round((d.dissent_ratio || 0) * 100)}%<br>
       배율 ${Math.round((d.position_scale || 0) * 100)}% · ${d.horizon_bars || "—"}봉<br>
-      <span class="dim">${(d.elapsed_s || 0).toFixed(1)}초 · AI 호출 ${d.llm_calls || 0}회</span>
+      <span class="dim">${(d.elapsed_s || 0).toFixed(1)}초 · AI 호출 ${d.llm_calls || 0}회${
+        d.cost_usd != null ? ` · $${Number(d.cost_usd).toFixed(4)}` : ""}</span>
       ${demo ? ' <span class="demo-tag">데모</span>' : ""}
       ${d.degraded ? ' <span class="demo-tag">축약</span>' : ""}
+      ${d.seat_failures ? ` <span class="demo-tag">좌석 ${d.seat_failures}곳 실패</span>` : ""}
     </div>
     <div class="why">
       <em>판단 근거</em>${esc(d.rationale || "")}
@@ -1905,53 +1942,57 @@ function connect() {
 const DEMO = {
   // 종목명은 서버가 형제 필드로 실어 보냅니다. 데모도 같은 모양을 써야,
   // 로그인 전에 보는 화면과 로그인 후에 보는 화면이 같은 제품이 됩니다.
+  //
+  // **출하 데스크(Jev)가 실제로 내는 모양** 입니다. 예전 데모는 제미나이 시절의
+  // 서술형 논거, 호출 19회, 토론 2라운드, 31.6초를 보여 줬는데, Jev 데스크는
+  // 글을 쓰지 않습니다 — 좌석마다 확률을 적은 정해진 문장이고 호출은 16회,
+  // 토론은 1라운드입니다. 아래 좌석 출력은 `quant.alpha.jev.map_answers` 가
+  // 가짜 Jev 의 답으로 만든 것을 그대로 옮겼습니다(확률은 예시).
+  // 소요 시간과 비용은 추정입니다: 서버 0.3~0.6초 × 차례로 도는 8단계,
+  // 종목당 입력 약 3만 토큰 × $0.042/100만.
   symbol: "005930", symbol_name: "삼성전자",
-  decided_at: "demo", action: "buy", conviction: 0.72,
-  position_scale: 0.6, horizon_bars: 12, consensus: 0.38, voting_seats: 7,
-  dissent_ratio: 0.29, elapsed_s: 31.6, llm_calls: 19,
-  rationale: "외국인 6일 연속 순매수에 기관이 동조했고, 주가는 20일선 눌림목에서 지지받는 중. 수급이 가격을 앞서고 있다는 판단. 다만 퀀트·미시구조 좌석의 이견을 반영해 사이즈는 절반 수준으로.",
-  invalidation: "외국인 순매도 2일 연속 전환, 또는 종가가 20일선 아래로 마감.",
-  dissent: "미시구조(MICRO)는 스프레드 3틱을 근거로 분할 진입을, 퀀트(SIGMA)는 표본 부족을 이유로 확신도 하향을 요구.",
+  decided_at: "demo", action: "buy", conviction: 0.73,
+  position_scale: 0.638, horizon_bars: 10, consensus: 0.354, voting_seats: 6,
+  dissent_ratio: 0.0, elapsed_s: 4.8, llm_calls: 16, cost_usd: 0.0013,
+  rationale: "매수 측 73% → 매수(buy). 매수 측 73% · 관망 20% · 축소·청산 측 7%, 묶음 안에서 매수 55%. 기대 변동 +2.35% · 보유 10봉 (Jev 확률 판정)",
+  invalidation: "다음 재심의에서 축소·청산 측이 65% 이상이 되면 무효",
+  dissent: "퀀트 리서처 반대 (Jev 34%)",
   analysts: {
-    technical: {stance: "bullish", conviction: .68, data_sufficient: true,
-      key_points: ["ADX 27 — 추세 국면. 20일선 눌림목 지지 확인"]},
-    flow: {stance: "bullish", conviction: .81, data_sufficient: true,
-      key_points: ["외국인 6일 연속 순매수, 참여율 z=+2.1, 기관 동조"]},
-    fundamental: {stance: "neutral", conviction: .18, data_sufficient: false,
-      key_points: ["브리프에 재무 데이터 없음 — 판단 보류"]},
-    news: {stance: "bullish", conviction: .55, data_sufficient: true,
-      key_points: ["증설 공시 — 거래량 2.3배, 상당 부분 선반영 추정"]},
-    sentiment: {stance: "neutral", conviction: .35, data_sufficient: true,
-      key_points: ["개인 순매수 z=+0.7 — 아직 극단 아님"]},
-    macro: {stance: "neutral", conviction: .40, data_sufficient: true,
-      key_points: ["원/달러 상승은 외국인 수급 지속의 최대 변수"]},
-    microstructure: {stance: "neutral", conviction: .45, data_sufficient: true,
-      key_points: ["스프레드 3틱, 왕복 비용 0.24% — 분할 진입 권고"]},
-    quant: {stance: "neutral", conviction: .42, data_sufficient: true,
-      key_points: ["관측 20봉으로 표본 부족. 효과 크기는 일변동성의 0.8배"]},
+    technical: {stance: "bullish", conviction: 0.64, data_sufficient: true,
+      key_points: ["강세 64% · 중립 28% · 약세 8%", "판단 재료 충분 확률 93% (Jev 확률 판정)"]},
+    flow: {stance: "bullish", conviction: 0.78, data_sufficient: true,
+      key_points: ["강세 78% · 중립 17% · 약세 5%", "판단 재료 충분 확률 90% (Jev 확률 판정)"]},
+    fundamental: {stance: "neutral", conviction: 0.2, data_sufficient: false,
+      key_points: ["판단 재료 부족 (충분 확률 7%) — 중립 처리", "참고 확률: 강세 8% · 중립 86% · 약세 6% (Jev 확률 판정)"]},
+    news: {stance: "neutral", conviction: 0.2, data_sufficient: false,
+      key_points: ["판단 재료 부족 (충분 확률 5%) — 중립 처리", "참고 확률: 강세 5% · 중립 90% · 약세 5% (Jev 확률 판정)"]},
+    sentiment: {stance: "neutral", conviction: 0.55, data_sufficient: true,
+      key_points: ["강세 33% · 중립 55% · 약세 12%", "판단 재료 충분 확률 62% (Jev 확률 판정)"]},
+    macro: {stance: "neutral", conviction: 0.62, data_sufficient: true,
+      key_points: ["강세 23% · 중립 62% · 약세 15%", "판단 재료 충분 확률 58% (Jev 확률 판정)"]},
+    microstructure: {stance: "neutral", conviction: 0.84, data_sufficient: true,
+      key_points: ["체결 가능성: 조건부 체결 가능 62% (Jev 확률 판정)", "강세 10% · 중립 84% · 약세 6%", "판단 재료 충분 확률 88% (Jev 확률 판정)"], risks: ["조건부 체결 가능 (62%)"]},
+    quant: {stance: "neutral", conviction: 0.58, data_sufficient: true,
+      key_points: ["강세 30% · 중립 58% · 약세 12%", "판단 재료 충분 확률 80% (Jev 확률 판정)"]},
   },
   debate: {rounds: [
     {round: 1,
-     bull: {argument: "수급이 6일째 한 방향이고 개인이 반대편이다. 외국인·기관이 동시에 사는 구조는 통계적으로 며칠 더 이어진다.", conviction: .70},
-     bear: {argument: "그 수급은 이미 +9% 오른 뒤의 수급이다. 매집이 아니라 추격일 수 있고, 그렇다면 진입 시점이 늦었다.", conviction: .55}},
-    {round: 2,
-     bull: {argument: "눌림목이라 늦지 않았다. 20일선에서 되돌린 지점이 진입 자리이며, 손절폭도 그만큼 좁아진다.", conviction: .72},
-     bear: {argument: "환율이 흔들리면 외국인이 가장 먼저 나간다. 그것을 무효화 조건으로 명시하지 않으면 이 논거는 검증 불가능하다.", conviction: .52}},
+     bull: {argument: "매수 논거 강도: 강함 (50%). 5단계 기대값 2.8/4 → 확신도 0.71 (Jev 확률 판정)", conviction: 0.712},
+     bear: {argument: "매수 반대(매도·관망) 논거 강도: 약함 (45%). 5단계 기대값 1.4/4 → 확신도 0.36 (Jev 확률 판정)", conviction: 0.362}},
   ]},
   risk_debate: {rounds: [
     {round: 1,
-     aggressive: {argument: "손절폭이 20일선까지 3.2%로 명확하고 좁다. 유동성도 충분하고 기존 보유와 상관도 낮다. 여기서 작게 들어가면 맞아도 의미가 없다.", proposed_scale: .85},
-     conservative: {argument: "실적 발표가 8거래일 뒤다. 근거의 절반이 관측이 아니라 수급 지속성에 대한 추론이고, 미시구조 좌석도 비용을 경고했다.", proposed_scale: .40}},
+     aggressive: {argument: "공격형 리스크: 제안 배율 0.74 (가장 유력: 3/4 사이즈 50%). 가장 뚜렷한 위험: 없음 55% (Jev 확률 판정)", proposed_scale: 0.738, named_hazards: [], conviction: 0.7},
+     conservative: {argument: "보수형 리스크: 제안 배율 0.45 (가장 유력: 1/2 사이즈 45%). 가장 뚜렷한 위험: 관측보다 추론 의존 46% (Jev 확률 판정)", proposed_scale: 0.45, named_hazards: ["관측보다 추론 의존"], conviction: 0.7}},
   ]},
-  risk: {position_scale: .60, veto: false, max_loss_pct: 3.5,
-    reasoning: "보수형이 '실적 발표 임박'이라는 이름 붙일 수 있는 위험을 제시했고 공격형의 근거는 손절폭 하나뿐이다. 보수 쪽에 가중해 60%."},
-  plan: {rating: "buy", conviction: .68,
-    rationale: "강세 논거가 이겼다. 약세 측의 '추격 매수' 지적은 타당하나, 눌림목 진입으로 손절폭이 좁아진다는 반론을 넘지 못했다.",
-    strategic_actions: "20일선 이탈 없이 유지되는 동안 2회 분할 진입, 손절은 20일선 종가 이탈."},
-  trade: {action: "buy", entry_style: "scale_in", tranches: 2, limit_offset_bps: 6,
-    timeout_bars: 3, if_unfilled: "다음 봉 시장가 전환",
-    execution_note: "스프레드 3틱 — 지정가 중간에 2회 분할. 3봉 내 미체결 시 시장가."},
-  vetoed: false, degraded: "",
+  risk: {position_scale: 0.638, veto: false, veto_reason: "",
+    reasoning: "거부 확률 7% → 거부 안 함. 배율 0.64 (가장 유력: 3/4 사이즈 45%) (Jev 확률 판정)"},
+  plan: {rating: "buy", conviction: 0.72,
+    rationale: "매수 측 72% → 매수(buy). 매수 측 72% · 관망 20% · 매도 측 8%. 토론: 강세 측 우세 66% (Jev 확률 판정)",
+    strategic_actions: "방향 매수(buy) (매수 측 72%). 진입 방식과 분할은 트레이더 좌석이 유동성·체결비용을 보고 정한다"},
+  trade: {action: "buy", entry_style: "scale_in", tranches: 2, conviction: 0.84,
+    execution_note: "매수(buy) 84%. 진입 방식 확률 51% (Jev 확률 판정)"},
+  vetoed: false, veto_reason: "", degraded: "", seat_failures: 0,
 };
 $("#demoBtn").addEventListener("click", () => {
   scrollToDesk();
@@ -5326,6 +5367,13 @@ function renderAsk(d, ticker) {
   out.innerHTML =
     `<div class="act">${esc(symLabel(ticker, nameOf(d, "ticker")))} · ${esc(act)}${cv}</div>` +
     (d.veto_reason ? `<div class="why">거부 사유 — ${esc(d.veto_reason)}</div>` : "") +
+    /* 축약 심의는 판단이 아닙니다 — 토론·결정이 실패해 분석가 합의로 물러선
+       결과입니다. 메인 화면은 "축약" 을 붙이는데 이 창만 말하지 않아서, 실패한
+       심의가 멀쩡한 "관망" 으로 읽혔습니다. */
+    (d.degraded ? `<div class="why">⚠ 축약 심의 — ${esc(d.degraded)}</div>` : "") +
+    /* 대체값으로 채워진 좌석. 그 좌석의 "판단" 은 판단이 아닙니다. */
+    (d.seat_failures ? `<div class="why">⚠ 좌석 ${d.seat_failures}곳이 답하지 못했습니다 — ${
+      esc(d.first_seat_error || "")}</div>` : "") +
     (d.rationale ? `<div class="why">${esc(d.rationale)}</div>` : "") +
     `<div class="kv">` +
       kv("목표 비중", d.target_weight_pct ? d.target_weight_pct.toFixed(1) + "%" : "—") +
@@ -5555,7 +5603,11 @@ function deskWaitReason() {
   const why = (deskState || {}).disabled_reason;
   if (why) {
     return {kind: "broken", who: "데스크가 꺼졌습니다",
-            line: why + " — ⚙ 설정에서 Gemini 키를 확인하세요."};
+            // 꺼진 이유(why)를 그대로 씁니다. 서버가 이유마다 할 일까지 적어
+            // 둡니다 — 키 거절이면 키, 주소·배포 문제면 JEV_MCP_URL·llm.base_url, 백테스트면
+            // 설정. 예전에는 무엇이든 뒤에 "LLM 키와 한도를 확인하세요" 를 붙여,
+            // 주소가 틀린 사람도 키를 보러 갔습니다.
+            line: why};
   }
   if (stillStarting()) {
     return {kind: "starting", who: "시작 중…",

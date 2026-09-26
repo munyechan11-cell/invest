@@ -63,13 +63,19 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from starlette.concurrency import run_in_threadpool
 
-from quant.alpha.llm_client import LLMError
+from quant.alpha.llm_client import (
+    BadEndpoint,
+    LLMError,
+    MissingKey,
+    billing_hint,
+    usage_tally,
+)
 from quant.config.loader import load_config
 from quant.config.schema import StrategyConfig
 from quant.core.aio import LazyLock, LazySemaphore
 from quant.core.context import QUOTE_FUTURE_TOLERANCE
 from quant.core.events import Event
-from quant.core.types import UTC, RunMode, Symbol
+from quant.core.types import UTC, RunMode, Symbol, one_line_error
 from quant.data.names import NameBook
 from quant.live.agents import MAX_AGENTS
 from quant.live.credentials import (
@@ -79,6 +85,7 @@ from quant.live.credentials import (
     WRITABLE_KEYS,
     load_env_file,
     rejection_reason,
+    value_rejection_reason,
     venue_catalog,
 )
 from quant.live.profile import (
@@ -622,10 +629,15 @@ def user_data_root(state_path: str = "quant_state.db") -> str:
 #: 들어갈 수 없습니다. 여기가 비어 있으면 가입자 한 명이 `QUANT_API_TOKEN` 을
 #: 저장해 전체 배포의 토큰을 정하거나, `QUANT_LIMIT_DAILY_*` 로 모두의 하루
 #: 한도를 바꿉니다 — 후자는 실제로 예전 `/api/limits` 가 하던 일입니다.
+#:
+#: `JEV_MCP_URL` 은 운영자의 `JEV_API_KEY` 가 실려 가는 주소입니다. 계정에 저장할
+#: 수 있으면 가입자가 자기 서버 주소를 넣어 운영자 토큰을 받아 갈 길이 됩니다
+#: (지금 클라이언트는 계정의 값을 읽지 않지만, 저장부터 막아 둡니다).
 _SERVICE_SCOPED = frozenset({
     "OPERATOR_NAME", "QUANT_API_TOKEN", "CORS_ORIGINS",
     "QUANT_LIMIT_DAILY_NOTIONAL", "QUANT_LIMIT_DAILY_ORDERS",
     "QUANT_LIMIT_DAILY_LOSS", "QUANT_LIMIT_DAILY_LOSS_PCT",
+    "JEV_MCP_URL",
 })
 
 #: 계정에 저장할 수 있는 이름 전부. `WRITABLE_KEYS` 에서 빼는 방식이라,
@@ -639,6 +651,11 @@ ACCOUNT_KEYS: frozenset[str] = frozenset(WRITABLE_KEYS) - _SERVICE_SCOPED
 #: 비용을 내므로, 자기 키를 넣는 것은 사용량 상한을 벗어나고 싶을 때뿐입니다 —
 #: 그래서 서비스가 실제로 쓰는 제공자와 같은 것만 보여줍니다. 쓰지도 않는
 #: 제공자의 칸이 서 있으면 사용자는 그것이 필요한 값이라고 읽습니다.
+#:
+#: ⚠️ 2026-09: 출하 데스크 설정이 전부 `provider: jev` 로 바뀌었습니다. 이
+#: Gemini 키는 제공자가 google 인 데스크에만 들어가므로(`_with_credentials`),
+#: 지금 출하 설정에서는 넣어도 한도가 풀리지 않습니다. 이 칸을 어떻게 할지는
+#: 아직 정하지 않은 제품 결정이라 그대로 둡니다.
 _BYO_LLM_KEY = "GOOGLE_API_KEY"
 
 #: 자기 키 칸에 붙는 설명. 계정 화면에서는 "선택"의 뜻이 달라집니다 —
@@ -652,6 +669,44 @@ ACCOUNT_OPERATOR_FIELDS = [
     for env, label, required in OPERATOR_FIELDS
     if env not in _SERVICE_SCOPED and not env.endswith("_API_KEY")
 ] + [(_BYO_LLM_KEY, _BYO_LLM_LABEL, False)]
+
+
+def _desk_llm(cfg: StrategyConfig) -> tuple[str, bool]:
+    """(이 전략의 AI 데스크가 쓰는 LLM 이름, 계정 화면의 자기 키로 풀리는가).
+
+    키가 없다는 안내가 제공자 하나를 박아 두면 틀린 곳으로 보냅니다. 출하
+    설정은 전부 Jev 인데 계정 화면이 받는 자기 키(`_BYO_LLM_KEY`)는 Gemini
+    키라서, Jev 데스크에 "본인 Gemini 키를 넣으세요" 라고 하면 넣어도 아무것도
+    바뀌지 않습니다 — 그 키는 제공자가 google 인 데스크에만 들어갑니다.
+    """
+    spec = next((m for m in cfg.alpha if m.type in ("desk", "council")), None)
+    llm = spec.params.get("llm") if spec is not None else None
+    if not isinstance(llm, dict):
+        return "LLM", False
+    provider = str(llm.get("provider", "anthropic"))      # LLMConfig 의 기본값
+    if provider == "google":                              # _BYO_LLM_KEY 의 제공자
+        return "Gemini", True
+    return billing_hint(provider)[0], False
+
+
+def _missing_key(exc: Exception) -> bool:
+    """이 `LLMError` 가 "키가 없다" 인가. 형으로 보고, 형을 잃은 글도 받아 줍니다."""
+    return isinstance(exc, MissingKey) or "no API key" in str(exc)
+
+
+def _desk_setup_error(name: str, exc: Exception) -> str:
+    """키가 **있는데** 데스크를 세우지 못했을 때 사람이 읽을 한 줄 — 원문을 담습니다."""
+    who = f"'{name}' 의 " if name else ""
+    if isinstance(exc, BadEndpoint):
+        # Jev 주소(`JEV_MCP_URL`)는 운영자만 정합니다. "전략 설정의 llm 값" 으로
+        # 보내면 사용자는 고칠 수 없는 곳을 찾아다닙니다. 원문은 주소의 호스트
+        # 까지만 담습니다(`jev_endpoint`).
+        return (f"{who}AI 데스크를 준비하지 못했습니다 — 키가 없어서가 아니라 서비스의 "
+                f"Jev 서버 주소 설정 문제입니다. 운영자에게 확인하세요: "
+                f"{one_line_error(exc, 240)}")
+    return (f"{who}AI 데스크를 준비하지 못했습니다 — 키가 없어서가 아닙니다. 전략 "
+            f"설정의 llm 값을 확인하세요: {one_line_error(exc, 240)}")
+
 
 #: 프로세스 환경에 남아 있으면 안 되는 이름들 — 계좌에 닿거나 사람에게 닿는 값.
 #:
@@ -1655,7 +1710,8 @@ class UserDesk(Desk):
                 "operator": self.user.display_name or self.user.email,
                 "venues": linked,
                 "has_llm": any(name in configured for name in
-                               ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY")),
+                               ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY",
+                                "JEV_API_KEY")),
                 "has_notifier": ("TELEGRAM_BOT_TOKEN" in configured
                                  and "TELEGRAM_CHAT_ID" in configured),
                 "updated_at": "",
@@ -1683,9 +1739,12 @@ class UserDesk(Desk):
                 # 빈 칸은 "이미 저장된 것을 그대로 두라"는 뜻입니다. 설정 화면이
                 # 비밀 칸을 비운 채 폼을 제출할 수 있어야 하니까요.
                 continue
-            if "\n" in value or "\r" in value:
-                rejected[key] = "값에 줄바꿈이 있어 저장할 수 없습니다"
-                log.warning("설정 저장 거부: user=%s key=%r — 줄바꿈", self.user.id, key)
+            # 줄바꿈, 그리고 키·시크릿·토큰의 ASCII 아닌 글자(보이지 않는 공백 …).
+            reason = value_rejection_reason(key, value)
+            if reason:
+                rejected[key] = reason
+                log.warning("설정 저장 거부: user=%s key=%r — %s", self.user.id, key,
+                            reason)
                 continue
             self.accounts.put_secret(self.user.id, key, value)
             written.append(key)
@@ -1765,11 +1824,18 @@ class UserDesk(Desk):
             # 모르겠다" 가 반복됐습니다.
             log.warning("봇 시작 실패(LLM): %s", exc)
             has_desk = any(m.type in ("desk", "council") for m in cfg.alpha)
+            if has_desk and not _missing_key(exc):
+                # 키는 있습니다 — 설정이 틀렸습니다(예: `llm.extra.undecided_below`
+                # 를 65 로 적음). 예전에는 모든 LLMError 를 "쓸 수 있는 키가
+                # 없습니다" 로 적고 원문을 버려, 사람이 멀쩡한 키를 확인하러 갔습니다.
+                raise HTTPException(503, _desk_setup_error(cfg.name, exc)) from None
+            who, byo = _desk_llm(cfg)
+            fix = (f"마이페이지에서 본인 {who} 키를 넣거나" if byo else
+                   f"서비스의 {who} 키 설정을 운영자에게 확인하거나")
             raise HTTPException(
                 503,
-                f"'{cfg.name}' 은 AI 데스크를 쓰는 전략인데 쓸 수 있는 LLM 키가 "
-                f"없습니다. 마이페이지에서 본인 Gemini 키를 넣거나, 데스크가 없는 "
-                f"전략을 고르세요."
+                f"'{cfg.name}' 은 AI 데스크를 쓰는 전략인데 쓸 수 있는 {who} 키가 "
+                f"없습니다. {fix}, 데스크가 없는 전략을 고르세요."
                 if has_desk else f"모델을 준비하지 못했습니다: {exc}") from None
 
     async def start_group(self, req: GroupStartRequest) -> dict:
@@ -1801,11 +1867,18 @@ class UserDesk(Desk):
                 self.user.id, group, configs, on_event=self.hub.publish)
         except LLMError as exc:
             log.warning("그룹 시작 실패(LLM): %s", exc)
+            desk_cfg = next((c for c in configs.values()
+                             if any(m.type in ("desk", "council") for m in c.alpha)), None)
+            if not _missing_key(exc):
+                raise HTTPException(503, _desk_setup_error(
+                    desk_cfg.name if desk_cfg is not None else "", exc)) from None
+            who, byo = _desk_llm(desk_cfg) if desk_cfg is not None else ("LLM", False)
+            fix = (f"마이페이지에서 본인 {who} 키를 넣거나" if byo else
+                   f"서비스의 {who} 키 설정을 운영자에게 확인하거나")
             raise HTTPException(
                 503,
-                "AI 데스크를 쓰는 전략인데 쓸 수 있는 LLM 키가 없습니다. "
-                "마이페이지에서 본인 Gemini 키를 넣거나, 데스크가 없는 전략을 "
-                f"고르세요. ({exc})") from None
+                f"AI 데스크를 쓰는 전략인데 쓸 수 있는 {who} 키가 없습니다. "
+                f"{fix}, 데스크가 없는 전략을 고르세요. ({exc})") from None
 
     async def stop(self) -> dict:
         return await self.registry.stop(self.user.id)
@@ -2672,11 +2745,29 @@ def create_app(config: StrategyConfig | None = None,
         한다면 순서가 뒤바뀝니다. 검색해서 고른 종목을 그 자리에서 16명에게
         물어볼 수 있어야 합니다.
 
-        **이 호출은 돈이 듭니다.** 심의 한 번이 약 $0.06 이고 그 비용은
-        서비스가 냅니다. 그래서 요금제 한도를 먼저 확인하고, 끝난 뒤에는
-        실제 토큰 수로 계량합니다 — 계량하지 않으면 한 사람의 반복 클릭이
-        운영자 카드로 청구되고, 나중에 소급해서 만들 수도 없습니다.
+        **이 호출은 돈이 듭니다.** 출하 설정(Jev, 16석)이면 심의 한 번이 입력
+        약 3만 토큰 — 입력 100만 토큰당 $0.042 라 약 $0.0013 입니다(출력은
+        무료). 다른 제공자로 돌리면 수십 배가 됩니다. 비용은 서비스가 냅니다.
+        그래서 요금제 한도를 먼저 확인하고, 끝난 뒤에는 실제 토큰 수로
+        계량합니다 — 계량하지 않으면 한 사람의 반복 클릭이 운영자 카드로
+        청구되고, 나중에 소급해서 만들 수도 없습니다.
+
+        봇이 없으면 요청마다 새 데스크 — 새 LLM 클라이언트와 연결 풀 — 를
+        세웁니다(`_evaluate`). 예전에는 닫지 않아, 요청마다 연결 여럿이 순환 참조
+        수거 때까지 열려 있었습니다. 이 요청이 세운 데스크만 닫습니다(돌고 있는
+        봇의 데스크는 그대로).
         """
+        opened: list = []
+        try:
+            return await _evaluate(req, seat, opened)
+        finally:
+            for model in opened:
+                close = getattr(model, "aclose", None)
+                if close is not None:
+                    await close()
+
+    async def _evaluate(req: EvaluateRequest, seat: Desk, opened: list):
+        """`/api/evaluate` 의 본문. 이 요청이 **새로 세운** 데스크를 `opened` 에 적습니다."""
         ticker = (req.ticker or "").strip().upper()
         if not ticker:
             raise HTTPException(400, "종목을 지정하세요")
@@ -2721,24 +2812,30 @@ def create_app(config: StrategyConfig | None = None,
             try:
                 model, own_key = await run_in_threadpool(
                     seat.registry.desk_for, seat.user.id, cfg)
+                opened.append(model)
             except Exception as exc:
                 log.warning("데스크 생성 실패: %s", exc)
                 # 사용자가 읽어야 하는 문장입니다. 원문이 영어면 무엇을 해야
                 # 하는지 알 수 없으므로, 가장 흔한 원인은 한국어로 바꿔 줍니다.
                 text = str(exc)
+                if isinstance(exc, BadEndpoint):
+                    # 운영자의 Jev 주소 문제 — 사용자의 키와는 무관합니다.
+                    raise HTTPException(503, _desk_setup_error(cfg.name, exc)) from None
                 if "no API key" in text or "api key" in text.lower():
                     # 이미 자기 키를 넣은 사람에게 "키를 넣으세요" 라고 말하면,
                     # 맞는 말도 아니고 고칠 방법도 알려주지 못합니다.
                     mine = await run_in_threadpool(
                         seat.registry.desk_owns_key, seat.user.id, cfg)
+                    who, byo = _desk_llm(cfg)
                     raise HTTPException(
                         503,
-                        "넣어 두신 Gemini 키를 쓸 수 없습니다 — 값이 맞는지, "
-                        "해당 키에 Gemini API 사용 권한이 있는지 확인하세요."
+                        f"넣어 두신 {who} 키를 쓸 수 없습니다 — 값이 맞는지, "
+                        f"해당 키에 {who} API 사용 권한이 있는지 확인하세요."
                         if mine else
-                        "AI 데스크를 쓸 수 없습니다 — 서비스의 Gemini 키가 "
-                        "설정되지 않았거나 한도에 걸렸습니다. 마이페이지에서 "
-                        "본인 Gemini 키를 넣으면 바로 쓸 수 있습니다.") from None
+                        f"AI 데스크를 쓸 수 없습니다 — 서비스의 {who} 키가 "
+                        "설정되지 않았거나 한도에 걸렸습니다. "
+                        + (f"마이페이지에서 본인 {who} 키를 넣으면 바로 쓸 수 "
+                           "있습니다." if byo else "운영자에게 문의하세요.")) from None
                 raise HTTPException(
                     503, f"데스크를 준비할 수 없습니다: {text}") from None
 
@@ -2779,26 +2876,53 @@ def create_app(config: StrategyConfig | None = None,
                      f"부족합니다(최소 60개). 상장 직후이거나 거래가 드문 종목일 수 있습니다.")
 
         ctx = _standalone_context(cfg, symbol, bars)
-        before_calls, before_cost = model.status()["llm_calls"], model.estimated_cost_usd
-        try:
-            decision = await model.deliberate(ctx, symbol)
-        except Exception as exc:
-            log.warning("심의 실패 %s: %s", ticker, exc)
-            raise HTTPException(502, f"심의 중 오류: {exc}") from None
-        finally:
-            # 실패했어도 부른 만큼은 청구됩니다. 성공만 계량하면 실패한
-            # 호출의 비용이 아무 계정에도 잡히지 않습니다.
-            after = model.status()
-            spent = max(0.0, model.estimated_cost_usd - before_cost)
-            calls = max(0, after["llm_calls"] - before_calls)
-            if calls:
-                await run_in_threadpool(
-                    usage.record_spend, seat.user.id, calls, spent, own_key)
+        # 꺼진 데스크(키 거절·한도 소진·주소 오류)로 심의하면 16석이 전부
+        # 실패하고 분석가 합의의 "관망" 이 HTTP 200 으로 나갑니다 — 사람은
+        # 판단으로 읽습니다. 부르지 않고 꺼진 이유를 그대로 돌려줍니다.
+        disabled = (model.status() or {}).get("disabled_reason") or ""
+        if disabled:
+            raise HTTPException(503, f"AI 데스크가 꺼져 있습니다 — {disabled}")
+        # **이 요청이** 쓴 것만 셉니다. 돌고 있는 봇의 데스크라면 같은 순간에
+        # 봉 심의가 같은 클라이언트로 돌 수 있고, 누적의 앞뒤 차이는 그 호출까지
+        # 이 사람에게 청구했습니다(봉 쪽 계량기도 같은 호출을 또 적습니다).
+        with usage_tally() as used:
+            try:
+                decision = await model.deliberate(ctx, symbol)
+            except Exception as exc:
+                log.warning("심의 실패 %s: %s", ticker, exc)
+                raise HTTPException(502, f"심의 중 오류: {exc}") from None
+            finally:
+                # 실패했어도 부른 만큼은 청구됩니다. 성공만 계량하면 실패한
+                # 호출의 비용이 아무 계정에도 잡히지 않습니다.
+                calls, spent = used.calls, max(0.0, used.cost_usd)
+                if calls:
+                    await run_in_threadpool(
+                        usage.record_spend, seat.user.id, calls, spent, own_key)
 
         if decision is None:
+            # 심의 **도중에** 데스크가 꺼졌을 수 있습니다(Jev 잔액 소진 → 좌석이
+            # `QuotaExhausted` 로 데스크를 끄고 None). 그 이유는 데스크가 이미
+            # 적어 두었는데, 여기서 읽지 않으면 "잠시 후 다시 시도하세요" 가
+            # 나갑니다 — 기다려도 풀리지 않는 것을 기다리게 하고, 봇이 없을 때는
+            # 요청마다 새 데스크라 클릭할 때마다 같은 호출을 또 합니다.
+            disabled = (model.status() or {}).get("disabled_reason") or ""
+            if disabled:
+                raise HTTPException(503, f"AI 데스크가 꺼져 있습니다 — {disabled}")
             raise HTTPException(
                 422, "심의가 결론에 이르지 못했습니다 — 마감 시간을 넘겼거나 "
-                     "데스크 한도에 걸렸습니다. 잠시 후 다시 시도하세요.")
+                     "데이터가 부족합니다. 잠시 후 다시 시도하세요.")
+        seat_errors = [str(r.get("error")) for r in decision.analysts.values()
+                       if isinstance(r, dict) and r.get("error")]
+        if decision.analysts and len(seat_errors) == len(decision.analysts):
+            # 분석가가 **한 석도** 답하지 못했습니다. 헤드가 답했든(투표 0석의
+            # 판단) 못 했든(확신 0 의 관망) 그 결론은 판단이 아니고, 이유는
+            # 좌석의 오류에만 있습니다. 이 호출은 주문을 내지 않으므로 거절이
+            # 안전합니다. 예전에는 헤드가 답하면 HTTP 200 이었습니다.
+            who = _desk_llm(cfg)[0]
+            raise HTTPException(
+                503, f"AI 데스크가 {who} 에 닿지 못했습니다 — 분석가 "
+                     f"{len(seat_errors)}석이 모두 실패했습니다: "
+                     f"{one_line_error(seat_errors[0], 200)}")
         out = decision.to_dict()
         out["metered"] = {"llm_calls": calls, "cost_usd": round(spent, 4),
                           "billed_to": "own_key" if own_key else "service"}
@@ -3581,7 +3705,14 @@ _SECRET_HINTS = ("key", "secret", "token", "password", "passphrase")
 
 #: 어떤 거래소 배선표에도 없지만 사람을 가리키는 필드들. 알림은 사람의
 #: 텔레그램이고, `api_key` 는 AI 데스크 슬롯에 들어가는 LLM 키입니다.
-_ALWAYS_SECRET = frozenset({"telegram_bot_token", "telegram_chat_id", "api_key"})
+#:
+#: `base_url` 은 AI 데스크 슬롯의 주소입니다. Jev 에서는 운영자의 `JEV_API_KEY`
+#: 가 실려 가는 곳이고(`jev_endpoint`), 오류 문장·로그에는 호스트까지만
+#: 적습니다. 그런데 `/api/config` 가 운영자 YAML 의 `llm.base_url` 을 경로·
+#: 쿼리까지 가입자 누구에게나 돌려줬습니다. 이 이름을 쓰는 설정 자리는 LLM
+#: 슬롯뿐입니다.
+_ALWAYS_SECRET = frozenset({"telegram_bot_token", "telegram_chat_id", "api_key",
+                            "base_url"})
 
 #: 설정 트리에서 배선 파라미터가 사는 자리.
 _WIRING_SECTIONS = ("broker", "data", "flow")

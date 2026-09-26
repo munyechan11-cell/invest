@@ -195,6 +195,14 @@ VENUES_BY_ID = {v.id: v for v in VENUES}
 OPERATOR_FIELDS = [
     ("OPERATOR_NAME", "이름 (기록용)", False),
     ("GOOGLE_API_KEY", "Gemini API 키 (내 키로 AI 데스크를 쓸 때, 선택)", False),
+    # 출하된 데스크 설정은 전부 `provider: jev` 입니다. 이 값이 없으면 데스크가
+    # 세워지지 않고, 데스크가 있는 전략은 시작되지 않습니다.
+    ("JEV_API_KEY", "Jev API 토큰 (AI 데스크 16석이 이 토큰으로 판단합니다)", False),
+    # 위 토큰이 실려 가는 곳입니다. 코드에는 기본 주소가 없어서(저장소가 공개)
+    # 운영자가 여기 넣습니다. **계정에는 저장할 수 없습니다** — 사용자가 이 값을
+    # 정하면 운영자의 토큰을 자기 서버로 받을 수 있으므로, server.py 가
+    # `_SERVICE_SCOPED` 로 막습니다.
+    ("JEV_MCP_URL", "Jev 서버 주소 (MCP 엔드포인트, https://…) — 운영자 전용", False),
     ("TELEGRAM_BOT_TOKEN", "텔레그램 봇 토큰 (알림, 선택)", False),
     ("TELEGRAM_CHAT_ID", "텔레그램 챗 ID (알림, 선택)", False),
 ]
@@ -235,6 +243,40 @@ def rejection_reason(key: str) -> str:
         return "프로세스 동작을 바꾸는 변수라 저장할 수 없습니다"
     if key.strip() not in WRITABLE_KEYS:
         return "설정 화면이 다루는 항목이 아닙니다"
+    return ""
+
+
+#: 헤더·서명에 그대로 실리는 자격증명의 이름 꼬리. 이런 값은 ASCII 뿐입니다.
+_CREDENTIAL_SUFFIXES = ("_KEY", "_SECRET", "_TOKEN")
+
+
+def value_rejection_reason(key: str, value: str) -> str:
+    """이 **값** 을 그 키로 저장할 수 없는 이유. 저장해도 되면 빈 문자열.
+
+    채팅 앱·문서에서 붙여 넣은 키에는 보이지 않는 공백(U+200B)이나 둥근
+    따옴표가 섞여 옵니다. `strip()` 은 그것을 지우지 않아 그대로 저장됐고,
+    HTTP 헤더는 ASCII 만 실을 수 있어 **호출할 때마다** 요청이 나가기도 전에
+    실패했습니다 — 그때의 오류는 키를 말하지 않았습니다. 위치와 코드포인트만
+    적고 값의 다른 글자는 적지 않습니다.
+    """
+    if "\n" in value or "\r" in value:
+        # One line per key: a newline inside a value is a second key,
+        # and that is the allow-list bypassed from the value side.
+        return "값에 줄바꿈이 있어 저장할 수 없습니다"
+    if key.strip().upper().endswith(_CREDENTIAL_SUFFIXES):
+        for i, ch in enumerate(value):
+            if not ch.isascii():
+                return (f"값의 {i + 1}번째 글자가 ASCII 가 아닙니다(U+{ord(ch):04X} — "
+                        f"보이지 않는 공백·둥근 따옴표 등). 키는 영문·숫자·기호로만 "
+                        f"되어 있습니다 — 다시 붙여 넣으세요")
+            # ASCII 라도 보이는 글자(0x21~0x7E)만. 공백·탭·\x0b·\x0c 같은 제어
+            # 문자는 헤더에 실을 수 없고, 예전에는 그 거절 문장(h11 의 "Illegal
+            # header value b'Bearer <키>…'")이 키를 통째로 로그에 적었습니다.
+            # 어떤 거래소·LLM 의 키에도 공백이나 제어 문자는 없습니다.
+            if not "\x21" <= ch <= "\x7e":
+                return (f"값의 {i + 1}번째 글자가 공백이나 제어 문자입니다"
+                        f"(U+{ord(ch):04X} — 공백·탭 등). 키는 영문·숫자·기호로만 "
+                        f"되어 있습니다 — 다시 붙여 넣으세요")
     return ""
 
 
@@ -310,7 +352,7 @@ class CredentialStore:
             operator=raw.get("OPERATOR_NAME", "") or os.environ.get("OPERATOR_NAME", ""),
             venues=venues,
             has_llm=has("ANTHROPIC_API_KEY") or has("OPENAI_API_KEY")
-            or has("GOOGLE_API_KEY"),
+            or has("GOOGLE_API_KEY") or has("JEV_API_KEY"),
             has_notifier=has("TELEGRAM_BOT_TOKEN") and has("TELEGRAM_CHAT_ID"),
             updated_at=stamp,
         )
@@ -349,10 +391,8 @@ class CredentialStore:
             value = (value or "").strip()
             if not value:
                 continue
-            if "\n" in value or "\r" in value:
-                # One line per key: a newline inside a value is a second key,
-                # and that is the allow-list bypassed from the value side.
-                reason = "값에 줄바꿈이 있어 저장할 수 없습니다"
+            reason = value_rejection_reason(key, value)
+            if reason:
                 report.rejected[key] = reason
                 log.warning("설정 저장 거부: %r — %s", key, reason)
                 continue

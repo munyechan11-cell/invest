@@ -7,6 +7,13 @@
     python scripts/desk_live_check.py                 # 기본 (1종목, 토론 1라운드)
     python scripts/desk_live_check.py --rounds 2      # 더 깊게
     python scripts/desk_live_check.py --model claude-sonnet-5   # 더 싸게
+    python scripts/desk_live_check.py --provider jev  # 출하 설정과 같은 Jev
+                                                      # (JEV_API_KEY + JEV_MCP_URL)
+
+Jev 는 16석을 좌석당 호출 한 번으로 판단합니다(종목당 16회 + 시작 때 점검 1회).
+Jev 의 주소는 코드에 없습니다 — `.env`(또는 환경)의 `JEV_MCP_URL` 에서 읽습니다.
+글을 쓰지 않고 확률만 돌려주므로 서술 칸은 확률을 적은 정해진 문장이고,
+`--max-tokens` 와 `--model` 은 쓰지 않습니다. **실제 호출이라 과금됩니다.**
 
 주문은 나가지 않습니다 — `deliberate()` 만 호출하고 엔진 파이프라인은 타지 않습니다.
 합성 데이터를 쓰므로 결과의 방향성 자체에는 의미가 없고, 측정 대상은 기계 쪽입니다.
@@ -29,7 +36,7 @@ from quant.live.credentials import load_env_file
 load_env_file()
 
 from quant.alpha.desk import TradingDesk
-from quant.alpha.llm_client import DEFAULT_MODELS, LLMConfig
+from quant.alpha.llm_client import DEFAULT_MODELS, JEV_URL_ENV, BadEndpoint, LLMConfig
 from quant.core.account import Portfolio
 from quant.core.clock import SimClock
 from quant.core.context import Context
@@ -46,8 +53,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="데스크 실전 심의 1회")
     p.add_argument("--ticker", default="005930")
     p.add_argument("--provider", default="auto",
-                   choices=["auto", "anthropic", "google", "openai"],
-                   help="auto = .env 에 있는 키를 보고 고름")
+                   choices=["auto", "jev", "anthropic", "google", "openai"],
+                   help="auto = .env 에 있는 키를 보고 고름 (Jev 가 먼저)")
     p.add_argument("--model", default="", help="비우면 프로바이더 기본 모델")
     p.add_argument("--rounds", type=int, default=1, help="강세/약세 토론 라운드")
     p.add_argument("--risk-rounds", type=int, default=1)
@@ -70,7 +77,10 @@ def pick_provider(requested: str) -> str:
     operator hunting for a config problem that is really a "you have a
     different key" problem.
     """
+    # Jev 가 먼저인 이유: 출하 데스크 설정이 전부 Jev 라, 키가 여럿이면 실제로
+    # 돌게 될 것을 재는 쪽이 맞습니다.
     available = [name for name, var in (
+        ("jev", "JEV_API_KEY"),
         ("anthropic", "ANTHROPIC_API_KEY"),
         ("google", "GOOGLE_API_KEY"),
         ("openai", "OPENAI_API_KEY"),
@@ -82,7 +92,7 @@ def pick_provider(requested: str) -> str:
             return ""
         return requested
     if not available:
-        print("LLM 키가 하나도 없습니다 — .env 에 ANTHROPIC_API_KEY / "
+        print("LLM 키가 하나도 없습니다 — .env 에 JEV_API_KEY / ANTHROPIC_API_KEY / "
               "GOOGLE_API_KEY / OPENAI_API_KEY 중 하나를 넣으세요.", file=sys.stderr)
         return ""
     if len(available) > 1:
@@ -96,6 +106,12 @@ async def run(args: argparse.Namespace) -> int:
     if not provider:
         return 2
     model = args.model or DEFAULT_MODELS.get(provider, "")
+    if provider == "jev" and args.model and args.model != DEFAULT_MODELS["jev"]:
+        # Jev 에는 고를 모델이 없습니다. 다른 이름을 적으면 단가표에서 못 찾아
+        # 비용이 가장 비싼 기본 요율로 계산됩니다.
+        print(f"Jev 에는 모델 선택이 없습니다 — --model {args.model} 은 무시합니다",
+              file=sys.stderr)
+        model = DEFAULT_MODELS["jev"]
 
     symbol = Symbol(args.ticker, venue="kis", quote_currency="KRW",
                     tick_size=Decimal("100"), lot_size=Decimal("1"))
@@ -119,19 +135,43 @@ async def run(args: argparse.Namespace) -> int:
                                           avg_volume=12_000_000), live=False)
     await feed.backfill([symbol], start, end)
 
-    desk = TradingDesk(
-        LLMConfig(provider=provider, model=model, max_tokens=args.max_tokens,
-                  temperature=0.2, requests_per_minute=args.rpm,
-                  max_retries=5 if args.rpm else 3),
-        flow_feed=feed,
-        debate_rounds=args.rounds,
-        risk_debate_rounds=args.risk_rounds,
-        max_symbols_per_run=1,
-        deadline_s=args.deadline,
-        allow_in_backtest=True,
-        seats=[x.strip() for x in args.seats.split(",") if x.strip()] or None,
-    )
+    if provider == "jev":
+        # 주소는 출하 설정과 같은 곳 — 환경(.env)의 `JEV_MCP_URL` — 에서 읽습니다.
+        # 코드에는 기본 주소가 없습니다. 없으면 과금되는 호출을 하나도 보내지
+        # 않고 여기서 끝냅니다. `base_url` 로 옮겨 적지 않는 이유: 출하 설정도
+        # 적지 않고, 그래야 오류 문장이 고칠 곳(JEV_MCP_URL)을 가리킵니다.
+        if not os.environ.get(JEV_URL_ENV, "").strip():
+            print(f"{JEV_URL_ENV} 가 없습니다 — .env 에 Jev MCP 엔드포인트(https://…)"
+                  "를 넣으세요.", file=sys.stderr)
+            return 2
+        # 출하 설정(`llm: {provider: jev, timeout: 30}`)과 같게. 토큰 한도·온도는
+        # Jev 에 뜻이 없어 넘기지 않습니다.
+        llm = LLMConfig(provider="jev", model=model, timeout=30.0,
+                        requests_per_minute=args.rpm,
+                        max_retries=5 if args.rpm else 3)
+    else:
+        llm = LLMConfig(provider=provider, model=model, max_tokens=args.max_tokens,
+                        temperature=0.2, requests_per_minute=args.rpm,
+                        max_retries=5 if args.rpm else 3)
+    try:
+        desk = TradingDesk(
+            llm,
+            flow_feed=feed,
+            debate_rounds=args.rounds,
+            risk_debate_rounds=args.risk_rounds,
+            max_symbols_per_run=1,
+            deadline_s=args.deadline,
+            allow_in_backtest=True,
+            seats=[x.strip() for x in args.seats.split(",") if x.strip()] or None,
+        )
+    except BadEndpoint as exc:
+        # `http://` 인 원격 주소 등 — 토큰을 싣기 전에 거절했습니다.
+        print(f"데스크를 만들 수 없습니다: {exc}", file=sys.stderr)
+        return 2
     await desk.on_start(ctx)
+    # 시작 점검(Jev 는 작은 jev_evaluate 한 번)은 종목 심의와 따로 적습니다 — 합쳐 적으면
+    # "LLM 16회" 옆의 비용이 17회분이 됩니다.
+    preflight_calls, preflight_cost = desk.status()["llm_calls"], desk.estimated_cost_usd
     if desk.status()["disabled_reason"]:
         print(f"\n{BAR}\n  데스크를 시작할 수 없습니다\n{BAR}")
         print(f"  {desk.status()['disabled_reason']}")
@@ -143,16 +183,34 @@ async def run(args: argparse.Namespace) -> int:
 
     decision = await desk.deliberate(ctx, symbol)
     if decision is None:
+        # 심의 도중에 데스크가 꺼졌을 수 있습니다(잔액·한도 소진). 그 이유를
+        # 데스크가 적어 두었으니 그대로 보여 줍니다 — 마감이나 데이터 탓이 아닙니다.
+        reason = desk.status()["disabled_reason"]
+        if reason:
+            print(f"\n{BAR}\n  심의 도중 데스크가 꺼졌습니다\n{BAR}")
+            print(f"  {reason}")
+            print(BAR)
+            return 2
         print("심의가 완료되지 않았습니다 (마감시간 초과 또는 데이터 부족)")
         return 1
 
     usage = desk.client.usage
     print(f"\n{BAR}\n  {decision.summary_line()}\n{BAR}")
+    # 소수 다섯째 자리까지 — Jev 는 종목당 $0.001 안팎(입력 약 3만 토큰)이라 `.3f`
+    # 로는 $0.000 입니다.
     print(f"  소요 {decision.elapsed_s:.1f}초 · LLM {decision.llm_calls}회 · "
-          f"추정 ${desk.estimated_cost_usd:.3f}")
-    print(f"  토큰 in {usage.input_tokens:,} / out {usage.output_tokens:,}")
-    if decision.degraded:
-        print(f"  ⚠ 축약 심의: {decision.degraded}")
+          f"추정 ${decision.cost_usd:.5f} (종목 1개)")
+    print(f"  시작 점검: LLM {preflight_calls}회 · 추정 ${preflight_cost:.5f}")
+    # 재시도가 결국 성공하면 좌석 실패로 남지 않고, 그 백오프 대기는 소요 시간에
+    # 그대로 들어갑니다. 서버가 밝힌 처리 시간과 나란히 적어 둘을 가를 수 있게.
+    print(f"  재시도 {decision.retries}회 · Jev 처리 시간 합 "
+          f"{decision.jev_latency_ms / 1000:.1f}초 (호출 하나 최대 "
+          f"{decision.jev_latency_max_ms:.0f}ms)")
+    print(f"  토큰 in {usage.input_tokens:,} / out {usage.output_tokens:,} (점검 포함)")
+    failures = seat_failures(decision)
+    if failures:
+        print(f"  ⚠ 좌석 {len(failures)}곳 실패 — 첫 오류 [{failures[0][0]}] "
+              f"{failures[0][1][:160]}")
 
     print("\n── 분석 8석 ──")
     for key_, report in decision.analysts.items():
@@ -194,7 +252,9 @@ async def run(args: argparse.Namespace) -> int:
             "ticker": symbol.ticker, "close": bars[-1].close,
             "provider": provider, "model": model,
             "elapsed_s": decision.elapsed_s, "llm_calls": decision.llm_calls,
-            "cost_usd": desk.estimated_cost_usd, "action": decision.action,
+            "retries": decision.retries, "jev_latency_ms": decision.jev_latency_ms,
+            "cost_usd": decision.cost_usd, "preflight_cost_usd": preflight_cost,
+            "seat_failures": failures, "action": decision.action,
             "conviction": decision.conviction, "scale": decision.position_scale,
             "consensus": decision.consensus, "voting_seats": decision.voting_seats,
             "vetoed": decision.vetoed, "degraded": decision.degraded,
@@ -213,12 +273,47 @@ async def run(args: argparse.Namespace) -> int:
 
     # The number that decides whether this is usable in real time.
     print(f"\n{BAR}")
+    if failures:
+        # 실패한 좌석은 기다리지 않고 대체값을 냅니다. 그 심의의 소요 시간은
+        # 실제 심의보다 짧아서, 그걸로 봉 주기를 권하면 틀린 권고가 됩니다.
+        print(f"  좌석 {len(failures)}곳이 답하지 못해 속도·비용 판정을 하지 않습니다.")
+        for where, error in failures[:5]:
+            print(f"    - {where}: {error[:140]}")
+        print(BAR)
+        return 1
+    if decision.retries:
+        print(f"  ⚠ 재시도 {decision.retries}회 — 소요 시간에 재시도 대기가 들어 있어 "
+              "아래 속도 판정은 참고용입니다. 다시 재 보세요.")
     print(f"  실시간 적용 판정: 심의 {decision.elapsed_s:.0f}초 → "
           f"최소 봉 주기 {_min_timeframe(decision.elapsed_s)} 이상 권장")
-    print(f"  10종목을 매 봉 심의하면 시간당 약 ${desk.estimated_cost_usd * 10:.2f} "
-          f"(1분봉이면 이 값의 60배)")
+    print(f"  10종목을 매 봉 심의하면 한 봉에 약 ${decision.cost_usd * 10:.5f} "
+          f"(1시간봉이면 시간당, 1분봉이면 그 60배)")
     print(BAR)
     return 0
+
+
+def seat_failures(decision) -> list[tuple[str, str]]:
+    """답하지 못한 좌석과 그 오류. 좌석은 실패해도 대체값을 내므로 따로 셉니다."""
+    found: list[tuple[str, str]] = []
+
+    def check(where: str, report) -> None:
+        if isinstance(report, dict) and report.get("error"):
+            found.append((where, str(report["error"])))
+
+    for key, report in decision.analysts.items():
+        check(key, report)
+    for round_ in decision.debate.get("rounds", []):
+        for side in ("bull", "bear"):
+            check(f"{side} R{round_.get('round')}", round_.get(side))
+    for round_ in decision.risk_debate.get("rounds", []):
+        for side in ("aggressive", "conservative"):
+            check(f"risk_{side} R{round_.get('round')}", round_.get(side))
+    check("risk_neutral", decision.risk)
+    check("research_manager", decision.plan)
+    check("trader", decision.trade)
+    if decision.degraded:
+        found.append(("head", decision.degraded))
+    return found
 
 
 def _min_timeframe(seconds: float) -> str:

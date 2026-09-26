@@ -326,3 +326,20 @@ async def test_a_future_window_end_sends_no_until_at_all():
     now = datetime.now(UTC)
     await run(fake, start=now - timedelta(days=30), end=now + timedelta(days=1))
     assert "until" not in fake.investor_calls[0]
+
+
+# ── 프로그램 매매를 지어내지 않는다 ──────────────────────────────────────
+@pytest.mark.asyncio
+async def test_program_trading_the_venue_does_not_report_is_unknown_not_zero():
+    """토스는 프로그램 매매를 주지 않습니다. 기록의 기본값 0 이 그대로 나가면
+    수급 좌석은 "프로그램 순매수 0주" 를 측정된 사실로 읽습니다(용어집도 그렇게
+    풀었습니다)."""
+    fake = FakeToss(
+        pages=[{"nextUntil": None,
+                "records": [final("2026-07-16", 100_000, 50_000, -150_000)]}],
+        candles=[candle("2026-07-16", 3_000_000, 70_000)],
+    )
+    f = (await run(fake))[0]
+    assert not f.program_reported
+    assert f.to_dict()["program_qty"] is None
+    assert f.to_dict()["foreign_qty"] == 100_000              # 아는 것은 그대로

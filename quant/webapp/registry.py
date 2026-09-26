@@ -114,7 +114,8 @@ def _atomic_write_text(path: Path, text: str) -> None:
 #: LLM 제공자별 자격증명 이름. 데스크 알파가 있을 때만 봅니다.
 _LLM_SECRETS = {"anthropic": "ANTHROPIC_API_KEY",
                 "openai": "OPENAI_API_KEY",
-                "google": "GOOGLE_API_KEY"}
+                "google": "GOOGLE_API_KEY",
+                "jev": "JEV_API_KEY"}
 
 
 # ── 화면이 설명할 수 있는 실패 ───────────────────────────────────────────

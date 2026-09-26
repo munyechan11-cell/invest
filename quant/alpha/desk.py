@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import statistics
@@ -47,12 +48,18 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from quant.alpha.base import AlphaModel
+from quant.alpha.jev import PreflightAnswerFlipped
 from quant.alpha.llm_client import (
+    JEV_URL_ENV,
     LLMClient,
     LLMConfig,
     LLMError,
     QuotaExhausted,
+    UnsendableKey,
+    UsageTally,
     billing_hint,
+    failure_status,
+    usage_tally,
 )
 from quant.alpha.seats import (
     BEAR_SEAT,
@@ -62,6 +69,7 @@ from quant.alpha.seats import (
     RISK_SEATS,
     SPRITE_NAMES,
     TRADER_SEAT,
+    VETO_BLOCK_BARS,
     Seat,
     roster,
 )
@@ -92,6 +100,12 @@ from quant.indicators.streaming import (
 
 log = logging.getLogger("quant.alpha.desk")
 
+#: 사전 점검이 Jev 주소 문제를 말할 때 가리키는 곳. **주소 자체는 적지
+#: 않습니다** — 운영자만 정하는 값이고(`JEV_MCP_URL`), 경로·쿼리에 무엇이 들어
+#: 있을지 모릅니다. 이 문장은 사용자 화면(데스크가 꺼진 이유)에도 뜹니다.
+_JEV_ADDRESS = (f"Jev 주소 설정(운영자 환경 변수 {JEV_URL_ENV} — 전략에 "
+                "llm.base_url 이 있으면 그 값)")
+
 
 def _as_client(llm):
     """Accept an `LLMConfig`, an `LLMClient`, or anything with `.complete()`.
@@ -106,6 +120,15 @@ def _as_client(llm):
     if hasattr(llm, "complete"):
         return llm
     return LLMClient(llm)
+
+
+def _provider_of(llm) -> str:
+    """`LLMConfig` 이든 클라이언트든, 설정된 제공자 이름. 모르면 ""."""
+    if llm is None:
+        return ""
+    if isinstance(llm, LLMConfig):
+        return llm.provider
+    return str(getattr(getattr(llm, "config", None), "provider", "") or "")
 
 
 ACTION_TO_DIRECTION = {
@@ -156,8 +179,18 @@ class DeskDecision:
     brief: dict = field(default_factory=dict)
     lessons_used: str = ""
     elapsed_s: float = 0.0
+    #: **이 심의가** 쓴 호출 수와 비용 (`UsageTally`). 동시에 도는 다른 종목의
+    #: 호출은 섞이지 않습니다.
     llm_calls: int = 0
+    cost_usd: float = 0.0
     degraded: str = ""
+    #: 이 심의에서 실패 뒤 다시 보낸 횟수. 재시도가 결국 성공하면 좌석 실패로도
+    #: 호출 수로도 남지 않아, 그 백오프 대기가 `elapsed_s` 에 조용히 섞였습니다.
+    retries: int = 0
+    #: Jev 가 호출마다 밝히는 처리 시간(`latency_ms`)의 합과 최댓값. 합은 벽시계
+    #: 시간이 아닙니다(분석가 8석은 동시에 돕니다) — 모델 몫을 가늠하는 값입니다.
+    jev_latency_ms: float = 0.0
+    jev_latency_max_ms: float = 0.0
 
     @property
     def consensus(self) -> float:
@@ -229,8 +262,42 @@ class DeskDecision:
             "lessons_used": self.lessons_used,
             "elapsed_s": round(self.elapsed_s, 2),
             "llm_calls": self.llm_calls,
+            # 이 심의가 쓴 돈. 계산은 늘 하고 있었는데(`UsageTally`) 여기서 빠져,
+            # 화면과 `/api/desk` 는 심의 한 번의 비용을 보여 줄 수 없었습니다.
+            "cost_usd": round(self.cost_usd, 6),
             "degraded": self.degraded,
+            "retries": self.retries,
+            "jev_latency_ms": round(self.jev_latency_ms, 1),
+            "jev_latency_max_ms": round(self.jev_latency_max_ms, 1),
+            # 답하지 못한 좌석. 좌석은 실패해도 대체값을 내므로(분석가는 "판단
+            # 재료 부족", 트레이더는 "즉시 시장가" …) 이 수가 없으면 화면은 실패를
+            # 정직한 판단으로 그립니다. 헤드의 실패는 `degraded` 가 말합니다.
+            "seat_failures": len(self.seat_errors),
+            "first_seat_error": (one_line_error(self.seat_errors[0][1], 200)
+                                 if self.seat_errors else ""),
         }
+
+    @property
+    def seat_errors(self) -> list[tuple[str, str]]:
+        """(좌석, 오류) — 대체값으로 채워진 좌석들, 단계 순서대로. 헤드는 뺍니다."""
+        found: list[tuple[str, str]] = []
+
+        def check(where: str, report) -> None:
+            if isinstance(report, dict) and report.get("error"):
+                found.append((where, str(report["error"])))
+
+        for key, report in self.analysts.items():
+            check(key, report)
+        for round_ in self.debate.get("rounds", []):
+            for side in ("bull", "bear"):
+                check(side, round_.get(side))
+        for round_ in self.risk_debate.get("rounds", []):
+            check("risk_aggressive", round_.get("aggressive"))
+            check("risk_conservative", round_.get("conservative"))
+        check("risk_neutral", self.risk)
+        check("research_manager", self.plan)
+        check("trader", self.trade)
+        return found
 
     def summary_line(self) -> str:
         mark = "⛔" if self.vetoed else {
@@ -591,6 +658,15 @@ class TradingDesk(AlphaModel):
         cost_limit_usd: float = 0.0,
         memory: bool = True,
     ):
+        if allow_short and "jev" in (_provider_of(llm), _provider_of(decision_llm)):
+            # Jev 의 확률은 선택지 **설명** 에 대한 답입니다. 헤드에게 sell 은
+            # "보유를 닫는다" 로 묻는데, 공매도를 켜면 보유가 없는 종목에서
+            # 데스크가 그 답으로 **공매도를 엽니다** — 묻지 않은 질문에 돈이
+            # 걸립니다. 공매도용 설명을 만들기 전까지는 시작부터 거절합니다.
+            raise ValueError(
+                "공매도(allow_short)를 켠 데스크는 Jev 로 돌릴 수 없습니다 — Jev 에게 "
+                "매도는 '보유 청산' 으로 묻는데, 공매도가 켜져 있으면 보유가 없는 "
+                "종목에서 공매도 포지션을 엽니다. allow_short 를 끄세요.")
         self.client = _as_client(llm)
         # The judging seats decide real money; they are worth the stronger model.
         self.decision_client = _as_client(decision_llm) or self.client
@@ -647,6 +723,14 @@ class TradingDesk(AlphaModel):
         self.meter = None
         #: 이번 봉에 심의를 쉰 이유(요금제). 비어 있으면 정상입니다.
         self.meter_note = ""
+        #: `update()` 가 실제로 종목을 심의한 횟수와 마지막 한 번의 결과.
+        #:
+        #: 부르는 쪽(`LiveTrader._deliberate_now`)은 예전에 "LLM 호출 수가
+        #: 그대로면 새로 볼 것이 없었다" 로 읽었습니다. 그런데 호출 수는 응답이
+        #: **온** 호출만 셉니다 — Jev 가 전부 503 이면 수가 그대로라, 모든 좌석이
+        #: 실패한 심의가 "이 봉은 이미 심의했습니다" 로 적혔습니다.
+        self.runs = 0
+        self.last_run: dict = {}
 
     # ── lifecycle ────────────────────────────────────────────────────────
     async def on_start(self, ctx: Context) -> None:
@@ -699,41 +783,105 @@ class TradingDesk(AlphaModel):
                 timeout=min(self.deadline_s, 45.0),
             )
         except asyncio.TimeoutError:
-            return "LLM 응답이 없습니다 (사전 점검 시간 초과) — 네트워크나 모델 설정을 확인하세요"
+            # 제공자를 말합니다. Jev 에는 고를 모델이 없어서 "모델 설정을
+            # 확인하세요" 는 있지도 않은 설정으로 사람을 보냅니다.
+            config = getattr(self.client, "config", None)
+            provider = getattr(config, "provider", "")
+            if provider == "jev":
+                return ("Jev 응답이 없습니다 (사전 점검 시간 초과) — 네트워크나 "
+                        f"{_JEV_ADDRESS}을 확인하세요")
+            who = billing_hint(provider)[0] if provider else "LLM"
+            return (f"{who} 응답이 없습니다 (사전 점검 시간 초과) — 네트워크나 모델 "
+                    "설정을 확인하세요")
         except LLMError as exc:
             message = str(exc)
             # **어느 제공자인지 말해야 합니다.** 예전에는 무조건 Anthropic
-            # 이라고 적혀 있었는데, 출하 설정은 전부 제미나이입니다. 제미나이
-            # 할당량이 떨어진 사람이 그 문장을 읽으면 있지도 않은 Anthropic
-            # 계정을 충전하러 갑니다 — 틀린 안내는 없는 안내보다 나쁩니다.
-            who, where = billing_hint(
-                getattr(getattr(self.client, "config", None), "provider", ""))
-            if ("credit balance" in message or "quota" in message.lower()
-                    or "spending cap" in message.lower()
-                    or "credits are depleted" in message.lower()):
+            # 이라고 적혀 있었는데, 그때 출하 설정은 전부 제미나이였습니다(지금은
+            # Jev). 제미나이 할당량이 떨어진 사람이 그 문장을 읽으면 있지도 않은
+            # Anthropic 계정을 충전하러 갑니다 — 틀린 안내는 없는 안내보다
+            # 나쁩니다. 그래서 이름은 설정의 제공자에서 `billing_hint` 로 얻습니다.
+            config = getattr(self.client, "config", None)
+            provider = getattr(config, "provider", "")
+            who, where = billing_hint(provider)
+            # Jev 의 소진은 전송 층이 이미 가렸습니다(`QuotaExhausted`). 글에서
+            # "quota" 를 다시 찾으면, 재시도 끝에 싸여 온 **분 단위** 한도
+            # ("Quota exceeded: 60 requests per minute" — 일시 429)가 "하루
+            # 단위로 풀립니다" 로 적혔습니다. 다른 제공자는 소진이 400 같은
+            # 평범한 오류로 오기도 해(Anthropic 의 "credit balance") 글도 봅니다.
+            lowered = message.lower()
+            if isinstance(exc, QuotaExhausted) or (provider != "jev" and (
+                    "credit balance" in message or "quota" in lowered
+                    or "spending cap" in lowered or "credits are depleted" in lowered)):
                 return self._exhausted_reason(exc)
-            if " 401:" in message or " 403:" in message:
+            if isinstance(exc, UnsendableKey):
+                # 서버는 이 키를 본 적이 없습니다 — "거부되었습니다" 는 틀린
+                # 말입니다. 붙여 넣을 때 섞인 글자가 원인이고, 위치를 적습니다.
+                return (f"{who} API 키에 보낼 수 없는 글자가 있습니다 — 키를 다시 "
+                        f"붙여 넣으세요. ({message[:200]})")
+            # 원인은 꼬리표로만 읽습니다(`failure_status`). 예전에는 글 전체에서
+            # " 401:"·" 404:" 을 찾아, 재시도 끝에 싸여 온 "jev 503: Upstream
+            # provider returned 401: …" 같은 **일시 장애** 를 "키가 거부되었습니다"
+            # 나 "llm.base_url 을 확인하세요" 로 적었습니다. 사람은 멀쩡한 키를
+            # 바꾸러 갔습니다. `complete()` 는 이미 같은 규칙으로 재시도를 정합니다.
+            status = failure_status(exc)
+            if status in (401, 403):
                 return (f"{who} API 키가 거부되었습니다 — 키를 확인하세요."
                         + (f" 발급: {where}" if where else "")
                         + f" ({message[:160]})")
-            if " 404:" in message:
+            if status == 404 and provider == "jev":
+                # Jev 에는 고를 모델이 없습니다(모델 설정을 보내지도 않습니다).
+                # 404 는 주소가 틀렸거나 배포가 옮겨졌다는 뜻이라, "모델 이름을
+                # 확인하세요" 는 있지도 않은 설정으로 사람을 보냅니다.
+                # 주소는 화면에 옮기지 않습니다 — 운영자만 정하는 값이고, 경로·
+                # 쿼리에 무엇이 들어 있을지 모릅니다. 코드에는 기본 주소가 없어
+                # 고칠 곳은 둘 중 하나이고, 지금 어느 쪽을 쓰는지만 적습니다.
+                which = ("지금은 전략의 llm.base_url" if getattr(config, "base_url", "")
+                         else f"지금은 {JEV_URL_ENV}")
+                return (f"Jev 주소를 찾을 수 없습니다 — {_JEV_ADDRESS}을 확인하세요"
+                        f"({which}). ({message[:120]})")
+            if status == 404:
                 available = await self._list_models()
                 hint = f" 사용 가능: {', '.join(available[:8])}" if available else ""
                 return (f"모델을 찾을 수 없습니다 — 모델 이름을 확인하세요."
                         f"{hint} ({message[:120]})")
-            return f"LLM 사전 점검 실패: {message[:200]}"
+            if provider == "jev":
+                # 키도 한도도 아닌 실패입니다. 예전에는 아래의 "LLM 사전 점검
+                # 실패" 로 떨어졌고, 화면은 거기에 "LLM 키와 한도를 확인하세요"
+                # 를 붙였습니다 — 406·405·HTML 인증 페이지처럼 **주소나 배포**
+                # 문제일 때 사람을 키로 보냈습니다.
+                if isinstance(exc, PreflightAnswerFlipped):
+                    return ("Jev 의 답이 정해진 답과 반대입니다 — Jev 서버에서 확률의 "
+                            "의미(방향)가 바뀌었을 수 있습니다. 이대로 켜면 '거부 없음' "
+                            "이 거부로 읽혀 보유가 청산될 수 있어 데스크를 켜지 "
+                            "않습니다. 기다려도 풀리지 않으니 데스크 코드를 확인하세요. "
+                            f"({message[:200]})")
+                if status == 422:
+                    return ("Jev 가 데스크의 질문 형식을 거부했습니다 — Jev 서버의 "
+                            "jev_evaluate 입력 형식이 바뀌었을 수 있습니다. 기다려도 "
+                            "풀리지 않으니 데스크 코드를 확인하세요. "
+                            f"({message[:160]})")
+                if status == 429:
+                    # 소진(`QuotaExhausted`)이 아닌 429 — 재시도 세 번 동안 풀리지
+                    # 않은 **짧은** 속도 제한입니다. 예전에는 아래의 "llm.base_url
+                    # 을 확인하세요" 로 떨어져, 멀쩡한 주소를 고치러 갔습니다.
+                    return ("Jev 가 요청 속도를 잠시 제한하고 있습니다 (429) — 한도 "
+                            "소진이 아니라 짧은 창의 제한이라 기다리면 풀립니다. "
+                            "데스크는 저절로 다시 켜지지 않으니 잠시 뒤 봇을 다시 "
+                            f"시작하세요. ({message[:200]})")
+                return (f"Jev 연결 실패 (MCP 응답 형식·주소) — {_JEV_ADDRESS}과 Jev "
+                        f"배포 상태를 확인하세요. ({message[:200]})")
+            return (f"LLM 사전 점검 실패: {message[:200]} — AI 데스크의 LLM 키와 한도를 "
+                    "확인하세요.")
         except Exception as exc:                      # pragma: no cover - defensive
-            return f"LLM 사전 점검 실패: {type(exc).__name__}: {exc}"
+            return (f"LLM 사전 점검 실패: {type(exc).__name__}: {exc} — AI 데스크의 LLM "
+                    "키와 한도를 확인하세요.")
         return ""
 
-    def _record_spend(self, before_calls: int, before_cost: float) -> None:
+    def _record_spend(self, calls: int, spent: float) -> None:
         """이번 심의가 쓴 만큼 계량기에 적는다. 기록 실패가 매매를 막지 않게."""
-        if self.meter is None:
+        if self.meter is None or calls <= 0:
             return
-        calls = max(0, self._calls() - before_calls)
-        if not calls:
-            return
-        spent = max(0.0, self.estimated_cost_usd - before_cost)
+        spent = max(0.0, spent)
         try:
             self.meter.record(calls, spent)
         except Exception:  # noqa: BLE001 — 청구 기록 실패로 봇을 세우지 않는다
@@ -754,16 +902,55 @@ class TradingDesk(AlphaModel):
             out[key] = bar
         return out
 
+    def on_universe_changed(self, ctx: Context, added: list[Symbol],
+                            removed: list[Symbol]) -> None:
+        """빠진 종목의 지표를 버린다. 돌아오면 `ctx.history` 로 다시 쌓습니다.
+
+        유니버스에서 빠진 종목에는 엔진이 봉을 넘겨주지 않습니다(`_active`).
+        지표를 그대로 두면, 몇 주 뒤 돌아왔을 때 그 사이 봉 없이 새 봉 하나만
+        이어 붙여 5봉 수익률·ATR·ADX 가 공백을 가로질러 계산됩니다 — 실제
+        +12.5% 가 +86% 로 적힌 브리프를 좌석들이 "사실로" 읽었습니다. 규칙
+        알파(`technical.py`)는 이미 이렇게 버립니다.
+        """
+        for sym in removed:
+            self._sets.pop(sym.key, None)
+            self._ingested.pop(sym.key, None)
+
+    def _feed(self, ctx: Context, bar: Bar) -> None:
+        """새 봉 하나를 지표에 넣는다. 그 사이 못 본 봉이 있으면 처음부터 다시 쌓는다.
+
+        데스크가 못 본 봉이 `ctx.history` 에 있는 경우는 유니버스 이탈 말고도
+        있습니다(일시정지 중에도 엔진은 봉을 쌓지만 알파는 부르지 않습니다).
+        스트리밍 지표는 빠진 봉을 끼워 넣을 수 없으니 이 봉 **앞까지** 의
+        기록으로 새로 쌓고 이 봉을 넣습니다.
+        """
+        key = bar.symbol.key
+        seen = self._ingested.get(key)
+        if seen is not None and key in self._sets:
+            history = ctx.history(bar.symbol)
+            if any(seen < b.ts < bar.ts for b in history):
+                log.info("%s: 데스크가 보지 못한 봉이 있어 지표를 다시 쌓습니다 "
+                         "(마지막으로 본 봉 %s)", bar.symbol.ticker, seen)
+                iset = self._new_set(ctx)
+                iset.prime([b for b in history if b.ts < bar.ts])
+                self._sets[key] = iset
+        self._indicators(ctx, bar.symbol).update(bar)
+        self._ingested[key] = bar.ts
+
     # ── the shared brief ─────────────────────────────────────────────────
+    @staticmethod
+    def _new_set(ctx: Context) -> IndicatorSet:
+        return IndicatorSet(
+            rsi=RSI(14), sma20=SMA(20), sma50=SMA(50), sma200=SMA(200),
+            atr=ATR(14), macd=MACD(), adx=ADX(14), bb=BollingerBands(20, 2.0),
+            ret5=RollingReturn(5), ret20=RollingReturn(20), ret60=RollingReturn(60),
+            vol=RollingVolatility(20, periods_per_year(ctx.timeframe)),
+        )
+
     def _indicators(self, ctx: Context, symbol: Symbol) -> IndicatorSet:
         iset = self._sets.get(symbol.key)
         if iset is None:
-            iset = IndicatorSet(
-                rsi=RSI(14), sma20=SMA(20), sma50=SMA(50), sma200=SMA(200),
-                atr=ATR(14), macd=MACD(), adx=ADX(14), bb=BollingerBands(20, 2.0),
-                ret5=RollingReturn(5), ret20=RollingReturn(20), ret60=RollingReturn(60),
-                vol=RollingVolatility(20, periods_per_year(ctx.timeframe)),
-            )
+            iset = self._new_set(ctx)
             history = ctx.history(symbol)
             if history:
                 iset.prime(history[:-1])   # the newest bar arrives via update()
@@ -903,14 +1090,31 @@ class TradingDesk(AlphaModel):
         who, where = billing_hint(
             getattr(getattr(self.client, "config", None), "provider", ""))
         text = str(exc).lower()
-        if "spending cap" in text or "credits are depleted" in text:
+        # 한 번 꺼진 데스크는 **저절로 다시 켜지지 않습니다** (`_disabled` 는
+        # 시작 때만 비웁니다). "하루 단위로 풀립니다" 만 적으면 다음 날 알아서
+        # 돌아올 것처럼 읽혀, 아무도 다시 시작하지 않습니다.
+        if ("spending cap" in text or "credits are depleted" in text
+                or text.startswith("jev 402:")):
             todo = (f"{who} 결제 한도에 걸렸습니다 — **기다려도 풀리지 않습니다.**"
-                    + (f" {where} 에서 한도·잔액을 확인하세요." if where else ""))
+                    + (f" {where} 에서 한도·잔액을 확인하세요." if where else "")
+                    + " 해결한 뒤 봇을 다시 시작해야 데스크가 켜집니다.")
         else:
             todo = (f"{who} 사용 한도가 찼습니다 — 보통 하루 단위로 풀립니다. "
-                    f"한 바퀴가 호출 약 {len(self.seats) + 3}회를 쓰므로, 계속 "
-                    f"걸리면 좌석 축소(seats 옵션)도 방법입니다.")
+                    f"데스크는 저절로 다시 켜지지 않으니 풀린 뒤 봇을 다시 "
+                    f"시작하세요. 종목 하나 심의가 호출 {self.calls_per_symbol()}회를 "
+                    f"쓰므로, 계속 걸리면 좌석 축소(seats 옵션)도 방법입니다.")
         return f"{todo} (원문: {one_line_error(exc, 120)})"
+
+    def calls_per_symbol(self) -> int:
+        """종목 하나를 끝까지 심의할 때의 LLM 호출 수 (시작 때 점검 1회 제외).
+
+        분석가 전원 + 토론 라운드마다 강세·약세 + 리스크 라운드마다 공격·보수 +
+        중립·계획·트레이더·헤드. 출하 설정(라운드 1·1)이면 16회입니다 — 예전
+        안내문은 `좌석 수 + 3` 으로 19회라고 적었는데, 어느 출하 설정과도 맞지
+        않았습니다.
+        """
+        return (len(self.analyst_seats) + 2 * self.debate_rounds
+                + 2 * self.risk_debate_rounds + 4)
 
     async def _safe_ask(self, seat: Seat, user: str, fallback: dict) -> dict:
         try:
@@ -931,7 +1135,11 @@ class TradingDesk(AlphaModel):
         user = f"결정론적으로 계산된 시장 브리프다. 이 숫자들을 사실로 간주하라.\n{payload}\n\n"
         if external:
             user += f"[{brief.get('기준시각')}] 시점 기준 외부 컨텍스트:\n{external}\n\n"
+        # 방향은 **기간** 이 있어야 판단할 수 있습니다. 예전에는 헤드에게만 이
+        # 문장이 있어서, 분석가는 "보유기간 동안" 을 제각기 짐작했습니다 — 같은
+        # 투표에서 좌석마다 다른 기간을 가정한 셈입니다.
         user += (
+            f"기본 보유기간은 {self.default_horizon}봉이다. "
             "당신 좌석의 관점에서만 판단하라. 다른 분석가의 영역은 침범하지 마라. "
             "브리프의 숫자를 인용해 근거를 대라. 데이터가 없으면 지어내지 말고 "
             "data_sufficient=false 로 답하라."
@@ -1055,8 +1263,15 @@ class TradingDesk(AlphaModel):
         return n
 
     async def deliberate(self, ctx: Context, symbol: Symbol) -> DeskDecision | None:
+        # 이 심의의 호출만 셉니다. 클라이언트 누적의 앞뒤 차이로 세면 동시에
+        # 도는 다른 종목의 좌석까지 섞여, 4종목 동시 심의에서 종목마다 64회로
+        # 적혔습니다(실제로는 16회).
+        with usage_tally() as tally:
+            return await self._deliberate(ctx, symbol, tally)
+
+    async def _deliberate(self, ctx: Context, symbol: Symbol,
+                          tally: UsageTally) -> DeskDecision | None:
         started = time.monotonic()
-        calls_before = self._calls()
         brief = self.build_brief(ctx, symbol)
         if not brief:
             return None
@@ -1106,7 +1321,13 @@ class TradingDesk(AlphaModel):
                 self._run_head(brief, analysts, debate, risk_debate, risk, plan,
                                trade, lessons),
                 timeout=remaining())
-        except QuotaExhausted:
+        except QuotaExhausted as exc:
+            # 헤드는 `_safe_ask` 를 거치지 않습니다(실패하면 합의로 물러서야
+            # 하므로). 그래서 헤드에서 온 소진은 데스크를 끄지 않았고, 다음
+            # 봉에 16석이 또 돌았습니다. 좌석에서 온 소진과 같이 끕니다.
+            if not self._disabled:
+                self._disabled = self._exhausted_reason(exc)
+                log.error(self._disabled)
             log.error("%s: 사용량 소진으로 심의 중단", symbol.ticker)
             return None
         except (asyncio.TimeoutError, LLMError) as exc:
@@ -1115,7 +1336,7 @@ class TradingDesk(AlphaModel):
             # contract, not a suggestion.
             degraded = f"마감 초과/오류로 분석가 합의 대체 ({type(exc).__name__})"
             log.warning("%s: %s", symbol.ticker, degraded)
-            head, risk = self._consensus_fallback(analysts, risk)
+            head, risk = self._consensus_fallback(analysts, risk, exc)
 
         # Stamp the benchmark the call will be graded against, not just its
         # price: a benchmark that is configured but unpriced (no warm-up data)
@@ -1147,11 +1368,29 @@ class TradingDesk(AlphaModel):
             analysts=analysts, debate=debate, risk_debate=risk_debate, risk=risk,
             plan=plan, trade=trade, brief=brief, lessons_used=lessons,
             elapsed_s=time.monotonic() - started,
-            llm_calls=self._calls() - calls_before,
+            llm_calls=tally.calls,
+            cost_usd=tally.cost_usd,
             degraded=degraded,
+            retries=tally.retries,
+            jev_latency_ms=tally.latency_ms,
+            jev_latency_max_ms=tally.latency_max_ms,
         )
 
-    def _consensus_fallback(self, analysts: dict, risk: dict) -> tuple[dict, dict]:
+    def _fallback_cause(self, exc: BaseException | None) -> str:
+        """합의로 물러선 **이유** — 마감인지, 호출 실패인지.
+
+        예전에는 무엇 때문이든 "마감 내 완료되지 않아" 라고 적었습니다. 키가
+        거절돼 16석이 전부 실패해도 화면은 마감 탓을 했고, 사람은 마감을
+        늘리러 갔습니다.
+        """
+        if exc is None or isinstance(exc, asyncio.TimeoutError):
+            return "토론·결정 단계가 마감 내 완료되지 않아 분석가 합의로 대체"
+        who = billing_hint(
+            getattr(getattr(self.decision_client, "config", None), "provider", ""))[0]
+        return f"{who} 호출 실패로 분석가 합의로 대체 — {one_line_error(exc, 120)}"
+
+    def _consensus_fallback(self, analysts: dict, risk: dict,
+                            exc: BaseException | None = None) -> tuple[dict, dict]:
         """Deterministic decision from the analyst seats alone."""
         score = weight = 0.0
         for r in analysts.values():
@@ -1165,7 +1404,7 @@ class TradingDesk(AlphaModel):
             "action": "buy" if consensus > 0.35 else "sell" if consensus < -0.35 else "hold",
             # capped, because no debate was held to test this view
             "conviction": min(abs(consensus), 0.7),
-            "rationale": "토론·결정 단계가 마감 내 완료되지 않아 분석가 합의로 대체",
+            "rationale": self._fallback_cause(exc),
             "invalidation": "다음 사이클에서 완전한 심의가 완료되면 재평가",
             "horizon_bars": self.default_horizon,
         }
@@ -1209,8 +1448,7 @@ class TradingDesk(AlphaModel):
         fresh = self._fresh_bars(bars)
         if fresh:
             for bar in fresh.values():
-                self._indicators(ctx, bar.symbol).update(bar)
-                self._ingested[bar.symbol.key] = bar.ts
+                self._feed(ctx, bar)
             self._covered.clear()          # 새 봉 — 다시 전부 볼 수 있습니다
             bars = fresh
         else:
@@ -1263,32 +1501,44 @@ class TradingDesk(AlphaModel):
         if not targets:
             return []
 
-        before_calls, before_cost = self._calls(), self.estimated_cost_usd
-        try:
-            gate = asyncio.Semaphore(self.concurrent_symbols)
+        # 이 봉의 심의가 쓴 것만 셉니다. 누적의 앞뒤 차이로 세면 그 사이
+        # 같은 데스크로 돈 `/api/evaluate` 의 호출까지 섞여 두 번 청구됩니다.
+        with usage_tally() as spent:
+            try:
+                gate = asyncio.Semaphore(self.concurrent_symbols)
 
-            async def one(symbol):
-                async with gate:
-                    return await self._deliberate_cached(ctx, symbol)
+                async def one(symbol):
+                    async with gate:
+                        return await self._deliberate_cached(ctx, symbol)
 
-            results = await asyncio.gather(
-                *(one(s) for s in targets), return_exceptions=True,
-            )
-            # 봤으면 적습니다 — 실패한 것도 포함입니다. 실패한 종목을 계속
-            # 다시 집으면 남은 후보가 영영 순서를 못 받습니다.
-            self._covered.update(s.key for s in targets)
-        finally:
-            # 실패한 호출도 청구됩니다. 성공만 적으면 그 비용이 아무 계정에도
-            # 잡히지 않고 운영자 카드로 갑니다.
-            self._record_spend(before_calls, before_cost)
+                results = await asyncio.gather(
+                    *(one(s) for s in targets), return_exceptions=True,
+                )
+                # 봤으면 적습니다 — 실패한 것도 포함입니다. 실패한 종목을 계속
+                # 다시 집으면 남은 후보가 영영 순서를 못 받습니다.
+                self._covered.update(s.key for s in targets)
+            finally:
+                # 실패한 호출도 청구됩니다. 성공만 적으면 그 비용이 아무 계정에도
+                # 잡히지 않고 운영자 카드로 갑니다.
+                self._record_spend(spent.calls, spent.cost_usd)
 
         insights: list[Insight] = []
+        run = {"attempted": len(targets), "decided": 0, "seat_failures": 0,
+               "degraded": 0, "first_error": ""}
         for symbol, decision in zip(targets, results):
             if isinstance(decision, BaseException):
                 log.warning("데스크 심의 실패 %s: %s", symbol.ticker, decision)
+                run["first_error"] = run["first_error"] or one_line_error(decision, 200)
                 continue
             if decision is None:
                 continue
+            run["decided"] += 1
+            errors = decision.seat_errors
+            run["seat_failures"] += len(errors)
+            run["degraded"] += 1 if decision.degraded else 0
+            if not run["first_error"]:
+                run["first_error"] = one_line_error(
+                    errors[0][1] if errors else decision.degraded, 200)
             self.decisions[symbol.key] = decision
             self.history.append(decision)
             if len(self.history) > 500:
@@ -1301,6 +1551,8 @@ class TradingDesk(AlphaModel):
             insight = self._to_insight(ctx, symbol, decision)
             if insight is not None:
                 insights.append(insight)
+        self.runs += 1
+        self.last_run = run
         return insights
 
     def _to_insight(self, ctx: Context, symbol: Symbol, d: DeskDecision) -> Insight | None:
@@ -1308,8 +1560,10 @@ class TradingDesk(AlphaModel):
 
         if d.vetoed:
             # A veto closes the position; it never means merely "do not add".
+            # 봉 수는 Jev 에게 거부를 묻는 문장과 같은 값입니다(`VETO_BLOCK_BARS`).
             return self._insight(
-                ctx, symbol, Direction.FLAT, period=ctx.bar_delta * 3, confidence=0.9,
+                ctx, symbol, Direction.FLAT, period=ctx.bar_delta * VETO_BLOCK_BARS,
+                confidence=0.9,
                 tag=f"리스크 거부: {d.veto_reason or d.risk.get('reasoning', '')}"[:180],
                 decision=d.to_dict(),
             )
@@ -1365,6 +1619,26 @@ class TradingDesk(AlphaModel):
         return decision
 
     # ── operations ───────────────────────────────────────────────────────
+    async def aclose(self) -> None:
+        """LLM 클라이언트의 연결을 닫는다. 다시 쓰지 않을 데스크에만 부릅니다.
+
+        `/api/evaluate` 는 봇이 없으면 요청마다 새 데스크(새 클라이언트)를 세웁니다.
+        닫지 않으면 요청마다 연결 여럿이 순환 참조 수거 때까지 열려 있었습니다
+        (gc 를 끄고 잰 값: 요청 10번에 파일 기술자 +160). 봇이 멈출 때도 같습니다.
+        """
+        seen: set[int] = set()
+        for client in (self.client, self.decision_client):
+            close = getattr(client, "close", None)
+            if close is None or id(client) in seen:
+                continue
+            seen.add(id(client))
+            try:
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:  # noqa: BLE001 — 정리 실패가 요청·종료를 막지 않게
+                log.exception("데스크 LLM 클라이언트를 닫지 못했습니다")
+
     @property
     def estimated_cost_usd(self) -> float:
         """Spend estimate, priced per model.

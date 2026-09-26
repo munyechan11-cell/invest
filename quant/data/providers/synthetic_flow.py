@@ -55,6 +55,7 @@ class SyntheticFlowProvider(FlowProvider):
                     retail_value=retail * price,
                     program_qty=smart * rng.uniform(0.2, 0.5),
                     program_value=smart * rng.uniform(0.2, 0.5) * price,
+                    program_reported=True,
                     close=price, volume=volume,
                 ))
             ts += timedelta(days=1)

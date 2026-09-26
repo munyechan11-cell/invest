@@ -627,3 +627,34 @@ def test_a_strategy_that_never_reads_flow_stays_quiet():
     """Otherwise the warning appears on every config and stops being read."""
     result = asyncio.run(run_backtest(flow_config("none", [ModelSpec(type="ema_cross")])))
     assert _flow_warnings(result) == []
+
+
+# ── the desk's LLM connections are released with everything else ─────────
+class _ClosableDesk:
+    def __init__(self):
+        self.closed = 0
+
+    async def aclose(self):
+        self.closed += 1
+
+
+def test_shutdown_closes_the_desk_llm_client(tmp_path):
+    """`LLMClient.close()` had no caller: a stopped bot's desk kept its pool open."""
+    trader = make_trader(tmp_path, "desk.db")
+    desk = _ClosableDesk()
+
+    async def scenario():
+        await trader.start()
+        trader.desk = lambda: desk          # this config has no desk; stand one in
+        await trader.shutdown()
+
+    asyncio.run(scenario())
+    assert desk.closed == 1
+
+
+def test_a_failed_start_closes_the_desk_llm_client(tmp_path):
+    trader = make_trader(tmp_path, "desk-failed.db")
+    desk = _ClosableDesk()
+    trader.desk = lambda: desk
+    asyncio.run(trader._cleanup_failed_start())
+    assert desk.closed == 1

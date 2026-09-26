@@ -19,7 +19,7 @@ from quant.core.types import (
     krx_tick_size,
 )
 from quant.data.providers.kis import korean_tick_size
-from tests.conftest import shipped_configs
+from tests.conftest import DUMMY_JEV_MCP_URL, shipped_configs
 
 #: 국내 종목을 다루는 출하 설정 전부. 이름을 박아 두면 설정 하나를 옮길 때마다
 #: 가드가 없는 파일을 찾다가 깨집니다 — 지켜야 하는 것은 **그때그때 목록에
@@ -106,8 +106,10 @@ def test_a_zero_tick_still_means_no_grid():
 def test_every_shipped_korean_symbol_uses_the_ladder(path, monkeypatch):
     for var in ("TOSS_CLIENT_ID", "TOSS_CLIENT_SECRET", "TOSS_ACCOUNT_NO",
                 "KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCOUNT_NO",
-                "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY"):
+                "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GOOGLE_API_KEY",
+                "JEV_API_KEY"):
         monkeypatch.setenv(var, "x")
+    monkeypatch.setenv("JEV_MCP_URL", DUMMY_JEV_MCP_URL)
     config = _load(path)
     krw = [s for s in config.universe.symbols if s.quote_currency.upper() == "KRW"]
     assert krw, f"{path} 에 국내 종목이 없습니다"

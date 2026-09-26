@@ -171,6 +171,9 @@ class KisFlowProvider(FlowProvider):
             out[ts] = {
                 "program_qty": _f(row, "whol_ntby_qty", "ntby_qty"),
                 "program_value": _f(row, "whol_ntby_tr_pbmn", "ntby_tr_pbmn") * 1_000,
+                # 이 날짜의 행이 **있었다**. 행이 없는 날(또는 엔드포인트가 막힌
+                # 뒤)은 이 표시가 없어 `program_qty` 가 null 로 나갑니다.
+                "program_reported": True,
             }
         return out
 
