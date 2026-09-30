@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -209,8 +210,8 @@ def test_a_distribution_that_does_not_add_up_is_refused_not_stretched(probabilit
 def test_rounding_across_many_options_is_still_accepted():
     # 16지선다(반대 좌석)를 둘째 자리에서 반올림하면 합이 1 에서 조금 벗어납니다.
     options = [f"o{i}" for i in range(16)]
-    probs = {o: 0.07 for o in options}
-    probs.update({o: 0.06 for o in options[:12]})          # 12×0.06 + 4×0.07 = 1.00
+    probs = dict.fromkeys(options, 0.07)
+    probs.update(dict.fromkeys(options[:12], 0.06))          # 12×0.06 + 4×0.07 = 1.00
     probs["o0"] = 0.065                                   # 합 1.005
     out = jev.read_choice({"q": {"probabilities": probs}}, "q", options)
     assert sum(out.values()) == pytest.approx(1.0)
@@ -1632,7 +1633,7 @@ def risk_bubble(out: dict) -> str:
 
 
 def test_risk_and_trader_bubbles_have_a_short_first_sentence():
-    html = open("quant/api/static/index.html", encoding="utf-8").read()
+    html = Path("quant/api/static/index.html").read_text(encoding="utf-8")
     assert '"⛔ 거부: " + reason + joint' in html          # 사유와 설명 사이를 띄운다
 
     cases = [verdict(0.9), verdict(0.9, reason="none_applies"), verdict(0.5),

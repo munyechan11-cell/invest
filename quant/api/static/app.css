@@ -658,7 +658,7 @@ select{-webkit-appearance:none;appearance:none;padding-right:36px;
 /* ── 여러 성향 동시 운용 ────────────────────────────────────────────── */
 .agentsetup{margin-top:12px;border-radius:14px;background:var(--bg)}
 .agentsetup>summary{padding:12px 14px;cursor:pointer;font-size:14px;font-weight:700;color:var(--ink)}
-.agentsetup>summary small{color:var(--muted);margin-left:8px;font-weight:500}
+.agentsetup>summary small{color:var(--muted);margin-left:8px;font-weight:500;font-size:13px}
 .agentsetup[open]>summary{border-bottom:1px solid var(--line)}
 .agentsetup>*:not(summary){padding-left:14px;padding-right:14px}
 .agentrow{display:grid;gap:8px;align-items:center;margin-bottom:8px;
@@ -677,7 +677,7 @@ select{-webkit-appearance:none;appearance:none;padding-right:36px;
 .weightsum[data-over="1"]{color:var(--bad)}
 .agenttabs{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
 .agtab{background:var(--bg);border:0;border-radius:999px;color:var(--muted);
-  padding:8px 14px;min-height:40px;font-size:14px;font-weight:600;
+  padding:8px 14px;min-height:44px;font-size:14px;font-weight:600;
   display:flex;align-items:center;gap:6px}
 .agtab.on{background:var(--ink);color:#fff}
 .agtab small{font-size:12px;font-weight:500;opacity:.8}
@@ -1122,6 +1122,10 @@ body[data-page="account"] #pageAccount{display:grid;grid-template-columns:minmax
   .cockpit-step{min-height:58px;padding:8px 12px}
   .run-safety{grid-template-columns:auto minmax(0,1fr)}
   .run-safety>span:last-child{grid-column:2}
+  /* 이벤트 종류 칸은 한글 네 글자면 충분합니다 — 118px 을 그대로 두면 휴대폰에서
+     메시지가 화면 오른쪽 절반으로 밀립니다. */
+  .feed .t{flex-basis:52px}
+  .feed .ty{flex-basis:64px}
   .land{padding:24px 16px 48px}
   #demoStage{padding:0 16px}
   .hero{grid-template-columns:minmax(0,1fr);grid-template-areas:
