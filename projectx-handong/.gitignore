@@ -1,0 +1,8 @@
+work/vid/
+work/img/
+work/tts/
+work/tts_final
+work/out/*.mp4
+work/out/*.jpg
+work/out/graph.txt
+offline/
