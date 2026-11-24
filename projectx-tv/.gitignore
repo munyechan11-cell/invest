@@ -1,2 +1,7 @@
 offline/
 work/tts/
+work/loops/*.raw.mp4
+work/endings/vid/
+work/endings/tts/
+work/endings/out/*.mp4
+work/endings/out/graph.txt

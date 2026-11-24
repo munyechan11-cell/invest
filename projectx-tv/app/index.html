@@ -6,7 +6,7 @@
 <style>
 /* Layout: TV-first 16:9 — header (progress + team chances) / big stage / host control bar. Single dark theme by choice: a lit TV in a classroom reads best on a dark ground. */
 :root{
-  --bg:#0d1422; --panel:#16213a; --panel2:#1e2c4c; --line:#2c3d63;
+  --bg:#0d1422; --panel:rgba(22,33,58,.86); --panel2:rgba(30,44,76,.92); --line:#2c3d63;
   --ink:#f4f6fb; --mute:#a3b3d3; --accent:#ffcf3f; --ok:#35d07f; --bad:#ff5a5f; --x:#ff3d8b;
   --t0:#ff7a59; --t1:#4ea8ff; --t2:#ffd23f;
   --display:"Black Han Sans","Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
@@ -21,7 +21,12 @@ button{font:inherit;color:inherit;cursor:pointer}
 button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 h1,h2,h3{font-family:var(--display);font-weight:400;margin:0;line-height:1.12;text-wrap:balance}
 .num{font-variant-numeric:tabular-nums}
-#app{height:100%;display:grid;grid-template-rows:auto 1fr auto;grid-template-columns:minmax(0,1fr)}
+#app{position:relative;z-index:1;height:100%;display:grid;grid-template-rows:auto 1fr auto;grid-template-columns:minmax(0,1fr)}
+#bgwrap{position:fixed;inset:0;z-index:0;background:var(--bg);overflow:hidden}
+#bgwrap video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:opacity .6s}
+#bgwrap::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(13,20,34,.62),rgba(13,20,34,.78) 55%,rgba(13,20,34,.9))}
+#bgwrap.off video{opacity:0}
+video.shot{background:#000}
 .bar{display:flex;align-items:center;gap:.8rem;padding-block:.5rem;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));background:#0a101c;border-bottom:1px solid var(--line)}
 .brand{font-family:var(--display);font-size:1.3rem;white-space:nowrap}
 .brand b{color:var(--x);font-weight:400}
@@ -56,13 +61,13 @@ h1,h2,h3{font-family:var(--display);font-weight:400;margin:0;line-height:1.12;te
 .big{font-size:clamp(2rem,4.2vw,4.4rem)}
 .mid{font-size:clamp(1.5rem,2.6vw,2.6rem)}
 .lead{font-size:1.25rem;color:var(--mute);margin:0;max-width:62ch}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:1rem 1.2rem}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:1rem 1.2rem;backdrop-filter:blur(6px)}
 .grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}
 .grid2{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:1.2rem;align-items:center}
 .grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1rem}
 @media (max-width:900px){.grid3,.grid2,.grid4{grid-template-columns:1fr}}
 .shot{width:100%;display:block;border-radius:14px;border:1px solid var(--line);aspect-ratio:16/9;object-fit:cover;background:var(--panel)}
-.note{display:grid;grid-template-columns:auto 1fr;gap:.4rem 1rem;font-size:.92rem;color:#d8deec;background:rgba(255,207,63,.07);border:1px dashed rgba(255,207,63,.35);border-radius:10px;padding:.6rem .9rem}
+.note{display:grid;grid-template-columns:auto 1fr;gap:.4rem 1rem;font-size:.92rem;color:#d8deec;background:rgba(20,24,34,.82);border:1px dashed rgba(255,207,63,.35);border-radius:10px;padding:.6rem .9rem}
 .note b{color:var(--accent);font-size:.8rem;letter-spacing:.06em;white-space:nowrap;padding-top:.1rem}
 .team{border-top:6px solid var(--tc)}
 .tname{font-family:var(--display);font-size:1.6rem;color:var(--tc)}
@@ -75,7 +80,7 @@ input.tn{background:var(--bg);border:1px solid var(--line);border-radius:8px;col
 .tbl th{color:var(--mute);font-weight:700;font-size:.85rem}
 .tbl td.c,.tbl th.c{text-align:center}
 .tbl .tot{font-family:var(--display);font-size:1.4rem;color:var(--accent)}
-.wrapx{overflow-x:auto}
+.wrapx{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:.3rem .8rem;backdrop-filter:blur(6px)}
 /* source card */
 .src{background:#fbf7ec;color:#1e1a10;border-radius:16px;padding:1.4rem 1.6rem;display:grid;gap:.6rem;box-shadow:0 18px 40px rgba(0,0,0,.35);border:3px solid #e9dfc2}
 .src .no{font-family:var(--display);color:#9a7d2e;font-size:1rem;letter-spacing:.1em}
@@ -107,7 +112,7 @@ input.tn{background:var(--bg);border:1px solid var(--line);border-radius:8px;col
 .wlist .pass{background:rgba(255,90,95,.12);border-color:var(--bad);text-decoration:line-through;color:#ffb3b5}
 /* karaoke */
 .slide{position:relative;border-radius:14px;overflow:hidden;border:2px solid var(--line);aspect-ratio:16/9;max-height:62vh;margin-inline:auto;width:100%;background:#000}
-.slide img{width:100%;height:100%;object-fit:cover;display:block}
+.slide img,.slide video{width:100%;height:100%;object-fit:cover;display:block}
 .slide .cap{position:absolute;left:0;right:0;top:0;padding:1.2rem 1.6rem;background:linear-gradient(rgba(0,0,0,.78),transparent);font-family:var(--display);font-size:clamp(1.6rem,3vw,3rem)}
 .slide .pg{position:absolute;right:1rem;bottom:.8rem;background:rgba(0,0,0,.6);border-radius:8px;padding:.1rem .6rem}
 /* countdown overlay */
@@ -129,6 +134,7 @@ input.tn{background:var(--bg);border:1px solid var(--line);border-radius:8px;col
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 
+<div id="bgwrap" aria-hidden="true"><video id="bgv" muted loop playsinline autoplay preload="auto"></video></div>
 <div id="app">
   <header class="bar">
     <div class="brand">PROJECT <b>X</b></div>
@@ -157,7 +163,19 @@ input.tn{background:var(--bg);border:1px solid var(--line);border-radius:8px;col
 <script>
 (() => {
 'use strict';
-const IMG = n => `assets/img/${n}.jpg`, AUD = n => `assets/audio/${n}.mp3`;
+const IMG = n => `assets/img/${n}.jpg`, AUD = n => `assets/audio/${n}.mp3`, LOOP = n => `assets/loop/${n}.mp4`, END = n => `assets/end/${n}.mp4`;
+const KLOOPS = ['campus','envelope','teamroom','research','meeting','ppt','present','celebrate','union','suspect','trollwin'];
+function vid(name,cls,alt){ return `<video class="${cls||'shot'}" src="${LOOP(name)}" autoplay muted loop playsinline preload="auto" aria-label="${alt||''}"></video>`; }
+let bgCur=null;
+function setBg(name){ const w=document.getElementById('bgwrap'), v=document.getElementById('bgv'); if(!name){ w.classList.add('off'); bgCur=null; return; } w.classList.remove('off'); if(bgCur===name) return; bgCur=name; v.src=LOOP(name); v.play().catch(()=>{}); }
+function bgFor(){ const st=STEPS[S.step], s=S.sub;
+  if(st.key==='setup') return 'campus'; if(st.key==='intro') return null; if(st.key==='secret') return 'envelope'; if(st.key==='rules') return 'teamroom';
+  if(st.key==='r1') return s===1?'teamroom':'research';
+  if(st.key==='r2') return s===1?'teamroom':(s===2+QS.length?'union':'meeting');
+  if(st.key==='r3') return s===1?'teamroom':'ppt';
+  if(st.key==='r4') return s>=4?'suspect':'present';
+  if(st.key==='end') return s===0?(S.troll==null?'suspect':'trollwin'):s===1?null:'celebrate';
+  return 'campus'; }
 const TC = ['var(--t0)','var(--t1)','var(--t2)'];
 
 /* ---------- content ---------- */
@@ -180,10 +198,10 @@ const KTITLES = ['우리 제안의 결정적 근거','예산은 이렇게 아낍
 const KIMGS = ['k0_campus','k1_teamroom','k2_envelope','k3_meeting','k4_ppt','k5_present','k6_troll_win','k7_normal_win','k8_research','k9_captain','k10_sink'];
 const ROT = [[1,2,0],[2,0,1],[1,2,0]]; // R1..R3: team t sends helper to ROT[r][t]
 const ROUNDS = [
-  {no:1,title:'자료조사',game:'팩트체크 OX',audio:'m_r1',img:'k8_research',line:'화면의 자료를 믿을 수 있으면 O, 믿기 어려우면 X. 신호가 오면 팀 대표가 몸으로 표시합니다.',score:'맞히면 +5 · 더블 찬스 쓰고 맞히면 +10',x:'그럴듯한 이유로 틀린 답 쪽으로 분위기를 몬다. "이 숫자 나도 어디서 봤어, 믿어도 돼."'},
-  {no:2,title:'팀 회의',game:'텔레파시 합의',audio:'m_r2',img:'k3_meeting',line:'40초 의논한 뒤 "3, 2, 1, 텔레파시!"에 팀원 모두가 손가락으로 번호를 동시에 듭니다. 전원이 같으면 합의 성공.',score:'합의 성공 +8 · 연합 회의 합의 시 전 팀 +3',x:'결정을 미룬다. "한 번만 더 생각해 보자", "근데 4번도 괜찮지 않아?"'},
-  {no:3,title:'PPT 제작',game:'스피드 퀴즈',audio:'m_r3',img:'k4_ppt',line:'설명하는 1명만 화면을 보고 나머지는 등을 돌립니다. 단어를 말하지 않고 설명해서 90초 안에 많이 맞힙니다.',score:'★ 필수 단어 2점 · 일반 단어 1점',x:'엉뚱한 답을 계속 외치고, 어려운 ★ 단어는 "패스, 패스!"로 넘기게 만든다.'},
-  {no:4,title:'최종 발표',game:'PPT 가라오케',audio:'m_r4',img:'k5_present',line:'처음 보는 슬라이드 3장이 13초마다 넘어갑니다. 발표자는 40초 동안 우리 팀 제안처럼 발표합니다.',score:'다른 두 팀이 손가락 1~5점 평가 · 합계 최대 10점',x:'다른 팀 발표에 박한 점수를 주고, 추리 토론에서 의심을 다른 팀으로 돌린다.'}
+  {no:1,title:'자료조사',game:'팩트체크 OX',audio:'m_r1',img:'k8_research',loop:'research',line:'화면의 자료를 믿을 수 있으면 O, 믿기 어려우면 X. 신호가 오면 팀 대표가 몸으로 표시합니다.',score:'맞히면 +5 · 더블 찬스 쓰고 맞히면 +10',x:'그럴듯한 이유로 틀린 답 쪽으로 분위기를 몬다. "이 숫자 나도 어디서 봤어, 믿어도 돼."'},
+  {no:2,title:'팀 회의',game:'텔레파시 합의',audio:'m_r2',img:'k3_meeting',loop:'meeting',line:'40초 의논한 뒤 "3, 2, 1, 텔레파시!"에 팀원 모두가 손가락으로 번호를 동시에 듭니다. 전원이 같으면 합의 성공.',score:'합의 성공 +8 · 연합 회의 합의 시 전 팀 +3',x:'결정을 미룬다. "한 번만 더 생각해 보자", "근데 4번도 괜찮지 않아?"'},
+  {no:3,title:'PPT 제작',game:'스피드 퀴즈',audio:'m_r3',img:'k4_ppt',loop:'ppt',line:'설명하는 1명만 화면을 보고 나머지는 등을 돌립니다. 단어를 말하지 않고 설명해서 90초 안에 많이 맞힙니다.',score:'★ 필수 단어 2점 · 일반 단어 1점',x:'엉뚱한 답을 계속 외치고, 어려운 ★ 단어는 "패스, 패스!"로 넘기게 만든다.'},
+  {no:4,title:'최종 발표',game:'PPT 가라오케',audio:'m_r4',img:'k5_present',loop:'present',line:'처음 보는 슬라이드 3장이 13초마다 넘어갑니다. 발표자는 40초 동안 우리 팀 제안처럼 발표합니다.',score:'다른 두 팀이 손가락 1~5점 평가 · 합계 최대 10점',x:'다른 팀 발표에 박한 점수를 주고, 추리 토론에서 의심을 다른 팀으로 돌린다.'}
 ];
 const STEPS = [
   {key:'setup',label:'준비',subs:1},
@@ -239,6 +257,13 @@ function final(){
   });
 }
 
+function endingOf(){
+  const F=final(), top=[...F].sort((a,b)=>b.total-a.total)[0], X=S.troll;
+  const caught=[0,1,2].filter(t=>t!==X&&S.votes[t]===X).length;
+  if(top.t===X) return {file:'e1_troll_win',poster:'k6_troll_win',label:'X팀 승리',head:'X팀 승리',color:'var(--x)'};
+  if(caught>0) return {file:'e2_caught',poster:'k7_normal_win',label:'X팀 검거',head:tn(top.t)+' 우승',color:TC[top.t]};
+  return {file:'e3_next',poster:'k2_envelope',label:'다음 학기에 계속',head:tn(top.t)+' 우승',color:TC[top.t]};
+}
 /* ---------- sound ---------- */
 let soundOn=true, ac=null, voice=null;
 function ctx(){ if(!ac){ try{ac=new (window.AudioContext||window.webkitAudioContext)();}catch(e){} } if(ac&&ac.state==='suspended') ac.resume(); return ac; }
@@ -284,7 +309,7 @@ function vSetup(){
     <h1 class="big">PROJECT <span style="color:var(--x)">X</span><br>한동 팀플 미니게임</h1>
     <p class="lead">3팀이 "학식 점심 줄 줄이기" 팀플을 미니게임 4개로 겨룹니다. 그중 한 팀은 몰래 팀플을 흔드는 X팀입니다. 마지막에 X팀을 찾아내세요.</p>
     <div class="row"><button class="btn primary lg" data-a="start">▶ 오프닝 영상으로 시작</button>${S.startedAt?`<button class="btn" data-a="resume">이어서 (${esc(STEPS[S.step].label)})</button><button class="btn bad" data-a="askreset">새 게임</button>`:''}</div>
-  </div><img class="shot" src="${IMG('k0_campus')}" alt="바다가 보이는 언덕 위 캠퍼스"></div>
+  </div>${vid('campus','shot','바다가 보이는 언덕 위 캠퍼스')}</div>
   <div class="grid3">${S.teams.map((m,t)=>`<div class="panel team" ${tc(t)} style="display:grid;gap:.5rem"><label class="eyebrow" for="tn${t}">${t+1}팀 이름</label><input class="tn" id="tn${t}" data-a="tname" data-t="${t}" value="${esc(m.name)}" maxlength="10">
     <div class="row"><span>인원</span><span class="seg">${[3,4,5,6,7].map(n=>`<button data-a="size" data-t="${t}" data-n="${n}" aria-pressed="${m.size===n}">${n}</button>`).join('')}</span></div></div>`).join('')}</div>
   <div class="grid2" style="align-items:start"><div class="panel"><h3 style="font-size:1.4rem;margin-bottom:.4rem">45분 진행표 <span style="font-family:var(--body);font-size:.9rem;color:${total<10||total>20?'var(--bad)':'var(--mute)'}">· 지금 ${total}명${total<10||total>20?' (10~20명 권장)':''}</span></h3>
@@ -311,7 +336,7 @@ function vSecret(){
       <li>각 팀 대표가 진행자 B의 손에서 접힌 쪽지 1장을 뽑습니다.</li>
       <li>팀원끼리만 몰래 확인하고, 쪽지를 접어 진행자 B에게 돌려줍니다.</li>
       <li><b style="color:var(--x)">X</b>를 뽑은 팀은 오늘의 X팀입니다. 표정 관리!</li></ol></div>
-    <img class="shot" src="${IMG('k2_envelope')}" alt="빨간 봉인이 찍힌 검은 봉투"></div>
+    ${vid('envelope','shot','빨간 봉인이 찍힌 검은 봉투')}</div>
     ${note('쪽지를 뽑는 동안 "표정으로 티 내지 마세요"라고 한 번 말해 주세요.','어느 팀이 X를 뽑았는지 기억만 합니다. 노트북에는 마지막 공개 때까지 아무것도 입력하지 않습니다.')}</div>`;
 }
 function vRules(sub){
@@ -320,7 +345,7 @@ function vRules(sub){
       <li>3팀이 <b>"학식 점심 줄 줄이기"</b> 팀플을 미니게임 4판으로 겨룹니다.</li>
       <li>한 팀은 몰래 <b style="color:var(--x)">X팀</b>. 대놓고 방해하지 않고, 팀플에서 흔한 말로 슬쩍 흔듭니다.</li>
       <li>마지막에 X팀을 지목합니다. 맞히면 <b style="color:var(--ok)">+${S.cfg.vote}</b>, 틀리면 <b style="color:var(--bad)">−5</b>.</li></ol></div>
-    <img class="shot" src="${IMG('k1_teamroom')}" alt="세 팀이 각자 테이블에서 팀플하는 모습"></div></div>`;
+    ${vid('teamroom','shot','세 팀이 각자 테이블에서 팀플하는 모습')}</div></div>`;
   if(sub===1) return `<div class="scene"><span class="eyebrow">규칙 2/3 · 미니게임 4판</span><h2 class="mid">라운드마다 한 판, 이해는 10초</h2>
     <div class="wrapx"><table class="tbl" style="font-size:1.15rem"><thead><tr><th>라운드</th><th>미니게임</th><th>하는 법</th><th>점수</th></tr></thead><tbody>
     ${ROUNDS.map(R=>`<tr><td><b>${R.no}R ${R.title}</b></td><td style="color:var(--accent);font-weight:700;white-space:nowrap">${R.game}</td><td>${R.line}</td><td>${R.score}</td></tr>`).join('')}</tbody></table></div>
@@ -337,7 +362,7 @@ function vRoundIntro(r){
   return `<div class="scene"><div class="grid2"><div style="display:grid;gap:1rem"><span class="eyebrow">ROUND ${R.no} · ${R.title}</span><h2 class="big">미니게임: ${R.game}</h2>
     <p style="font-size:1.6rem;margin:0">${R.line}</p><p class="lead" style="color:var(--accent)">${R.score}</p>
     <div class="row"><button class="btn" data-a="voice" data-v="${R.audio}">▶ 안내 음성 다시 듣기</button></div></div>
-    <img class="shot" src="${IMG(R.img)}" alt=""></div></div>`;
+    ${vid(R.loop,'shot','')}</div></div>`;
 }
 /* R1 */
 function vR1(k){
@@ -389,7 +414,7 @@ function vR3(i){
     <p style="font-size:1.5rem;margin:0">설명할 1명만 TV를 봅니다. 나머지 팀원과 지원 팀원은 <b>TV를 등지고</b> 앉으세요.</p>
     <p class="lead">단어 자체·영어·초성은 말하면 안 됩니다. ★ 필수 단어는 2점, 일반 단어 1점. 패스는 무제한.</p>
     <div class="row"><button class="btn" data-a="sqx" data-t="${t}" ${S.r3.extra[t]||S.chances[t]<1?'disabled':''}>${S.r3.extra[t]?'+15초 찬스 사용 ✓':'+15초 찬스 쓰기'}</button><button class="btn primary lg" data-a="sqstart" data-t="${t}">시작 (${S.cfg.tSQ+(S.r3.extra[t]?15:0)}초)</button></div></div>
-    <img class="shot" src="${IMG('k4_ppt')}" alt=""></div>${note('다른 팀들은 화면을 봐도 됩니다. 답을 외치면 안 됩니다.','정답 = 스페이스 또는 "정답" 버튼, 패스 = P 또는 "패스" 버튼.')}</div>`;
+    ${vid('ppt','shot','')}</div>${note('다른 팀들은 화면을 봐도 됩니다. 답을 외치면 안 됩니다.','정답 = 스페이스 또는 "정답" 버튼, 패스 = P 또는 "패스" 버튼.')}</div>`;
   if(ph==='play'){ const w=curWord(); return `<div class="scene">${head}
     <div class="row" style="justify-content:space-between"><span class="score-live num">${r3pts(t)}점</span><span class="oxbig num" style="font-size:4rem;color:var(--accent)" data-bigtimer>${Math.ceil(T.left)}</span></div>
     <div style="text-align:center">${w.s?'<span class="starbadge">★ 필수 · 2점</span>':'<span class="starbadge" style="background:var(--panel2);color:var(--mute)">일반 · 1점</span>'}</div>
@@ -407,7 +432,7 @@ function vR4(i){
     <p style="font-size:1.5rem;margin:0">처음 보는 슬라이드 3장이 ${Math.round(S.cfg.tKA/3)}초마다 넘어갑니다. 무슨 사진이 나와도 <b>우리 팀의 학식 줄 해결 제안</b>처럼 발표하세요.</p>
     <div class="row"><button class="btn primary lg" data-a="kastart" data-t="${t}">발표 시작 (${S.cfg.tKA}초)</button></div>${note('발표가 끝나면 다른 두 팀이 동시에 손가락으로 1~5점을 듭니다.','')}</div>`;
   if(ph==='play'){ const sl=S.r4.slides[t], idx=Math.min(2,Math.floor((S.cfg.tKA-T.left)/(S.cfg.tKA/3))); const s=sl[idx]; return `<div class="scene">${head}
-    <div class="slide"><img src="${IMG(s.img)}" alt=""><div class="cap">${esc(s.title)}</div><div class="pg num">${idx+1} / 3 · <span data-bigtimer>${Math.ceil(T.left)}</span>초</div></div><div class="row" style="justify-content:flex-end"><button class="btn" data-a="kaend" data-t="${t}">발표 끝</button></div></div>`; }
+    <div class="slide"><video src="${LOOP(s.img)}" autoplay muted loop playsinline></video><div class="cap">${esc(s.title)}</div><div class="pg num">${idx+1} / 3 · <span data-bigtimer>${Math.ceil(T.left)}</span>초</div></div><div class="row" style="justify-content:flex-end"><button class="btn" data-a="kaend" data-t="${t}">발표 끝</button></div></div>`; }
   const all=raters.every(o=>S.r4.rate[t][o]!=null);
   return `<div class="scene">${head}<h2 class="mid">${tn(t)} 발표 평가 · "3, 2, 1!"에 손가락 1~5</h2>
     <div class="grid2" style="align-items:start">${raters.map(o=>`<div class="ans" ${tc(o)}><div class="tname">${tn(o)}의 점수</div><div class="row">${[1,2,3,4,5].map(n=>`<button class="btn lg num" data-a="rate" data-t="${t}" data-o="${o}" data-v="${n}">${n}</button>`).join('')}</div><span style="font-weight:700;color:${S.r4.rate[t][o]!=null?'var(--accent)':'var(--mute)'}">${S.r4.rate[t][o]!=null?(ph==='done'?S.r4.rate[t][o]+'점':'입력 완료'):'대기 중'}</span></div>`).join('')}</div>
@@ -443,8 +468,9 @@ function vEnd(sub){
       <p style="font-size:1.6rem;margin:0">${tn(X)}, 자리에서 일어나 주세요!</p><p class="lead">정확히 지목한 팀: ${cv.length?cv.map(tn).join(', '):'없음'} </p></div>`;
   }
   const F=final(), top=[...F].sort((a,b)=>b.total-a.total)[0], trollWin=top.t===S.troll;
-  if(sub===1) return `<div class="scene"><div class="slide" style="max-height:52vh"><img src="${IMG(trollWin?'k6_troll_win':'k7_normal_win')}" alt=""><div class="cap" style="color:${trollWin?'var(--x)':'var(--ok)'}">${trollWin?'X팀 승리':'팀플 완주! '+tn(top.t)+' 우승'}</div></div>
-    <p style="font-size:1.6rem;margin:0">${trollWin?'가장 친절했던 그 조언들, 모두 계획된 것이었습니다.':'의심하고, 확인하고, 끝까지 함께 결정한 팀이 이겼습니다.'}</p></div>`;
+  if(sub===1){ const E=endingOf(); return `<div class="scene"><div class="row" style="justify-content:space-between"><span class="eyebrow">결말 · ${E.label}</span><span class="tname" style="--tc:${E.color}">${E.head}</span></div>
+    <div class="slide" style="max-height:70vh"><video id="endv" src="${END(E.file)}" playsinline preload="auto" poster="${IMG(E.poster)}" style="background:#000"></video></div>
+    <div class="row" style="justify-content:center"><button class="btn primary lg" data-a="endplay">▶ 결말 영상 재생</button><button class="btn" data-a="endfull">영상 전체화면</button></div></div>`; }
   const X=S.troll;
   return `<div class="scene"><span class="eyebrow">최종 점수</span><h2 class="mid">우승: <span style="color:${TC[top.t]}">${tn(top.t)}</span> ${top.t===X?'<span style="color:var(--x)">(X팀)</span>':''}</h2>
     <div class="wrapx"><table class="tbl" style="font-size:1.1rem"><thead><tr><th>팀</th><th class="c">1R</th><th class="c">2R</th><th class="c">3R</th><th class="c">4R</th><th class="c">남은 찬스</th><th class="c">지목</th><th class="c">X팀 방해</th><th class="c">X팀 은폐</th><th class="c">총점</th></tr></thead><tbody>
@@ -465,7 +491,7 @@ function render(){
   else if(st.key==='r3') h= s===0?vRoundIntro(2):s===1?dispatchView(2):s<5?vR3(s-2):`<div class="scene"><span class="eyebrow">3R 결과</span><h2 class="mid">스피드 퀴즈 결과</h2>${scoreTable([['1R',r1pts],['2R',r2pts],['3R',r3pts],['★ 패스',r3starPass]])}</div>`;
   else if(st.key==='r4') h= s===0?vRoundIntro(3):s<4?vR4(s-1):s===4?vR4Talk():vVote();
   else h=vEnd(s);
-  $('#stage').innerHTML=h; $('#stage').scrollTop=0;
+  $('#stage').innerHTML=h; $('#stage').scrollTop=0; setBg(bgFor());
   $('#rail').innerHTML=STEPS.map((x,i)=>`<button class="pill ${i===S.step?'now':i<S.step?'done':''}" data-a="jump" data-i="${i}">${x.label}</button>`).join('');
   $('#where').innerHTML=`<b>${esc(st.label)}</b>${st.subs>1?` · ${s+1}/${st.subs}`:''}`;
   $('#bPrev').disabled=S.step===0&&s===0;
@@ -481,7 +507,7 @@ function enter(){
   if(st.key==='r2'&&s>=2&&s<2+QS.length&&S.r2.ph[s-2]==='q') setTimer(S.cfg.tTP,'의논',true);
   if(st.key==='r4'&&s===4){ setTimer(60,'추리 토론',true); }
   if(st.key==='r4'&&s===5) setTimeout(()=>playVoice('g_vote'),300);
-  if(st.key==='end'&&s===1){ const F=final(), top=[...F].sort((a,b)=>b.total-a.total)[0]; setTimeout(()=>{ top.t===S.troll?SFX.bad():SFX.ok(); playVoice(top.t===S.troll?'g_end_troll':'g_end_normal'); },400); }
+  if(st.key==='end'&&s===1){ setTimeout(()=>{ const v=$('#endv'); if(v){ v.muted=!soundOn; v.play().catch(()=>toast('▶ 결말 영상 재생을 눌러 주세요')); v.addEventListener('error',()=>{ const E=endingOf(); playVoice(E.file==='e1_troll_win'?'g_end_troll':'g_end_normal'); },{once:true}); } },300); }
 }
 function go(step,sub){ S.step=Math.max(0,Math.min(STEPS.length-1,step)); S.sub=Math.max(0,Math.min(STEPS[S.step].subs-1,sub)); save(); render(); enter(); }
 function next(){
@@ -505,7 +531,7 @@ function tpGo(q){ setTimer(0); countdown(['3','2','1','텔레파시!'],()=>{ S.r
 function sqStart(t){ deck(); S.r3.ph[t]='play'; save(); render(); setTimer(S.cfg.tSQ+(S.r3.extra[t]?15:0),'스피드 퀴즈',true,()=>{ S.r3.ph[t]='done'; save(); render(); }); }
 function sqMark(r){ const st=STEPS[S.step]; if(st.key!=='r3') return; const t=order()[S.sub-2]; if(S.r3.ph[t]!=='play') return; const w=curWord(); S.r3.words[t].push({w:w.w,s:w.s,r}); S.r3.ptr++; save(); (r==='ok'?SFX.ding:SFX.buzz)(); render(); }
 function sqOk(){ sqMark('ok'); }
-function kaStart(t){ const imgs=shuffle([...KIMGS]).slice(0,3), tl=shuffle([...KTITLES]).slice(0,3); S.r4.slides[t]=imgs.map((img,i)=>({img,title:tl[i]})); S.r4.ph[t]='play'; save(); render(); let last=-1; const iv=setInterval(()=>{ if(S.r4.ph[t]!=='play'){ clearInterval(iv); return; } const idx=Math.min(2,Math.floor((S.cfg.tKA-T.left)/(S.cfg.tKA/3))); if(idx!==last){ last=idx; if(idx>0) SFX.ding(); render(); } },250); setTimer(S.cfg.tKA,'발표',true,()=>{ clearInterval(iv); S.r4.ph[t]='rate'; save(); render(); }); }
+function kaStart(t){ const imgs=shuffle([...KLOOPS]).slice(0,3), tl=shuffle([...KTITLES]).slice(0,3); S.r4.slides[t]=imgs.map((img,i)=>({img,title:tl[i]})); S.r4.ph[t]='play'; save(); render(); let last=-1; const iv=setInterval(()=>{ if(S.r4.ph[t]!=='play'){ clearInterval(iv); return; } const idx=Math.min(2,Math.floor((S.cfg.tKA-T.left)/(S.cfg.tKA/3))); if(idx!==last){ last=idx; if(idx>0) SFX.ding(); render(); } },250); setTimer(S.cfg.tKA,'발표',true,()=>{ clearInterval(iv); S.r4.ph[t]='rate'; save(); render(); }); }
 
 /* ---------- events ---------- */
 document.addEventListener('click',e=>{
@@ -545,6 +571,8 @@ document.addEventListener('click',e=>{
   else if(a==='rate'){ S.r4.rate[t][+b.dataset.o]=+b.dataset.v; save(); SFX.tick(); render(); }
   else if(a==='ratedone') next();
   else if(a==='vote'){ S.votes[t]=+b.dataset.v; save(); SFX.tick(); render(); }
+  else if(a==='endplay'){ const v=$('#endv'); if(v){ v.muted=!soundOn; v.currentTime=0; v.play().catch(()=>{}); } }
+  else if(a==='endfull'){ const v=$('#endv'); v&&v.requestFullscreen&&v.requestFullscreen().catch(()=>{}); }
   else if(a==='troll'){ S.troll=t; save(); countdown(['3','2','1'],()=>{ render(); playVoice('g_reveal'); SFX.horn(); }); }
 });
 document.addEventListener('change',e=>{
