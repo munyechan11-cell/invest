@@ -189,18 +189,18 @@ const ROUNDS=[
   tauntText:'크크크. 출항 전 자료조사라고? 항해일지 한 줄쯤은, 슬쩍 바꿔도 아무도 모르지.',
   line:'첫 번째 선원만 TV의 항해일지를 보고, 귓속말로 끝까지 전달합니다. 마지막 선원이 일지를 말하면 진행자가 맞힌 항목을 셉니다.',score:'맞힌 항목 × 2점 (항목 5개 → 최대 10점)',
   x:'숫자·단어 한 글자를 슬쩍 바꿔 전달한다 (예: 12포대 → 13포대)'},
- {no:2,name:'팀 회의',theme:'갑판 집합',game:'말 없이 줄서기',loop:'deck',intro:'p_r2i',taunt:'p_r2c',
-  tauntText:'말 없이 줄을 서라고? 내가 슬쩍 한 칸만 옮기면, 대열은 엉망이 되지.',
-  line:'한마디도 하지 않고 60초 안에 생일(월·일) 순서로 한 줄을 섭니다. 끝나면 앞에서부터 생일을 말해 확인합니다.',score:'제자리에 선 인원 ÷ 팀 인원 × 10점',
-  x:'틀린 자리로 유도하는 손짓, 일부러 늦게 서기, 아는 척 고개 끄덕이기'},
+  {no:2,name:'팀 회의',theme:'갑판 집합',game:'몸으로 말해요',loop:'deck',intro:'p_r2i',taunt:'p_r2c',
+  tauntText:'몸으로 말해요? 내가 몸짓을 한 군데만 슬쩍 틀리면, 팀원들은 영영 못 맞힐걸. 크크크.',
+  line:'설명하는 1명만 TV의 단어를 보고, 말 없이 몸짓으로만 설명합니다. 나머지 선원이 맞히면 다음 사람이 나와 이어 갑니다. 제한 시간 안에 많이 맞힙니다.',score:'맞힌 단어 × 2점, 최대 10점',
+  x:'몸짓을 한 군데만 일부러 틀리게 하기(수영하다 갑자기 손 흔들기) · 정답 대신 엉뚱한 답 외치기 · 패스로 시간 끌기 — 보는 사람이 "어? 좀 이상한데?" 할 만큼만 티 나게'},
  {no:3,name:'PPT 제작',theme:'찢어진 돛 수리',game:'스피드 퀴즈',loop:'repair',intro:'p_r3i',taunt:'p_r3c',
   tauntText:'찢어진 돛을 고치겠다고? 내가 엉뚱한 답만 외치면, 한 장도 못 고칠걸.',
   line:'설명하는 1명만 화면을 보고, 나머지는 등을 돌립니다. 단어를 직접 말하지 않고 설명해 90초 안에 많이 맞힙니다. ★ 수리 부품은 2점.',score:'원점수(일반 1 · ★ 2) × 0.7, 최대 10점',
   x:'엉뚱한 답을 외치기, ★ 단어를 "패스!"로 넘기게 만들기'},
- {no:4,name:'최종 발표',theme:'입항 보고',game:'한 단어씩 이어 말하기',loop:'report',intro:'p_r4i',taunt:'p_r4c',
-  tauntText:'마지막 입항 보고다. 한 단어만 비틀면, 보고서가 통째로 바다에 빠지지.',
-  line:'팀원이 돌아가며 딱 한 단어씩만 이어 말해 40초 동안 하나의 보고를 완성합니다. 끝나면 다른 두 팀이 손가락으로 1~5점을 줍니다.',score:'다른 두 팀이 준 1~5점의 합 (최대 10점)',
-  x:'문장을 엉뚱하게 비트는 한 단어를 슬쩍 끼워 넣기'}
+ {no:4,name:'최종 발표',theme:'입항 보고',game:'대본 외워 말하기',loop:'report',intro:'p_r4i',taunt:'p_r4c',
+  tauntText:'대본을 그대로 외운다고? 내가 한 단어만 슬쩍 바꿔 말하면, 보고서는 엉망이 되지. 크크크.',
+  line:'배마다 대본을 받아 외웁니다. 선원마다 한 문장씩 맡고, 대본을 가린 뒤 1번부터 차례로 한 문장씩 말합니다. 얼마나 정확하게 말했는지로 점수를 받습니다.',score:'문장마다 정확 2 · 조금 달라 1 · 틀림 0, 합계 ÷ (인원 × 2) × 10점',
+  x:'자기 문장의 단어를 한두 개 일부러 바꿔 말하기 · 외우는 시간에 틀린 단어 속삭이기 — 듣는 사람이 "대본과 다른데?" 할 만큼만 티 나게'}
 ];
 const LOGS=[
  {title:'보급 창고 점검',items:['창고 3번','쌀 12포대','물 40통','출항 새벽 5시','목적지 종강항']},
@@ -210,14 +210,22 @@ const LOGS=[
 ];
 const STAR=['돛','닻','밧줄','망치','나침반','깃발','보물지도','발표','슬라이드','그래프'];
 const PLAIN=['배','바다','파도','갈매기','섬','모래','조개','불가사리','고래','상어','문어','등대','항구','나무','톱','풀','보물','지도','선장','해적','선원','물','쌀','빵','사과','달','별','해','구름','비','바람','노트북','마이크','연필','책상','의자','시계','가방','안경','신발','우산'];
-const TOPICS=['우리 배의 항해 보고','학식 줄 해결책','종강항 도착 계획','선장님께 올리는 건의'];
+const CHARS=['수영하기','낚시하기','노 젓기','닻 올리기','돛 펴기','망원경 보기','보물 캐기','칼싸움','물고기 잡기','파도타기','바닥 청소','요리하기','양치질','샤워하기','달리기','자전거 타기','전화 받기','사진 찍기','노트북 치기','발표하기','고양이','원숭이','상어','문어','갈매기','고래','앵무새','해적','선장','잠자기','밥 먹기','춤추기','기타 치기','축구하기','농구하기','우산 쓰기','추워서 떨기','깜짝 놀라기','웃기','울기'];
+/* 4R 대본: 짧고 쉬운 문장 7개. 인원이 7명 미만이면 앞 문장을 쓰고 마지막 문장(맺음말)을 항상 붙인다 */
+const SCRIPTS=[
+ {title:'항해 결과 보고',lines:['우리 배는 오늘 무사히 항구에 도착했습니다.','파도가 거칠었지만 모두 함께 노를 저었습니다.','자료조사로 길을 찾고 회의로 방향을 정했습니다.','찢어진 돛은 힘을 모아 튼튼하게 고쳤습니다.','해적이 방해했지만 끝까지 포기하지 않았습니다.','도와준 모든 선원에게 감사드립니다.','이상으로 입항 보고를 마치겠습니다.']},
+ {title:'항해 일지',lines:['안녕하세요, 저희는 팀플호 선원입니다.','저희는 종강항을 향해 출항했습니다.','첫째 날에는 바람이 좋아 돛을 활짝 폈습니다.','둘째 날에는 안개가 껴서 등대를 찾았습니다.','셋째 날에는 폭풍을 만났지만 버텨 냈습니다.','마침내 새벽에 항구의 불빛이 보였습니다.','모두의 힘으로 무사히 도착했습니다.']},
+ {title:'선장님께 보고',lines:['선장님께 입항 보고를 드리겠습니다.','저희 배의 이름은 팀플호입니다.','선원들은 매일 아침 갑판에 모였습니다.','밤에는 별을 보며 길을 확인했습니다.','식량과 물은 충분히 남아 있습니다.','해적을 조심하며 안전하게 왔습니다.','이상 보고를 마칩니다. 충성!']},
+ {title:'우리 배 소개',lines:['지금부터 우리 배의 항해를 소개합니다.','우리 배는 서로 돕는 선원들로 가득합니다.','아침에는 갑판을 청소하고 돛을 점검했습니다.','점심에는 모여서 오늘의 항로를 의논했습니다.','저녁에는 노래를 부르며 노를 저었습니다.','밤에는 번갈아 망을 보며 바다를 지켰습니다.','이렇게 우리는 항구에 도착했습니다.']}
+];
+const scriptLines=(i,n)=>{ const L=SCRIPTS[i].lines; return n>=L.length?L.slice():[...L.slice(0,n-1),L[L.length-1]]; };
 const STEPS=[
  {key:'setup',label:'준비',subs:1},
  {key:'intro',label:'오프닝',subs:1},
  {key:'secret',label:'비밀 쪽지',subs:1},
  {key:'rules',label:'규칙',subs:3},
  {key:'r1',label:'1R 자료조사',subs:6},
- {key:'r2',label:'2R 팀 회의',subs:4},
+ {key:'r2',label:'2R 팀 회의',subs:5},
  {key:'r3',label:'3R PPT 제작',subs:5},
  {key:'r4',label:'4R 최종 발표',subs:5},
  {key:'vote',label:'추리·지목',subs:3},
@@ -226,23 +234,24 @@ const STEPS=[
 const others=t=>[0,1,2].filter(o=>o!==t);
 
 /* ---------- state ---------- */
-const KEY='pirates-coop-v1';
-const fresh=()=>({teams:[{name:'1조',size:5},{name:'2조',size:5},{name:'3조',size:5}],cfg:{tRelay:60,tLine:60,tSQ:90,tStory:40},step:0,sub:0,startedAt:null,
+const KEY='pirates-coop-v2';
+const fresh=()=>({teams:[{name:'1조',size:5},{name:'2조',size:5},{name:'3조',size:5}],cfg:{tRelay:60,tChar:90,tSQ:90,tMem:45},step:0,sub:0,startedAt:null,
  r1:{log:null,ph:'hid',score:[null,null,null]},
- r2:{ph:'ready',ok:[null,null,null]},
+ r2:{deck:null,ptr:0,words:[[],[],[]],ph:['ready','ready','ready']},
  r3:{deck:null,ptr:0,words:[[],[],[]],ph:['ready','ready','ready']},
- r4:{topic:[null,null,null],rate:[[null,null,null],[null,null,null],[null,null,null]],ph:['ready','ready','ready']},
+ r4:{script:[null,null,null],mark:[[],[],[]],cur:[0,0,0],ph:['ready','ready','ready']},
  caught:[null,null,null],endPick:null});
 let S=load();
-function load(){ try{ const r=localStorage.getItem(KEY); if(r){ const s=JSON.parse(r); if(s&&s.r1&&s.r4&&s.caught){ if(s.r2.ph==='counting') s.r2.ph='ready'; if(s.r1.ph==='show') s.r1.ph='gone'; return s; } } }catch(e){} return fresh(); }
+function load(){ try{ const r=localStorage.getItem(KEY); if(r){ const s=JSON.parse(r); if(s&&s.r1&&s.r2&&Array.isArray(s.r2.words)&&s.r4&&Array.isArray(s.r4.mark)&&s.caught&&s.cfg&&s.cfg.tChar&&s.cfg.tMem){ if(s.r1.ph==='show') s.r1.ph='gone'; return s; } } }catch(e){} return fresh(); }
 function save(){ try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){} }
 
 /* ---------- scoring ---------- */
 const r1pts=t=>S.r1.score[t]==null?0:S.r1.score[t]*2;
-const r2pts=t=>S.r2.ok[t]==null?0:Math.round(10*S.r2.ok[t]/S.teams[t].size);
+const r2raw=t=>S.r2.words[t].filter(w=>w.r==='ok').length;
+const r2pts=t=>Math.min(10,r2raw(t)*2);
 const r3raw=t=>S.r3.words[t].reduce((a,w)=>a+(w.r==='ok'?(w.s?2:1):0),0);
 const r3pts=t=>Math.min(10,Math.round(r3raw(t)*0.7));
-const r4pts=t=>S.r4.rate[t].reduce((a,v)=>a+(v||0),0);
+const r4pts=t=>{ const n=S.teams[t].size, m=S.r4.mark[t]||[]; let sum=0; for(let k=0;k<n;k++) sum+=(m[k]||0); return Math.round(10*sum/(2*n)); };
 const ship=t=>r1pts(t)+r2pts(t)+r3pts(t)+r4pts(t);
 const bonus=t=>S.caught[t]===true?10:(S.caught[t]===false?-5:0);
 const total=t=>ship(t)+bonus(t);
@@ -303,7 +312,7 @@ setInterval(()=>{ Object.keys(bgm).forEach(k=>{ const a=bgm[k]; const want=(musi
 function bgFor(){ const st=STEPS[S.step], s=S.sub;
   if(st.key==='setup'||st.key==='rules') return 'harbor'; if(st.key==='intro') return null; if(st.key==='secret'||st.key==='vote') return 'night';
   if(st.key==='r1') return (s>=1&&s<=4)?'chart':'sea';
-  if(st.key==='r2') return (s>=1&&s<=2)?'deck':'sea';
+  if(st.key==='r2') return (s>=1&&s<=3)?'deck':'sea';
   if(st.key==='r3') return (s>=1&&s<=3)?'repair':'sea';
   if(st.key==='r4') return (s>=1&&s<=3)?'report':'sea';
   if(st.key==='end') return s===0?null:(caughtN()===0?'sink':'arrive');
@@ -311,7 +320,7 @@ function bgFor(){ const st=STEPS[S.step], s=S.sub;
 function bedFor(){ const st=STEPS[S.step], s=S.sub;
   if(st.key==='setup'||st.key==='rules') return 'calm'; if(st.key==='intro') return null; if(st.key==='secret'||st.key==='vote') return 'tense';
   if(st.key==='r1') return (s>=1&&s<=4)?'play':'calm';
-  if(st.key==='r2') return (s>=1&&s<=2)?'play':'calm';
+  if(st.key==='r2') return (s>=1&&s<=3)?'play':'calm';
   if(st.key==='r3') return (s>=1&&s<=3)?'play':'calm';
   if(st.key==='r4') return (s>=1&&s<=3)?'play':'calm';
   if(st.key==='end') return s===0?null:(caughtN()===0?'tense':'play');
@@ -358,14 +367,14 @@ function vSetup(){
     <table class="tbl"><tbody>
     <tr><td class="num">00:00</td><td>오프닝 영상 (2분) · 비밀 쪽지 뽑기 (3분) · 규칙 (3분)</td></tr>
     <tr><td class="num">08:00</td><td>1R 출항 전 자료조사 — 항해일지 귓속말 전달 (8분)</td></tr>
-    <tr><td class="num">16:00</td><td>2R 팀 회의 — 갑판 집합: 말 없이 줄서기 (6분)</td></tr>
-    <tr><td class="num">22:00</td><td>3R PPT 제작 — 찢어진 돛 수리: 스피드 퀴즈 (9분)</td></tr>
-    <tr><td class="num">31:00</td><td>4R 최종 발표 — 입항 보고: 한 단어씩 이어 말하기 (6분)</td></tr>
-    <tr><td class="num">37:00</td><td>추리 · 지목 · X맨 공개 · 결말 (3분)</td></tr></tbody></table></div>
+    <tr><td class="num">16:00</td><td>2R 팀 회의 — 갑판 집합: 몸으로 말해요 (7분)</td></tr>
+    <tr><td class="num">23:00</td><td>3R PPT 제작 — 찢어진 돛 수리: 스피드 퀴즈 (9분)</td></tr>
+    <tr><td class="num">32:00</td><td>4R 최종 발표 — 입항 보고: 대본 외워 말하기 (8분)</td></tr>
+    <tr><td class="num">40:00</td><td>추리 · 지목 · X맨 공개 · 결말 (3분)</td></tr></tbody></table></div>
     <div class="panel" style="display:grid;gap:.6rem"><h3 style="font-size:1.4rem">준비물과 설정</h3>
       <p style="margin:0">종이 1장이면 됩니다. <b>배마다</b> 종이를 사람 수만큼 찢어 한 장에만 <b style="color:var(--x)">X</b>를 쓰고 접어 섞은 뒤 한 장씩 뽑아 몰래 확인하세요. 진행자도 모릅니다.</p>
       <p style="margin:0;color:var(--mute)">TV 연결: 노트북을 HDMI로 TV에 꽂고 디스플레이를 "복제"로 둔 뒤 위의 "전체화면"을 누르세요. 소리는 TV 스피커로 나옵니다.</p>
-      <div class="row"><label>귓속말 ${sel('c_relay',S.cfg.tRelay,[[45,'45초'],[60,'60초'],[90,'90초']])}</label><label>줄서기 ${sel('c_line',S.cfg.tLine,[[45,'45초'],[60,'60초'],[90,'90초']])}</label><label>스피드 퀴즈 ${sel('c_sq',S.cfg.tSQ,[[60,'60초'],[90,'90초'],[120,'120초']])}</label><label>이어 말하기 ${sel('c_story',S.cfg.tStory,[[30,'30초'],[40,'40초'],[60,'60초']])}</label></div>
+      <div class="row"><label>귓속말 ${sel('c_relay',S.cfg.tRelay,[[45,'45초'],[60,'60초'],[90,'90초']])}</label><label>몸으로 말해요 ${sel('c_char',S.cfg.tChar,[[60,'60초'],[90,'90초'],[120,'120초']])}</label><label>스피드 퀴즈 ${sel('c_sq',S.cfg.tSQ,[[60,'60초'],[90,'90초'],[120,'120초']])}</label><label>대본 외우기 ${sel('c_mem',S.cfg.tMem,[[30,'30초'],[45,'45초'],[60,'60초'],[90,'90초']])}</label></div>
     </div></div>
   ${note('마이크를 잡고 설명과 "3, 2, 1!" 신호를 맡습니다.','노트북을 조작하고 점수를 입력합니다. X맨이 누구인지는 진행자도 모릅니다. 끝에 각 배가 쪽지를 펼칠 때 "검거/놓침"만 입력하세요.')}</div>`;
 }
@@ -395,10 +404,10 @@ function vRules(sub){
   if(sub===1) return `<div class="scene"><span class="eyebrow">규칙 2/3 · 미니게임 4판</span><h2 class="mid">이름은 그대로, 항해 테마로 바뀐 네 판</h2>
     <div class="wrapx"><table class="tbl" style="font-size:1.15rem"><thead><tr><th>라운드</th><th>미니게임</th><th>하는 법</th><th>점수</th></tr></thead><tbody>
     ${ROUNDS.map(R=>`<tr><td style="white-space:nowrap"><b>${R.no}R ${R.name}</b><br><small style="color:var(--mute)">${R.theme}</small></td><td style="color:var(--accent);font-weight:700;white-space:nowrap">${R.game}</td><td>${R.line}</td><td>${R.score}</td></tr>`).join('')}</tbody></table></div>
-    ${note('1~2라운드는 세 배가 동시에, 3~4라운드는 배 순서대로 합니다.','')}</div>`;
+    ${note('1라운드는 세 배가 동시에, 2~4라운드는 배 순서대로 합니다.','')}</div>`;
   return `<div class="scene"><span class="eyebrow">규칙 3/3 · X맨</span><h2 class="mid">X맨의 수법 (모두가 알아도 괜찮습니다)</h2>
     <div class="grid2" style="align-items:start"><div class="wrapx"><table class="tbl" style="font-size:1.1rem"><tbody>${ROUNDS.map(R=>`<tr><td style="white-space:nowrap"><b>${R.no}R ${R.game}</b></td><td>${R.x}</td></tr>`).join('')}</tbody></table></div>
-    <div style="display:grid;gap:.8rem"><div class="panel"><b style="color:var(--ok)">해도 되는 것</b><br>평범한 실수처럼 보이는 방해, 의견·질문·맞장구 — 실제 팀플에서 누군가 할 법한 행동</div>
+    <div style="display:grid;gap:.8rem"><div class="panel"><b style="color:var(--ok)">해도 되는 것</b><br>일부러 틀리되 <b>살짝 티 나게</b> — 보는 사람이 "어? 좀 이상한데?" 할 정도의 실수·엉뚱한 답·바꿔 말하기. 완전히 숨기면 추리가 불가능합니다.</div>
     <div class="panel"><b style="color:var(--bad)">하면 안 되는 것</b><br>"내가 X맨이야" 말하기, 규칙을 어기거나 게임을 멈추기, 소리 지르기·몸싸움, 남의 물건에 손대기</div>
     <div class="panel"><b>점수와 결말</b><br>라운드마다 0~10점(최대 40) + 검거 +10 / 놓침 −5. 세 배 중 <b>X맨을 잡은 배의 수</b>로 결말이 정해집니다: 0척 해적단 승리 · 1~2척 아슬아슬한 입항 · 3척 완벽한 입항.</div></div></div>
     ${note('질문을 1~2개 받고 1라운드로 넘어갑니다.','')}</div>`;
@@ -438,17 +447,26 @@ function vR1(s){
 }
 /* R2 */
 function vR2(s){
-  const R=ROUNDS[1];
-  const head=`<div class="row" style="justify-content:space-between"><span class="eyebrow">2R ${R.theme} · ${R.game}</span></div>`;
-  if(s===1) return `<div class="scene">${head}<h2 class="big">${S.r2.ph==='run'?'말은 금지! 줄을 서세요':'생일 순서로 한 줄!'}</h2>
-    ${S.r2.ph==='run'?`<div class="row" style="justify-content:center"><div class="oxbig" style="font-size:9rem;color:var(--accent)" data-bigtimer>${Math.ceil(T.left)}</div></div>`:
-    `<p style="font-size:1.6rem;margin:0">1월 1일이 맨 앞, 12월 31일이 맨 뒤. <b>한마디도 하지 않고</b> 몸짓·손가락만으로 줄을 섭니다.</p><div class="row"><button class="btn primary lg" data-a="linego">3, 2, 1, 시작! ▶</button></div>`}
-    ${note('말하는 선원이 보이면 "말은 금지!"라고 한 번 알려 주세요. 시간이 끝나면 확인으로 넘어갑니다.','')}</div>`;
-  if(s===2) return `<div class="scene">${head}<h2 class="mid">앞에서부터 생일을 말해 확인하세요</h2>
-    <div class="ansrow">${[0,1,2].map(t=>`<div class="ans" ${tc(t)}><div class="tname">${tn(t)} (${S.teams[t].size}명)</div><p style="margin:0;font-size:.9rem;color:var(--mute)">제자리에 선 사람 수</p><div class="row" style="justify-content:center">${Array.from({length:S.teams[t].size+1},(_,k)=>`<button class="btn num" data-a="r2ok" data-t="${t}" data-k="${k}" style="${S.r2.ok[t]===k?'background:var(--accent);color:#1a1400':''}">${k}</button>`).join('')}</div></div>`).join('')}</div>
-    ${note('앞에서부터 한 명씩 생일을 말하게 하고, 앞사람보다 이른 생일이 나오면 그 사람을 제자리 밖으로 세어 주세요.','세 배 모두 입력하면 "다음"으로 결과를 봅니다.')}</div>`;
-  return `<div class="scene"><span class="eyebrow">2R 결과</span><h2 class="mid">말 없이 줄서기 결과</h2>${scoreTable([['제자리',t=>`${S.r2.ok[t]}/${S.teams[t].size}`],['2R 점수',r2pts]])}</div>`;
+  const R=ROUNDS[1], t=s-1, ph=S.r2.ph[t], ws=S.r2.words[t];
+  const head=`<div class="row" style="justify-content:space-between"><span class="eyebrow">2R ${R.theme} · ${R.game} · ${s}번째 배</span><span class="tname" ${tc(t)}>${tn(t)}</span></div>`;
+  if(ph==='ready') return `<div class="scene">${head}<div class="grid2"><div style="display:grid;gap:1rem"><h2 class="big">${tn(t)} 몸으로 말해요 준비!</h2>
+    <p style="font-size:1.5rem;margin:0">설명하는 사람 1명만 TV를 봅니다. 나머지 선원은 <b>TV를 등지고</b> 앉아 몸짓을 보고 맞히세요.</p>
+    <p class="lead">말·소리·입 모양·가리키기는 금지, <b>몸짓만</b>! 맞히면 다음 사람이 나옵니다. 어려우면 패스해도 됩니다.</p>
+    <div class="row"><button class="btn primary lg" data-a="charstart" data-t="${t}">시작 (${S.cfg.tChar}초)</button></div></div>${vid('deck','shot','')}</div>
+    ${note('다른 배들은 정답을 외치면 안 됩니다. X맨이 있는 걸 잊지 마세요 — 이상한 몸짓과 엉뚱한 답을 눈여겨보세요.','정답 = 스페이스 또는 "정답" 버튼, 패스 = P 또는 "패스" 버튼.')}</div>`;
+  if(ph==='play'){ const w=curChar(); return `<div class="scene">${head}
+    <div class="row" style="justify-content:space-between"><span class="score-live num">${r2raw(t)}개</span><span class="oxbig num" style="font-size:4rem;color:var(--accent)" data-bigtimer>${Math.ceil(T.left)}</span></div>
+    <div class="word" id="word">${esc(w)}</div>
+    <p class="lead" style="text-align:center;margin-inline:auto">설명하는 사람만 TV를 보세요. 말 없이 몸으로만!</p>
+    <div class="row" style="justify-content:center"><button class="btn good lg" data-a="charok">정답 (Space)</button><button class="btn bad lg" data-a="charpass">패스 (P)</button><button class="btn" data-a="charend">그만 (종료)</button></div></div>`; }
+  return `<div class="scene">${head}<h2 class="big">${tn(t)} <span style="color:var(--ok)">맞힌 단어 ${r2raw(t)}개</span> → 점수 <span style="color:var(--accent)">${r2pts(t)}</span></h2>
+    <div class="wlist">${ws.map(x=>`<span class="${x.r}">${esc(x.w)}</span>`).join('')||'<span>맞힌 단어 없음</span>'}</div>
+    <p class="lead">맞힌 단어 ${r2raw(t)}개 · 패스 ${ws.filter(x=>x.r==='pass').length}개</p>${note('몸짓이 이상했거나 엉뚱한 답을 외친 선원을 기억해 두세요. "다음"을 누르면 다음 배 차례입니다.','')}</div>`;
 }
+function chDeck(){ if(!S.r2.deck){ S.r2.deck=shuffle(CHARS.slice()); S.r2.ptr=0; save(); } return S.r2.deck; }
+function curChar(){ const d=chDeck(); return d[S.r2.ptr%d.length]; }
+function charStart(t){ chDeck(); S.r2.ph[t]='play'; save(); render(); setTimer(S.cfg.tChar,'몸으로 말해요',true,()=>{ S.r2.ph[t]='done'; save(); render(); playVoice('v_time_up'); }); }
+function chMark(r){ const st=STEPS[S.step]; if(st.key!=='r2') return; const t=S.sub-1; if(t<0||t>2||S.r2.ph[t]!=='play') return; const w=curChar(); S.r2.words[t].push({w,r}); S.r2.ptr++; save(); (r==='ok'?SFX.ding:SFX.buzz)(); render(); }
 /* R3 speed quiz */
 function deck(){ if(!S.r3.deck){ const s=shuffle(STAR.map(w=>({w,s:1}))), p=shuffle(PLAIN.map(w=>({w,s:0}))); const d=[]; while(s.length||p.length){ if(p.length) d.push(p.shift()); if(s.length&&Math.random()<.55) d.push(s.shift()); if(p.length&&Math.random()<.5) d.push(p.shift()); } S.r3.deck=d; S.r3.ptr=0; save(); } return S.r3.deck; }
 function curWord(){ const d=deck(); return d[S.r3.ptr%d.length]; }
@@ -471,25 +489,38 @@ function vR3(s){
 }
 function sqStart(t){ deck(); S.r3.ph[t]='play'; save(); render(); setTimer(S.cfg.tSQ,'스피드 퀴즈',true,()=>{ S.r3.ph[t]='done'; save(); render(); playVoice('v_time_up'); }); }
 function sqMark(r){ const st=STEPS[S.step]; if(st.key!=='r3') return; const t=S.sub-1; if(t<0||t>2||S.r3.ph[t]!=='play') return; const w=curWord(); S.r3.words[t].push({w:w.w,s:w.s,r}); S.r3.ptr++; save(); (r==='ok'?SFX.ding:SFX.buzz)(); render(); }
-/* R4 story relay */
+/* R4 대본 외워 말하기 */
+const scriptOf=t=>S.r4.script[t]==null?null:scriptLines(S.r4.script[t],S.teams[t].size);
 function vR4(s){
-  const R=ROUNDS[3], t=s-1, ph=S.r4.ph[t], oth=others(t);
+  const R=ROUNDS[3], t=s-1, ph=S.r4.ph[t], n=S.teams[t].size, L=scriptOf(t);
   const head=`<div class="row" style="justify-content:space-between"><span class="eyebrow">4R ${R.theme} · ${R.game} · ${s}번째 배</span><span class="tname" ${tc(t)}>${tn(t)}</span></div>`;
-  const topic=S.r4.topic[t]==null?TOPICS[t%TOPICS.length]:S.r4.topic[t];
-  if(ph==='ready') return `<div class="scene">${head}<h2 class="big">${tn(t)} 입항 보고, 앞으로!</h2>
-    <p style="font-size:1.5rem;margin:0">원으로 서서 <b>한 사람이 딱 한 단어씩</b> 이어 말해 하나의 보고를 만듭니다. 주제: <b style="color:var(--accent)">${esc(topic)}</b></p>
-    <div class="row"><button class="btn primary lg" data-a="storystart" data-t="${t}">시작 (${S.cfg.tStory}초)</button></div>${note('다른 두 배는 문장이 이어지는지 잘 들어 주세요.','')}</div>`;
-  if(ph==='play') return `<div class="scene">${head}<div class="row" style="justify-content:center"><div class="oxbig" style="font-size:7rem;color:var(--accent)" data-bigtimer>${Math.ceil(T.left)}</div></div>
-    <div class="word" style="font-size:min(11vh,5rem)">${esc(topic)}</div><p class="lead" style="text-align:center;margin-inline:auto">한 사람씩 한 단어! 문장이 끊기지 않게 이어 가세요.</p>
-    <div class="row" style="justify-content:flex-end"><button class="btn" data-a="storyend" data-t="${t}">보고 끝</button></div></div>`;
-  const all=oth.every(o=>S.r4.rate[t][o]!=null);
-  return `<div class="scene">${head}<h2 class="mid">${tn(t)} 입항 보고 평가 · "3, 2, 1!"에 손가락 1~5</h2>
-    <div class="grid2" style="align-items:start">${oth.map(o=>`<div class="ans" ${tc(o)}><div class="tname">${tn(o)}의 점수</div><div class="row" style="justify-content:center">${[1,2,3,4,5].map(n=>`<button class="btn lg num" data-a="rate" data-t="${t}" data-o="${o}" data-v="${n}" style="${S.r4.rate[t][o]===n?'background:var(--accent);color:#1a1400':''}">${n}</button>`).join('')}</div></div>`).join('')}</div>
-    <div class="row" style="justify-content:space-between"><span class="score-live num">${ph==='done'?`합계 ${r4pts(t)}점`:''}</span>${ph==='done'?'<span class="done-mark">완료 — "다음"으로 이동</span>':`<button class="btn primary lg" data-a="ratedone" ${all?'':'disabled'}>점수 확정 ▶</button>`}</div>
-    ${note('문장이 매끄럽고 주제에 맞았는지 보고 점수를 주게 하세요.','두 배의 점수를 모두 입력하면 확정됩니다.')}</div>`;
+  const card=(rows)=>`<div class="src">${rows}</div>`;
+  if(ph==='ready') return `<div class="scene">${head}<div class="grid2"><div style="display:grid;gap:1rem"><h2 class="big">${tn(t)} 입항 보고 준비!</h2>
+    <p style="font-size:1.5rem;margin:0">대본이 공개되면 선원 ${n}명이 <b>한 문장씩</b> 맡아 외웁니다. 서로 도와도 좋아요.</p>
+    <p class="lead">외우는 시간(${S.cfg.tMem}초)이 끝나면 대본을 가리고, 1번 선원부터 차례로 자기 문장을 말합니다. 얼마나 정확하게 말했는지로 점수를 받습니다.</p>
+    <div class="row"><button class="btn primary lg" data-a="memstart" data-t="${t}">대본 공개 · 외우기 시작 (${S.cfg.tMem}초)</button></div></div>${vid('report','shot','')}</div>
+    ${note('다른 두 배는 이 대본을 외우지 않아도 됩니다. 구경만 하면서 X맨의 수상한 행동을 눈여겨보세요.','대본이 배마다 다릅니다.')}</div>`;
+  if(ph==='mem') return `<div class="scene">${head}<div class="row" style="justify-content:space-between"><span class="eyebrow">대본 외우기 · ${esc(SCRIPTS[S.r4.script[t]].title)} · 내 번호의 문장을 외우세요!</span><span class="oxbig num" style="font-size:4rem;color:var(--accent)" data-bigtimer>${Math.ceil(T.left)}</span></div>
+    ${card(L.map((x,k)=>`<div style="display:flex;gap:.8rem;align-items:baseline"><span class="no" style="font-size:1.3rem;min-width:3ch">${k+1}번</span><span style="font-size:clamp(1.2rem,2.2vw,2.2rem);font-weight:900">${esc(x)}</span></div>`).join(''))}
+    ${note('시간이 끝나면 대본이 자동으로 가려집니다. 그전에 다 외웠으면 "다음"을 눌러도 됩니다.','외우는 동안 팀원끼리 서로 문장을 말해 주며 연습해도 좋습니다.')}</div>`;
+  if(ph==='perf'){ const c=S.r4.cur[t]||0; return `<div class="scene">${head}<h2 class="big">대본을 가렸습니다 — 발표 시작!</h2>
+    <div class="row" style="justify-content:center">${Array.from({length:n},(_,k)=>`<span class="stamp ${k<c?'ok':''}" style="font-size:1.6rem;padding:.35rem .9rem;${k===c?'background:var(--accent);color:#1a1400':(k>c?'border:1px solid var(--line)':'')}">${k+1}번</span>`).join('')}</div>
+    <p class="lead" style="text-align:center;margin-inline:auto">${c<n?`지금은 <b style="color:var(--accent)">${c+1}번 선원</b> 차례! 자기 문장을 또박또박 말하세요.`:'모두 말했습니다. 채점으로 넘어가세요.'}</p>
+    <div class="row" style="justify-content:center">${c<n?`<button class="btn primary lg" data-a="perfnext" data-t="${t}">${c+1}번 선원 끝 → 다음 ▶</button>`:''}<button class="btn lg" data-a="perfend" data-t="${t}">발표 끝 → 채점</button></div>
+    ${note('다른 배는 조용히 들어 주세요. 틀리게 말한 단어는 기억해 두세요.','선원이 한 문장을 말할 때마다 "다음"을 누르면 순서가 넘어갑니다.')}</div>`; }
+  const m=S.r4.mark[t]||[]; const all=Array.from({length:n},(_,k)=>m[k]!=null).every(Boolean);
+  return `<div class="scene">${head}<h2 class="mid">${tn(t)} 정답 대본 · 문장마다 정확도를 눌러 주세요</h2>
+    ${card(L.map((x,k)=>`<div style="display:flex;flex-wrap:wrap;gap:.4rem .8rem;align-items:center"><span class="no" style="font-size:1.2rem;min-width:3ch">${k+1}번</span><span style="flex:1 1 16rem;font-size:clamp(1.05rem,1.8vw,1.8rem);font-weight:900">${esc(x)}</span>
+      <span class="row" style="gap:.3rem">${[[2,'정확'],[1,'조금 달라'],[0,'틀림']].map(([v,lb])=>`<button class="btn" data-a="sentmark" data-t="${t}" data-k="${k}" data-v="${v}" style="${m[k]===v?'background:var(--accent);color:#1a1400':''}">${lb}</button>`).join('')}</span></div>`).join(''))}
+    <div class="row" style="justify-content:space-between"><span class="score-live num">${all?`${r4pts(t)}점`:''}</span>${ph==='done'?'<span class="done-mark">완료 — "다음"으로 이동</span>':`<button class="btn primary lg" data-a="markdone" data-t="${t}" ${all?'':'disabled'}>점수 확정 ▶</button>`}</div>
+    ${note('들은 문장을 정답과 비교해 주세요. 한 단어만 달라도 "조금 달라", 많이 틀리거나 빠지면 "틀림"입니다.','일부러 바꿔 말한 단어가 있었다면 X맨 단서로 기억해 두세요. 점수 = 합계 ÷ (인원 × 2) × 10.')}</div>`;
 }
-function storyStart(t){ if(S.r4.topic[t]==null){ const used=S.r4.topic.filter(Boolean); S.r4.topic[t]=TOPICS.find(x=>!used.includes(x))||TOPICS[t%TOPICS.length]; } S.r4.ph[t]='play'; save(); render(); setTimer(S.cfg.tStory,'이어 말하기',true,()=>{ S.r4.ph[t]='rate'; save(); render(); playVoice('v_ka_rate'); }); }
-function storyEnd(t){ setTimer(0); S.r4.ph[t]='rate'; save(); render(); playVoice('v_ka_rate'); }
+function memStart(t){ if(S.r4.script[t]==null){ const used=S.r4.script.filter(v=>v!=null); const free=SCRIPTS.map((_,i)=>i).filter(i=>!used.includes(i)); S.r4.script[t]=free[Math.floor(Math.random()*free.length)]; }
+  S.r4.ph[t]='mem'; S.r4.cur[t]=0; save(); render(); playVoice('p_mem_go'); setTimer(S.cfg.tMem,'대본 외우기',true,()=>perfStart(t)); }
+function perfStart(t){ setTimer(0); S.r4.ph[t]='perf'; S.r4.cur[t]=0; save(); render(); playVoice('p_perform_go'); }
+function perfNext(t){ const n=S.teams[t].size; if((S.r4.cur[t]||0)<n){ S.r4.cur[t]=(S.r4.cur[t]||0)+1; save(); SFX.tick(); render(); } }
+function perfEnd(t){ S.r4.ph[t]='mark'; save(); render(); playVoice('p_mark'); }
+
 /* vote / reveal */
 function clueBoard(){
   const cols=[['1R',r1pts],['2R',r2pts],['3R',r3pts],['4R',r4pts]];
@@ -498,7 +529,7 @@ function clueBoard(){
 }
 function vVote(s){
   if(s===0) return `<div class="scene"><span class="eyebrow">추리 토론 · 60초</span><h2 class="big">우리 배의 X맨은 누구?</h2>${clueBoard()}
-    <p class="lead">점수가 떨어진 라운드에서 누가 이상했나요? 귓속말, 줄서기, 퀴즈 답, 이어 말한 단어를 떠올려 보세요. 단정하지 말고 근거로 이야기하세요.</p>
+    <p class="lead">점수가 떨어진 라운드에서 누가 이상했나요? 귓속말, 몸짓, 퀴즈 답, 대본 속 단어를 떠올려 보세요. 단정하지 말고 근거로 이야기하세요.</p>
     ${note('60초 동안 배끼리 토론하게 하고, 끝나면 "다음"으로 지목합니다.','')}</div>`;
   if(s===1) return `<div class="scene" style="justify-items:center;text-align:center"><span class="eyebrow">최후의 지목</span><h2 class="big">"3, 2, 1, 지목!"</h2>
     <p class="lead" style="margin-inline:auto">배마다 팀원 전원이 자기 배의 X맨이라고 생각하는 사람을 동시에 손가락으로 가리킵니다. 가장 많이 지목된 사람이 쪽지를 펼칩니다.</p>
@@ -528,9 +559,9 @@ function render(){
   const st=STEPS[S.step], s=S.sub; let h='';
   if(st.key==='setup') h=vSetup(); else if(st.key==='intro') h=vIntro(); else if(st.key==='secret') h=vSecret(); else if(st.key==='rules') h=vRules(s);
   else if(st.key==='r1') h=s===0?vRoundIntro(0):vR1(s);
-  else if(st.key==='r2') h=s===0?vRoundIntro(1):vR2(s);
+  else if(st.key==='r2') h=s===0?vRoundIntro(1):s<=3?vR2(s):`<div class="scene"><span class="eyebrow">2R 결과</span><h2 class="mid">몸으로 말해요 결과</h2>${scoreTable([['맞힌 단어',r2raw],['2R 점수',r2pts]])}</div>`;
   else if(st.key==='r3') h=s===0?vRoundIntro(2):s<=3?vR3(s):`<div class="scene"><span class="eyebrow">3R 결과</span><h2 class="mid">찢어진 돛 수리 결과</h2>${scoreTable([['원점수',r3raw],['3R 점수',r3pts]])}</div>`;
-  else if(st.key==='r4') h=s===0?vRoundIntro(3):s<=3?vR4(s):`<div class="scene"><span class="eyebrow">4R 결과</span><h2 class="mid">입항 보고 결과</h2>${scoreTable([['1R',r1pts],['2R',r2pts],['3R',r3pts],['4R',r4pts]])}</div>`;
+  else if(st.key==='r4') h=s===0?vRoundIntro(3):s<=3?vR4(s):`<div class="scene"><span class="eyebrow">4R 결과</span><h2 class="mid">입항 보고 결과</h2>${scoreTable([['정확한 문장',t=>`${(S.r4.mark[t]||[]).slice(0,S.teams[t].size).filter(v=>v===2).length}/${S.teams[t].size}`],['4R 점수',r4pts]])}</div>`;
   else if(st.key==='vote') h=vVote(s); else h=vEnd(s);
   $('#stage').innerHTML=h; $('#stage').scrollTop=0; setBg(bgFor()); setBed(bedFor());
   $('#rail').innerHTML=STEPS.map((x,i)=>`<button class="pill ${i===S.step?'now':i<S.step?'done':''}" data-a="jump" data-i="${i}">${x.label}</button>`).join('');
@@ -539,7 +570,7 @@ function render(){
 }
 function enter(){
   stopVoice(); const st=STEPS[S.step], s=S.sub;
-  const keepTimer=(st.key==='r3'&&s>=1&&s<=3&&S.r3.ph[s-1]==='play')||(st.key==='r4'&&s>=1&&s<=3&&S.r4.ph[s-1]==='play');
+  const keepTimer=(st.key==='r2'&&s>=1&&s<=3&&S.r2.ph[s-1]==='play')||(st.key==='r3'&&s>=1&&s<=3&&S.r3.ph[s-1]==='play')||(st.key==='r4'&&s>=1&&s<=3&&S.r4.ph[s-1]==='mem');
   if(!keepTimer) setTimer(0);
   const ri={r1:0,r2:1,r3:2,r4:3}[st.key];
   if(st.key==='intro'){ const v=$('#vid'); if(v) v.muted=!soundOn; }
@@ -553,9 +584,9 @@ function enter(){
     if(s===4) playVoice('p_relay_check');
     if(s===5) playVoice('v_round_result');
   }
-  if(st.key==='r2'){ if(s===1){ if(S.r2.ph!=='run') S.r2.ph='ready'; } if(s===2) playVoice('p_line_check'); if(s===3) playVoice('v_round_result'); }
+  if(st.key==='r2'){ if(s>=1&&s<=3&&S.r2.ph[s-1]==='ready') playVoice('p_char_go'); if(s===4) playVoice('v_round_result'); }
   if(st.key==='r3'){ if(s>=1&&s<=3&&S.r3.ph[s-1]==='ready') playVoice('v_sq_ready'); if(s===4) playVoice('v_round_result'); }
-  if(st.key==='r4'){ if(s>=1&&s<=3&&S.r4.ph[s-1]==='ready') playVoice('p_story_go'); if(s===4) playVoice('v_round_result'); }
+  if(st.key==='r4'){ if(s===4) playVoice('v_round_result'); }
   if(st.key==='vote'){ if(s===0){ setTimer(60,'추리 토론',true); playVoice('p_talk'); } if(s===1) playVoice('p_vote'); if(s===2) playVoice('p_reveal'); }
   if(st.key==='end'){ if(s===0){ const v=$('#endv'); if(v){ v.muted=!soundOn; const pr=v.play(); if(pr&&pr.catch) pr.catch(()=>{ showGate(); toast('▶ 결말 영상 재생을 눌러 주세요'); }); } } if(s===1) playVoice('v_scores'); }
 }
@@ -564,14 +595,14 @@ function next(){
   const st=STEPS[S.step], s=S.sub;
   if(!S.startedAt) S.startedAt=Date.now();
   if(st.key==='r1'){ if(s===2&&S.r1.ph==='hid') return toast('"항해일지 공개" 버튼을 눌러 주세요'); if(s===2&&S.r1.ph==='show') return toast('일지가 보이는 중입니다'); if(s===4&&S.r1.score.some(v=>v==null)) return toast('세 배의 맞힌 항목 수를 입력하세요'); }
-  if(st.key==='r2'){ if(s===1&&S.r2.ph==='ready') return lineGo(); if(s===1&&S.r2.ph==='counting') return; if(s===2&&S.r2.ok.some(v=>v==null)) return toast('세 배의 제자리 인원을 입력하세요'); }
+  if(st.key==='r2'&&s>=1&&s<=3){ const t=s-1; if(S.r2.ph[t]==='ready') return charStart(t); if(S.r2.ph[t]==='play') return chMark('ok'); }
   if(st.key==='r3'&&s>=1&&s<=3){ const t=s-1; if(S.r3.ph[t]==='ready') return sqStart(t); if(S.r3.ph[t]==='play') return sqMark('ok'); }
-  if(st.key==='r4'&&s>=1&&s<=3){ const t=s-1, ph=S.r4.ph[t]; if(ph==='ready') return storyStart(t); if(ph==='play') return storyEnd(t); if(ph==='rate'){ if(others(t).some(o=>S.r4.rate[t][o]==null)) return toast('두 배의 점수를 모두 입력하세요'); S.r4.ph[t]='done'; save(); SFX.ok(); return render(); } }
+  if(st.key==='r4'&&s>=1&&s<=3){ const t=s-1, ph=S.r4.ph[t], n=S.teams[t].size; if(ph==='ready') return memStart(t); if(ph==='mem') return perfStart(t); if(ph==='perf'){ if((S.r4.cur[t]||0)<n) return perfNext(t); return perfEnd(t); } if(ph==='mark'){ const m=S.r4.mark[t]||[]; if(Array.from({length:n},(_,k)=>m[k]==null).some(Boolean)) return toast('모든 문장의 정확도를 눌러 주세요'); S.r4.ph[t]='done'; save(); SFX.ok(); return render(); } }
   if(st.key==='vote'&&s===2&&S.caught.some(v=>v==null)) return toast('세 배의 검거/놓침을 모두 입력하세요');
   if(s<st.subs-1) go(S.step,s+1); else if(S.step<STEPS.length-1) go(S.step+1,0);
 }
 function prev(){ if(S.sub>0) go(S.step,S.sub-1); else if(S.step>0) go(S.step-1,STEPS[S.step-1].subs-1); }
-function lineGo(){ setTimer(0); S.r2.ph='counting'; countdown(['3','2','1','시작!'],()=>{ S.r2.ph='run'; save(); render(); playVoice('p_line_go'); setTimer(S.cfg.tLine,'줄서기',true,()=>{ playVoice('v_time_up'); }); },{voice:'p_cd_go',times:CD_GO}); }
+
 
 /* ---------- events ---------- */
 document.addEventListener('click',e=>{
@@ -589,16 +620,19 @@ document.addEventListener('click',e=>{
   else if(a==='voice'){ const c=b.dataset.c; playVoice(b.dataset.v,c?()=>playVoice(c):undefined); }
   else if(a==='logshow'){ S.r1.ph='show'; save(); render(); setTimer(10,'항해일지',true,()=>{ S.r1.ph='gone'; save(); render(); }); }
   else if(a==='r1score'){ S.r1.score[t]=+b.dataset.k; save(); SFX.tick(); render(); }
-  else if(a==='linego') next();
-  else if(a==='r2ok'){ S.r2.ok[t]=+b.dataset.k; save(); SFX.tick(); render(); }
+  else if(a==='charstart') charStart(t);
+  else if(a==='charok') chMark('ok');
+  else if(a==='charpass') chMark('pass');
+  else if(a==='charend'){ const tt=S.sub-1; if(S.r2.ph[tt]==='play'){ setTimer(0); S.r2.ph[tt]='done'; save(); render(); playVoice('v_time_up'); } }
   else if(a==='sqstart') sqStart(t);
   else if(a==='sqok') sqMark('ok');
   else if(a==='sqpass') sqMark('pass');
   else if(a==='sqend'){ const tt=S.sub-1; if(S.r3.ph[tt]==='play'){ setTimer(0); S.r3.ph[tt]='done'; save(); render(); playVoice('v_time_up'); } }
-  else if(a==='storystart') storyStart(t);
-  else if(a==='storyend') storyEnd(t);
-  else if(a==='rate'){ S.r4.rate[t][+b.dataset.o]=+b.dataset.v; save(); SFX.tick(); render(); }
-  else if(a==='ratedone') next();
+  else if(a==='memstart') memStart(t);
+  else if(a==='perfnext') perfNext(t);
+  else if(a==='perfend') perfEnd(t);
+  else if(a==='sentmark'){ if(!S.r4.mark[t]) S.r4.mark[t]=[]; S.r4.mark[t][+b.dataset.k]=+b.dataset.v; save(); SFX.tick(); render(); }
+  else if(a==='markdone') next();
   else if(a==='cdvote') countdown(['3','2','1','지목!'],null,{voice:'v_cd_vote',times:CD_VOTE});
   else if(a==='endpick'){ S.endPick=+b.dataset.k; save(); render(); const v=$('#endv'); if(v){ v.muted=!soundOn; const p=v.play(); if(p&&p.catch) p.catch(()=>{ showGate(); }); } }
   else if(a==='endpreview') openEndPreview(+b.dataset.k);
@@ -608,7 +642,7 @@ document.addEventListener('click',e=>{
   else if(a==='endfull'){ const v=$('#endv'); v&&v.requestFullscreen&&v.requestFullscreen().catch(()=>{}); }
 });
 document.addEventListener('change',e=>{
-  const m={c_relay:'tRelay',c_line:'tLine',c_sq:'tSQ',c_story:'tStory'}[e.target.id];
+  const m={c_relay:'tRelay',c_char:'tChar',c_sq:'tSQ',c_mem:'tMem'}[e.target.id];
   if(m){ S.cfg[m]=Number(e.target.value); save(); render(); }
 });
 document.addEventListener('input',e=>{ if(e.target.dataset.a==='tname'){ S.teams[+e.target.dataset.t].name=e.target.value.slice(0,10); save(); } });
@@ -628,6 +662,7 @@ document.addEventListener('keydown',e=>{
   if(document.getElementById('epv')){ if(e.key==='Escape') closeEndPreview(); return; }   // 미리보기 중에는 진행 단계가 넘어가지 않게
   const st=STEPS[S.step];
   if(st.key==='r3'&&S.sub>=1&&S.sub<=3&&S.r3.ph[S.sub-1]==='play'){ if(e.key===' '){ e.preventDefault(); sqMark('ok'); return; } if(e.key==='p'||e.key==='P'){ sqMark('pass'); return; } }
+  if(st.key==='r2'&&S.sub>=1&&S.sub<=3&&S.r2.ph[S.sub-1]==='play'){ if(e.key===' '){ e.preventDefault(); chMark('ok'); return; } if(e.key==='p'||e.key==='P'){ chMark('pass'); return; } }
   if(e.key===' '&&e.target.closest('button')) return;
   if(['ArrowRight','PageDown',' '].includes(e.key)){ e.preventDefault(); ctx(); next(); }
   else if(['ArrowLeft','PageUp'].includes(e.key)){ e.preventDefault(); prev(); }
