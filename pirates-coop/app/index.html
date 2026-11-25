@@ -1,0 +1,610 @@
+<title>팀플호 협동 항해</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Noto+Sans+KR:wght@400;500;700;900&display=swap">
+<style>
+/* Layout: TV-first 16:9 — header (progress + team chances) / big stage / host control bar. Single dark theme by choice: a lit TV in a classroom reads best on a dark ground. */
+:root{
+  --bg:#071a24; --panel:rgba(10,36,54,.86); --panel2:rgba(16,50,72,.92); --line:#25506a;
+  --ink:#eef6f4; --mute:#92b5b0; --accent:#f4b740; --ok:#35d0a0; --bad:#ff5a4a; --x:#ff6a3d;
+  --t0:#e05a47; --t1:#4a8fe0; --t2:#e8b93c;
+  --display:"Black Han Sans","Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  --body:"Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  color-scheme:dark;
+  font-size:clamp(14px,1.12vw,26px);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);line-height:1.5;-webkit-font-smoothing:antialiased;overflow:hidden}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+h1,h2,h3{font-family:var(--display);font-weight:400;margin:0;line-height:1.12;text-wrap:balance}
+.num{font-variant-numeric:tabular-nums}
+#app{position:relative;z-index:1;height:100%;display:grid;grid-template-rows:auto 1fr auto;grid-template-columns:minmax(0,1fr)}
+#bgwrap{position:fixed;inset:0;z-index:0;background:var(--bg);overflow:hidden}
+#bgwrap video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:opacity .6s}
+#bgwrap::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(7,26,36,.6),rgba(7,26,36,.78) 55%,rgba(7,26,36,.92))}
+#bgwrap.off video{opacity:0}
+video.shot{background:#000}
+.bar{display:flex;align-items:center;gap:.8rem;padding-block:.5rem;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));background:#0a101c;border-bottom:1px solid var(--line)}
+.brand{font-family:var(--display);font-size:1.3rem;white-space:nowrap}
+.brand b{color:var(--x);font-weight:400}
+.rail{flex:1;display:flex;gap:.3rem;overflow-x:auto;scrollbar-width:none;min-width:0}
+.rail::-webkit-scrollbar{display:none}
+.pill{flex:0 0 auto;border:1px solid var(--line);background:transparent;border-radius:999px;padding:.15rem .7rem;font-size:.8rem;color:var(--mute)}
+.pill.done{color:var(--ink)}
+.pill.now{background:var(--accent);border-color:var(--accent);color:#1a1400;font-weight:700}
+.chips{display:flex;gap:.4rem}
+.tchip{display:flex;align-items:center;gap:.3rem;border:1px solid var(--line);border-left:4px solid var(--tc);border-radius:8px;padding:.1rem .5rem;font-size:.8rem;white-space:nowrap}
+.tchip i{font-style:normal;color:var(--accent);letter-spacing:.1em}
+.ibtn{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:.25rem .6rem;font-size:.8rem;white-space:nowrap}
+.ibtn[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+#stage{position:relative;overflow:auto;padding-block:1.1rem;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.scene{max-width:1500px;margin:0 auto;display:grid;gap:1rem}
+.ctrl{display:flex;align-items:center;gap:.8rem;padding-block:.5rem;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));background:#0a101c;border-top:1px solid var(--line)}
+.ctrl .where{flex:1;min-width:0;color:var(--mute);font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctrl .where b{color:var(--ink)}
+.timer{display:flex;align-items:center;gap:.4rem}
+.timer[hidden]{display:none!important}
+.timer .t{font-family:var(--display);font-size:1.9rem;min-width:3.2ch;text-align:center;font-variant-numeric:tabular-nums}
+.timer.warn .t{color:var(--bad)}
+.btn{border:1px solid var(--line);background:var(--panel2);border-radius:10px;padding:.55rem 1.1rem;font-weight:700}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#1a1400}
+.btn.good{background:var(--ok);border-color:var(--ok);color:#03210f}
+.btn.bad{background:var(--bad);border-color:var(--bad);color:#fff}
+.btn.xbtn{background:var(--x);border-color:var(--x);color:#fff}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn.lg{font-size:1.25rem;padding:.8rem 1.6rem}
+.row{display:flex;gap:.8rem;flex-wrap:wrap;align-items:center}
+.eyebrow{font-size:.85rem;letter-spacing:.14em;color:var(--accent);font-weight:700}
+.big{font-size:clamp(2rem,4.2vw,4.4rem)}
+.mid{font-size:clamp(1.5rem,2.6vw,2.6rem)}
+.lead{font-size:1.25rem;color:var(--mute);margin:0;max-width:62ch}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:1rem 1.2rem;backdrop-filter:blur(6px)}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}
+.grid2{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:1.2rem;align-items:center}
+.grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1rem}
+@media (max-width:900px){.grid3,.grid2,.grid4{grid-template-columns:1fr}}
+.shot{width:100%;display:block;border-radius:14px;border:1px solid var(--line);aspect-ratio:16/9;object-fit:cover;background:var(--panel)}
+.note{display:grid;grid-template-columns:auto 1fr;gap:.4rem 1rem;font-size:.92rem;color:#d8deec;background:rgba(20,24,34,.82);border:1px dashed rgba(255,207,63,.35);border-radius:10px;padding:.6rem .9rem}
+.note b{color:var(--accent);font-size:.8rem;letter-spacing:.06em;white-space:nowrap;padding-top:.1rem}
+.team{border-top:6px solid var(--tc)}
+.tname{font-family:var(--display);font-size:1.6rem;color:var(--tc)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.seg button{border:0;background:transparent;padding:.4rem .9rem;font-weight:700}
+.seg button[aria-pressed="true"]{background:var(--accent);color:#1a1400}
+input.tn{background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:.4rem .6rem;font-size:1.1rem;font-weight:700;width:100%}
+.tbl{border-collapse:collapse;width:100%;font-size:1rem}
+.tbl th,.tbl td{border-bottom:1px solid var(--line);padding:.45rem .6rem;text-align:left;vertical-align:top}
+.tbl th{color:var(--mute);font-weight:700;font-size:.85rem}
+.tbl td.c,.tbl th.c{text-align:center}
+.tbl .tot{font-family:var(--display);font-size:1.4rem;color:var(--accent)}
+.wrapx{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:.3rem .8rem;backdrop-filter:blur(6px)}
+/* source card */
+.src{background:#fbf7ec;color:#1e1a10;border-radius:16px;padding:1.4rem 1.6rem;display:grid;gap:.6rem;box-shadow:0 18px 40px rgba(0,0,0,.35);border:3px solid #e9dfc2}
+.src .no{font-family:var(--display);color:#9a7d2e;font-size:1rem;letter-spacing:.1em}
+.src h2{font-size:clamp(2rem,3.6vw,3.6rem);color:#141009}
+.src .meta{font-size:1.4rem;color:#5a4d2c;background:#f1e8cf;border-radius:8px;padding:.5rem .8rem}
+.src .body{font-size:1.75rem;font-weight:700}
+.ox{display:flex;gap:1rem;justify-content:center}
+.oxbig{font-family:var(--display);font-size:min(28vh,13rem);line-height:1}
+.oxbig.o{color:var(--ok)}.oxbig.x{color:var(--bad)}
+.ansrow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}
+.ans{border:2px solid var(--line);border-top:8px solid var(--tc);border-radius:14px;padding:.7rem 1rem;display:grid;gap:.4rem;justify-items:center;text-align:center;background:var(--panel)}
+.ans .v{font-family:var(--display);font-size:3rem;line-height:1}
+.ans.right{border-color:var(--ok)}.ans.wrong{border-color:var(--bad)}
+.stamp{font-family:var(--display);font-size:1.3rem;border-radius:8px;padding:.1rem .6rem}
+.stamp.ok{background:var(--ok);color:#03210f}.stamp.bad{background:var(--bad);color:#fff}
+.done-mark{color:var(--accent);font-weight:700}
+/* telepathy */
+.opts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}
+.opt{display:flex;gap:1rem;align-items:center;background:var(--panel2);border:2px solid var(--line);border-radius:14px;padding:1rem 1.2rem;font-size:1.5rem;font-weight:700}
+.opt .n{font-family:var(--display);font-size:3rem;color:var(--accent);min-width:1.2ch;text-align:center}
+/* speed quiz */
+.word{font-family:var(--display);font-size:min(22vh,9.5rem);line-height:1.05;text-align:center;padding:2vh 0}
+.word.star{color:var(--accent)}
+.starbadge{display:inline-block;background:var(--accent);color:#1a1400;border-radius:999px;padding:.2rem 1rem;font-weight:900;font-size:1.3rem}
+.score-live{font-family:var(--display);font-size:3.2rem;color:var(--ok)}
+.wlist{display:flex;flex-wrap:wrap;gap:.4rem}
+.wlist span{border-radius:999px;padding:.15rem .7rem;font-size:.95rem;border:1px solid var(--line)}
+.wlist .ok{background:rgba(53,208,127,.15);border-color:var(--ok)}
+.wlist .pass{background:rgba(255,90,95,.12);border-color:var(--bad);text-decoration:line-through;color:#ffb3b5}
+/* karaoke */
+.slide{position:relative;border-radius:14px;overflow:hidden;border:2px solid var(--line);aspect-ratio:16/9;max-height:62vh;margin-inline:auto;width:100%;background:#000}
+.slide img,.slide video{width:100%;height:100%;object-fit:cover;display:block}
+.slide .cap{position:absolute;left:0;right:0;top:0;padding:1.2rem 1.6rem;background:linear-gradient(rgba(0,0,0,.78),transparent);font-family:var(--display);font-size:clamp(1.6rem,3vw,3rem)}
+.slide .pg{position:absolute;right:1rem;bottom:.8rem;background:rgba(0,0,0,.6);border-radius:8px;padding:.1rem .6rem}
+/* countdown overlay */
+#cd{position:fixed;inset:0;display:grid;place-items:center;background:rgba(8,12,22,.82);z-index:40;font-family:var(--display);color:var(--accent);font-size:min(40vh,22rem);pointer-events:none}
+#cd[hidden]{display:none!important}
+#cd.go{color:var(--x);font-size:min(20vh,10rem)}
+.pop{animation:pop .45s ease-out}
+@keyframes pop{from{transform:scale(1.7);opacity:0}}
+.reveal-x{font-family:var(--display);font-size:min(30vh,14rem);color:var(--x);text-align:center;animation:pop .6s ease-out}
+.toast{position:fixed;left:50%;bottom:calc(5rem + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--panel2);border:1px solid var(--accent);border-radius:10px;padding:.6rem 1rem;z-index:50;font-weight:700}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:grid;place-items:center;z-index:45}
+.modal[hidden]{display:none!important}
+.modal .panel{min-width:min(560px,92vw);display:grid;gap:.8rem}
+@media (max-width:760px){
+  .bar{flex-wrap:wrap}.rail{order:3;flex-basis:100%}.chips{display:none}
+  .ctrl{flex-wrap:wrap}.ctrl .where{order:-1;flex-basis:100%}
+  .ansrow,.opts{grid-template-columns:1fr}
+}
+.gate{position:fixed;top:3.4rem;left:50%;transform:translateX(-50%);z-index:60;background:var(--accent);color:#1a1400;border:0;border-radius:999px;padding:.55rem 1.4rem;font-weight:900;font-size:1.05rem;box-shadow:0 10px 30px rgba(0,0,0,.5);animation:gatepulse 1.4s ease-in-out infinite}
+.gate[hidden]{display:none!important}
+@keyframes gatepulse{50%{box-shadow:0 0 0 .6rem rgba(255,207,63,.35),0 10px 30px rgba(0,0,0,.5)}}
+#bVol{width:5.5rem;accent-color:var(--accent);vertical-align:middle}
+.vol{display:flex;align-items:center;gap:.3rem;font-size:.8rem;color:var(--mute)}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div id="bgwrap" aria-hidden="true"><video id="bgv" muted loop playsinline autoplay preload="auto"></video></div>
+<div id="app">
+  <header class="bar">
+    <div class="brand">팀플호 <b>협동 항해</b></div>
+    <nav class="rail" id="rail" aria-label="진행 단계"></nav>
+    <button class="ibtn" id="bSound" aria-pressed="true" title="음성·효과음·영상 소리">소리</button>
+    <button class="ibtn" id="bMusic" aria-pressed="true" title="배경음악">음악</button>
+    <label class="vol" title="배경음악 크기">♪<input id="bVol" type="range" min="0" max="100" step="5" value="80" aria-label="배경음악 크기"></label>
+    <button class="ibtn" id="bFull">전체화면</button>
+  </header>
+  <main id="stage" aria-live="polite"></main>
+  <footer class="ctrl">
+    <button class="btn" id="bPrev">◀ 이전</button>
+    <div class="where" id="where"></div>
+    <div class="timer" id="timer" hidden><span class="t num" id="tval">0:30</span><button class="ibtn" id="tPlay">시작</button><button class="ibtn" id="tAdd">+15초</button><button class="ibtn" id="tReset">↺</button></div>
+    <button class="btn primary" id="bNext">다음 ▶</button>
+  </footer>
+</div>
+<button class="gate" id="gate" hidden>🔇 소리가 막혀 있습니다 — 여기를 눌러 켜기</button>
+<div id="cd" hidden></div>
+<script src="assets/timing.js"></script>
+<script>
+
+(() => {
+'use strict';
+const IMG = n => `assets/img/${n}.jpg`, AUD = n => `assets/audio/${n}.mp3`, LOOP = n => `assets/loop/${n}.mp4`, END = n => `assets/end/${n}.mp4`;
+const CDT=window.CDT||{};
+const CD_GO=CDT.go||{t:[134,868,1454,2067],end:2900}, CD_VOTE=CDT.vote||{t:[146,818,1432,1995],end:3300};
+function vid(name,cls,alt){ return `<video class="${cls||'shot'}" src="${LOOP(name)}" autoplay muted loop playsinline preload="auto" aria-label="${alt||''}"></video>`; }
+let bgCur=null;
+function setBg(name){ const w=document.getElementById('bgwrap'), v=document.getElementById('bgv'); if(!name){ w.classList.add('off'); bgCur=null; return; } w.classList.remove('off'); if(bgCur===name) return; bgCur=name; v.src=LOOP(name); v.play().catch(()=>{}); }
+const TC = ['var(--t0)','var(--t1)','var(--t2)'];
+
+/* ---------- content ---------- */
+const ROUNDS=[
+ {no:1,name:'자료조사',theme:'출항 전 자료조사',game:'항해일지 귓속말 전달',loop:'chart',intro:'p_r1i',taunt:'p_r1c',
+  tauntText:'크크크. 출항 전 자료조사라고? 항해일지 한 줄쯤은, 슬쩍 바꿔도 아무도 모르지.',
+  line:'첫 번째 선원만 TV의 항해일지를 보고, 귓속말로 끝까지 전달합니다. 마지막 선원이 일지를 말하면 진행자가 맞힌 항목을 셉니다.',score:'맞힌 항목 × 2점 (항목 5개 → 최대 10점)',
+  x:'숫자·단어 한 글자를 슬쩍 바꿔 전달한다. "12포대 아니었나? 13이었던 것 같은데…"'},
+ {no:2,name:'팀 회의',theme:'갑판 집합',game:'말 없이 줄서기',loop:'deck',intro:'p_r2i',taunt:'p_r2c',
+  tauntText:'말 없이 줄을 서라고? 내가 슬쩍 한 칸만 옮기면, 대열은 엉망이 되지.',
+  line:'한마디도 하지 않고 60초 안에 생일(월·일) 순서로 한 줄을 섭니다. 끝나면 앞에서부터 생일을 말해 확인합니다.',score:'제자리에 선 인원 ÷ 팀 인원 × 10점',
+  x:'틀린 자리로 유도하는 손짓, 일부러 늦게 서기, 아는 척 고개 끄덕이기'},
+ {no:3,name:'PPT 제작',theme:'찢어진 돛 수리',game:'스피드 퀴즈',loop:'repair',intro:'p_r3i',taunt:'p_r3c',
+  tauntText:'찢어진 돛을 고치겠다고? 내가 엉뚱한 답만 외치면, 한 장도 못 고칠걸.',
+  line:'설명하는 1명만 화면을 보고, 나머지는 등을 돌립니다. 단어를 직접 말하지 않고 설명해 90초 안에 많이 맞힙니다. ★ 수리 부품은 2점.',score:'원점수(일반 1 · ★ 2) × 0.7, 최대 10점',
+  x:'엉뚱한 답을 외치기, ★ 단어를 "패스!"로 넘기게 만들기'},
+ {no:4,name:'최종 발표',theme:'입항 보고',game:'한 단어씩 이어 말하기',loop:'report',intro:'p_r4i',taunt:'p_r4c',
+  tauntText:'마지막 입항 보고다. 한 단어만 비틀면, 보고서가 통째로 바다에 빠지지.',
+  line:'팀원이 돌아가며 딱 한 단어씩만 이어 말해 40초 동안 하나의 보고를 완성합니다. 끝나면 다른 두 팀이 손가락으로 1~5점을 줍니다.',score:'다른 두 팀이 준 1~5점의 합 (최대 10점)',
+  x:'문장을 엉뚱하게 비트는 한 단어를 슬쩍 끼워 넣기'}
+];
+const LOGS=[
+ {title:'보급 창고 점검',items:['창고 3번','쌀 12포대','물 40통','출항 새벽 5시','목적지 종강항']},
+ {title:'출항 명단',items:['선원 15명','깃발 파란색','밧줄 8개','출항 일요일','목적지 등대섬']},
+ {title:'항로 기록',items:['북쪽으로 7일','섬 2개 통과','폭풍 3번','물고기 25마리','도착 저녁 6시']},
+ {title:'선장 지시',items:['돛 4장 수리','망치 6자루','못 100개','집합 갑판 2층','점검 낮 12시']}
+];
+const STAR=['돛','닻','밧줄','망치','나침반','깃발','보물지도','발표','슬라이드','그래프'];
+const PLAIN=['배','바다','파도','갈매기','섬','모래','조개','불가사리','고래','상어','문어','등대','항구','나무','톱','풀','보물','지도','선장','해적','선원','물','쌀','빵','사과','달','별','해','구름','비','바람','노트북','마이크','연필','책상','의자','시계','가방','안경','신발','우산'];
+const TOPICS=['우리 배의 항해 보고','학식 줄 해결책','종강항 도착 계획','선장님께 올리는 건의'];
+const STEPS=[
+ {key:'setup',label:'준비',subs:1},
+ {key:'intro',label:'오프닝',subs:1},
+ {key:'secret',label:'비밀 쪽지',subs:1},
+ {key:'rules',label:'규칙',subs:3},
+ {key:'r1',label:'1R 자료조사',subs:6},
+ {key:'r2',label:'2R 팀 회의',subs:4},
+ {key:'r3',label:'3R PPT 제작',subs:5},
+ {key:'r4',label:'4R 최종 발표',subs:5},
+ {key:'vote',label:'추리·지목',subs:3},
+ {key:'end',label:'결말',subs:2}
+];
+const others=t=>[0,1,2].filter(o=>o!==t);
+
+/* ---------- state ---------- */
+const KEY='pirates-coop-v1';
+const fresh=()=>({teams:[{name:'1조',size:5},{name:'2조',size:5},{name:'3조',size:5}],cfg:{tRelay:60,tLine:60,tSQ:90,tStory:40},step:0,sub:0,startedAt:null,
+ r1:{log:null,ph:'hid',score:[null,null,null]},
+ r2:{ph:'ready',ok:[null,null,null]},
+ r3:{deck:null,ptr:0,words:[[],[],[]],ph:['ready','ready','ready']},
+ r4:{topic:[null,null,null],rate:[[null,null,null],[null,null,null],[null,null,null]],ph:['ready','ready','ready']},
+ caught:[null,null,null]});
+let S=load();
+function load(){ try{ const r=localStorage.getItem(KEY); if(r){ const s=JSON.parse(r); if(s&&s.r1&&s.r4&&s.caught){ if(s.r2.ph==='counting') s.r2.ph='ready'; if(s.r1.ph==='show') s.r1.ph='gone'; return s; } } }catch(e){} return fresh(); }
+function save(){ try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){} }
+
+/* ---------- scoring ---------- */
+const r1pts=t=>S.r1.score[t]==null?0:S.r1.score[t]*2;
+const r2pts=t=>S.r2.ok[t]==null?0:Math.round(10*S.r2.ok[t]/S.teams[t].size);
+const r3raw=t=>S.r3.words[t].reduce((a,w)=>a+(w.r==='ok'?(w.s?2:1):0),0);
+const r3pts=t=>Math.min(10,Math.round(r3raw(t)*0.7));
+const r4pts=t=>S.r4.rate[t].reduce((a,v)=>a+(v||0),0);
+const ship=t=>r1pts(t)+r2pts(t)+r3pts(t)+r4pts(t);
+const bonus=t=>S.caught[t]===true?10:(S.caught[t]===false?-5:0);
+const total=t=>ship(t)+bonus(t);
+const caughtN=()=>S.caught.filter(v=>v===true).length;
+function endingOf(){ const n=caughtN();
+  if(n===0) return {file:'e1_pirate_win',poster:'s6_sink',label:'해적단 승리',head:'해적단 승리',color:'var(--x)'};
+  if(n<3) return {file:'e2_partial',poster:'s7_arrive',label:'아슬아슬한 입항',head:'아슬아슬한 입항',color:'var(--accent)'};
+  return {file:'e3_perfect',poster:'s7_arrive',label:'완벽한 입항',head:'완벽한 입항',color:'var(--ok)'}; }
+
+/* ---------- sound ----------
+   Browsers only allow sound after a user gesture. The first click/keypress "unlocks" three shared
+   elements (one voice element + three looping music beds); after that they can be driven from code
+   at any time without being blocked. If a voice is still blocked, a visible button asks for one click. */
+let soundOn=true, musicOn=true, ac=null, unlocked=false, pendingVoice=null, voiceTok=0, wantBed=null, ducked=false;
+let bgmVol=0.8; try{ const v=parseFloat(localStorage.getItem('px-tv-bgm')); if(v>=0&&v<=1) bgmVol=v; }catch(e){}
+const SILENT='data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=';
+const voiceEl=new Audio(); voiceEl.preload='auto';
+const BEDS={calm:'assets/music/calm.mp3',play:'assets/music/play.mp3',tense:'assets/music/tense.mp3'};
+const bgm={}; Object.keys(BEDS).forEach(k=>{ const a=new Audio(BEDS[k]); a.loop=true; a.preload='auto'; a.volume=0; bgm[k]=a; });
+function ctx(){ if(!ac){ try{ac=new (window.AudioContext||window.webkitAudioContext)();}catch(e){} } if(ac&&ac.state==='suspended') ac.resume(); return ac; }
+function tone(f,d,{type='sine',g=.16,w=0,to=null}={}){ const a=ctx(); if(!a||!soundOn) return; const t=a.currentTime+w,o=a.createOscillator(),G=a.createGain(); o.type=type; o.frequency.setValueAtTime(f,t); if(to) o.frequency.exponentialRampToValueAtTime(to,t+d); G.gain.setValueAtTime(0,t); G.gain.linearRampToValueAtTime(g,t+.01); G.gain.exponentialRampToValueAtTime(.0001,t+d); o.connect(G).connect(a.destination); o.start(t); o.stop(t+d+.05); }
+const SFX={ok(){[523,659,784,1047].forEach((f,i)=>tone(f,.4,{type:'triangle',w:i*.08}));},bad(){tone(180,.6,{type:'sawtooth',g:.14,to:70});},ding(){tone(1320,.18,{type:'triangle',g:.18});tone(1760,.25,{type:'triangle',g:.12,w:.08});},buzz(){tone(140,.25,{type:'square',g:.08});},tick(){tone(880,.07,{type:'square',g:.05});},horn(){tone(220,1,{type:'sawtooth',g:.12});tone(277,1,{type:'sawtooth',g:.08});},go(){tone(660,.5,{type:'square',g:.1});tone(990,.5,{type:'square',g:.08});}};
+function showGate(){ const g=document.getElementById('gate'); if(g) g.hidden=false; }
+function hideGate(){ const g=document.getElementById('gate'); if(g) g.hidden=true; }
+function startBeds(){ Object.values(bgm).forEach(a=>{ const p=a.play(); if(p&&p.catch) p.catch(()=>{ unlocked=false; }); }); }
+function unlockAudio(){
+  if(unlocked) return; unlocked=true; ctx();
+  const tok=++voiceTok;
+  try{ voiceEl.onended=null; voiceEl.src=SILENT; const p=voiceEl.play(); if(p&&p.then) p.then(()=>{ if(tok===voiceTok) voiceEl.pause(); }).catch(()=>{}); }catch(e){}
+  if(musicOn&&soundOn) startBeds();
+  hideGate();
+  if(pendingVoice){ const q=pendingVoice; pendingVoice=null; playVoice(q.n,q.end); }
+}
+['pointerup','click','keydown','touchend'].forEach(ev=>document.addEventListener(ev,unlockAudio,{capture:true}));
+function playVoice(n,end){
+  stopVoice(); if(!soundOn) return;
+  const tok=voiceTok;
+  voiceEl.src=AUD(n); voiceEl.volume=1; ducked=true;
+  voiceEl.onended=()=>{ if(tok!==voiceTok) return; ducked=false; end&&end(); };
+  voiceEl.onerror=()=>{ if(tok===voiceTok) ducked=false; };
+  const p=voiceEl.play();
+  if(p&&p.catch) p.catch(()=>{ if(tok!==voiceTok) return; ducked=false; pendingVoice={n,end}; unlocked=false; showGate(); });
+}
+function stopVoice(){ voiceTok++; try{ voiceEl.pause(); }catch(e){} voiceEl.onended=null; ducked=false; }
+function setBed(n){ wantBed=n; if(!unlocked&&n&&musicOn&&soundOn) showGate(); }
+setInterval(()=>{ Object.keys(bgm).forEach(k=>{ const a=bgm[k]; const want=(musicOn&&soundOn&&unlocked&&wantBed===k)?bgmVol*(ducked?0.35:1):0; const d=want-a.volume; if(Math.abs(d)<0.004){ a.volume=Math.max(0,Math.min(1,want)); return; } const stepv=d<0?0.05:0.03; a.volume=Math.max(0,Math.min(1,a.volume+Math.sign(d)*Math.min(Math.abs(d),stepv))); }); },60);
+
+
+function bgFor(){ const st=STEPS[S.step], s=S.sub;
+  if(st.key==='setup'||st.key==='rules') return 'harbor'; if(st.key==='intro') return null; if(st.key==='secret'||st.key==='vote') return 'night';
+  if(st.key==='r1') return (s>=1&&s<=4)?'chart':'sea';
+  if(st.key==='r2') return (s>=1&&s<=2)?'deck':'sea';
+  if(st.key==='r3') return (s>=1&&s<=3)?'repair':'sea';
+  if(st.key==='r4') return (s>=1&&s<=3)?'report':'sea';
+  if(st.key==='end') return s===0?null:(caughtN()===0?'sink':'arrive');
+  return 'harbor'; }
+function bedFor(){ const st=STEPS[S.step], s=S.sub;
+  if(st.key==='setup'||st.key==='rules') return 'calm'; if(st.key==='intro') return null; if(st.key==='secret'||st.key==='vote') return 'tense';
+  if(st.key==='r1') return (s>=1&&s<=4)?'play':'calm';
+  if(st.key==='r2') return (s>=1&&s<=2)?'play':'calm';
+  if(st.key==='r3') return (s>=1&&s<=3)?'play':'calm';
+  if(st.key==='r4') return (s>=1&&s<=3)?'play':'calm';
+  if(st.key==='end') return s===0?null:(caughtN()===0?'tense':'play');
+  return 'calm'; }
+/* ---------- timer ---------- */
+const T={total:0,left:0,run:false,last:0,label:'',onEnd:null};
+function setTimer(sec,label,auto,onEnd){ T.total=sec; T.left=sec; T.label=label; T.run=!!auto; T.last=performance.now(); T.onEnd=onEnd||null; drawTimer(); }
+function drawTimer(){ const el=$('#timer'); el.hidden=!T.total; const s=Math.max(0,Math.ceil(T.left)); $('#tval').textContent=`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`; el.classList.toggle('warn',T.run&&s<=5&&s>0); $('#tPlay').textContent=T.run?'멈춤':(T.left<T.total?'계속':'시작'); const big=document.querySelector('[data-bigtimer]'); if(big) big.textContent=s; }
+let prevS=null;
+setInterval(()=>{ const now=performance.now(); if(T.run){ T.left-=(now-T.last)/1000; const s=Math.ceil(T.left); if(s!==prevS&&s<=5&&s>0) SFX.tick(); prevS=s; if(T.left<=0){ T.left=0; T.run=false; SFX.horn(); const f=T.onEnd; T.onEnd=null; if(f) f(); else toast(`${T.label} 시간 끝!`); } drawTimer(); } T.last=now; },150);
+
+
+/* ---------- helpers ---------- */
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const tn=t=>esc(S.teams[t].name||`${t+1}조`);
+const tc=t=>`style="--tc:${TC[t]}"`;
+function toast(m){ const d=document.createElement('div'); d.className='toast'; d.textContent=m; document.body.appendChild(d); setTimeout(()=>d.remove(),2600); }
+function shuffle(a){ for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
+function note(mc,b){ return `<div class="note">${mc?`<b>진행자 A</b><span>${mc}</span>`:''}${b?`<b>진행자 B</b><span>${b}</span>`:''}</div>`; }
+function countdown(words,cb,opt){ const el=$('#cd'); el.hidden=false; const withVoice=!!(opt&&opt.voice&&soundOn); if(withVoice) playVoice(opt.voice);
+  const times=withVoice?opt.times.t:words.map((_,i)=>i*800);
+  words.forEach((w,i)=>setTimeout(()=>{ const last=i===words.length-1; el.textContent=w; el.className=last?'go pop':'pop'; void el.offsetWidth; if(last) SFX.go(); else if(!withVoice) SFX.tick(); },times[i]));
+  setTimeout(()=>{ el.hidden=true; el.className=''; cb&&cb(); },withVoice?opt.times.end:times[times.length-1]+950); }
+
+function scoreTable(cols){
+  return `<div class="wrapx"><table class="tbl"><thead><tr><th>배</th>${cols.map(c=>`<th class="c">${c[0]}</th>`).join('')}<th class="c">항해 점수</th></tr></thead><tbody>${[0,1,2].map(t=>`<tr><td><span class="tname" ${tc(t)} style="font-size:1.3rem">${tn(t)}</span></td>${cols.map(c=>`<td class="c num">${c[1](t)}</td>`).join('')}<td class="c tot num">${ship(t)}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+/* ---------- screens ---------- */
+function vSetup(){
+  const total_=S.teams.reduce((a,t)=>a+t.size,0);
+  const sel=(id,v,opts)=>`<select id="${id}" style="background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:.3rem">${opts.map(([a,b])=>`<option value="${a}" ${String(a)===String(v)?'selected':''}>${b}</option>`).join('')}</select>`;
+  return `<div class="scene"><div class="grid2"><div style="display:grid;gap:.8rem">
+    <span class="eyebrow">10~20명 · 3척 · 팀마다 X맨 1명 · 약 40분 · 준비물: 종이 1장</span>
+    <h1 class="big">팀플호에<br>해적이 탔다 <span style="color:var(--x)">협동 항해</span></h1>
+    <p class="lead">세 척의 배가 협동 미니게임 네 판으로 항해합니다. 배마다 해적 X맨이 한 명씩 숨어 매 라운드 슬쩍 방해해요. 마지막에 우리 배의 X맨을 찾아내세요.</p>
+    <div class="row"><button class="btn primary lg" data-a="start">▶ 오프닝 영상으로 시작</button>${S.startedAt?`<button class="btn" data-a="resume">이어서 (${esc(STEPS[S.step].label)})</button><button class="btn bad" data-a="askreset">새 게임</button>`:''}</div>
+  </div>${vid('harbor','shot','출항을 기다리는 항구')}</div>
+  <div class="grid3">${S.teams.map((m,t)=>`<div class="panel team" ${tc(t)} style="display:grid;gap:.5rem"><label class="eyebrow" for="tn${t}">${t+1}번 배</label><input class="tn" id="tn${t}" data-a="tname" data-t="${t}" value="${esc(m.name)}" maxlength="10">
+    <div class="row"><span>인원</span><span class="seg">${[3,4,5,6,7].map(n=>`<button data-a="size" data-t="${t}" data-n="${n}" aria-pressed="${m.size===n}">${n}</button>`).join('')}</span></div></div>`).join('')}</div>
+  <div class="grid2" style="align-items:start"><div class="panel"><h3 style="font-size:1.4rem;margin-bottom:.4rem">약 40분 진행표 <span style="font-family:var(--body);font-size:.9rem;color:${total_<10||total_>20?'var(--bad)':'var(--mute)'}">· 지금 ${total_}명${total_<10||total_>20?' (10~20명 권장)':''}</span></h3>
+    <table class="tbl"><tbody>
+    <tr><td class="num">00:00</td><td>오프닝 영상 (2분) · 비밀 쪽지 뽑기 (3분) · 규칙 (3분)</td></tr>
+    <tr><td class="num">08:00</td><td>1R 출항 전 자료조사 — 항해일지 귓속말 전달 (8분)</td></tr>
+    <tr><td class="num">16:00</td><td>2R 팀 회의 — 갑판 집합: 말 없이 줄서기 (6분)</td></tr>
+    <tr><td class="num">22:00</td><td>3R PPT 제작 — 찢어진 돛 수리: 스피드 퀴즈 (9분)</td></tr>
+    <tr><td class="num">31:00</td><td>4R 최종 발표 — 입항 보고: 한 단어씩 이어 말하기 (6분)</td></tr>
+    <tr><td class="num">37:00</td><td>추리 · 지목 · X맨 공개 · 결말 (3분)</td></tr></tbody></table></div>
+    <div class="panel" style="display:grid;gap:.6rem"><h3 style="font-size:1.4rem">준비물과 설정</h3>
+      <p style="margin:0">종이 1장이면 됩니다. <b>배마다</b> 종이를 사람 수만큼 찢어 한 장에만 <b style="color:var(--x)">X</b>를 쓰고 접어 섞은 뒤 한 장씩 뽑아 몰래 확인하세요. 진행자도 모릅니다.</p>
+      <p style="margin:0;color:var(--mute)">TV 연결: 노트북을 HDMI로 TV에 꽂고 디스플레이를 "복제"로 둔 뒤 위의 "전체화면"을 누르세요. 소리는 TV 스피커로 나옵니다.</p>
+      <div class="row"><label>귓속말 ${sel('c_relay',S.cfg.tRelay,[[45,'45초'],[60,'60초'],[90,'90초']])}</label><label>줄서기 ${sel('c_line',S.cfg.tLine,[[45,'45초'],[60,'60초'],[90,'90초']])}</label><label>스피드 퀴즈 ${sel('c_sq',S.cfg.tSQ,[[60,'60초'],[90,'90초'],[120,'120초']])}</label><label>이어 말하기 ${sel('c_story',S.cfg.tStory,[[30,'30초'],[40,'40초'],[60,'60초']])}</label></div>
+    </div></div>
+  ${note('마이크를 잡고 설명과 "3, 2, 1!" 신호를 맡습니다.','노트북을 조작하고 점수를 입력합니다. X맨이 누구인지는 진행자도 모릅니다. 끝에 각 배가 쪽지를 펼칠 때 "검거/놓침"만 입력하세요.')}</div>`;
+}
+function vIntro(){
+  return `<div class="scene"><div class="slide" style="max-height:72vh"><video id="vid" src="assets/intro.mp4" controls playsinline preload="auto" poster="${IMG('style_key')}" style="width:100%;height:100%;display:block;background:#000"></video></div>
+  <div class="row" style="justify-content:center"><button class="btn primary lg" data-a="vplay">▶ 오프닝 영상 재생</button><button class="btn" data-a="vfull">영상 전체화면</button></div>
+  ${note('영상이 끝나면 "다음"으로 비밀 쪽지 뽑기로 넘어갑니다.','')}</div>`;
+}
+function vSecret(){
+  return `<div class="scene"><div class="grid2"><div style="display:grid;gap:1rem"><span class="eyebrow">비밀 쪽지 · 3분</span><h2 class="big">배마다 해적이 한 명씩</h2>
+    <ol class="lead" style="color:var(--ink);font-size:1.35rem;display:grid;gap:.5rem;padding-left:1.3em">
+      <li>${S.teams.map((m,t)=>`<b style="color:${TC[t]}">${tn(t)} ${m.size}명</b>`).join(' · ')}으로 모여 앉습니다.</li>
+      <li>배마다 종이를 사람 수만큼 찢어 <b>한 장에만 X</b>를 쓰고, 똑같이 접어 섞습니다.</li>
+      <li>한 장씩 뽑아 혼자만 확인한 뒤 주머니에 넣으세요.</li>
+      <li><b style="color:var(--x)">X</b>를 뽑은 사람이 이 배의 해적(X맨)입니다. 표정 관리!</li></ol></div>
+    ${vid('night','shot','밤의 선실에서 몰래 모이는 해적')}</div>
+    ${note('"표정으로 티 내지 마세요"라고 한 번 말해 주세요. 쪽지는 진행자에게 돌려줄 필요 없습니다.','어느 배의 누가 X인지 알 수 없는 것이 정상입니다. 마지막 공개 때까지 아무것도 입력하지 않습니다.')}</div>`;
+}
+function vRules(sub){
+  if(sub===0) return `<div class="scene"><div class="grid2"><div style="display:grid;gap:1rem"><span class="eyebrow">규칙 1/3 · 세 줄 요약</span><h2 class="big">협동 항해, 해적은 방해 중</h2>
+    <ol style="font-size:1.6rem;display:grid;gap:.7rem;padding-left:1.2em;margin:0">
+      <li>세 척의 배가 <b>협동 미니게임 네 판</b>으로 항해합니다. 팀원 모두가 함께 해내는 게임입니다.</li>
+      <li>배마다 <b style="color:var(--x)">해적 X맨 1명</b>이 몰래 매 라운드 <b>일부러 슬쩍 방해</b>해요.</li>
+      <li>마지막에 우리 배의 X맨을 지목합니다. 맞히면 <b style="color:var(--ok)">+10</b>, 놓치면 <b style="color:var(--bad)">−5</b>.</li></ol></div>
+    ${vid('sea','shot','세 척의 배가 함께 항해')}</div></div>`;
+  if(sub===1) return `<div class="scene"><span class="eyebrow">규칙 2/3 · 미니게임 4판</span><h2 class="mid">이름은 그대로, 항해 테마로 바뀐 네 판</h2>
+    <div class="wrapx"><table class="tbl" style="font-size:1.15rem"><thead><tr><th>라운드</th><th>미니게임</th><th>하는 법</th><th>점수</th></tr></thead><tbody>
+    ${ROUNDS.map(R=>`<tr><td style="white-space:nowrap"><b>${R.no}R ${R.name}</b><br><small style="color:var(--mute)">${R.theme}</small></td><td style="color:var(--accent);font-weight:700;white-space:nowrap">${R.game}</td><td>${R.line}</td><td>${R.score}</td></tr>`).join('')}</tbody></table></div>
+    ${note('1~2라운드는 세 배가 동시에, 3~4라운드는 배 순서대로 합니다.','')}</div>`;
+  return `<div class="scene"><span class="eyebrow">규칙 3/3 · X맨</span><h2 class="mid">X맨의 수법 (모두가 알아도 괜찮습니다)</h2>
+    <div class="grid2" style="align-items:start"><div class="wrapx"><table class="tbl" style="font-size:1.1rem"><tbody>${ROUNDS.map(R=>`<tr><td style="white-space:nowrap"><b>${R.no}R ${R.game}</b></td><td>${R.x}</td></tr>`).join('')}</tbody></table></div>
+    <div style="display:grid;gap:.8rem"><div class="panel"><b style="color:var(--ok)">해도 되는 것</b><br>평범한 실수처럼 보이는 방해, 의견·질문·맞장구 — 실제 팀플에서 누군가 할 법한 행동</div>
+    <div class="panel"><b style="color:var(--bad)">하면 안 되는 것</b><br>"내가 X맨이야" 말하기, 규칙을 어기거나 게임을 멈추기, 소리 지르기·몸싸움, 남의 물건에 손대기</div>
+    <div class="panel"><b>점수와 결말</b><br>라운드마다 0~10점(최대 40) + 검거 +10 / 놓침 −5. 세 배 중 <b>X맨을 잡은 배의 수</b>로 결말이 정해집니다: 0척 해적단 승리 · 1~2척 아슬아슬한 입항 · 3척 완벽한 입항.</div></div></div>
+    ${note('질문을 1~2개 받고 1라운드로 넘어갑니다.','')}</div>`;
+}
+function vRoundIntro(r){
+  const R=ROUNDS[r];
+  return `<div class="scene"><div class="grid2"><div style="display:grid;gap:1rem"><span class="eyebrow">ROUND ${R.no} · ${R.name}</span><h2 class="big">${R.theme}</h2>
+    <p style="font-size:1.5rem;margin:0;color:var(--accent);font-weight:700">미니게임: ${R.game}</p>
+    <p style="font-size:1.45rem;margin:0">${R.line}</p><p class="lead" style="color:var(--mute)">점수: ${R.score}</p>
+    <div class="panel" style="border-left:6px solid var(--x)"><span class="eyebrow" style="color:var(--x)">캡틴 F</span><p style="margin:.2rem 0 0;font-size:1.25rem">“${R.tauntText}”</p></div>
+    <div class="row"><button class="btn" data-a="voice" data-v="${R.intro}" data-c="${R.taunt}">▶ 안내 다시 듣기</button></div></div>
+    ${vid(R.loop,'shot','')}</div></div>`;
+}
+/* R1 */
+function vR1(s){
+  const R=ROUNDS[0], L=LOGS[S.r1.log==null?0:S.r1.log];
+  const head=`<div class="row" style="justify-content:space-between"><span class="eyebrow">1R ${R.theme} · ${R.game}</span></div>`;
+  if(s===1) return `<div class="scene">${head}<h2 class="big">작전 회의 30초</h2>
+    <p style="font-size:1.6rem;margin:0">귓속말을 <b>어떻게 정확히 전달할지</b> 배마다 정하세요. 전달 순서(줄 순서)도 정합니다.</p>
+    <p class="lead">예) 한 번씩 되묻기 · 숫자는 손가락으로 확인하기 · 앞사람 말이 끝나면 반복해서 확인하기</p>
+    ${note('30초가 끝나면 "다음"을 눌러 항해일지를 공개합니다.','')}</div>`;
+  if(s===2){ const ph=S.r1.ph;
+    return `<div class="scene">${head}<h2 class="mid">첫 번째 선원만 TV를 보세요</h2>
+    ${ph==='hid'?`<div class="panel" style="text-align:center;display:grid;gap:1rem;justify-items:center"><p style="font-size:1.5rem;margin:0">나머지 선원은 <b>등을 돌려</b> 주세요. 준비되면 일지를 10초 동안 공개합니다.</p><button class="btn primary lg" data-a="logshow">🔓 항해일지 공개 (10초)</button></div>`:''}
+    ${ph==='show'?`<div class="src"><span class="no">항해일지 · 게임용 가상 자료</span><h2>${esc(L.title)}</h2><ol class="body" style="margin:0;padding-left:1.2em;display:grid;gap:.3rem">${L.items.map(i=>`<li style="font-size:2rem;font-weight:900">${esc(i)}</li>`).join('')}</ol></div><div class="oxbig" style="font-size:5rem;color:var(--accent);text-align:center" data-bigtimer>${Math.ceil(T.left)}</div>`:''}
+    ${ph==='gone'?`<div class="panel" style="text-align:center"><p style="font-size:1.7rem;margin:0">🌊 항해일지를 가렸습니다. 이제 귓속말로 전달하세요!</p></div>`:''}
+    ${note('일지가 보이는 동안 다른 선원이 훔쳐보지 않는지 살펴 주세요.','공개 후 10초가 지나면 자동으로 가려집니다.')}</div>`; }
+  if(s===3) return `<div class="scene">${head}<h2 class="big">귓속말 전달 중!</h2>
+    <div class="row" style="justify-content:center"><div class="oxbig" style="font-size:9rem;color:var(--accent)" data-bigtimer>${Math.ceil(T.left)}</div></div>
+    <p class="lead" style="text-align:center;margin-inline:auto">맨 앞 선원부터 한 명씩 귓속말로 일지를 전달하세요. 마지막 선원이 일지를 크게 말합니다.</p>
+    ${note('다른 배가 들을 수 있게 크게 말하는 것은 반칙입니다. 시간이 끝나면 확인 화면으로 갑니다.','')}</div>`;
+  if(s===4){ return `<div class="scene">${head}<h2 class="mid">정답 항해일지: ${esc(L.title)}</h2>
+    <div class="src"><ol class="body" style="margin:0;padding-left:1.2em;display:grid;gap:.3rem">${L.items.map(i=>`<li style="font-size:1.8rem;font-weight:900">${esc(i)}</li>`).join('')}</ol></div>
+    <div class="ansrow">${[0,1,2].map(t=>`<div class="ans" ${tc(t)}><div class="tname">${tn(t)}</div><p style="margin:0;font-size:.9rem;color:var(--mute)">마지막 선원이 말한 일지에서 맞힌 항목 수</p><div class="row" style="justify-content:center">${[0,1,2,3,4,5].map(k=>`<button class="btn num" data-a="r1score" data-t="${t}" data-k="${k}" aria-pressed="${S.r1.score[t]===k}" style="${S.r1.score[t]===k?'background:var(--accent);color:#1a1400':''}">${k}</button>`).join('')}</div></div>`).join('')}</div>
+    ${note('각 배의 마지막 선원이 말한 일지를 정답과 비교해 항목별로 맞으면 1개로 셉니다.','세 배 모두 입력하면 "다음"으로 결과를 봅니다.')}</div>`; }
+  return `<div class="scene"><span class="eyebrow">1R 결과</span><h2 class="mid">항해일지 귓속말 전달 결과</h2>${scoreTable([['맞힌 항목',t=>S.r1.score[t]],['1R 점수',r1pts]])}${note('점수가 낮은 배가 있다면 누가 바꿨는지 기억해 두세요.','')}</div>`;
+}
+/* R2 */
+function vR2(s){
+  const R=ROUNDS[1];
+  const head=`<div class="row" style="justify-content:space-between"><span class="eyebrow">2R ${R.theme} · ${R.game}</span></div>`;
+  if(s===1) return `<div class="scene">${head}<h2 class="big">${S.r2.ph==='run'?'말은 금지! 줄을 서세요':'생일 순서로 한 줄!'}</h2>
+    ${S.r2.ph==='run'?`<div class="row" style="justify-content:center"><div class="oxbig" style="font-size:9rem;color:var(--accent)" data-bigtimer>${Math.ceil(T.left)}</div></div>`:
+    `<p style="font-size:1.6rem;margin:0">1월 1일이 맨 앞, 12월 31일이 맨 뒤. <b>한마디도 하지 않고</b> 몸짓·손가락만으로 줄을 섭니다.</p><div class="row"><button class="btn primary lg" data-a="linego">3, 2, 1, 시작! ▶</button></div>`}
+    ${note('말하는 선원이 보이면 "말은 금지!"라고 한 번 알려 주세요. 시간이 끝나면 확인으로 넘어갑니다.','')}</div>`;
+  if(s===2) return `<div class="scene">${head}<h2 class="mid">앞에서부터 생일을 말해 확인하세요</h2>
+    <div class="ansrow">${[0,1,2].map(t=>`<div class="ans" ${tc(t)}><div class="tname">${tn(t)} (${S.teams[t].size}명)</div><p style="margin:0;font-size:.9rem;color:var(--mute)">제자리에 선 사람 수</p><div class="row" style="justify-content:center">${Array.from({length:S.teams[t].size+1},(_,k)=>`<button class="btn num" data-a="r2ok" data-t="${t}" data-k="${k}" style="${S.r2.ok[t]===k?'background:var(--accent);color:#1a1400':''}">${k}</button>`).join('')}</div></div>`).join('')}</div>
+    ${note('앞에서부터 한 명씩 생일을 말하게 하고, 앞사람보다 이른 생일이 나오면 그 사람을 제자리 밖으로 세어 주세요.','세 배 모두 입력하면 "다음"으로 결과를 봅니다.')}</div>`;
+  return `<div class="scene"><span class="eyebrow">2R 결과</span><h2 class="mid">말 없이 줄서기 결과</h2>${scoreTable([['제자리',t=>`${S.r2.ok[t]}/${S.teams[t].size}`],['2R 점수',r2pts]])}</div>`;
+}
+/* R3 speed quiz */
+function deck(){ if(!S.r3.deck){ const s=shuffle(STAR.map(w=>({w,s:1}))), p=shuffle(PLAIN.map(w=>({w,s:0}))); const d=[]; while(s.length||p.length){ if(p.length) d.push(p.shift()); if(s.length&&Math.random()<.55) d.push(s.shift()); if(p.length&&Math.random()<.5) d.push(p.shift()); } S.r3.deck=d; S.r3.ptr=0; save(); } return S.r3.deck; }
+function curWord(){ const d=deck(); return d[S.r3.ptr%d.length]; }
+function vR3(s){
+  const R=ROUNDS[2], t=s-1, ph=S.r3.ph[t], ws=S.r3.words[t];
+  const head=`<div class="row" style="justify-content:space-between"><span class="eyebrow">3R ${R.theme} · ${R.game} · ${s}번째 배</span><span class="tname" ${tc(t)}>${tn(t)}</span></div>`;
+  if(ph==='ready') return `<div class="scene">${head}<div class="grid2"><div style="display:grid;gap:1rem"><h2 class="big">${tn(t)} 돛 수리 준비!</h2>
+    <p style="font-size:1.5rem;margin:0">설명할 1명만 TV를 봅니다. 나머지 선원은 <b>TV를 등지고</b> 앉으세요.</p>
+    <p class="lead">단어 자체·영어·초성은 말하면 안 됩니다. ★ 수리 부품은 2점, 일반 단어 1점. 패스는 무제한.</p>
+    <div class="row"><button class="btn primary lg" data-a="sqstart" data-t="${t}">시작 (${S.cfg.tSQ}초)</button></div></div>${vid('repair','shot','')}</div>
+    ${note('다른 배들은 화면을 봐도 됩니다. 답을 외치면 안 됩니다.','정답 = 스페이스 또는 "정답" 버튼, 패스 = P 또는 "패스" 버튼.')}</div>`;
+  if(ph==='play'){ const w=curWord(); return `<div class="scene">${head}
+    <div class="row" style="justify-content:space-between"><span class="score-live num">${r3raw(t)}점</span><span class="oxbig num" style="font-size:4rem;color:var(--accent)" data-bigtimer>${Math.ceil(T.left)}</span></div>
+    <div style="text-align:center">${w.s?'<span class="starbadge">★ 수리 부품 · 2점</span>':'<span class="starbadge" style="background:var(--panel2);color:var(--mute)">일반 · 1점</span>'}</div>
+    <div class="word ${w.s?'star':''}" id="word">${esc(w.w)}</div>
+    <div class="row" style="justify-content:center"><button class="btn good lg" data-a="sqok">정답 (Space)</button><button class="btn bad lg" data-a="sqpass">패스 (P)</button><button class="btn" data-a="sqend">그만 (종료)</button></div></div>`; }
+  return `<div class="scene">${head}<h2 class="big">${tn(t)} <span style="color:var(--ok)">원점수 ${r3raw(t)}</span> → 수리 점수 <span style="color:var(--accent)">${r3pts(t)}</span></h2>
+    <div class="wlist">${ws.map(x=>`<span class="${x.r}">${x.s?'★ ':''}${esc(x.w)}</span>`).join('')||'<span>맞힌 단어 없음</span>'}</div>
+    <p class="lead">맞힌 단어 ${ws.filter(x=>x.r==='ok').length}개 · 패스 ${ws.filter(x=>x.r==='pass').length}개 (★ 패스 ${ws.filter(x=>x.r==='pass'&&x.s).length}개)</p>${note('"다음"을 누르면 다음 배 차례입니다.','')}</div>`;
+}
+function sqStart(t){ deck(); S.r3.ph[t]='play'; save(); render(); setTimer(S.cfg.tSQ,'스피드 퀴즈',true,()=>{ S.r3.ph[t]='done'; save(); render(); playVoice('v_time_up'); }); }
+function sqMark(r){ const st=STEPS[S.step]; if(st.key!=='r3') return; const t=S.sub-1; if(t<0||t>2||S.r3.ph[t]!=='play') return; const w=curWord(); S.r3.words[t].push({w:w.w,s:w.s,r}); S.r3.ptr++; save(); (r==='ok'?SFX.ding:SFX.buzz)(); render(); }
+/* R4 story relay */
+function vR4(s){
+  const R=ROUNDS[3], t=s-1, ph=S.r4.ph[t], oth=others(t);
+  const head=`<div class="row" style="justify-content:space-between"><span class="eyebrow">4R ${R.theme} · ${R.game} · ${s}번째 배</span><span class="tname" ${tc(t)}>${tn(t)}</span></div>`;
+  const topic=S.r4.topic[t]==null?TOPICS[t%TOPICS.length]:S.r4.topic[t];
+  if(ph==='ready') return `<div class="scene">${head}<h2 class="big">${tn(t)} 입항 보고, 앞으로!</h2>
+    <p style="font-size:1.5rem;margin:0">원으로 서서 <b>한 사람이 딱 한 단어씩</b> 이어 말해 하나의 보고를 만듭니다. 주제: <b style="color:var(--accent)">${esc(topic)}</b></p>
+    <div class="row"><button class="btn primary lg" data-a="storystart" data-t="${t}">시작 (${S.cfg.tStory}초)</button></div>${note('다른 두 배는 문장이 이어지는지 잘 들어 주세요.','')}</div>`;
+  if(ph==='play') return `<div class="scene">${head}<div class="row" style="justify-content:center"><div class="oxbig" style="font-size:7rem;color:var(--accent)" data-bigtimer>${Math.ceil(T.left)}</div></div>
+    <div class="word" style="font-size:min(11vh,5rem)">${esc(topic)}</div><p class="lead" style="text-align:center;margin-inline:auto">한 사람씩 한 단어! 문장이 끊기지 않게 이어 가세요.</p>
+    <div class="row" style="justify-content:flex-end"><button class="btn" data-a="storyend" data-t="${t}">보고 끝</button></div></div>`;
+  const all=oth.every(o=>S.r4.rate[t][o]!=null);
+  return `<div class="scene">${head}<h2 class="mid">${tn(t)} 입항 보고 평가 · "3, 2, 1!"에 손가락 1~5</h2>
+    <div class="grid2" style="align-items:start">${oth.map(o=>`<div class="ans" ${tc(o)}><div class="tname">${tn(o)}의 점수</div><div class="row" style="justify-content:center">${[1,2,3,4,5].map(n=>`<button class="btn lg num" data-a="rate" data-t="${t}" data-o="${o}" data-v="${n}" style="${S.r4.rate[t][o]===n?'background:var(--accent);color:#1a1400':''}">${n}</button>`).join('')}</div></div>`).join('')}</div>
+    <div class="row" style="justify-content:space-between"><span class="score-live num">${ph==='done'?`합계 ${r4pts(t)}점`:''}</span>${ph==='done'?'<span class="done-mark">완료 — "다음"으로 이동</span>':`<button class="btn primary lg" data-a="ratedone" ${all?'':'disabled'}>점수 확정 ▶</button>`}</div>
+    ${note('문장이 매끄럽고 주제에 맞았는지 보고 점수를 주게 하세요.','두 배의 점수를 모두 입력하면 확정됩니다.')}</div>`;
+}
+function storyStart(t){ if(S.r4.topic[t]==null){ const used=S.r4.topic.filter(Boolean); S.r4.topic[t]=TOPICS.find(x=>!used.includes(x))||TOPICS[t%TOPICS.length]; } S.r4.ph[t]='play'; save(); render(); setTimer(S.cfg.tStory,'이어 말하기',true,()=>{ S.r4.ph[t]='rate'; save(); render(); playVoice('v_ka_rate'); }); }
+function storyEnd(t){ setTimer(0); S.r4.ph[t]='rate'; save(); render(); playVoice('v_ka_rate'); }
+/* vote / reveal */
+function clueBoard(){
+  const cols=[['1R',r1pts],['2R',r2pts],['3R',r3pts],['4R',r4pts]];
+  return `<div class="wrapx"><table class="tbl" style="font-size:1.15rem"><thead><tr><th>배</th>${cols.map(c=>`<th class="c">${c[0]}</th>`).join('')}<th class="c">가장 낮았던 라운드</th></tr></thead><tbody>${[0,1,2].map(t=>{ const v=cols.map(c=>c[1](t)); const mn=Math.min(...v); const worst=cols.map((c,i)=>v[i]===mn?c[0]:null).filter(Boolean).join(', ');
+    return `<tr><td><span class="tname" ${tc(t)} style="font-size:1.2rem">${tn(t)}</span></td>${v.map(x=>`<td class="c num" style="${x===mn?'color:var(--bad);font-weight:900':''}">${x}</td>`).join('')}<td class="c">${worst}</td></tr>`; }).join('')}</tbody></table></div>`;
+}
+function vVote(s){
+  if(s===0) return `<div class="scene"><span class="eyebrow">추리 토론 · 60초</span><h2 class="big">우리 배의 X맨은 누구?</h2>${clueBoard()}
+    <p class="lead">점수가 떨어진 라운드에서 누가 이상했나요? 귓속말, 줄서기, 퀴즈 답, 이어 말한 단어를 떠올려 보세요. 단정하지 말고 근거로 이야기하세요.</p>
+    ${note('60초 동안 배끼리 토론하게 하고, 끝나면 "다음"으로 지목합니다.','')}</div>`;
+  if(s===1) return `<div class="scene" style="justify-items:center;text-align:center"><span class="eyebrow">최후의 지목</span><h2 class="big">"3, 2, 1, 지목!"</h2>
+    <p class="lead" style="margin-inline:auto">배마다 팀원 전원이 자기 배의 X맨이라고 생각하는 사람을 동시에 손가락으로 가리킵니다. 가장 많이 지목된 사람이 쪽지를 펼칩니다.</p>
+    <button class="btn primary lg" data-a="cdvote">카운트다운</button>${note('동점이면 마지막으로 이야기한 사람이 정합니다.','')}</div>`;
+  return `<div class="scene"><span class="eyebrow">X맨 공개</span><h2 class="mid">지목된 사람이 쪽지에 X를 쓴 사람이었나요?</h2><div class="panel">
+    ${[0,1,2].map(t=>`<div class="inrow" ${tc(t)} style="display:grid;grid-template-columns:minmax(120px,.6fr) 1fr;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)"><h3 style="font-size:24px;border-left:6px solid var(--tc);padding-left:10px">${tn(t)}</h3><div class="row">
+      <button class="btn ${S.caught[t]===true?'good':''}" data-a="caught" data-t="${t}" data-v="1">⚓ 검거 · +10</button>
+      <button class="btn ${S.caught[t]===false?'bad':''}" data-a="caught" data-t="${t}" data-v="0">놓침 · −5</button></div></div>`).join('')}
+    </div><p class="lead">잡은 배 ${caughtN()}척 → ${endingOf().label}</p>${note('"지금부터 각 배의 X맨을 공개합니다. X맨은, 일어나 주세요!"','쪽지를 펼친 결과를 배마다 입력하세요. 세 배 모두 입력하면 "다음"으로 결말을 봅니다.')}</div>`;
+}
+function vEnd(s){
+  const E=endingOf();
+  if(s===0) return `<div class="scene"><div class="row" style="justify-content:space-between"><span class="eyebrow">결말 · ${E.label}</span><span class="tname" style="--tc:${E.color}">${caughtN()}척 검거</span></div>
+    <div class="slide" style="max-height:70vh"><video id="endv" src="${END(E.file)}" playsinline preload="auto" poster="${IMG(E.poster)}" style="background:#000"></video></div>
+    <div class="row" style="justify-content:center"><button class="btn primary lg" data-a="endplay">▶ 결말 영상 재생</button><button class="btn" data-a="endfull">영상 전체화면</button></div></div>`;
+  const order=[0,1,2].sort((a,b)=>total(b)-total(a));
+  return `<div class="scene"><span class="eyebrow">최종 성적</span><h2 class="mid"><span style="color:${E.color}">${E.head}</span> · 1위 <span style="color:${TC[order[0]]}">${tn(order[0])}</span></h2>
+    <div class="wrapx"><table class="tbl" style="font-size:1.15rem"><thead><tr><th>순위</th><th>배</th><th class="c">1R</th><th class="c">2R</th><th class="c">3R</th><th class="c">4R</th><th class="c">검거</th><th class="c">총점</th></tr></thead><tbody>
+    ${order.map((t,i)=>`<tr><td class="num">${i+1}위</td><td><span class="tname" ${tc(t)} style="font-size:1.3rem">${tn(t)}</span></td><td class="c num">${r1pts(t)}</td><td class="c num">${r2pts(t)}</td><td class="c num">${r3pts(t)}</td><td class="c num">${r4pts(t)}</td><td class="c num">${S.caught[t]===true?'+10':S.caught[t]===false?'−5':'—'}</td><td class="c tot num">${total(t)}</td></tr>`).join('')}</tbody></table></div>
+    <div class="row"><button class="btn" data-a="askreset">새 게임</button></div>${note('X맨에게 "가장 잘 먹힌 방해"를 한 명씩 물어보세요. 사진 찍기 좋은 순간입니다.','')}</div>`;
+}
+
+/* ---------- render / flow ---------- */
+function render(){
+  const st=STEPS[S.step], s=S.sub; let h='';
+  if(st.key==='setup') h=vSetup(); else if(st.key==='intro') h=vIntro(); else if(st.key==='secret') h=vSecret(); else if(st.key==='rules') h=vRules(s);
+  else if(st.key==='r1') h=s===0?vRoundIntro(0):vR1(s);
+  else if(st.key==='r2') h=s===0?vRoundIntro(1):vR2(s);
+  else if(st.key==='r3') h=s===0?vRoundIntro(2):s<=3?vR3(s):`<div class="scene"><span class="eyebrow">3R 결과</span><h2 class="mid">찢어진 돛 수리 결과</h2>${scoreTable([['원점수',r3raw],['3R 점수',r3pts]])}</div>`;
+  else if(st.key==='r4') h=s===0?vRoundIntro(3):s<=3?vR4(s):`<div class="scene"><span class="eyebrow">4R 결과</span><h2 class="mid">입항 보고 결과</h2>${scoreTable([['1R',r1pts],['2R',r2pts],['3R',r3pts],['4R',r4pts]])}</div>`;
+  else if(st.key==='vote') h=vVote(s); else h=vEnd(s);
+  $('#stage').innerHTML=h; $('#stage').scrollTop=0; setBg(bgFor()); setBed(bedFor());
+  $('#rail').innerHTML=STEPS.map((x,i)=>`<button class="pill ${i===S.step?'now':i<S.step?'done':''}" data-a="jump" data-i="${i}">${x.label}</button>`).join('');
+  $('#where').innerHTML=`<b>${esc(st.label)}</b>${st.subs>1?` · ${s+1}/${st.subs}`:''}`;
+  $('#bPrev').disabled=S.step===0&&s===0;
+}
+function enter(){
+  stopVoice(); const st=STEPS[S.step], s=S.sub;
+  const keepTimer=(st.key==='r3'&&s>=1&&s<=3&&S.r3.ph[s-1]==='play')||(st.key==='r4'&&s>=1&&s<=3&&S.r4.ph[s-1]==='play');
+  if(!keepTimer) setTimer(0);
+  const ri={r1:0,r2:1,r3:2,r4:3}[st.key];
+  if(st.key==='intro'){ const v=$('#vid'); if(v) v.muted=!soundOn; }
+  if(st.key==='secret') playVoice('p_secret');
+  if(st.key==='rules') playVoice('p_rules'+(s+1));
+  if(ri!=null&&s===0){ const R=ROUNDS[ri]; playVoice(R.intro,()=>playVoice(R.taunt)); }
+  if(st.key==='r1'){
+    if(s===1) setTimer(30,'작전 회의',true);
+    if(s===2){ if(S.r1.log==null){ S.r1.log=Math.floor(Math.random()*LOGS.length); } if(S.r1.ph!=='gone') S.r1.ph='hid'; save(); render(); playVoice('p_relay_show'); }
+    if(s===3) setTimer(S.cfg.tRelay,'귓속말 전달',true,()=>playVoice('v_time_up'));
+    if(s===4) playVoice('p_relay_check');
+    if(s===5) playVoice('v_round_result');
+  }
+  if(st.key==='r2'){ if(s===1){ if(S.r2.ph!=='run') S.r2.ph='ready'; } if(s===2) playVoice('p_line_check'); if(s===3) playVoice('v_round_result'); }
+  if(st.key==='r3'){ if(s>=1&&s<=3&&S.r3.ph[s-1]==='ready') playVoice('v_sq_ready'); if(s===4) playVoice('v_round_result'); }
+  if(st.key==='r4'){ if(s>=1&&s<=3&&S.r4.ph[s-1]==='ready') playVoice('p_story_go'); if(s===4) playVoice('v_round_result'); }
+  if(st.key==='vote'){ if(s===0){ setTimer(60,'추리 토론',true); playVoice('p_talk'); } if(s===1) playVoice('p_vote'); if(s===2) playVoice('p_reveal'); }
+  if(st.key==='end'){ if(s===0){ const v=$('#endv'); if(v){ v.muted=!soundOn; const pr=v.play(); if(pr&&pr.catch) pr.catch(()=>{ showGate(); toast('▶ 결말 영상 재생을 눌러 주세요'); }); } } if(s===1) playVoice('v_scores'); }
+}
+function go(step,sub){ S.step=Math.max(0,Math.min(STEPS.length-1,step)); S.sub=Math.max(0,Math.min(STEPS[S.step].subs-1,sub)); save(); render(); enter(); }
+function next(){
+  const st=STEPS[S.step], s=S.sub;
+  if(!S.startedAt) S.startedAt=Date.now();
+  if(st.key==='r1'){ if(s===2&&S.r1.ph==='hid') return toast('"항해일지 공개" 버튼을 눌러 주세요'); if(s===2&&S.r1.ph==='show') return toast('일지가 보이는 중입니다'); if(s===4&&S.r1.score.some(v=>v==null)) return toast('세 배의 맞힌 항목 수를 입력하세요'); }
+  if(st.key==='r2'){ if(s===1&&S.r2.ph==='ready') return lineGo(); if(s===1&&S.r2.ph==='counting') return; if(s===2&&S.r2.ok.some(v=>v==null)) return toast('세 배의 제자리 인원을 입력하세요'); }
+  if(st.key==='r3'&&s>=1&&s<=3){ const t=s-1; if(S.r3.ph[t]==='ready') return sqStart(t); if(S.r3.ph[t]==='play') return sqMark('ok'); }
+  if(st.key==='r4'&&s>=1&&s<=3){ const t=s-1, ph=S.r4.ph[t]; if(ph==='ready') return storyStart(t); if(ph==='play') return storyEnd(t); if(ph==='rate'){ if(others(t).some(o=>S.r4.rate[t][o]==null)) return toast('두 배의 점수를 모두 입력하세요'); S.r4.ph[t]='done'; save(); SFX.ok(); return render(); } }
+  if(st.key==='vote'&&s===2&&S.caught.some(v=>v==null)) return toast('세 배의 검거/놓침을 모두 입력하세요');
+  if(s<st.subs-1) go(S.step,s+1); else if(S.step<STEPS.length-1) go(S.step+1,0);
+}
+function prev(){ if(S.sub>0) go(S.step,S.sub-1); else if(S.step>0) go(S.step-1,STEPS[S.step-1].subs-1); }
+function lineGo(){ setTimer(0); S.r2.ph='counting'; countdown(['3','2','1','시작!'],()=>{ S.r2.ph='run'; save(); render(); playVoice('p_line_go'); setTimer(S.cfg.tLine,'줄서기',true,()=>{ playVoice('v_time_up'); }); },{voice:'p_cd_go',times:CD_GO}); }
+
+/* ---------- events ---------- */
+document.addEventListener('click',e=>{
+  const b=e.target.closest('[data-a]'); if(!b) return; ctx();
+  const a=b.dataset.a, t=+b.dataset.t;
+  if(a==='jump') go(+b.dataset.i,0);
+  else if(a==='start'){ S.startedAt=Date.now(); go(1,0); }
+  else if(a==='resume') go(S.step||1,S.sub);
+  else if(a==='askreset'){ b.outerHTML=`<span class="row"><b>기록을 모두 지울까요?</b><button class="btn bad" data-a="reset">지우기</button><button class="btn" data-a="noreset">취소</button></span>`; }
+  else if(a==='reset'){ const keep={teams:S.teams,cfg:S.cfg}; S=fresh(); Object.assign(S,keep); go(0,0); }
+  else if(a==='noreset') render();
+  else if(a==='size'){ S.teams[t].size=+b.dataset.n; save(); render(); }
+  else if(a==='vplay'){ const v=$('#vid'); v&&v.play().catch(()=>{}); }
+  else if(a==='vfull'){ const v=$('#vid'); v&&v.requestFullscreen&&v.requestFullscreen().catch(()=>{}); }
+  else if(a==='voice'){ const c=b.dataset.c; playVoice(b.dataset.v,c?()=>playVoice(c):undefined); }
+  else if(a==='logshow'){ S.r1.ph='show'; save(); render(); setTimer(10,'항해일지',true,()=>{ S.r1.ph='gone'; save(); render(); }); }
+  else if(a==='r1score'){ S.r1.score[t]=+b.dataset.k; save(); SFX.tick(); render(); }
+  else if(a==='linego') next();
+  else if(a==='r2ok'){ S.r2.ok[t]=+b.dataset.k; save(); SFX.tick(); render(); }
+  else if(a==='sqstart') sqStart(t);
+  else if(a==='sqok') sqMark('ok');
+  else if(a==='sqpass') sqMark('pass');
+  else if(a==='sqend'){ const tt=S.sub-1; if(S.r3.ph[tt]==='play'){ setTimer(0); S.r3.ph[tt]='done'; save(); render(); playVoice('v_time_up'); } }
+  else if(a==='storystart') storyStart(t);
+  else if(a==='storyend') storyEnd(t);
+  else if(a==='rate'){ S.r4.rate[t][+b.dataset.o]=+b.dataset.v; save(); SFX.tick(); render(); }
+  else if(a==='ratedone') next();
+  else if(a==='cdvote') countdown(['3','2','1','지목!'],null,{voice:'v_cd_vote',times:CD_VOTE});
+  else if(a==='caught'){ S.caught[t]=b.dataset.v==='1'; save(); (S.caught[t]?SFX.ok:SFX.bad)(); render(); }
+  else if(a==='endplay'){ const v=$('#endv'); if(v){ v.muted=!soundOn; v.currentTime=0; v.play().catch(()=>{ showGate(); }); } }
+  else if(a==='endfull'){ const v=$('#endv'); v&&v.requestFullscreen&&v.requestFullscreen().catch(()=>{}); }
+});
+document.addEventListener('change',e=>{
+  const m={c_relay:'tRelay',c_line:'tLine',c_sq:'tSQ',c_story:'tStory'}[e.target.id];
+  if(m){ S.cfg[m]=Number(e.target.value); save(); render(); }
+});
+document.addEventListener('input',e=>{ if(e.target.dataset.a==='tname'){ S.teams[+e.target.dataset.t].name=e.target.value.slice(0,10); save(); } });
+$('#bNext').addEventListener('click',()=>{ ctx(); next(); });
+$('#bPrev').addEventListener('click',prev);
+$('#tPlay').addEventListener('click',()=>{ ctx(); if(T.left<=0) T.left=T.total; T.run=!T.run; T.last=performance.now(); drawTimer(); });
+$('#tAdd').addEventListener('click',()=>{ T.left+=15; T.total=Math.max(T.total,T.left); drawTimer(); });
+$('#tReset').addEventListener('click',()=>{ T.left=T.total; T.run=false; drawTimer(); });
+$('#bSound').addEventListener('click',e=>{ soundOn=!soundOn; e.currentTarget.setAttribute('aria-pressed',soundOn); if(!soundOn) stopVoice(); else if(musicOn) startBeds(); document.querySelectorAll('video#vid,video#endv').forEach(v=>{ v.muted=!soundOn; }); });
+$('#bMusic').addEventListener('click',e=>{ musicOn=!musicOn; e.currentTarget.setAttribute('aria-pressed',musicOn); if(musicOn&&soundOn) startBeds(); });
+$('#bVol').value=Math.round(bgmVol*100);
+$('#bVol').addEventListener('input',e=>{ bgmVol=(+e.target.value)/100; try{ localStorage.setItem('px-tv-bgm',String(bgmVol)); }catch(err){} });
+$('#gate').addEventListener('click',()=>{ if(unlocked) hideGate(); });
+$('#bFull').addEventListener('click',()=>{ const d=document.documentElement; if(document.fullscreenElement) document.exitFullscreen().catch(()=>{}); else d.requestFullscreen&&d.requestFullscreen().catch(()=>toast('전체화면을 쓸 수 없는 환경입니다')); });
+document.addEventListener('keydown',e=>{
+  if(e.target.matches('input,select,textarea')) return;
+  const st=STEPS[S.step];
+  if(st.key==='r3'&&S.sub>=1&&S.sub<=3&&S.r3.ph[S.sub-1]==='play'){ if(e.key===' '){ e.preventDefault(); sqMark('ok'); return; } if(e.key==='p'||e.key==='P'){ sqMark('pass'); return; } }
+  if(e.key===' '&&e.target.closest('button')) return;
+  if(['ArrowRight','PageDown',' '].includes(e.key)){ e.preventDefault(); ctx(); next(); }
+  else if(['ArrowLeft','PageUp'].includes(e.key)){ e.preventDefault(); prev(); }
+  else if(e.key==='t'||e.key==='T') $('#tPlay').click();
+});
+render(); enter();
+})();
+</script>
