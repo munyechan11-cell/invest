@@ -131,6 +131,11 @@ input.tn{background:var(--bg);border:1px solid var(--line);border-radius:8px;col
   .ctrl{flex-wrap:wrap}.ctrl .where{order:-1;flex-basis:100%}
   .ansrow,.opts{grid-template-columns:1fr}
 }
+.gate{position:fixed;top:3.4rem;left:50%;transform:translateX(-50%);z-index:60;background:var(--accent);color:#1a1400;border:0;border-radius:999px;padding:.55rem 1.4rem;font-weight:900;font-size:1.05rem;box-shadow:0 10px 30px rgba(0,0,0,.5);animation:gatepulse 1.4s ease-in-out infinite}
+.gate[hidden]{display:none!important}
+@keyframes gatepulse{50%{box-shadow:0 0 0 .6rem rgba(255,207,63,.35),0 10px 30px rgba(0,0,0,.5)}}
+#bVol{width:5.5rem;accent-color:var(--accent);vertical-align:middle}
+.vol{display:flex;align-items:center;gap:.3rem;font-size:.8rem;color:var(--mute)}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 
@@ -141,7 +146,9 @@ input.tn{background:var(--bg);border:1px solid var(--line);border-radius:8px;col
     <nav class="rail" id="rail" aria-label="진행 단계"></nav>
     <div class="chips" id="chips" aria-label="팀별 찬스"></div>
     <button class="ibtn" id="bTrade">찬스 거래</button>
-    <button class="ibtn" id="bSound" aria-pressed="true">소리</button>
+    <button class="ibtn" id="bSound" aria-pressed="true" title="음성·효과음·영상 소리">소리</button>
+    <button class="ibtn" id="bMusic" aria-pressed="true" title="배경음악">음악</button>
+    <label class="vol" title="배경음악 크기">♪<input id="bVol" type="range" min="0" max="100" step="5" value="80" aria-label="배경음악 크기"></label>
     <button class="ibtn" id="bFull">전체화면</button>
   </header>
   <main id="stage" aria-live="polite"></main>
@@ -152,6 +159,7 @@ input.tn{background:var(--bg);border:1px solid var(--line);border-radius:8px;col
     <button class="btn primary" id="bNext">다음 ▶</button>
   </footer>
 </div>
+<button class="gate" id="gate" hidden>🔇 소리가 막혀 있습니다 — 여기를 눌러 켜기</button>
 <div id="cd" hidden></div>
 <div class="modal" id="trade" hidden><div class="panel" role="dialog" aria-label="찬스 거래">
   <h3 class="mid">찬스 거래</h3>
@@ -264,13 +272,53 @@ function endingOf(){
   if(caught>0) return {file:'e2_caught',poster:'k7_normal_win',label:'X팀 검거',head:tn(top.t)+' 우승',color:TC[top.t]};
   return {file:'e3_next',poster:'k2_envelope',label:'다음 학기에 계속',head:tn(top.t)+' 우승',color:TC[top.t]};
 }
-/* ---------- sound ---------- */
-let soundOn=true, ac=null, voice=null;
+/* ---------- sound ----------
+   Browsers only allow sound after a user gesture. The first click/keypress "unlocks" three shared
+   elements (one voice element + three looping music beds); after that they can be driven from code
+   at any time without being blocked. If a voice is still blocked, a visible button asks for one click. */
+let soundOn=true, musicOn=true, ac=null, unlocked=false, pendingVoice=null, voiceTok=0, wantBed=null, ducked=false;
+let bgmVol=0.8; try{ const v=parseFloat(localStorage.getItem('px-tv-bgm')); if(v>=0&&v<=1) bgmVol=v; }catch(e){}
+const SILENT='data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=';
+const voiceEl=new Audio(); voiceEl.preload='auto';
+const BEDS={calm:'assets/music/calm.mp3',play:'assets/music/play.mp3',tense:'assets/music/tense.mp3'};
+const bgm={}; Object.keys(BEDS).forEach(k=>{ const a=new Audio(BEDS[k]); a.loop=true; a.preload='auto'; a.volume=0; bgm[k]=a; });
 function ctx(){ if(!ac){ try{ac=new (window.AudioContext||window.webkitAudioContext)();}catch(e){} } if(ac&&ac.state==='suspended') ac.resume(); return ac; }
 function tone(f,d,{type='sine',g=.16,w=0,to=null}={}){ const a=ctx(); if(!a||!soundOn) return; const t=a.currentTime+w,o=a.createOscillator(),G=a.createGain(); o.type=type; o.frequency.setValueAtTime(f,t); if(to) o.frequency.exponentialRampToValueAtTime(to,t+d); G.gain.setValueAtTime(0,t); G.gain.linearRampToValueAtTime(g,t+.01); G.gain.exponentialRampToValueAtTime(.0001,t+d); o.connect(G).connect(a.destination); o.start(t); o.stop(t+d+.05); }
 const SFX={ok(){[523,659,784,1047].forEach((f,i)=>tone(f,.4,{type:'triangle',w:i*.08}));},bad(){tone(180,.6,{type:'sawtooth',g:.14,to:70});},ding(){tone(1320,.18,{type:'triangle',g:.18});tone(1760,.25,{type:'triangle',g:.12,w:.08});},buzz(){tone(140,.25,{type:'square',g:.08});},tick(){tone(880,.07,{type:'square',g:.05});},horn(){tone(220,1,{type:'sawtooth',g:.12});tone(277,1,{type:'sawtooth',g:.08});},go(){tone(660,.5,{type:'square',g:.1});tone(990,.5,{type:'square',g:.08});}};
-function playVoice(n,end){ stopVoice(); if(!soundOn) return; voice=new Audio(AUD(n)); voice.addEventListener('ended',()=>end&&end()); voice.play().catch(()=>toast('음성은 화면을 한 번 클릭한 뒤 재생됩니다')); }
-function stopVoice(){ if(voice){ voice.pause(); voice=null; } }
+function showGate(){ const g=document.getElementById('gate'); if(g) g.hidden=false; }
+function hideGate(){ const g=document.getElementById('gate'); if(g) g.hidden=true; }
+function startBeds(){ Object.values(bgm).forEach(a=>{ const p=a.play(); if(p&&p.catch) p.catch(()=>{ unlocked=false; }); }); }
+function unlockAudio(){
+  if(unlocked) return; unlocked=true; ctx();
+  const tok=++voiceTok;
+  try{ voiceEl.onended=null; voiceEl.src=SILENT; const p=voiceEl.play(); if(p&&p.then) p.then(()=>{ if(tok===voiceTok) voiceEl.pause(); }).catch(()=>{}); }catch(e){}
+  if(musicOn&&soundOn) startBeds();
+  hideGate();
+  if(pendingVoice){ const q=pendingVoice; pendingVoice=null; playVoice(q.n,q.end); }
+}
+['pointerup','click','keydown','touchend'].forEach(ev=>document.addEventListener(ev,unlockAudio,{capture:true}));
+function playVoice(n,end){
+  stopVoice(); if(!soundOn) return;
+  const tok=voiceTok;
+  voiceEl.src=AUD(n); voiceEl.volume=1; ducked=true;
+  voiceEl.onended=()=>{ if(tok!==voiceTok) return; ducked=false; end&&end(); };
+  voiceEl.onerror=()=>{ if(tok===voiceTok) ducked=false; };
+  const p=voiceEl.play();
+  if(p&&p.catch) p.catch(()=>{ if(tok!==voiceTok) return; ducked=false; pendingVoice={n,end}; unlocked=false; showGate(); });
+}
+function stopVoice(){ voiceTok++; try{ voiceEl.pause(); }catch(e){} voiceEl.onended=null; ducked=false; }
+function setBed(n){ wantBed=n; if(!unlocked&&n&&musicOn&&soundOn) showGate(); }
+setInterval(()=>{ Object.keys(bgm).forEach(k=>{ const a=bgm[k]; const want=(musicOn&&soundOn&&unlocked&&wantBed===k)?bgmVol*(ducked?0.35:1):0; const d=want-a.volume; if(Math.abs(d)<0.004){ a.volume=Math.max(0,Math.min(1,want)); return; } const stepv=d<0?0.05:0.03; a.volume=Math.max(0,Math.min(1,a.volume+Math.sign(d)*Math.min(Math.abs(d),stepv))); }); },60);
+function bedFor(){ const st=STEPS[S.step], s=S.sub;
+  if(st.key==='setup') return 'calm'; if(st.key==='intro') return null; if(st.key==='secret') return 'tense'; if(st.key==='rules') return 'calm';
+  if(st.key==='r1') return (s>=2&&s<2+CARDS.length)?'play':'calm';
+  if(st.key==='r2') return (s>=2&&s<=2+QS.length)?'play':'calm';
+  if(st.key==='r3') return (s>=2&&s<5)?'play':'calm';
+  if(st.key==='r4') return (s>=1&&s<=3)?'play':(s>=4?'tense':'calm');
+  if(st.key==='end') return s===0?'tense':(s===1?null:'play');
+  return 'calm'; }
+// word start times (ms) of the spoken countdowns, measured on the exported files; used to sync the on-screen numbers
+const CD={ox:{t:[134,868,1454,2067],end:2900},tp:{t:[148,817,1523,2123],end:3700},vote:{t:[146,818,1432,1995],end:3300}};
 
 /* ---------- timer ---------- */
 const T={total:0,left:0,run:false,last:0,label:'',onEnd:null};
@@ -287,7 +335,10 @@ const tc=t=>`style="--tc:${TC[t]}"`;
 function toast(m){ const d=document.createElement('div'); d.className='toast'; d.textContent=m; document.body.appendChild(d); setTimeout(()=>d.remove(),2600); }
 function shuffle(a){ for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
 function note(mc,b){ return `<div class="note">${mc?`<b>진행자 A</b><span>${mc}</span>`:''}${b?`<b>진행자 B</b><span>${b}</span>`:''}</div>`; }
-function countdown(words,cb){ const el=$('#cd'); el.hidden=false; let i=0; const step=()=>{ if(i>=words.length){ el.hidden=true; el.className=''; cb&&cb(); return; } const last=i===words.length-1; el.textContent=words[i]; el.className=last?'go pop':'pop'; void el.offsetWidth; (last?SFX.go:SFX.tick)(); i++; setTimeout(step,last?900:800); }; step(); }
+function countdown(words,cb,opt){ const el=$('#cd'); el.hidden=false; const withVoice=!!(opt&&opt.voice&&soundOn); if(withVoice) playVoice(opt.voice);
+  const times=withVoice?opt.times.t:words.map((_,i)=>i*800);
+  words.forEach((w,i)=>setTimeout(()=>{ const last=i===words.length-1; el.textContent=w; el.className=last?'go pop':'pop'; void el.offsetWidth; if(last) SFX.go(); else if(!withVoice) SFX.tick(); },times[i]));
+  setTimeout(()=>{ el.hidden=true; el.className=''; cb&&cb(); },withVoice?opt.times.end:times[times.length-1]+950); }
 function chips(){ $('#chips').innerHTML=[0,1,2].map(t=>`<span class="tchip" ${tc(t)}>${tn(t)} <i>${'●'.repeat(S.chances[t])||'—'}</i></span>`).join(''); }
 function dispatchView(r,img){
   const R=ROUNDS[r];
@@ -491,7 +542,7 @@ function render(){
   else if(st.key==='r3') h= s===0?vRoundIntro(2):s===1?dispatchView(2):s<5?vR3(s-2):`<div class="scene"><span class="eyebrow">3R 결과</span><h2 class="mid">스피드 퀴즈 결과</h2>${scoreTable([['1R',r1pts],['2R',r2pts],['3R',r3pts],['★ 패스',r3starPass]])}</div>`;
   else if(st.key==='r4') h= s===0?vRoundIntro(3):s<4?vR4(s-1):s===4?vR4Talk():vVote();
   else h=vEnd(s);
-  $('#stage').innerHTML=h; $('#stage').scrollTop=0; setBg(bgFor());
+  $('#stage').innerHTML=h; $('#stage').scrollTop=0; setBg(bgFor()); setBed(bedFor());
   $('#rail').innerHTML=STEPS.map((x,i)=>`<button class="pill ${i===S.step?'now':i<S.step?'done':''}" data-a="jump" data-i="${i}">${x.label}</button>`).join('');
   $('#where').innerHTML=`<b>${esc(st.label)}</b>${st.subs>1?` · ${s+1}/${st.subs}`:''}`;
   $('#bPrev').disabled=S.step===0&&s===0;
@@ -501,13 +552,20 @@ function enter(){
   stopVoice(); const st=STEPS[S.step], s=S.sub;
   if(!(st.key==='r3'&&S.r3.ph[order()[s-2]]==='play')&&!(st.key==='r4'&&s>=1&&s<=3&&S.r4.ph[order()[s-1]]==='play')) setTimer(0);
   const ri={r1:0,r2:1,r3:2,r4:3}[st.key];
-  if(ri!=null&&s===0) setTimeout(()=>playVoice(ROUNDS[ri].audio),300);
-  if(ri!=null&&ri<3&&s===1){ setTimeout(()=>playVoice('g_dispatch'),300); setTimer(30,'파견·거래',true); }
+  if(st.key==='intro'){ const v=$('#vid'); if(v){ v.muted=!soundOn; v.addEventListener('error',()=>{},{once:true}); } }
+  if(st.key==='secret') playVoice('v_secret');
+  if(st.key==='rules') playVoice('v_rules'+(s+1));
+  if(ri!=null&&s===0) playVoice(ROUNDS[ri].audio);
+  if(ri!=null&&ri<3&&s===1){ playVoice('g_dispatch'); setTimer(30,'파견·거래',true); }
   if(st.key==='r1'&&s>=2&&s<2+CARDS.length&&S.r1.ph[s-2]==='q') setTimer(S.cfg.tOX,'의논',true);
   if(st.key==='r2'&&s>=2&&s<2+QS.length&&S.r2.ph[s-2]==='q') setTimer(S.cfg.tTP,'의논',true);
-  if(st.key==='r4'&&s===4){ setTimer(60,'추리 토론',true); }
-  if(st.key==='r4'&&s===5) setTimeout(()=>playVoice('g_vote'),300);
-  if(st.key==='end'&&s===1){ setTimeout(()=>{ const v=$('#endv'); if(v){ v.muted=!soundOn; v.play().catch(()=>toast('▶ 결말 영상 재생을 눌러 주세요')); v.addEventListener('error',()=>{ const E=endingOf(); playVoice(E.file==='e1_troll_win'?'g_end_troll':'g_end_normal'); },{once:true}); } },300); }
+  if(st.key==='r2'&&s===2+QS.length) playVoice('v_union');
+  if(st.key==='r3'&&s>=2&&s<5&&S.r3.ph[order()[s-2]]==='ready') playVoice('v_sq_ready');
+  if((st.key==='r1'&&s===2+CARDS.length)||(st.key==='r2'&&s===3+QS.length)||(st.key==='r3'&&s===5)) playVoice('v_round_result');
+  if(st.key==='r4'&&s===4){ setTimer(60,'추리 토론',true); playVoice('v_talk'); }
+  if(st.key==='r4'&&s===5) playVoice('g_vote');
+  if(st.key==='end'&&s===1){ const v=$('#endv'); if(v){ v.muted=!soundOn; const pr=v.play(); if(pr&&pr.catch) pr.catch(()=>{ showGate(); toast('▶ 결말 영상 재생을 눌러 주세요'); }); v.addEventListener('error',()=>{ const E=endingOf(); playVoice(E.file==='e1_troll_win'?'g_end_troll':'g_end_normal'); },{once:true}); } }
+  if(st.key==='end'&&s===2) playVoice('v_scores');
 }
 function go(step,sub){ S.step=Math.max(0,Math.min(STEPS.length-1,step)); S.sub=Math.max(0,Math.min(STEPS[S.step].subs-1,sub)); save(); render(); enter(); }
 function next(){
@@ -515,7 +573,7 @@ function next(){
   if(!S.startedAt) S.startedAt=Date.now();
   // in-screen phases first
   if(st.key==='r1'&&s>=2&&s<2+CARDS.length){ const k=s-2; if(S.r1.ph[k]==='q') return oxGo(k); if(S.r1.ph[k]==='in'){ if(!S.r1.ans[k].every(v=>v)) return toast('세 팀의 O/X를 모두 입력하세요'); return oxRev(k); } }
-  if(st.key==='r2'&&s>=2&&s<2+QS.length){ const q=s-2; if(S.r2.ph[q]==='q') return tpGo(q); if(S.r2.ph[q]==='in'){ if(!S.r2.res[q].every(v=>v!==null)) return toast('세 팀의 판정을 모두 입력하세요'); S.r2.ph[q]='rev'; save(); SFX.ok(); return render(); } }
+  if(st.key==='r2'&&s>=2&&s<2+QS.length){ const q=s-2; if(S.r2.ph[q]==='q') return tpGo(q); if(S.r2.ph[q]==='in'){ if(!S.r2.res[q].every(v=>v!==null)) return toast('세 팀의 판정을 모두 입력하세요'); S.r2.ph[q]='rev'; save(); const okAny=S.r2.res[q].some(v=>v===true); (okAny?SFX.ok:SFX.bad)(); render(); playVoice(okAny?'v_tp_ok':'v_tp_fail'); return; } }
   if(st.key==='r2'&&s===2+QS.length&&S.r2.union==null) return toast('연합 회의 결과(합의/결렬)를 누르세요');
   if(st.key==='r2'&&s===2+QS.length&&S.r2.union===true&&S.r2.order.length<3) return toast('합의한 발표 순서대로 세 팀을 누르세요');
   if(st.key==='r3'&&s>=2&&s<5){ const t=order()[s-2]; if(S.r3.ph[t]==='ready') return sqStart(t); if(S.r3.ph[t]==='play') return sqOk(); }
@@ -525,13 +583,13 @@ function next(){
   if(s<st.subs-1) go(S.step,s+1); else if(S.step<STEPS.length-1) go(S.step+1,0);
 }
 function prev(){ if(S.sub>0) go(S.step,S.sub-1); else if(S.step>0) go(S.step-1,STEPS[S.step-1].subs-1); }
-function oxGo(k){ setTimer(0); countdown(['3','2','1','OX!'],()=>{ S.r1.ph[k]='in'; save(); render(); }); }
-function oxRev(k){ S.r1.ph[k]='rev'; save(); render(); const c=CARDS[k]; const any=S.r1.ans[k].some(v=>v===c.a); (any?SFX.ok:SFX.bad)(); }
-function tpGo(q){ setTimer(0); countdown(['3','2','1','텔레파시!'],()=>{ S.r2.ph[q]='in'; save(); render(); }); }
-function sqStart(t){ deck(); S.r3.ph[t]='play'; save(); render(); setTimer(S.cfg.tSQ+(S.r3.extra[t]?15:0),'스피드 퀴즈',true,()=>{ S.r3.ph[t]='done'; save(); render(); }); }
+function oxGo(k){ setTimer(0); countdown(['3','2','1','OX!'],()=>{ S.r1.ph[k]='in'; save(); render(); },{voice:'v_cd_ox',times:CD.ox}); }
+function oxRev(k){ S.r1.ph[k]='rev'; save(); render(); const c=CARDS[k]; const any=S.r1.ans[k].some(v=>v===c.a); (any?SFX.ok:SFX.bad)(); playVoice(c.a==='O'?'v_ox_o':'v_ox_x'); }
+function tpGo(q){ setTimer(0); countdown(['3','2','1','텔레파시!'],()=>{ S.r2.ph[q]='in'; save(); render(); },{voice:'v_cd_tp',times:CD.tp}); }
+function sqStart(t){ deck(); S.r3.ph[t]='play'; save(); render(); setTimer(S.cfg.tSQ+(S.r3.extra[t]?15:0),'스피드 퀴즈',true,()=>{ S.r3.ph[t]='done'; save(); render(); playVoice('v_time_up'); }); }
 function sqMark(r){ const st=STEPS[S.step]; if(st.key!=='r3') return; const t=order()[S.sub-2]; if(S.r3.ph[t]!=='play') return; const w=curWord(); S.r3.words[t].push({w:w.w,s:w.s,r}); S.r3.ptr++; save(); (r==='ok'?SFX.ding:SFX.buzz)(); render(); }
 function sqOk(){ sqMark('ok'); }
-function kaStart(t){ const imgs=shuffle([...KLOOPS]).slice(0,3), tl=shuffle([...KTITLES]).slice(0,3); S.r4.slides[t]=imgs.map((img,i)=>({img,title:tl[i]})); S.r4.ph[t]='play'; save(); render(); let last=-1; const iv=setInterval(()=>{ if(S.r4.ph[t]!=='play'){ clearInterval(iv); return; } const idx=Math.min(2,Math.floor((S.cfg.tKA-T.left)/(S.cfg.tKA/3))); if(idx!==last){ last=idx; if(idx>0) SFX.ding(); render(); } },250); setTimer(S.cfg.tKA,'발표',true,()=>{ clearInterval(iv); S.r4.ph[t]='rate'; save(); render(); }); }
+function kaStart(t){ playVoice('v_ka_start'); const imgs=shuffle([...KLOOPS]).slice(0,3), tl=shuffle([...KTITLES]).slice(0,3); S.r4.slides[t]=imgs.map((img,i)=>({img,title:tl[i]})); S.r4.ph[t]='play'; save(); render(); let last=-1; const iv=setInterval(()=>{ if(S.r4.ph[t]!=='play'){ clearInterval(iv); return; } const idx=Math.min(2,Math.floor((S.cfg.tKA-T.left)/(S.cfg.tKA/3))); if(idx!==last){ last=idx; if(idx>0) SFX.ding(); render(); } },250); setTimer(S.cfg.tKA,'발표',true,()=>{ clearInterval(iv); S.r4.ph[t]='rate'; save(); render(); playVoice('v_ka_rate'); }); }
 
 /* ---------- events ---------- */
 document.addEventListener('click',e=>{
@@ -548,7 +606,7 @@ document.addEventListener('click',e=>{
   else if(a==='vfull'){ const v=$('#vid'); v&&v.requestFullscreen&&v.requestFullscreen().catch(()=>{}); }
   else if(a==='voice') playVoice(b.dataset.v);
   else if(a==='next') next();
-  else if(a==='cd') countdown(b.dataset.w.split(','),null);
+  else if(a==='cd') countdown(b.dataset.w.split(','),null,{voice:'v_cd_vote',times:CD.vote});
   else if(a==='dbl'){ const k=S.sub-2; if(S.r1.dbl[k][t]){ S.r1.dbl[k][t]=false; S.chances[t]++; } else if(S.chances[t]>0){ S.r1.dbl[k][t]=true; S.chances[t]--; SFX.ding(); } save(); render(); }
   else if(a==='oxgo') next();
   else if(a==='ox'){ S.r1.ans[S.sub-2][t]=b.dataset.v; save(); SFX.tick(); render(); }
@@ -566,12 +624,12 @@ document.addEventListener('click',e=>{
   else if(a==='sqok') sqMark('ok');
   else if(a==='sqpass') sqMark('pass');
   else if(a==='kastart') kaStart(t);
-  else if(a==='sqend'){ const tt=order()[S.sub-2]; if(S.r3.ph[tt]==='play'){ setTimer(0); S.r3.ph[tt]='done'; save(); render(); } }
-  else if(a==='kaend'){ if(S.r4.ph[t]==='play'){ setTimer(0); S.r4.ph[t]='rate'; save(); render(); } }
+  else if(a==='sqend'){ const tt=order()[S.sub-2]; if(S.r3.ph[tt]==='play'){ setTimer(0); S.r3.ph[tt]='done'; save(); render(); playVoice('v_time_up'); } }
+  else if(a==='kaend'){ if(S.r4.ph[t]==='play'){ setTimer(0); S.r4.ph[t]='rate'; save(); render(); playVoice('v_ka_rate'); } }
   else if(a==='rate'){ S.r4.rate[t][+b.dataset.o]=+b.dataset.v; save(); SFX.tick(); render(); }
   else if(a==='ratedone') next();
   else if(a==='vote'){ S.votes[t]=+b.dataset.v; save(); SFX.tick(); render(); }
-  else if(a==='endplay'){ const v=$('#endv'); if(v){ v.muted=!soundOn; v.currentTime=0; v.play().catch(()=>{}); } }
+  else if(a==='endplay'){ const v=$('#endv'); if(v){ v.muted=!soundOn; v.currentTime=0; v.play().catch(()=>{ showGate(); }); } }
   else if(a==='endfull'){ const v=$('#endv'); v&&v.requestFullscreen&&v.requestFullscreen().catch(()=>{}); }
   else if(a==='troll'){ S.troll=t; save(); countdown(['3','2','1'],()=>{ render(); playVoice('g_reveal'); SFX.horn(); }); }
 });
@@ -585,7 +643,11 @@ $('#bPrev').addEventListener('click',prev);
 $('#tPlay').addEventListener('click',()=>{ ctx(); if(T.left<=0) T.left=T.total; T.run=!T.run; T.last=performance.now(); drawTimer(); });
 $('#tAdd').addEventListener('click',()=>{ T.left+=15; T.total=Math.max(T.total,T.left); drawTimer(); });
 $('#tReset').addEventListener('click',()=>{ T.left=T.total; T.run=false; drawTimer(); });
-$('#bSound').addEventListener('click',e=>{ soundOn=!soundOn; e.currentTarget.setAttribute('aria-pressed',soundOn); if(!soundOn) stopVoice(); });
+$('#bSound').addEventListener('click',e=>{ soundOn=!soundOn; e.currentTarget.setAttribute('aria-pressed',soundOn); if(!soundOn) stopVoice(); else if(musicOn) startBeds(); document.querySelectorAll('video#vid,video#endv').forEach(v=>{ v.muted=!soundOn; }); });
+$('#bMusic').addEventListener('click',e=>{ musicOn=!musicOn; e.currentTarget.setAttribute('aria-pressed',musicOn); if(musicOn&&soundOn) startBeds(); });
+$('#bVol').value=Math.round(bgmVol*100);
+$('#bVol').addEventListener('input',e=>{ bgmVol=(+e.target.value)/100; try{ localStorage.setItem('px-tv-bgm',String(bgmVol)); }catch(err){} });
+$('#gate').addEventListener('click',()=>{ if(unlocked) hideGate(); });   // the capture-phase listeners already re-unlock and replay the pending voice
 $('#bFull').addEventListener('click',()=>{ const d=document.documentElement; if(document.fullscreenElement) document.exitFullscreen().catch(()=>{}); else d.requestFullscreen&&d.requestFullscreen().catch(()=>toast('전체화면을 쓸 수 없는 환경입니다')); });
 function tradeView(){ $('#tradeBody').innerHTML=`<div class="grid3">${[0,1,2].map(f=>`<div class="ans" ${tc(f)}><div class="tname">${tn(f)} <span style="color:var(--accent)">${'●'.repeat(S.chances[f])||'0'}</span></div>${[0,1,2].filter(o=>o!==f).map(o=>`<button class="btn" data-tr="${f}" data-to="${o}" ${S.chances[f]<1?'disabled':''}>→ ${tn(o)}에 1개</button>`).join('')}</div>`).join('')}</div>`; }
 $('#bTrade').addEventListener('click',()=>{ tradeView(); $('#trade').hidden=false; });

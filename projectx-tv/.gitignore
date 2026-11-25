@@ -4,4 +4,12 @@ work/loops/*.raw.mp4
 work/endings/vid/
 work/endings/tts/
 work/endings/out/*.mp4
+work/endings/out/*.wav
 work/endings/out/graph.txt
+work/music/*.raw.mp3
+work/music/*.norm.wav
+work/music/*.loop.mp3
+work/voice/tts/
+work/voice/*.log
+work/intro_out/*.mp4
+work/intro_out/graph.txt
