@@ -243,7 +243,7 @@ const others=t=>[0,1,2].filter(o=>o!==t);
 
 /* ---------- state ---------- */
 const KEY='pirates-coop-v3';
-const fresh=()=>({teams:[{name:'1조',size:4},{name:'2조',size:4},{name:'3조',size:3}],cfg:{tRelay:60,tChar:90,tScope:15,tMem:45},step:0,sub:0,startedAt:null,
+const fresh=()=>({teams:[{name:'1조',size:4},{name:'2조',size:4},{name:'3조',size:4}],cfg:{tRelay:60,tChar:90,tScope:15,tMem:45},step:0,sub:0,startedAt:null,
  r1:{log:null,ph:'hid',score:[null,null,null]},
  r2:{deck:null,ptr:0,words:[[],[],[]],ph:['ready','ready','ready']},
  r3:{set:[null,null,null],i:[0,0,0],att:[0,0,0],res:[[],[],[]],used:[],ph:['ready','ready','ready']},
@@ -369,13 +369,13 @@ function vSetup(){
   const total_=S.teams.reduce((a,t)=>a+t.size,0);
   const sel=(id,v,opts)=>`<select id="${id}" style="background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:.3rem">${opts.map(([a,b])=>`<option value="${a}" ${String(a)===String(v)?'selected':''}>${b}</option>`).join('')}</select>`;
   return `<div class="scene"><div class="grid2"><div style="display:grid;gap:.8rem">
-    <span class="eyebrow">10~11명 기준(최대 20명) · 3척 · 팀마다 X맨 1명 · 약 40분 · 준비물: 종이 1장</span>
+    <span class="eyebrow">12명 기준(최대 20명) · 3척 · 팀마다 X맨 1명 · 약 40분 · 준비물: 종이 1장</span>
     <h1 class="big">팀플호에<br>해적이 탔다 <span style="color:var(--x)">협동 항해</span></h1>
     <p class="lead">세 척의 배가 협동 미니게임 네 판으로 항해합니다. 배마다 해적 X맨이 한 명씩 숨어 매 라운드 슬쩍 방해해요. 마지막에 우리 배의 X맨을 찾아내세요.</p>
     <div class="row"><button class="btn primary lg" data-a="start">▶ 오프닝 영상으로 시작</button>${S.startedAt?`<button class="btn" data-a="resume">이어서 (${esc(STEPS[S.step].label)})</button><button class="btn bad" data-a="askreset">새 게임</button>`:''}</div>
     <div class="row"><span style="color:var(--mute);font-size:.95rem">결말 영상 미리보기</span>${ENDS.map((x,k)=>`<button class="btn" data-a="endpreview" data-k="${k}">${x.label}</button>`).join('')}</div>
   </div>${vid('harbor','shot','출항을 기다리는 항구')}</div>
-  <div class="row"><span style="color:var(--mute)">인원 빠른 설정</span>${[[10,[4,3,3]],[11,[4,4,3]]].map(([n,z])=>`<button class="btn" data-a="preset" data-n="${n}" aria-pressed="${S.teams.map(m=>m.size).join()===z.join()}" style="${S.teams.map(m=>m.size).join()===z.join()?'background:var(--accent);color:#1a1400':''}">총 ${n}명 (${z.join('·')})</button>`).join('')}<span style="color:var(--mute);font-size:.9rem">팀 인원은 아래에서 직접 바꿔도 됩니다</span></div>
+  <div class="row"><span style="color:var(--mute)">인원 빠른 설정</span>${[[10,[4,3,3]],[11,[4,4,3]],[12,[4,4,4]]].map(([n,z])=>`<button class="btn" data-a="preset" data-n="${n}" aria-pressed="${S.teams.map(m=>m.size).join()===z.join()}" style="${S.teams.map(m=>m.size).join()===z.join()?'background:var(--accent);color:#1a1400':''}">총 ${n}명 (${z.join('·')})</button>`).join('')}<span style="color:var(--mute);font-size:.9rem">팀 인원은 아래에서 직접 바꿔도 됩니다</span></div>
   <div class="grid3">${S.teams.map((m,t)=>`<div class="panel team" ${tc(t)} style="display:grid;gap:.5rem"><label class="eyebrow" for="tn${t}">${t+1}번 배</label><input class="tn" id="tn${t}" data-a="tname" data-t="${t}" value="${esc(m.name)}" maxlength="10">
     <div class="row"><span>인원</span><span class="seg">${[3,4,5,6,7].map(n=>`<button data-a="size" data-t="${t}" data-n="${n}" aria-pressed="${m.size===n}">${n}</button>`).join('')}</span></div></div>`).join('')}</div>
   <div class="grid2" style="align-items:start"><div class="panel"><h3 style="font-size:1.4rem;margin-bottom:.4rem">약 40분 진행표 <span style="font-family:var(--body);font-size:.9rem;color:${total_<10||total_>20?'var(--bad)':'var(--mute)'}">· 지금 ${total_}명${total_<10||total_>20?' (10~20명 권장)':''}</span></h3>
@@ -646,7 +646,7 @@ document.addEventListener('click',e=>{
   else if(a==='askreset'){ b.outerHTML=`<span class="row"><b>기록을 모두 지울까요?</b><button class="btn bad" data-a="reset">지우기</button><button class="btn" data-a="noreset">취소</button></span>`; }
   else if(a==='reset'){ const keep={teams:S.teams,cfg:S.cfg}; S=fresh(); Object.assign(S,keep); go(0,0); }
   else if(a==='noreset') render();
-  else if(a==='preset'){ const z=b.dataset.n==='10'?[4,3,3]:[4,4,3]; S.teams.forEach((m,i)=>{ m.size=z[i]; }); save(); render(); }
+  else if(a==='preset'){ const z={10:[4,3,3],11:[4,4,3],12:[4,4,4]}[b.dataset.n]; S.teams.forEach((m,i)=>{ m.size=z[i]; }); save(); render(); }
   else if(a==='size'){ S.teams[t].size=+b.dataset.n; save(); render(); }
   else if(a==='vplay'){ const v=$('#vid'); v&&v.play().catch(()=>{}); }
   else if(a==='vfull'){ const v=$('#vid'); v&&v.requestFullscreen&&v.requestFullscreen().catch(()=>{}); }
