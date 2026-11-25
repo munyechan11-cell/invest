@@ -136,7 +136,7 @@ input.tn{background:var(--bg);border:1px solid var(--line);border-radius:8px;col
 .gate[hidden]{display:none!important}
 @keyframes gatepulse{50%{box-shadow:0 0 0 .6rem rgba(255,207,63,.35),0 10px 30px rgba(0,0,0,.5)}}
 .scopewrap{display:grid;place-items:center}
-.lens{position:relative;width:min(58vh,72vw);aspect-ratio:1;border-radius:50%;overflow:hidden;border:14px solid #b8892e;box-shadow:0 0 0 6px #6b4a14,0 18px 50px rgba(0,0,0,.6),inset 0 0 90px rgba(0,0,0,.75);background:#000}
+.lens{position:relative;width:min(48vh,72vw);aspect-ratio:1;border-radius:50%;overflow:hidden;border:14px solid #b8892e;box-shadow:0 0 0 6px #6b4a14,0 18px 50px rgba(0,0,0,.6),inset 0 0 90px rgba(0,0,0,.75);background:#000}
 .lens img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:transform .16s linear}
 #bVol{width:5.5rem;accent-color:var(--accent);vertical-align:middle}
 .vol{display:flex;align-items:center;gap:.3rem;font-size:.8rem;color:var(--mute)}
@@ -198,7 +198,7 @@ const ROUNDS=[
   x:'몸짓을 한 군데만 일부러 틀리게 하기(수영하다 갑자기 손 흔들기) · 정답 대신 엉뚱한 답 외치기 · 패스로 시간 끌기 — 보는 사람이 "어? 좀 이상한데?" 할 만큼만 티 나게'},
  {no:3,name:'PPT 제작',theme:'망원경 이미지 점검',game:'망원경 이미지 퀴즈',loop:'sea',intro:'p_r3i',taunt:'p_r3c',
   tauntText:'망원경으로 뭘 보겠다고? 내가 엉뚱한 답을 크게 외치면, 팀원들은 헷갈려서 놓칠걸. 크크크.',
-  line:'망원경 렌즈 속 그림이 점점 넓어집니다. 팀이 함께 무엇인지 맞히세요. 한 문제에 기회는 두 번(첫 번째에 맞히면 1점, 두 번째는 0.5점)이고, 팀마다 10문제를 풉니다.',score:'문제당 1 · 0.5 · 0점, 10문제 합계 = 최대 10점',
+  line:'망원경 렌즈 속 그림이 천천히 넓어집니다(제한 시간이 끝나도 전체의 약 3분의 2까지만 보여요). 팀이 함께 무엇인지 맞히세요. 한 문제에 기회는 두 번(첫 번째에 맞히면 1점, 두 번째는 0.5점)이고, 팀마다 10문제를 풉니다.',score:'문제당 1 · 0.5 · 0점, 10문제 합계 = 최대 10점',
   x:'확신에 찬 목소리로 엉뚱한 답을 외치기 · 팀이 맞힌 답에 "아닌 것 같은데?" 하고 흔들기 — 듣는 사람이 "어? 왜 저러지?" 할 만큼만 티 나게'},
  {no:4,name:'최종 발표',theme:'입항 보고',game:'대본 외워 말하기',loop:'report',intro:'p_r4i',taunt:'p_r4c',
   tauntText:'대본을 그대로 외운다고? 내가 한 단어만 슬쩍 바꿔 말하면, 보고서는 엉망이 되지. 크크크.',
@@ -482,13 +482,15 @@ function curChar(){ const d=chDeck(); return d[S.r2.ptr%d.length]; }
 function charStart(t){ chDeck(); S.r2.ph[t]='play'; save(); render(); setTimer(S.cfg.tChar,'몸으로 말해요',true,()=>{ S.r2.ph[t]='done'; save(); render(); playVoice('v_time_up'); }); }
 function chMark(r){ const st=STEPS[S.step]; if(st.key!=='r2') return; const t=S.sub-1; if(t<0||t>2||S.r2.ph[t]!=='play') return; const w=curChar(); S.r2.words[t].push({w,r}); S.r2.ptr++; save(); (r==='ok'?SFX.ding:SFX.buzz)(); render(); }
 /* R3 망원경 이미지 퀴즈 */
-const zoomScale=()=>{ const p=T.total?Math.max(0,Math.min(1,T.left/T.total)):0; return 1.12+(7-1.12)*p; };
+/* 렌즈 확대: 시작 7배 → 제한 시간이 끝날 때 전체 풀림 범위의 3분의 2 지점(약 3.1배)까지만 천천히 넓어진다. 그림 전체는 끝까지 보이지 않는다 */
+const ZOOM_START=7, ZOOM_FULL=1.12, REVEAL_MAX=2/3;
+const zoomScale=()=>{ if(!T.total) return ZOOM_START; const p=Math.max(0,Math.min(1,T.left/T.total)); return ZOOM_START-(ZOOM_START-ZOOM_FULL)*REVEAL_MAX*(1-p); };
 const focusOf=idx=>`${30+((idx*37)%41)}% ${30+((idx*53)%41)}%`;
 function vR3(s){
   const R=ROUNDS[2], t=s-1, ph=S.r3.ph[t], set=S.r3.set[t]||[], i=S.r3.i[t]||0, res=S.r3.res[t];
   const head=`<div class="row" style="justify-content:space-between"><span class="eyebrow">3R ${R.theme} · ${R.game} · ${s}번째 배</span><span class="tname" ${tc(t)}>${tn(t)}</span></div>`;
   if(ph==='ready') return `<div class="scene">${head}<div class="grid2"><div style="display:grid;gap:1rem"><h2 class="big">${tn(t)} 망원경 준비!</h2>
-    <p style="font-size:1.5rem;margin:0">렌즈 속 그림이 점점 넓어집니다. <b>팀이 함께</b> 무엇인지 맞히세요. 문제는 <b>${PER}개</b>, 한 문제에 기회는 <b>두 번</b>!</p>
+    <p style="font-size:1.5rem;margin:0">렌즈 속 그림이 천천히 넓어지지만 <b>끝까지 가도 전체의 약 3분의 2만</b> 보입니다. <b>팀이 함께</b> 무엇인지 맞히세요. 문제는 <b>${PER}개</b>, 한 문제에 기회는 <b>두 번</b>!</p>
     <p class="lead">첫 번째에 맞히면 1점, 틀리고 두 번째에 맞히면 0.5점, 두 번 다 틀리거나 시간이 끝나면 0점. 답은 크게 외치면 됩니다(문제당 ${S.cfg.tScope}초).</p>
     <div class="row"><button class="btn primary lg" data-a="scopestart" data-t="${t}">시작 (${PER}문제)</button></div></div>${vid('sea','shot','')}</div>
     ${note('다른 두 배는 정답을 외치면 안 됩니다. X맨이 엉뚱한 답을 외치는지 귀 기울여 보세요.','정답 = Space 또는 "정답" 버튼, 오답 = X 또는 "오답" 버튼. 오답을 두 번 누르면 자동으로 정답이 공개됩니다.')}</div>`;
