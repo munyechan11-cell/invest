@@ -22,7 +22,8 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
 h1,h2,h3{font-family:var(--display);font-weight:400;margin:0;line-height:1.12;text-wrap:balance}
 .num{font-variant-numeric:tabular-nums}
 #app{position:relative;z-index:1;height:100%;display:grid;grid-template-rows:auto 1fr auto;grid-template-columns:minmax(0,1fr)}
-#bgwrap{position:fixed;inset:0;z-index:0;background:var(--bg);overflow:hidden}
+#bgwrap{position:fixed;inset:0;z-index:0;background:var(--bg) center/cover no-repeat;overflow:hidden}
+.note[hidden]{display:none!important}
 #bgwrap video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:opacity .6s}
 #bgwrap::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(7,26,36,.6),rgba(7,26,36,.78) 55%,rgba(7,26,36,.92))}
 #bgwrap.off video{opacity:0}
@@ -167,9 +168,19 @@ input.tn{background:var(--bg);border:1px solid var(--line);border-radius:8px;col
 const IMG = n => `assets/img/${n}.jpg`, AUD = n => `assets/audio/${n}.mp3`, LOOP = n => `assets/loop/${n}.mp4`, END = n => `assets/end/${n}.mp4`;
 const CDT=window.CDT||{};
 const CD_GO=CDT.go||{t:[134,868,1454,2067],end:2900}, CD_VOTE=CDT.vote||{t:[146,818,1432,1995],end:3300};
-function vid(name,cls,alt){ return `<video class="${cls||'shot'}" src="${LOOP(name)}" autoplay muted loop playsinline preload="auto" aria-label="${alt||''}"></video>`; }
+/* 반복 배경마다 대응하는 그림 — 브라우저가 영상을 막거나 못 읽어도 장면 그림은 항상 보인다 */
+const LOOPIMG={harbor:'a3_port',sea:'s4_three_ships',night:'s5_night',chart:'chart',deck:'a1_crew',repair:'repair',report:'report',arrive:'s7_arrive',sink:'s6_sink'};
+function vid(name,cls,alt){ return `<video class="${cls||'shot'}" src="${LOOP(name)}" poster="${IMG(LOOPIMG[name]||'style_key')}" autoplay muted loop playsinline preload="auto" aria-label="${alt||''}"></video>`; }
 let bgCur=null;
-function setBg(name){ const w=document.getElementById('bgwrap'), v=document.getElementById('bgv'); if(!name){ w.classList.add('off'); bgCur=null; return; } w.classList.remove('off'); if(bgCur===name) return; bgCur=name; v.src=LOOP(name); v.play().catch(()=>{}); }
+function setBg(name){ const w=document.getElementById('bgwrap'), v=document.getElementById('bgv'); if(!name){ w.classList.add('off'); w.style.backgroundImage=''; bgCur=null; return; } w.classList.remove('off'); if(bgCur===name) return; bgCur=name; w.style.backgroundImage=`url("${IMG(LOOPIMG[name]||'style_key')}")`; v.src=LOOP(name); v.play().catch(()=>{}); }
+/* 영상 폴백: (1) 반복 영상이 실패하면 그림으로 바꾼다 (2) 오프닝·결말 영상이 실패하면 안내문을 보인다 (3) 자동재생이 막혔으면 첫 클릭·키 입력에 다시 재생한다 */
+document.addEventListener('error',e=>{ const v=e.target; if(!v||v.tagName!=='VIDEO'||v.id==='bgv') return;
+  if(v.classList.contains('shot')&&v.poster){ const im=document.createElement('img'); im.className='shot'; im.src=v.poster; im.alt=v.getAttribute('aria-label')||''; v.replaceWith(im); return; }
+  const m=document.getElementById('vmsg'); if(m) m.hidden=false; },true);
+function retryLoops(){ document.querySelectorAll('video[loop],#bgv').forEach(v=>{ if(v.paused&&!v.ended&&!v.error){ const p=v.play(); if(p&&p.catch) p.catch(()=>{}); } }); }
+['pointerup','click','keydown','touchend'].forEach(ev=>document.addEventListener(ev,retryLoops,{capture:true}));
+const VFALL=f=>`<div id="vmsg" class="note" hidden><b>영상 안내</b><span>이 브라우저에서 영상을 불러오지 못했습니다. 아래 "영상만 새 창에서 열기"를 누르거나, Chrome·Edge 최신 버전으로 여세요. 영상이 없어도 "다음"으로 게임은 계속 진행됩니다.</span></div>
+  <div class="row" style="justify-content:center"><a class="btn" href="${f}" target="_blank" rel="noopener">영상만 새 창에서 열기</a></div>`;
 const TC = ['var(--t0)','var(--t1)','var(--t2)'];
 
 /* ---------- content ---------- */
@@ -351,6 +362,7 @@ function vSetup(){
 function vIntro(){
   return `<div class="scene"><div class="slide" style="max-height:72vh"><video id="vid" src="assets/intro.mp4" controls playsinline preload="auto" poster="${IMG('style_key')}" style="width:100%;height:100%;display:block;background:#000"></video></div>
   <div class="row" style="justify-content:center"><button class="btn primary lg" data-a="vplay">▶ 오프닝 영상 재생</button><button class="btn" data-a="vfull">영상 전체화면</button></div>
+  ${VFALL('assets/intro.mp4')}
   ${note('영상이 끝나면 "다음"으로 비밀 쪽지 뽑기로 넘어갑니다.','')}</div>`;
 }
 function vSecret(){
@@ -491,7 +503,8 @@ function vEnd(s){
   const E=endingOf();
   if(s===0) return `<div class="scene"><div class="row" style="justify-content:space-between"><span class="eyebrow">결말 · ${E.label}</span><span class="tname" style="--tc:${E.color}">${caughtN()}척 검거</span></div>
     <div class="slide" style="max-height:70vh"><video id="endv" src="${END(E.file)}" playsinline preload="auto" poster="${IMG(E.poster)}" style="background:#000"></video></div>
-    <div class="row" style="justify-content:center"><button class="btn primary lg" data-a="endplay">▶ 결말 영상 재생</button><button class="btn" data-a="endfull">영상 전체화면</button></div></div>`;
+    <div class="row" style="justify-content:center"><button class="btn primary lg" data-a="endplay">▶ 결말 영상 재생</button><button class="btn" data-a="endfull">영상 전체화면</button></div>
+    ${VFALL(END(E.file))}</div>`;
   const order=[0,1,2].sort((a,b)=>total(b)-total(a));
   return `<div class="scene"><span class="eyebrow">최종 성적</span><h2 class="mid"><span style="color:${E.color}">${E.head}</span> · 1위 <span style="color:${TC[order[0]]}">${tn(order[0])}</span></h2>
     <div class="wrapx"><table class="tbl" style="font-size:1.15rem"><thead><tr><th>순위</th><th>배</th><th class="c">1R</th><th class="c">2R</th><th class="c">3R</th><th class="c">4R</th><th class="c">검거</th><th class="c">총점</th></tr></thead><tbody>
