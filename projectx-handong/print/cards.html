@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>PROJECT X 인쇄물</title>
+<style>
+@font-face{font-family:"BHS";src:url("fonts/BlackHanSans-Regular.ttf")}
+@font-face{font-family:"NKR";src:url("fonts/NotoSansKR-Regular.ttf");font-weight:400}
+@font-face{font-family:"NKR";src:url("fonts/NotoSansKR-Medium.ttf");font-weight:500}
+@font-face{font-family:"NKR";src:url("fonts/NotoSansKR-Bold.ttf");font-weight:700}
+@font-face{font-family:"NKR";src:url("fonts/NotoSansKR-Black.ttf");font-weight:900}
+@page{size:A4;margin:0}
+:root{--navy:#17325c;--teal:#1b7f7a;--red:#c8312b;--ink:#1a1d24;--mute:#5c6370;--line:#c9ced8;--paper:#f6f7f9}
+*{box-sizing:border-box}
+body{margin:0;font-family:"NKR",sans-serif;font-weight:400;color:var(--ink);-webkit-print-color-adjust:exact;print-color-adjust:exact;font-size:9pt;line-height:1.45}
+.page{width:210mm;height:297mm;padding:11mm 12mm;page-break-after:always;position:relative;overflow:hidden}
+.page:last-child{page-break-after:auto}
+.hdr{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:.6mm solid var(--navy);padding-bottom:2mm;margin-bottom:3.5mm}
+.hdr h1{font-family:"NKR";font-weight:900;font-size:16pt;margin:0;color:var(--navy);letter-spacing:-.01em}
+.hdr .logo{font-family:"BHS";font-size:13pt;color:var(--navy)}
+.hdr .logo b{color:var(--red);font-weight:400}
+.hdr small{display:block;font-size:8pt;color:var(--mute);font-weight:500}
+h2{font-weight:900;font-size:11pt;margin:3.5mm 0 1.5mm;color:var(--navy)}
+h3{font-weight:700;font-size:9.5pt;margin:2mm 0 1mm}
+table{border-collapse:collapse;width:100%}
+td,th{border:.25mm solid var(--line);padding:1.1mm 1.8mm;vertical-align:top;text-align:left}
+th{background:#e8edf5;font-weight:700}
+.t-s td,.t-s th{font-size:8pt;padding:.9mm 1.5mm}
+.nowrap{white-space:nowrap}
+ul{margin:0;padding-left:4.5mm}
+li{margin:.3mm 0}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:5mm}
+.ok{color:var(--teal);font-weight:900}.no{color:var(--red);font-weight:900}
+.note{font-size:7.5pt;color:var(--mute)}
+.cut{border:.3mm dashed #8a93a3}
+.cutlabel{font-size:7.5pt;color:var(--mute);text-align:center;margin-bottom:2mm}
+/* problem cards */
+.prob{height:84mm;margin-bottom:4mm;display:grid;grid-template-columns:34mm 1fr;}
+.prob .num{background:var(--navy);color:#fff;display:grid;place-items:center;align-content:center;gap:1mm;text-align:center}
+.prob .num b{font-family:"BHS";font-size:40pt;font-weight:400;line-height:1}
+.prob .num span{font-size:8pt;font-weight:700;letter-spacing:.1em}
+.prob .body{padding:5mm 6mm;display:grid;gap:2mm;align-content:start}
+.prob h2{font-size:17pt;margin:0;color:var(--ink)}
+.prob p{margin:0;font-size:10pt}
+.prob .goal{background:var(--paper);border-left:1.2mm solid var(--teal);padding:2mm 3mm;font-weight:700}
+/* orders */
+.order{border:.3mm dashed #8a93a3;padding:6mm 7mm;height:134mm;display:grid;gap:2.2mm;align-content:start}
+.order .tag{display:inline-block;font-weight:900;font-size:8pt;letter-spacing:.12em;color:#fff;background:var(--teal);padding:.6mm 3mm;border-radius:1mm}
+.order h2{font-size:18pt;margin:0;color:var(--ink)}
+.order p{margin:0;font-size:9.6pt}
+.troll .tag{background:var(--red)}
+.big-x{font-family:"BHS";color:var(--red);font-size:120pt;line-height:.9;position:absolute;right:14mm;bottom:14mm;opacity:.07}
+/* source cards */
+.sheet{display:grid;grid-template-columns:repeat(3,62mm);grid-auto-rows:86mm;justify-content:center;gap:0}
+.src{border:.3mm dashed #8a93a3;padding:3.5mm 3.8mm 2.5mm;display:grid;grid-template-rows:auto auto 1fr auto auto;gap:1.6mm;background:#fff;position:relative}
+.src .top{display:flex;justify-content:space-between;align-items:center;font-size:7.5pt;font-weight:700;color:var(--mute)}
+.src .top .k{background:var(--navy);color:#fff;border-radius:1mm;padding:.3mm 2mm}
+.src.dS .top .k{background:#2a6fb0}.src.dL .top .k{background:#c47a14}.src.dD .top .k{background:#6a4fa3}.src.dX .top .k{background:#555}
+.src h4{margin:0;font-size:10.5pt;font-weight:900;line-height:1.3}
+.src .fact{font-size:13pt;font-weight:900;color:var(--navy);line-height:1.25;align-self:center}
+.src .meta{font-size:7.8pt;border-top:.25mm solid var(--line);padding-top:1.3mm;display:grid;gap:.4mm}
+.src .meta b{color:var(--mute);font-weight:700;margin-right:1.5mm}
+.src .fic{font-size:6.3pt;color:#8a93a3;text-align:right}
+.half{border:.3mm dashed #8a93a3;padding:3mm 4mm;display:grid;align-content:center;gap:1.2mm;background:#fff}
+.half .tag{font-size:7pt;font-weight:900;color:#fff;background:var(--red);border-radius:1mm;padding:.3mm 2mm;justify-self:start}
+.half q{font-size:10.5pt;font-weight:700;quotes:"\201C" "\201D";line-height:1.35}
+.half .note{font-size:7pt}
+/* sheets */
+.form{border:.3mm dashed #8a93a3;padding:6mm 7mm;height:134mm;display:grid;gap:2.5mm;align-content:start}
+.form h2{margin:0;font-size:14pt}
+.field{display:grid;gap:1mm}
+.field label{font-weight:700;font-size:9.5pt}
+.lines{height:16mm;background:repeating-linear-gradient(transparent 0 7.6mm,#b8bfcc 7.6mm 7.9mm)}
+.blank{display:inline-block;min-width:28mm;border-bottom:.3mm solid #8a93a3;height:5mm;vertical-align:bottom}
+.box{display:inline-block;width:3.6mm;height:3.6mm;border:.35mm solid var(--ink);vertical-align:-.6mm;margin-right:1.2mm}
+.slip{border:.3mm dashed #8a93a3;padding:4mm 5mm;height:52mm;display:grid;gap:2mm;align-content:center}
+.slip h3{margin:0;font-size:12pt;font-weight:900}
+.coin{width:30mm;height:30mm;border-radius:50%;border:.5mm dashed #8a93a3;display:grid;place-items:center;align-content:center;text-align:center;background:radial-gradient(circle,#fff6d8 0 60%,#f3d77d 61% 100%)}
+.coin b{font-family:"BHS";font-size:17pt;font-weight:400;color:#7a5a07;line-height:1}
+.coin span{font-size:6.5pt;font-weight:700;color:#7a5a07}
+</style></head><body>
+
+<!-- 1. 큐시트 p1 -->
+<section class="page">
+  <div class="hdr"><div><h1>진행자 큐시트 ①</h1><small>10~20명 · 3팀 · 진행자 2명 · 45분 · 실내</small></div><div class="logo">PROJECT <b>X</b> · 한동 팀플 편</div></div>
+  <p style="margin:0 0 2mm;font-size:9.5pt"><b>한 줄 요약</b> 3팀이 "새내기를 위한 한동 캠퍼스 생활 개선 제안" 팀플을 4라운드로 완성한다. 그중 한 팀은 몰래 다른 팀을 망치는 트롤팀이다. 매 라운드 각 팀은 지원 팀원 1명을 다른 팀에 보낸다.</p>
+  <h2>진행자 역할</h2>
+  <table><tr><th style="width:26mm">진행자 1 (MC)</th><td>화면 넘기기 · 시간 관리 · 이벤트 카드 낭독 · 지원 팀원 파견 안내 · 분위기 · 발표 사회</td></tr>
+  <tr><th>진행자 2 (판정관)</th><td>지령 봉투 관리 · <b>트롤팀을 아는 유일한 사람</b> · 진행 화면에 트롤팀 몰래 입력 · 팩트체크 응답(○/×만) · 판정과 점수 입력 · 비밀 트롤 점수 계산 · 금지 행동 적발</td></tr></table>
+  <h2>준비물</h2>
+  <div class="two"><ul><li>지령 봉투 3개: 일반팀 지령 2 / 트롤팀 지령 1 (+미끼 자료 4·지연 카드 4·질문 카드 3)</li><li>문제 카드 3장, 자료 카드 24장 (앞쪽 공용 테이블 = 자료 시장)</li><li>회의 결정 시트 3장 + 연합 회의 합의서 1장</li></ul>
+  <ul><li>A3 종이 12장(팀당 4) · 마커 · 테이프</li><li>PPT 체크리스트 3장 · 추리 투표지 3장 · 베스트 발표 투표지 3장</li><li>협력 코인 9개(팀당 3) · 진행 화면(노트북+프로젝터+스피커)</li></ul></div>
+  <h2>45분 진행표</h2>
+  <table class="t-s"><tr><th class="nowrap">시각</th><th>단계</th><th>진행자 1</th><th>진행자 2</th></tr>
+  <tr><td>00:00</td><td>오프닝 영상</td><td>영상 재생(약 1분)</td><td>봉투 섞어 두기</td></tr>
+  <tr><td>01:30</td><td>규칙 설명 4분</td><td>화면 규칙 4장 읽기, 질문 1~2개</td><td>자료 카드 펼치기</td></tr>
+  <tr><td>05:30</td><td>문제 카드 · 지령 봉투 2분</td><td>팀 대표 불러 뽑게 하기</td><td>트롤팀 확인 → 화면 "트롤팀 비밀 지정"</td></tr>
+  <tr><td>07:30</td><td>1R 자료조사 8분</td><td>파견 → 이벤트 → 타이머</td><td>팩트체크 응답 → 판정</td></tr>
+  <tr><td>15:30</td><td>2R 팀 회의 8분</td><td>파견 → 이벤트 → 연합 회의 사회</td><td>결정 시트 판정</td></tr>
+  <tr><td>23:30</td><td>3R PPT 제작 9분</td><td>파견 → 이벤트 → 타이머</td><td>필수 5항목 체크 · 디자인 상</td></tr>
+  <tr><td>32:30</td><td>4R 발표 + 추리 9분</td><td>협상 1분 → 발표 사회 → 투표 안내</td><td>발표 채점 · 표 집계</td></tr>
+  <tr><td>41:30</td><td>집계 · 공개 · 결말</td><td>결말 화면</td><td>"트롤팀은 일어나 주세요" · 비밀 점수 공개</td></tr></table>
+  <h2>지원 팀원 파견표 (1~3라운드 시작 때)</h2>
+  <table class="t-s"><tr><th class="nowrap">라운드</th><th class="nowrap">1팀 →</th><th class="nowrap">2팀 →</th><th class="nowrap">3팀 →</th><th>규칙</th></tr>
+  <tr><td>1R</td><td>2팀</td><td>3팀</td><td>1팀</td><td rowspan="3">팀마다 1명. 같은 사람 연속 파견 금지. 간 팀이 그 라운드에 <b>성공</b>하면 원래 팀 <b>+5</b>(협력 보너스). 라운드가 끝나면 원래 팀으로 복귀.</td></tr>
+  <tr><td>2R</td><td>3팀</td><td>1팀</td><td>2팀</td></tr>
+  <tr><td>3R</td><td>2팀</td><td>3팀</td><td>1팀</td></tr></table>
+  <h2>금지 · 허용 (트롤팀 포함 모두)</h2>
+  <div class="two"><div><h3 class="no">금지 → 적발 시 정체 공개 + 30점 감점</h3><ul><li>남의 카드·작업물 만지기, 숨기기, 찢기</li><li>없는 규칙 지어내기, 거짓 판정 주장</li><li>소리 지르기, 물리적 방해, 개인 공격</li></ul></div>
+  <div><h3 class="ok">허용 → 실제 팀플에서 할 법한 말이면 OK</h3><ul><li>의견·질문·제안·칭찬·반대</li><li>회의 방식 제안, 천천히 동의하기</li><li>거래·협상, 지키지 않는 약속</li></ul></div></div>
+</section>
+
+<!-- 2. 큐시트 p2 -->
+<section class="page">
+  <div class="hdr"><div><h1>진행자 큐시트 ② · 라운드별 진행과 점수</h1><small>진행자 1은 굵은 글씨 멘트를 그대로 읽으면 됩니다</small></div><div class="logo">PROJECT <b>X</b></div></div>
+  <table class="t-s">
+  <tr><th style="width:20mm">라운드</th><th>진행자 1 멘트 · 할 일</th><th style="width:52mm">판정 (진행자 2)</th><th style="width:48mm">점수</th></tr>
+  <tr><td><b>1R 자료조사</b><br>8분</td><td><b>"이벤트 카드, 팩트체크 찬스. 각 팀은 자료 한 장을 판정관에게 가져와 믿을 만한지 한 번 물어볼 수 있습니다."</b><br>이벤트 30초 → 탐색·거래 5분 → 제출 30초(팀당 3장) → 판정 2분</td><td>정답표와 코드 대조. 믿을 만한 자료 = 공식·조사 출처 + 2023년 이후 + 자기 문제와 관련. 3장 성공 / 2장 부분 / 0~1장 실패</td><td>믿을 자료 1장 +10, 3장 모두 +10 보너스<br><span class="no">트롤 비밀</span>: 다른 팀 불량 자료 1장당 +10</td></tr>
+  <tr><td><b>2R 팀 회의</b><br>8분</td><td><b>"이벤트 카드, 연합 회의 소집. 팀 회의가 끝나면 각 팀 대표가 앞으로 나와 3분 안에 발표 순서와 질문 순서를 정하고 모두 서명합니다."</b><br>이벤트 30초 → 팀 회의 4분 → 연합 회의 3분 → 판정 30초</td><td>결정 시트 3칸이 구체적이면 성공("열심히 하자"는 미완성). 합의서 서명 3개면 합의</td><td>시트 3칸 +20, 2칸 +10, 1칸 이하 0<br>합의 시 전 팀 +10, 결렬 시 전 팀 −5<br><span class="no">트롤 비밀</span>: 시트 미완성 팀당 +10, 결렬 +20</td></tr>
+  <tr><td><b>3R PPT 제작</b><br>9분</td><td><b>"이벤트 카드, 디자인 상 예고. 가장 보기 좋은 PPT에 보너스 5점."</b> (필수 항목 점수가 더 크다는 말은 하지 않는다)<br>이벤트 30초 → 제작 7분 → 판정 1분 30초</td><td>A3 4장에서 필수 5항목 확인: 문제 정의 · 근거 자료 · 해결책 · 기대 효과 · 출처. 5개 성공 / 4개 부분 / 3개 이하 실패</td><td>5개 +30, 4개 +20, 3개 +10, 2개 이하 0, 디자인 상 +5<br><span class="no">트롤 비밀</span>: 다른 팀 누락 항목 1개당 +5</td></tr>
+  <tr><td><b>4R 최종 발표</b><br>9분</td><td><b>"이벤트 카드, 마지막 협상 타임. 1분 동안 어떤 거래든 할 수 있습니다. 약속은 지켜도 되고 깨도 됩니다."</b><br>협상 1분 → 발표 순서대로 1분 발표 + 질문 30초 × 3팀 → 추리 투표·베스트 발표 투표 1분 → 집계</td><td>발표 항목당 10점: ① 1분 지킴 ② 1R 자료 인용 ③ 해결책이 구체적. 투표지 집계(자기 팀 투표 무효)</td><td>발표 최대 +30, 베스트 발표 1표 +10<br>트롤팀 맞힌 일반팀 +20 · 트롤팀은 맞힌 표 1표당 −15 · 일반팀 둘 다 틀리면 트롤팀 +30</td></tr>
+  </table>
+  <h2>최종 집계</h2>
+  <table class="t-s"><tr><th>일반팀</th><td>공개 점수(1~4R) + 협력 보너스 + 남은 협력 코인 × 5 + 추리 점수</td></tr>
+  <tr><th>트롤팀</th><td>공개 점수(1~4R) + <b>비밀 트롤 점수</b> + 남은 협력 코인 × 5 + 추리 결과(감점/보너스)</td></tr>
+  <tr><th>결말</th><td>트롤팀이 1위면 "트롤팀 승리", 아니면 "팀플 완주" · 1위 팀 우승</td></tr></table>
+  <h2>동점 처리</h2>
+  <ul><li>① 4R에서 트롤팀을 맞힌 팀 → ② 베스트 발표 표가 많은 팀 → ③ 3R 필수 항목이 많은 팀 → ④ 팀 대표 가위바위보</li></ul>
+  <h2>진행 팁</h2>
+  <div class="two"><ul><li>파견 인원은 화면에 표시된다. 라운드 시작 30초 안에 이동시킬 것</li><li>팩트체크는 팀당 1회, ○/×만 답한다. 이유는 말하지 않는다</li><li>연합 회의가 3분을 넘기면 그대로 결렬 처리</li></ul>
+  <ul><li>시간이 밀리면 3R 제작을 6분으로 줄인다</li><li>트롤팀이 너무 세면 비밀 점수를 절반으로, 너무 약하면 추리 감점을 −10으로</li><li>공개 직후 트롤팀에게 "가장 성공한 방해 한 가지"를 묻는다</li></ul></div>
+</section>
+
+<!-- 3. 정답표 -->
+<section class="page">
+  <div class="hdr"><div><h1>진행자 2 전용 · 자료 카드 정답표</h1><small>참가자에게 보이지 않게 보관 · 기준: 공식·조사 출처 / 2023년 이후 / 자기 문제와 관련 — 셋 다 맞아야 ○</small></div><div class="logo">PROJECT <b>X</b></div></div>
+  <table class="t-s" id="key"><tr><th class="nowrap">코드</th><th>제목</th><th>출처 · 연도</th><th class="nowrap">판정</th><th>이유</th></tr></table>
+  <p class="note" style="margin-top:2mm">S = 셔틀버스 · L = 학관 점심 · D = 생활관 소음 · X = 트롤팀 봉투의 미끼 자료(어느 문제에 써도 불량). 모든 자료는 게임용 가상 자료입니다.</p>
+</section>
+
+<!-- 4. 문제 카드 -->
+<section class="page">
+  <div class="cutlabel">문제 카드 3장 · 점선을 따라 자르세요 · 팀 대표가 1장씩 뽑습니다</div>
+  <div id="probs"></div>
+</section>
+
+<!-- 5. 일반팀 지령 -->
+<section class="page">
+  <div class="cutlabel">일반팀 지령 2장 · 봉투에 1장씩</div>
+  <div style="display:grid;gap:4mm" id="normals"></div>
+</section>
+
+<!-- 6. 트롤팀 지령 -->
+<section class="page troll" style="position:relative">
+  <div class="big-x">X</div>
+  <div class="hdr"><div><h1 style="color:var(--red)">트롤팀 지령서 · 극비</h1><small>팀원끼리만 보고 봉투에 다시 넣으세요</small></div><div class="logo">PROJECT <b>X</b></div></div>
+  <p style="font-size:11pt;margin:0 0 2mm"><b>여러분은 트롤팀입니다.</b> 다른 두 팀의 팀플을 몰래 망치세요. 단, <b>들키면 안 됩니다.</b> 대놓고 방해하지 말고, 실제 팀플에서 누구나 할 법한 말과 의견 차이를 이용하세요.</p>
+  <table><tr><th style="width:30mm">승리 조건</th><td>공개 점수 + <b>비밀 트롤 점수</b>로 1위. 자기 팀 미션도 잘해야 의심을 피합니다.</td></tr>
+  <tr><th>봉투 안</th><td>미끼 자료 카드 4장 · 지연 카드 4장 · 날카로운 질문 카드 3장 (카드는 보여 주지 말고 <b>말로</b> 쓰세요)</td></tr></table>
+  <h2>라운드별 비밀 미션</h2>
+  <table class="t-s"><tr><th style="width:22mm">라운드</th><th>비밀 미션</th><th style="width:44mm">써먹을 말</th><th style="width:36mm">비밀 점수</th></tr>
+  <tr><td><b>1R 자료조사</b></td><td>다른 팀이 믿기 어려운 자료를 고르게 만든다. 미끼 자료를 거래로 넘기고, 좋은 카드를 주는 척 2:1 거래에 미끼를 끼워 넣는다.</td><td>"이 숫자가 더 임팩트 있어" · "공식 통계는 다들 써서 차별화가 안 돼"</td><td>다른 팀 불량 자료 1장당 +10</td></tr>
+  <tr><td><b>2R 팀 회의</b></td><td>의견 충돌을 키우고 결정을 미룬다. 연합 회의를 3분 안에 끝나지 못하게 한다.</td><td>"결정 전에 문제 정의부터 다시 하자" · "다수결 말고 다 동의할 때까지"</td><td>시트 미완성 팀당 +10 · 연합 결렬 +20</td></tr>
+  <tr><td><b>3R PPT</b></td><td>다른 팀이 표지·색칠·글씨에 시간을 쓰고 필수 항목을 빠뜨리게 한다.</td><td>"표지가 첫인상이야" · "디자인 상 5점이잖아" · "목차는 꼭 있어야 해"</td><td>다른 팀 누락 항목 1개당 +5</td></tr>
+  <tr><td><b>4R 발표</b></td><td>질문으로 다른 팀 발표를 흔들고, 다른 일반팀이 트롤로 의심받게 만든다.</td><td>"그 자료 몇 년도 거예요?" · "우리 지목 안 하면 우리도 너희 찍어 줄게"</td><td>일반팀이 둘 다 틀리면 +30 · 맞힌 표 1표당 −15</td></tr></table>
+  <div class="two" style="margin-top:3mm"><div><h3 class="ok">해도 되는 것</h3><ul><li>의견, 질문, 제안, 칭찬, 반대</li><li>회의 방식 제안, 천천히 동의하기</li><li>거래, 협상, 지키지 않는 약속</li><li>지원 팀원으로 가서 "도와주는 척"</li></ul></div>
+  <div><h3 class="no">하면 안 되는 것 (정체 공개 + 30점 감점)</h3><ul><li>남의 카드·작업물 만지기, 숨기기</li><li>없는 규칙 지어내기, 거짓 판정 주장</li><li>소리 지르기, 물리적 방해</li><li>"우리가 트롤"이라고 직접 밝히기</li></ul></div></div>
+  <p class="note" style="margin-top:3mm">팁: 지원 팀원은 매번 다른 사람이 가야 합니다. 가장 친절해 보이는 사람이 가장 의심받지 않습니다.</p>
+</section>
+
+<!-- 7-9. 자료 카드 -->
+<section class="page"><div class="cutlabel">자료 카드 · ① 셔틀버스 (S) · 9번째는 자료 시장 안내</div><div class="sheet" id="srcS"></div></section>
+<section class="page"><div class="cutlabel">자료 카드 · ② 학관 점심 (L)</div><div class="sheet" id="srcL"></div></section>
+<section class="page"><div class="cutlabel">자료 카드 · ③ 생활관 소음 (D)</div><div class="sheet" id="srcD"></div></section>
+
+<!-- 10. 트롤팀 봉투 카드 -->
+<section class="page"><div class="cutlabel">트롤팀 봉투용 · 미끼 자료 4장(X) + 지연 카드 4장 + 날카로운 질문 카드 3장</div><div class="sheet" id="trollCards"></div></section>
+
+<!-- 11-12. 회의 결정 시트 -->
+<section class="page"><div style="display:grid;gap:4mm" id="sheets1"></div></section>
+<section class="page"><div style="display:grid;gap:4mm" id="sheets2"></div></section>
+
+<!-- 13. PPT 체크리스트 -->
+<section class="page">
+  <div class="cutlabel">3R PPT 필수 5항목 체크리스트 · 팀별 1장 · 판정 칸은 진행자 2가 표시</div>
+  <div style="display:grid;gap:3mm" id="checks"></div>
+</section>
+
+<!-- 14. 투표지 + 코인 -->
+<section class="page">
+  <div class="cutlabel">4R 투표지 · 추리 3장 + 베스트 발표 3장</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:3mm" id="slips"></div>
+  <div class="cutlabel" style="margin-top:5mm">협력 코인 9개 · 팀당 3개 · 1개 = 5점 · 거래 가능</div>
+  <div style="display:grid;grid-template-columns:repeat(5,30mm);gap:5mm;justify-content:center" id="coins"></div>
+</section>
+
+<script>
+const SRC = {
+ S:[
+  ['S-01','셔틀 정류장 평균 대기 시간','평균 14분 (등교 시간대)','학교 총무팀 셔틀 운행 기록 분석',2026,1,'학교 공식 기록 · 최신 · 관련'],
+  ['S-02','등교 시간대 탑승 쏠림','오전 8:40~9:00에 하루 탑승의 38%','총학생회 교통 설문 (응답 612명)',2025,1,'설문 표본 충분 · 최신 · 관련'],
+  ['S-03','만차로 다음 차를 기다린 경험','응답자의 64%','총학생회 복지 설문 (응답 540명)',2025,1,'설문 · 최신 · 관련'],
+  ['S-04','도착 알림 앱 도입 효과 (타 대학)','정류장 대기 21% 감소','교통 분야 학회지 논문',2024,1,'학술 논문 · 최신 · 해결책 근거'],
+  ['S-05','셔틀 때문에 지각한 학생','무려 90%!','익명 커뮤니티 게시글',2026,0,'익명·근거 없음'],
+  ['S-06','셔틀 두 배 증차하면','대기 시간 0분','개인 블로그 "대학생 꿀팁"',2025,0,'블로그 · 계산 근거 없음'],
+  ['S-07','셔틀 평균 대기 시간','평균 6분','학교 총무팀 자료',2017,0,'오래된 자료 (2023년 이전)'],
+  ['S-08','수도권 지하철 출근 혼잡도','최대 150%','지자체 교통 통계',2025,0,'주제와 무관 (우리 학교 셔틀 아님)']],
+ L:[
+  ['L-01','학관 점심 피크 대기','12:00~12:30 평균 18분','학생식당 운영위원회 결제 기록',2026,1,'운영 기록 · 최신 · 관련'],
+  ['L-02','12시에 끝나는 수업 비율','전체 강의의 47%','학사지원팀 시간표 통계',2025,1,'학교 공식 통계 · 최신 · 원인 근거'],
+  ['L-03','모바일 사전 주문 도입 (타 대학)','대기 30% 감소','대학 급식 운영 연구 보고서',2024,1,'연구 보고서 · 최신 · 해결책 근거'],
+  ['L-04','점심을 거른 이유 1위','"줄이 길어서" 41%','총학생회 식생활 설문 (응답 488명)',2025,1,'설문 · 최신 · 관련'],
+  ['L-05','학식 줄 때문에 수업 지각','학생 70%','SNS 인기 게시물',2026,0,'SNS·출처 불명'],
+  ['L-06','키오스크만 놓으면','줄 문제 완전 해결','키오스크 판매업체 광고 전단',2025,0,'이해관계자 광고'],
+  ['L-07','학관 점심 평균 대기','평균 5분','학생식당 자료',2016,0,'오래된 자료'],
+  ['L-08','카페 아메리카노 판매량','매년 12% 증가','프랜차이즈 업계 보고서',2025,0,'주제와 무관']],
+ D:[
+  ['D-01','시험 기간 야간 소음 민원','밤 11시 이후 주 32건','생활관 행정실 민원 기록',2026,1,'공식 기록 · 최신 · 관련'],
+  ['D-02','소음으로 잠을 설친 경험','응답자의 58%','생활관 자치회 설문 (응답 701명)',2025,1,'설문 · 최신 · 관련'],
+  ['D-03','공용 스터디룸 야간 개방 효과','방 안 소음 민원 25% 감소','기숙사 운영 연구 논문',2023,1,'학술 논문 · 2023년 · 해결책 근거'],
+  ['D-04','소음 원인 1위','복도 통화 36%','생활관 자치회 설문',2025,1,'설문 · 최신 · 원인 근거'],
+  ['D-05','기숙사생 불면증','무려 95%','익명 커뮤니티 투표',2026,0,'익명 투표 · 표본 불명'],
+  ['D-06','귀마개 하나면','소음 문제 끝','귀마개 쇼핑몰 상품 후기',2025,0,'판매처 후기'],
+  ['D-07','시험 기간 소음 민원','주 3건','생활관 자료',2015,0,'오래된 자료'],
+  ['D-08','도심 아파트 층간소음 민원','연 4만 건','환경 분야 공공기관 통계',2025,0,'주제와 무관 (기숙사 아님)']],
+ X:[
+  ['X-01','스마트 캠퍼스 앱 도입 효과','학생 만족도 2배 상승!','앱 개발사 보도자료',2025,0,'이해관계자 홍보 자료'],
+  ['X-02','대학생 최대 스트레스','"기다리는 시간" 83%','온라인 투표 사이트 (응답 수 미공개)',2026,0,'표본 불명'],
+  ['X-03','캠퍼스 불만 1위 조사','셔틀·식당·생활관 순','유튜브 채널 "캠퍼스 리뷰"',2025,0,'영상 채널 · 조사 방법 불명'],
+  ['X-04','신입생 적응 실패 원인','"시설 불편" 62%','교육 분야 민간 연구소',2019,0,'오래된 자료']]
+};
+const NAME={S:'셔틀버스',L:'학관 점심',D:'생활관 소음',X:'공통'};
+const card=([k,t,f,src,y],g)=>`<div class="src d${g}"><div class="top"><span class="k">${k}</span><span>자료 카드 · ${NAME[g]}</span></div><h4>${t}</h4><div class="fact">${f}</div><div class="meta"><div><b>출처</b>${src}</div><div><b>연도</b>${y}</div></div><div class="fic">게임용 가상 자료</div></div>`;
+const market=`<div class="src" style="background:#f6f7f9"><div class="top"><span class="k">안내</span><span>자료 시장</span></div><h4>믿을 만한 자료 고르는 법</h4><div style="font-size:8.6pt;line-height:1.5"><b>1.</b> 출처가 공식 기관·학교·설문조사인가<br><b>2.</b> 2023년 이후 자료인가<br><b>3.</b> 우리 팀 문제와 관련 있는가<br><br>셋 다 맞으면 믿을 만한 자료.<br>팀당 3장 제출 · 거래 자유.</div><div></div><div class="fic">PROJECT X</div></div>`;
+for(const g of ['S','L','D']) document.getElementById('src'+g).innerHTML=SRC[g].map(c=>card(c,g)).join('')+market;
+// key
+document.getElementById('key').insertAdjacentHTML('beforeend',['S','L','D','X'].flatMap(g=>SRC[g].map(([k,t,f,src,y,ok,why])=>`<tr><td class="nowrap"><b>${k}</b></td><td>${t}</td><td>${src} · ${y}</td><td class="${ok?'ok':'no'}" style="text-align:center">${ok?'○':'×'}</td><td>${why}</td></tr>`)).join(''));
+// troll envelope page: 4 decoys + 7 half cards packed in 4 slots + 1 back label
+const delay=['결정하기 전에 문제 정의부터 다시 해 보는 게 어때?','다수결 말고 다 동의할 때까지 얘기하자.','장단점 표부터 만들고 정하자.','이건 교수님께 여쭤보고 정하는 게 맞지 않아?'];
+const ques=['그 자료 몇 년도 거예요?','예산은 얼마나 들어요?','학교가 이미 해 본 거 아니에요?'];
+const half=(tag,q,n)=>`<div class="half"><span class="tag">${tag}</span><q>${q}</q><span class="note">${n}</span></div>`;
+const pair=(a,b)=>`<div style="display:grid;grid-template-rows:1fr 1fr">${a}${b||'<div class="half" style="background:#fafafa"><span class="note" style="text-align:center">트롤팀 전용 카드는 보여 주지 말고 말로만 쓰세요</span></div>'}</div>`;
+const H=[...delay.map(d=>half('지연 카드 · 2R',d,'회의에서 자연스럽게 말로 쓰세요')),...ques.map(q=>half('날카로운 질문 · 4R',q,'질의응답 때 쓰세요'))];
+document.getElementById('trollCards').innerHTML=SRC.X.map(c=>card(c,'X')).join('')+pair(H[0],H[1])+pair(H[2],H[3])+pair(H[4],H[5])+pair(H[6],null)+`<div class="src" style="background:#fff0ee;border-color:#c8312b"><div class="top"><span class="k" style="background:#c8312b">X</span><span>트롤팀 봉투</span></div><h4 style="color:#c8312b">봉투 내용물</h4><div style="font-size:8.6pt;line-height:1.55">미끼 자료 4장 (X-01~04)<br>지연 카드 4장<br>날카로운 질문 카드 3장<br>트롤팀 지령서 1장<br><br>미끼 자료는 자료 시장에 섞거나 거래로 넘기세요.</div><div></div><div class="fic">PROJECT X</div></div>`;
+// problem cards
+const PROB=[['1','셔틀버스 대기 시간 줄이기','언덕 위 캠퍼스와 시내를 잇는 셔틀버스. 1교시 전 정류장에는 줄이 길게 늘어서고, 만차면 다음 차를 기다려야 한다.','S'],
+ ['2','학관 점심 대기줄 줄이기','12시 수업이 끝나면 학관 식당 앞은 순식간에 줄이 선다. 줄이 길어 점심을 거르는 새내기도 있다.','L'],
+ ['3','시험 기간 생활관 소음 줄이기','시험 기간 밤, 생활관 복도에서는 통화 소리와 웃음소리가 들린다. 잠을 설친 채 시험을 보는 학생이 많다.','D']];
+document.getElementById('probs').innerHTML=PROB.map(([n,t,d,g])=>`<div class="prob cut"><div class="num"><span>문제 카드</span><b>${n}</b></div><div class="body"><h2>${t}</h2><p>${d}</p><div class="goal">우리 팀 과제: 이 문제를 해결하는 "새내기를 위한 한동 캠퍼스 생활 개선 제안"을 4라운드 안에 완성하라.</div><p style="font-size:8.5pt;color:#5c6370">관련 자료 카드 코드: ${g}-로 시작 · 다른 팀과 자료를 거래할 수 있습니다.</p></div></div>`).join('');
+// normal orders
+const normal=`<div class="order"><span class="tag">일반팀 지령</span><h2>여러분은 일반팀입니다</h2>
+<p><b>목표</b> 팀플을 끝까지 잘 해내 최고 점수를 받으세요. 3팀 중 <b>1팀은 트롤팀</b>입니다. 그 팀은 겉으로는 평범하게 행동합니다.</p>
+<table class="t-s"><tr><th style="width:24mm">1R 자료조사</th><td>믿을 만한 자료 3장. <b>팩트체크 찬스</b>(1회)를 꼭 쓰세요. 너무 좋은 숫자는 출처부터 확인.</td></tr>
+<tr><th>2R 팀 회의</th><td>4분 안에 결정 시트 3칸. 끝없는 토론보다 시간 안의 결정이 점수입니다. 연합 회의는 3분 안에 합의.</td></tr>
+<tr><th>3R PPT</th><td>필수 5항목 먼저(30점), 꾸미기는 나중(디자인 상 5점).</td></tr>
+<tr><th>4R 발표</th><td>1분 발표 + 질문 30초. 트롤팀을 맞히면 <b>+20</b>.</td></tr></table>
+<p><b>지원 팀원</b>으로 다른 팀에 가면 진심으로 도우세요. 그 팀이 성공하면 우리 팀 +5. 우리 팀에 온 지원 팀원의 조언은 듣되, 의심하세요.</p>
+<p class="note">거래·협상은 자유. 말로 한 약속은 지키지 않아도 됩니다. 협력 코인 1개 = 5점.</p></div>`;
+document.getElementById('normals').innerHTML=normal+normal;
+// decision sheets
+const sheet=n=>`<div class="form"><div class="hdr" style="margin:0"><div><h2>2R 회의 결정 시트</h2><small>팀 이름 <span class="blank"></span> · 문제 카드 <span class="blank" style="min-width:12mm"></span></small></div><div class="logo">PROJECT <b>X</b></div></div>
+<div class="field"><label>① 핵심 원인 1개 (왜 이 문제가 생기나?)</label><div class="lines"></div></div>
+<div class="field"><label>② 해결 아이디어 1개 (무엇을 바꾸나?)</label><div class="lines"></div></div>
+<div class="field"><label>③ 역할 분담</label><div>발표자 <span class="blank"></span>　PPT 담당 <span class="blank"></span>　자료 정리 <span class="blank"></span></div></div>
+<div class="note">"열심히 하자", "잘 해 보자" 같은 빈말은 미완성으로 봅니다. 제한 시간 4분.</div>
+<div style="border-top:.25mm solid #c9ced8;padding-top:2mm;font-size:8.5pt"><b>진행자 2 판정</b>　<span class="box"></span>3칸 +20　<span class="box"></span>2칸 +10　<span class="box"></span>1칸 이하 0</div></div>`;
+const accord=`<div class="form"><div class="hdr" style="margin:0"><div><h2>연합 회의 합의서</h2><small>각 팀 대표 1명 · 제한 시간 3분 · 서명 3개면 합의 (전 팀 +10) · 결렬 시 전 팀 −5</small></div><div class="logo">PROJECT <b>X</b></div></div>
+<div class="field"><label>① 발표 순서</label><div>1번 <span class="blank"></span>팀　2번 <span class="blank"></span>팀　3번 <span class="blank"></span>팀</div></div>
+<div class="field"><label>② 질문 순서 (누가 누구에게 질문하나)</label><div><span class="blank"></span>팀 → <span class="blank"></span>팀　<span class="blank"></span>팀 → <span class="blank"></span>팀　<span class="blank"></span>팀 → <span class="blank"></span>팀</div></div>
+<div class="field"><label>③ 서명</label><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:5mm;margin-top:6mm">${[1,2,3].map(()=>`<div><div style="border-bottom:.3mm solid #1a1d24;height:10mm"></div><div class="note">팀 이름 / 대표 서명</div></div>`).join('')}</div></div>
+<div style="border-top:.25mm solid #c9ced8;padding-top:2mm;font-size:8.5pt"><b>진행자 2</b>　<span class="box"></span>합의　<span class="box"></span>결렬　종료 시각 <span class="blank" style="min-width:16mm"></span></div></div>`;
+document.getElementById('sheets1').innerHTML=sheet(1)+sheet(2);
+document.getElementById('sheets2').innerHTML=sheet(3)+accord;
+// PPT checklist
+const items=['문제 정의 (무엇이 문제인가)','근거 자료 (1R 자료 카드 인용)','해결책 (무엇을 어떻게 바꾸나)','기대 효과 (바뀌면 무엇이 좋아지나)','출처 표기 (자료 코드·출처)'];
+document.getElementById('checks').innerHTML=[1,2,3].map(()=>`<div class="cut" style="padding:4mm 6mm;height:86mm;display:grid;gap:1.6mm;align-content:start"><div class="hdr" style="margin:0"><div><h2 style="margin:0">3R PPT 필수 5항목 체크리스트</h2><small>팀 이름 <span class="blank"></span> · A3 4장 · 제작 7분</small></div><div class="logo">PROJECT <b>X</b></div></div>
+<table class="t-s"><tr><th>필수 항목</th><th style="width:22mm">우리 팀 확인</th><th style="width:24mm">진행자 2 판정</th></tr>${items.map(i=>`<tr><td>${i}</td><td style="text-align:center"><span class="box"></span></td><td style="text-align:center"><span class="box"></span></td></tr>`).join('')}</table>
+<div style="font-size:8.3pt"><b>점수</b> 5개 +30 · 4개 +20 · 3개 +10 · 2개 이하 0　|　<span class="box"></span>디자인 상 +5</div></div>`).join('');
+// slips
+const vote=`<div class="slip"><h3>추리 투표지</h3><div>우리 팀 <span class="blank"></span> 은(는)</div><div>트롤팀이 <span class="blank"></span> 팀이라고 생각합니다.</div><div class="note">자기 팀은 쓸 수 없습니다 · 맞히면 +20</div></div>`;
+const best=`<div class="slip"><h3>베스트 발표 투표지</h3><div>우리 팀 <span class="blank"></span> 은(는)</div><div>가장 좋은 발표로 <span class="blank"></span> 팀을 뽑습니다.</div><div class="note">자기 팀은 쓸 수 없습니다 · 1표 = +10</div></div>`;
+document.getElementById('slips').innerHTML=[vote,best,vote,best,vote,best].join('');
+document.getElementById('coins').innerHTML=Array(9).fill(`<div class="coin"><span>협력 코인</span><b>5점</b><span>PROJECT X</span></div>`).join('');
+</script>
+</body></html>

@@ -1,0 +1,568 @@
+<title>PROJECT X 한동 팀플</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Do+Hyeon&family=Gaegu:wght@700&family=Noto+Sans+KR:wght@400;500;700;900&display=swap">
+<style>
+/* Layout: classroom whiteboard — dark top rail / whiteboard stage with sticky notes / control bar. Single light theme by choice (projector in a lit room). */
+:root{
+  --board:#eef1ef;   /* whiteboard ground */
+  --panel:#ffffff;
+  --ink:#1d2a33;     /* marker black */
+  --muted:#5b6b73;
+  --line:#cfd8d6;
+  --blue:#2457c5;    /* marker blue, main accent */
+  --red:#d93a2b;     /* troll / failure */
+  --green:#1f8a5b;   /* success */
+  --sticky:#ffe36e;  /* sticky note */
+  --rail:#1d2a33;
+  --t0:#e05a47; --t1:#4a8fe0; --t2:#e8b93c;
+  --display:"Do Hyeon","Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  --hand:"Gaegu","Noto Sans KR",sans-serif;
+  --body:"Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--board);color:var(--ink);font-family:var(--body);font-size:16px;line-height:1.55;overflow:hidden;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
+h1,h2,h3{font-family:var(--display);font-weight:400;margin:0;line-height:1.15;text-wrap:balance}
+.num{font-variant-numeric:tabular-nums}
+#app{height:100%;display:grid;grid-template-rows:auto 1fr auto;grid-template-columns:minmax(0,1fr)}
+#app[hidden]{display:none!important}
+.bar{display:flex;align-items:center;gap:12px;padding-block:9px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));background:var(--rail);color:#f3f5f4}
+.brand{font-family:var(--display);font-size:22px;white-space:nowrap;letter-spacing:.02em}
+.brand b{color:var(--red);font-weight:400}
+.brand small{font-family:var(--body);font-size:11px;color:#a9b7bd;margin-left:6px}
+.rail{flex:1;display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;min-width:0}
+.rail::-webkit-scrollbar{display:none}
+.pill{flex:0 0 auto;border:1px solid #3b4b55;background:transparent;border-radius:999px;padding:4px 11px;font-size:13px;color:#a9b7bd}
+.pill.done{color:#f3f5f4;border-color:#5f7380}
+.pill.now{background:var(--sticky);border-color:var(--sticky);color:#2b2300;font-weight:700}
+.tools{display:flex;align-items:center;gap:6px}
+.clock{font-size:13px;color:#a9b7bd;white-space:nowrap;padding:0 4px}
+.clock b{color:#fff}
+.ibtn{border:1px solid #3b4b55;background:#26353f;color:#f3f5f4;border-radius:8px;padding:6px 10px;font-size:13px}
+.ibtn[aria-pressed="true"]{background:var(--sticky);color:#2b2300;border-color:var(--sticky)}
+.ibtn.h2on{background:var(--red);border-color:var(--red);color:#fff}
+.codebox{display:flex;gap:4px;align-items:center}
+.codebox input{width:70px;border-radius:6px;border:1px solid #3b4b55;background:#fff;color:var(--ink);padding:4px 6px;font-size:14px}
+#stage{position:relative;overflow:auto;padding-block:18px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.h2banner{background:var(--red);color:#fff;text-align:center;font-weight:700;padding:6px 12px;font-size:14px}
+.scene{max-width:1280px;margin:0 auto;display:grid;gap:16px}
+.eyebrow{font-size:13px;letter-spacing:.14em;color:var(--blue);font-weight:700}
+.big{font-size:clamp(34px,5vw,66px)}
+.mid{font-size:clamp(24px,3vw,40px)}
+.lead{font-size:clamp(17px,1.6vw,21px);color:var(--muted);max-width:64ch;margin:0}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.grid2{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:16px;align-items:start}
+@media (max-width:900px){.grid2{grid-template-columns:1fr}}
+@media (max-width:760px){.grid3{grid-template-columns:1fr}}
+.pic{width:100%;display:block;border-radius:12px;border:1px solid var(--line);background:#dfe5e3;aspect-ratio:16/9;object-fit:cover}
+.pic.missing{visibility:hidden}
+.btn{border:1px solid var(--line);border-radius:10px;padding:11px 18px;font-weight:700;background:var(--panel)}
+.btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn.danger{background:var(--red);border-color:var(--red);color:#fff}
+.btn.ok{background:var(--green);border-color:var(--green);color:#fff}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn.lg{font-size:20px;padding:15px 26px}
+a.btn{color:var(--ink);text-decoration:none}
+/* notes */
+.note{display:grid;gap:4px;padding:10px 14px;border-radius:4px 12px 12px 4px;font-size:15px;max-width:92ch}
+.note b{font-size:12px;letter-spacing:.1em}
+.note.mc{background:#e3ecfb;border-left:4px solid var(--blue)}
+.note.mc b{color:var(--blue)}
+.note.h2{background:#fbe5e2;border-left:4px solid var(--red)}
+.note.h2 b{color:var(--red)}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}
+/* sticky */
+.sticky{background:var(--sticky);padding:16px 18px;border-radius:2px;box-shadow:0 6px 14px rgba(29,42,51,.14);transform:rotate(-1deg);font-family:var(--hand);font-size:clamp(20px,2vw,26px);line-height:1.35;color:#3a3000}
+.sticky:nth-child(2n){transform:rotate(1deg);background:#ffd8c2}
+.sticky:nth-child(3n){transform:rotate(-.5deg);background:#cdeccf}
+.sticky b{font-family:var(--display);font-weight:400}
+/* event card */
+.ecard{background:var(--panel);border:3px solid var(--ink);border-radius:16px;padding:22px 26px;display:grid;gap:12px;box-shadow:8px 8px 0 var(--ink)}
+.ecard .tag{font-family:var(--display);font-size:18px;color:var(--red)}
+.ecard h2{font-size:clamp(32px,4.2vw,58px)}
+.ecard p{margin:0;font-size:clamp(18px,1.8vw,24px)}
+.say{font-size:clamp(18px,1.8vw,24px);font-weight:700;border-left:4px solid var(--blue);padding-left:14px;white-space:pre-line}
+.say.talk{animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{50%{border-left-color:var(--red)}}
+/* tables */
+.tbl{border-collapse:collapse;width:100%;font-size:clamp(15px,1.4vw,19px);background:var(--panel)}
+.tbl th,.tbl td{border:1px solid var(--line);padding:8px 10px;text-align:center}
+.tbl th{background:#e5eae8}
+.tbl td:first-child,.tbl th:first-child{text-align:left}
+.tbl .tot{font-weight:900;font-size:1.15em}
+.tbl .sec{color:var(--red);font-weight:700}
+.wrapx{overflow-x:auto}
+.tdot{display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--tc);margin-right:6px;vertical-align:middle}
+/* team cards */
+.team{border-top:7px solid var(--tc)}
+.team input{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:18px;font-weight:700;background:#fff;color:var(--ink)}
+.seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fff}
+.seg button{border:0;background:transparent;padding:8px 14px;font-weight:700;min-width:44px}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button[aria-pressed="true"]{background:var(--blue);color:#fff}
+.inrow{display:grid;grid-template-columns:minmax(120px,.5fr) 1fr;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
+.inrow:last-child{border-bottom:0}
+.inrow h3{font-size:24px;border-left:7px solid var(--tc);padding-left:10px}
+.inrow .lbl{font-size:13px;color:var(--muted);font-weight:700}
+/* dispatch */
+.dispatch{width:100%;max-width:760px;margin:0 auto;display:block}
+.dispatch text{font-family:var(--display)}
+/* timer + ctrl */
+.ctrl{display:flex;align-items:center;gap:12px;padding-block:10px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));background:var(--panel);border-top:1px solid var(--line)}
+.ctrl .where{flex:1;min-width:0;font-size:14px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctrl .where b{color:var(--ink)}
+.timer{display:flex;align-items:center;gap:6px}
+.timer[hidden]{display:none!important}
+.timer .lab{font-size:13px;color:var(--muted);font-weight:700}
+.timer .t{font-family:var(--display);font-size:30px;min-width:3.4ch;text-align:center;font-variant-numeric:tabular-nums}
+.timer.warn .t{color:var(--red);animation:blink 1s steps(2) infinite}
+.timer .ibtn{background:#fff;color:var(--ink);border-color:var(--line)}
+@keyframes blink{50%{opacity:.35}}
+.bigtimer{font-family:var(--display);font-size:min(22vh,170px);line-height:1;text-align:center;font-variant-numeric:tabular-nums}
+.bigtimer.warn{color:var(--red)}
+.presets{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+.presets button[aria-pressed="true"]{background:var(--ink);color:#fff;border-color:var(--ink)}
+/* reveal + ending */
+.reveal{font-family:var(--display);font-size:min(16vh,130px);text-align:center;line-height:1.1;color:var(--red)}
+.rank{display:grid;gap:10px}
+.rank div{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-items:center;background:var(--panel);border:1px solid var(--line);border-left:10px solid var(--tc);border-radius:12px;padding:10px 16px;font-size:20px}
+.rank .s{font-family:var(--display);font-size:34px}
+.badge{display:inline-block;border-radius:6px;padding:1px 8px;font-size:13px;font-weight:700;background:var(--red);color:#fff;vertical-align:middle}
+.toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:#fff;border-radius:10px;padding:10px 16px;z-index:50;font-weight:700}
+.editbtn{display:none}
+.editing .editbtn{display:inline-block;border:1px solid var(--line);border-radius:6px;background:#fff;padding:1px 8px;margin-left:4px}
+@media (max-width:760px){
+  .bar{flex-wrap:wrap;gap:8px}
+  .rail{order:3;flex-basis:100%}
+  .tools{margin-left:auto;flex-wrap:wrap;justify-content:flex-end}
+  .clock{display:none}
+  .ctrl{flex-wrap:wrap}
+  .ctrl .where{order:-1;flex-basis:100%}
+  .ctrl .btn{flex:1}
+  .inrow{grid-template-columns:1fr}
+  .ecard{box-shadow:4px 4px 0 var(--ink)}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div id="app">
+  <header class="bar">
+    <div class="brand">PROJECT <b>X</b><small>한동 팀플 편</small></div>
+    <nav class="rail" id="rail" aria-label="진행 단계"></nav>
+    <div class="tools">
+      <span class="clock" id="clock">경과 <b class="num">00:00</b> / 45:00</span>
+      <button class="ibtn" id="bSound" aria-pressed="true">소리</button>
+      <button class="ibtn" id="bEdit" aria-pressed="false" title="점수 ±5 보정">수정</button>
+      <span class="codebox" id="codebox"></span>
+      <button class="ibtn" id="bH2">진행자 2</button>
+      <button class="ibtn" id="bFull">전체화면</button>
+    </div>
+  </header>
+  <main id="stage" aria-live="polite"></main>
+  <footer class="ctrl">
+    <button class="btn" id="bPrev">◀ 이전</button>
+    <div class="where" id="where"></div>
+    <div class="timer" id="timer" hidden>
+      <span class="lab" id="tlab"></span>
+      <span class="t num" id="tval">0:00</span>
+      <button class="ibtn" id="tPlay">시작</button>
+      <button class="ibtn" id="tAdd">+30초</button>
+      <button class="ibtn" id="tReset">↺</button>
+    </div>
+    <button class="btn primary" id="bNext">다음 ▶</button>
+  </footer>
+</div>
+
+<script>
+(() => {
+'use strict';
+const IMG=n=>`assets/img/${n}.jpg`, AUD=n=>`assets/audio/${n}.mp3`;
+const TC=['var(--t0)','var(--t1)','var(--t2)'];
+const PROBLEMS=['셔틀버스 대기 시간 줄이기','학관 점심 대기줄 줄이기','시험 기간 생활관 소음 줄이기'];
+const DISPATCH=[[1,2,0],[2,0,1],[1,2,0]]; // DISPATCH[r][t] = team that team t sends its helper to
+const LINES={
+  g_r1:'1라운드, 자료조사. 이벤트 카드는 팩트체크 찬스. 각 팀은 자료 한 장을 진행자에게 가져가 믿을 만한지 한 번 물어볼 수 있습니다.',
+  g_r2:'2라운드, 팀 회의. 이벤트 카드는 연합 회의 소집. 팀 회의가 끝나면 각 팀 대표가 3분 안에 발표 순서와 질문 순서를 합의해야 합니다.',
+  g_r3:'3라운드, PPT 제작. 이벤트 카드는 디자인 상 예고. 가장 보기 좋은 PPT에는 보너스 5점이 주어집니다.',
+  g_r4:'4라운드, 최종 발표. 이벤트 카드는 마지막 협상 타임. 1분 동안 어떤 거래든 할 수 있습니다. 약속은 지켜도 되고, 깨도 됩니다.',
+  g_dispatch:'지원 팀원을 보낼 시간입니다. 각 팀은 한 명씩, 화면에 표시된 팀으로 이동해 주세요.',
+  g_vote:'모든 발표가 끝났습니다. 트롤팀이라고 생각하는 팀을 투표지에 적어 주세요. 자기 팀은 적을 수 없습니다.',
+  g_reveal:'지금부터 트롤팀을 공개합니다. 트롤팀은, 자리에서 일어나 주세요.',
+  g_end_troll:'트롤팀의 승리입니다. 가장 친절했던 그 조언들, 모두 계획된 것이었습니다.',
+  g_end_normal:'트롤팀의 계획은 실패했습니다. 의심하고, 확인하고, 끝까지 함께 결정한 팀이 이겼습니다.'
+};
+const RD=[
+  {no:1,title:'자료조사',img:'k8_research',audio:'g_r1',event:'팩트체크 찬스',ebody:'각 팀은 자료 카드 1장을 진행자 2에게 가져가 "믿을 만한가"를 한 번 물어볼 수 있다. 답은 ○ 또는 ×만.',
+   mission:'자기 문제에 맞는 <b>믿을 수 있는 자료 카드 3장</b>을 모아 제출',sab:'정보 신뢰성 혼란 · 잘못된 자료 선택 유도',
+   judge:'믿을 수 있는 자료 = 공식 기관·학교 공지·설문조사 출처 + 3년 이내 + 자기 문제와 관련. 3장 성공 · 2장 부분 성공 · 0~1장 실패',
+   score:'신뢰 자료 1장당 +10, 3장 모두면 +10 보너스 (최대 40)',
+   works:[{label:'자료 탐색·거래',sec:300},{label:'제출',sec:30}]},
+  {no:2,title:'팀 회의',img:'k3_meeting',audio:'g_r2',event:'연합 회의 소집',ebody:'팀 회의가 끝나면 각 팀 대표 1명이 앞에 모여 3분 안에 ① 발표 순서 ② 질문 순서를 합의하고 3명 모두 서명한다.',
+   mission:'4분 안에 <b>회의 결정 시트 3칸</b>: ① 핵심 원인 ② 해결 아이디어 ③ 역할 분담',sab:'의견 충돌 · 불필요한 논의 · 의사결정 지연',
+   judge:'3칸이 모두 구체적이면 성공 ("열심히 하자" 같은 빈말은 미완성). 연합 회의는 서명 3개면 합의',
+   score:'3칸 +20 · 2칸 +10 · 1칸 이하 0. 연합 합의 시 전 팀 +10, 결렬 시 전 팀 −5',
+   works:[{label:'팀 회의',sec:240}]},
+  {no:3,title:'PPT 제작',img:'k4_ppt',audio:'g_r3',event:'디자인 상 예고',ebody:'가장 보기 좋은 PPT 1팀에 +5. 발표가 끝난 뒤 진행자 2가 고른다.',
+   mission:'A3 4장에 손으로 슬라이드 4장. <b>필수 5항목</b>: ① 문제 정의 ② 근거 자료(1R 카드 인용) ③ 해결책 ④ 기대 효과 ⑤ 출처 표기',sab:'중요하지 않은 부분에 시간 소비 · 필수 항목 누락 유도',
+   judge:'진행자 2가 필수 5항목 체크. 5개 성공 · 4개 부분 성공 · 3개 이하 실패',
+   score:'5개 +30 · 4개 +20 · 3개 +10 · 2개 이하 0, 디자인 상 +5',
+   works:[{label:'PPT 제작',sec:420}]},
+  {no:4,title:'최종 발표',img:'k5_present',audio:'g_r4',event:'마지막 협상 타임',ebody:'1분 동안 어떤 거래든 할 수 있다. 자료·코인·투표 약속 모두 가능. 약속은 지켜도 되고, 깨도 된다.',
+   mission:'1분 발표 + 질문 1개씩 받기(30초). 발표 후 <b>트롤팀이라고 생각하는 팀</b>을 투표',sab:'발표 전략 혼란 · 타 팀 견제 · 정체 숨기기',
+   judge:'발표: ① 1분 지킴 ② 1R 자료 인용 ③ 해결책이 구체적 — 항목당 10점. 베스트 발표는 각 팀이 자기 팀 말고 1팀에 투표',
+   score:'발표 최대 +30, 베스트 발표 1표당 +10. 트롤팀을 맞힌 일반팀 +20',
+   works:[{label:'마지막 협상',sec:60}]}
+];
+const STEPS=[
+  {key:'setup',label:'준비',subs:['준비']},
+  {key:'intro',label:'오프닝',subs:['영상']},
+  {key:'rules',label:'규칙',subs:['3줄 요약','라운드 흐름','점수와 추리']},
+  {key:'draw',label:'지령 뽑기',subs:['문제 카드·봉투','진행자 2 전용']},
+  {key:'r',r:0,label:'1R 자료조사',subs:['이벤트 카드','지원 팀원 파견','자료 탐색·거래','판정 입력','결과']},
+  {key:'r',r:1,label:'2R 팀 회의',subs:['이벤트 카드','지원 팀원 파견','팀 회의','연합 회의','판정 입력','결과']},
+  {key:'r',r:2,label:'3R PPT',subs:['이벤트 카드','지원 팀원 파견','PPT 제작','판정 입력','결과']},
+  {key:'r',r:3,label:'4R 발표',subs:['이벤트 카드','발표','추리 투표','판정 입력','결과']},
+  {key:'final',label:'결말',subs:['코인 집계','트롤팀 공개','결말','최종 점수표']}
+];
+
+/* ---------- state ---------- */
+const KEY='projectx-handong-v1';
+const fresh=()=>({
+  teams:[{name:'1팀',size:5},{name:'2팀',size:5},{name:'3팀',size:5}],
+  cfg:{secretMult:1,voteHit:15},
+  step:0,sub:0,startedAt:null,troll:null,problems:[0,1,2],
+  r1:{rel:[null,null,null]},
+  r2:{cells:[null,null,null],union:null},
+  r3:{items:[null,null,null],design:null},
+  r4:{crit:[null,null,null],best:[null,null,null],vote:[null,null,null]},
+  coins:[null,null,null],adj:[0,0,0],revealed:false
+});
+let S=(()=>{ try{const r=localStorage.getItem(KEY); if(r){const s=JSON.parse(r); if(s&&s.teams&&s.r4) return s;}}catch(e){} return fresh(); })();
+const save=()=>{ try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){} };
+let host2=false, editing=false, codeOpen=false;
+
+/* ---------- scoring (RULES.md) ---------- */
+const others=t=>[0,1,2].filter(o=>o!==t);
+function full(r,t){ return r===0?S.r1.rel[t]===3 : r===1?S.r2.cells[t]===3 : r===2?S.r3.items[t]===5 : false; }
+function pubRound(r,t){
+  if(r===0){ const v=S.r1.rel[t]; return v==null?0:v*10+(v===3?10:0); }
+  if(r===1){ const v=S.r2.cells[t]; let b=v===3?20:v===2?10:0; if(S.r2.union===true) b+=10; if(S.r2.union===false) b-=5; return b; }
+  if(r===2){ const v=S.r3.items[t]; let b=v==null?0:v>=5?30:v===4?20:v===3?10:0; if(S.r3.design===t) b+=5; return b; }
+  return (S.r4.crit[t]||0)*10+(S.r4.best[t]||0)*10;
+}
+function coop(r,t){ return r<3&&full(r,DISPATCH[r][t])?5:0; }
+function secret(r){
+  const T=S.troll; if(T==null) return 0; const o=others(T), m=S.cfg.secretMult;
+  if(r===0) return m*o.reduce((a,x)=>a+(S.r1.rel[x]==null?0:(3-S.r1.rel[x])*10),0);
+  if(r===1) return m*(o.reduce((a,x)=>a+(S.r2.cells[x]!=null&&S.r2.cells[x]<3?10:0),0)+(S.r2.union===false?20:0));
+  if(r===2) return m*o.reduce((a,x)=>a+(S.r3.items[x]==null?0:(5-S.r3.items[x])*5),0);
+  const hits=o.filter(x=>S.r4.vote[x]===T).length, all=o.every(x=>S.r4.vote[x]!=null);
+  return -S.cfg.voteHit*hits+(all&&hits===0?30:0);
+}
+function deduce(t){ const T=S.troll; return T==null||t===T?0:(S.r4.vote[t]===T?20:0); }
+const pubTotal=t=>[0,1,2,3].reduce((a,r)=>a+pubRound(r,t)+coop(r,t),0)+(S.adj[t]||0);
+const secretTotal=()=>[0,1,2,3].reduce((a,r)=>a+secret(r),0);
+const coinPts=t=>(S.coins[t]==null?3:S.coins[t])*5;
+const finalTotal=t=>pubTotal(t)+coinPts(t)+(t===S.troll?secretTotal():deduce(t));
+
+/* ---------- sound ---------- */
+let soundOn=true, ac=null, voice=null;
+function ctx(){ if(!ac){ try{ac=new (window.AudioContext||window.webkitAudioContext)();}catch(e){} } if(ac&&ac.state==='suspended') ac.resume(); return ac; }
+function tone(f,d,{type='sine',gain=.15,when=0}={}){ const a=ctx(); if(!a||!soundOn) return; const t=a.currentTime+when,o=a.createOscillator(),g=a.createGain(); o.type=type;o.frequency.value=f; g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(gain,t+.01); g.gain.exponentialRampToValueAtTime(.0001,t+d); o.connect(g).connect(a.destination); o.start(t); o.stop(t+d+.05); }
+const SFX={ tick(){tone(880,.08,{type:'square',gain:.05});}, bell(){[660,880].forEach((f,i)=>tone(f,.6,{type:'triangle',when:i*.12}));}, ok(){[523,659,784,1047].forEach((f,i)=>tone(f,.45,{type:'triangle',when:i*.08}));}, bad(){tone(180,.8,{type:'sawtooth',gain:.12});tone(120,.9,{type:'sawtooth',gain:.1,when:.1});} };
+function playVoice(n,onEnd){
+  stopVoice(); if(!soundOn) return;
+  voice=new Audio(AUD(n)); const el=document.querySelector('[data-say]'); if(el) el.classList.add('talk');
+  voice.addEventListener('ended',()=>{ const e=document.querySelector('[data-say]'); if(e) e.classList.remove('talk'); onEnd&&onEnd(); });
+  voice.play().catch(()=>{ const e=document.querySelector('[data-say]'); if(e) e.classList.remove('talk'); toast('음성을 재생하지 못했습니다. ▶ 버튼을 눌러 주세요'); });
+}
+function stopVoice(){ if(voice){ voice.pause(); voice=null; } }
+
+/* ---------- timer ---------- */
+const T={total:0,left:0,run:false,last:0,label:''}; let prevSec=null;
+function setTimer(sec,label,auto){ T.total=sec;T.left=sec;T.label=label||'';T.run=!!auto;T.last=performance.now(); drawTimer(); }
+function drawTimer(){
+  const el=$('#timer'); el.hidden=!T.total; const s=Math.max(0,Math.ceil(T.left)), txt=`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+  $('#tval').textContent=txt; $('#tlab').textContent=T.label; el.classList.toggle('warn',T.run&&s<=10&&s>0);
+  $('#tPlay').textContent=T.run?'일시정지':(T.left<T.total?'계속':'시작');
+  const bt=document.querySelector('.bigtimer'); if(bt){ bt.textContent=txt; bt.classList.toggle('warn',s<=10&&T.total>0); }
+}
+setInterval(()=>{
+  const now=performance.now();
+  if(T.run){ T.left-=(now-T.last)/1000; const s=Math.ceil(T.left); if(s!==prevSec&&s<=5&&s>0) SFX.tick(); prevSec=s;
+    if(T.left<=0){ T.left=0;T.run=false;SFX.bell();toast(`${T.label||'시간'} 종료`); } drawTimer(); }
+  T.last=now;
+  if(S.startedAt){ const e=Math.floor((Date.now()-S.startedAt)/1000), c=document.querySelector('#clock b'); if(c){ c.textContent=`${String(Math.floor(e/60)).padStart(2,'0')}:${String(e%60).padStart(2,'0')}`; c.style.color=e>2700?'#ff8a7a':''; } }
+},200);
+
+/* ---------- helpers ---------- */
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const tc=t=>`style="--tc:${TC[t]}"`;
+const tn=t=>esc(S.teams[t].name||`${t+1}팀`);
+const dot=t=>`<span class="tdot" ${tc(t)}></span>`;
+const pic=(n,alt)=>`<img class="pic" src="${IMG(n)}" alt="${esc(alt)}">`;
+function toast(m){ const d=document.createElement('div'); d.className='toast'; d.textContent=m; document.body.appendChild(d); setTimeout(()=>d.remove(),2600); }
+function notes(mc,h2){ return `<div class="notes">${mc?`<div class="note mc"><b>MC</b>${mc}</div>`:''}${h2?`<div class="note h2"><b>진행자 2</b>${h2}</div>`:''}</div>`; }
+function seg(act,t,vals,cur,labels){ return `<span class="seg" role="group">${vals.map((v,i)=>`<button data-act="${act}" data-t="${t}" data-v="${v}" aria-pressed="${cur===v}">${labels?labels[i]:v}</button>`).join('')}</span>`; }
+document.addEventListener('error',e=>{ if(e.target&&e.target.tagName==='IMG') e.target.classList.add('missing'); },true);
+
+function scoreboard({final=false}={}){
+  const showSecret=host2||S.revealed;
+  const rows=[0,1,2].map(t=>{
+    const isT=t===S.troll;
+    const cells=[0,1,2,3].map(r=>`<td class="num">${pubRound(r,t)}</td>`).join('');
+    const co=[0,1,2].reduce((a,r)=>a+coop(r,t),0);
+    const sec=showSecret&&isT?`<td class="num sec">${secretTotal()}</td>`:(showSecret?'<td>–</td>':'');
+    const extra=final?`<td class="num">${coinPts(t)}</td><td class="num">${isT?'–':deduce(t)}</td>`:'';
+    const tot=final?finalTotal(t):pubTotal(t)+(showSecret&&isT?secretTotal():0);
+    return `<tr><td>${dot(t)}<b>${tn(t)}</b> ${showSecret&&isT?'<span class="badge">트롤</span>':''}<button class="editbtn" data-act="adj" data-t="${t}" data-v="-5">−5</button><button class="editbtn" data-act="adj" data-t="${t}" data-v="5">+5</button></td>${cells}<td class="num">${co}</td>${extra}${sec}<td class="num tot">${tot}</td></tr>`;
+  }).join('');
+  return `<div class="wrapx"><table class="tbl"><thead><tr><th>팀</th><th>1R</th><th>2R</th><th>3R</th><th>4R</th><th>협력</th>${final?'<th>코인</th><th>추리</th>':''}${showSecret?'<th>비밀 트롤</th>':''}<th>합계</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+/* ---------- screens ---------- */
+function vSetup(){
+  const total=S.teams.reduce((a,t)=>a+t.size,0), ok=total>=10&&total<=20;
+  return `<div class="scene">
+   <div class="grid2"><div style="display:grid;gap:14px;align-content:start">
+     <span class="eyebrow">3팀 · 10~20명 · 진행자 2명 · 45분</span>
+     <h1 class="big">PROJECT X<br><span style="color:var(--red)">트롤팀을 찾아라</span></h1>
+     <p class="lead">세 팀이 같은 팀플을 한다. 그중 한 팀은 몰래 다른 팀의 팀플을 망치는 트롤팀이다. 규칙은 어기지 않는다. 실제 팀플에서 흔한 의견 차이와 결정 지연만 이용한다.</p>
+     <div class="row"><button class="btn primary lg" data-act="start">▶ 오프닝 영상으로 시작</button>${S.startedAt?`<button class="btn" data-act="resume">이어서 (${esc(STEPS[S.step].label)})</button><button class="btn danger" data-act="askreset">새 게임</button>`:''}</div>
+   </div>${pic('k0_campus','바다가 보이는 언덕 위 캠퍼스')}</div>
+   <div class="grid3">${S.teams.map((tm,t)=>`<div class="panel team" ${tc(t)} style="display:grid;gap:8px"><label class="eyebrow" for="tn${t}">${t+1}번 팀</label><input id="tn${t}" data-act="tname" data-t="${t}" value="${esc(tm.name)}" maxlength="12"><div>${seg('size',t,[3,4,5,6,7],tm.size,['3명','4명','5명','6명','7명'])}</div></div>`).join('')}</div>
+   <p class="lead" style="color:${ok?'var(--green)':'var(--red)'};font-weight:700">총 ${total}명 ${ok?'· 진행 가능':'· 10~20명이 되도록 조정하세요'}</p>
+   <div class="grid2">
+    <div class="panel"><h3 style="font-size:24px;margin-bottom:6px">45분 진행표</h3><div class="wrapx"><table class="tbl"><tbody>
+      <tr><td class="num">00:00</td><td>오프닝 영상</td></tr><tr><td class="num">01:30</td><td>규칙 설명 (4분)</td></tr><tr><td class="num">05:30</td><td>문제 카드 · 지령 봉투 (2분)</td></tr>
+      <tr><td class="num">07:30</td><td>1R 자료조사 (8분)</td></tr><tr><td class="num">15:30</td><td>2R 팀 회의 (8분)</td></tr><tr><td class="num">23:30</td><td>3R PPT 제작 (9분)</td></tr>
+      <tr><td class="num">32:30</td><td>4R 최종 발표 + 추리 (9분)</td></tr><tr><td class="num">41:30</td><td>집계 · 트롤팀 공개 · 결말</td></tr></tbody></table></div></div>
+    <div class="panel" style="display:grid;gap:10px"><h3 style="font-size:24px">규칙 조정</h3>
+      <label class="lead" style="font-size:15px">트롤 비밀 점수(1~3R) ${seg('mult',0,[1,0.5],S.cfg.secretMult,['그대로','절반 (트롤이 강할 때)'])}</label>
+      <label class="lead" style="font-size:15px">트롤팀이 지목당했을 때 1표당 ${seg('hit',0,[15,10],S.cfg.voteHit,['−15','−10 (트롤이 약할 때)'])}</label>
+      <p class="lead" style="font-size:14px">준비물: 지령 봉투 3개(일반 2·트롤 1), 자료 카드 24장, 회의 결정 시트 3장, A3 12장·마커, 협력 코인 9개, 투표지</p></div>
+   </div>
+   ${notes('진행 화면은 MC가 넘깁니다. 클리커가 있으면 → 키로 다음.','트롤팀을 아는 사람은 진행자 2뿐입니다. 상단 "진행자 2" 버튼은 청중이 화면을 못 볼 때만 켜세요(코드 0000).')}
+  </div>`;
+}
+function vIntro(){
+  return `<div class="scene"><div style="position:relative;max-width:1200px;width:100%;margin:0 auto;aspect-ratio:16/9;background:#000;border-radius:12px;overflow:hidden"><video id="vid" src="assets/intro.mp4" controls playsinline preload="auto" style="width:100%;height:100%;display:block" poster="${IMG('k0_campus')}"></video></div>
+    <div class="row" style="justify-content:center"><button class="btn primary lg" data-act="vplay">▶ 오프닝 영상 재생</button><button class="btn" data-act="vfull">영상 전체화면</button></div>
+    ${notes('영상이 끝나면 "다음"으로 규칙 설명.')}</div>`;
+}
+function vRules(sub){
+  if(sub===0) return `<div class="scene"><span class="eyebrow">규칙 1/3</span><h2 class="big">게임은 딱 3줄</h2>
+    <div class="grid3"><div class="sticky"><b>1.</b> 3팀이 <b>"새내기를 위한 한동 캠퍼스 생활 개선 제안"</b> 팀플을 4라운드로 완성한다.</div>
+    <div class="sticky"><b>2.</b> 그중 <b>한 팀은 트롤팀</b>. 매 라운드 다른 팀에 보내는 지원 팀원이 "도와주는 척" 망친다.</div>
+    <div class="sticky"><b>3.</b> 점수가 가장 높은 팀이 우승. 마지막에 트롤팀을 맞히면 보너스.</div></div>
+    ${pic('k1_teamroom','세 팀이 모여 팀플하는 세미나실')}
+    ${notes('세 장의 포스트잇만 기억하면 됩니다. 문제 카드: ① 셔틀버스 대기 ② 학관 점심 줄 ③ 시험 기간 생활관 소음.')}</div>`;
+  if(sub===1) return `<div class="scene"><span class="eyebrow">규칙 2/3</span><h2 class="mid">라운드 흐름 · 지원 팀원 · 거래</h2>
+    <div class="wrapx"><table class="tbl"><thead><tr><th>라운드</th><th>일반팀 미션</th><th>시간</th></tr></thead><tbody>
+    ${RD.map(R=>`<tr><td><b>${R.no}R ${R.title}</b></td><td style="text-align:left">${R.mission}</td><td>${[8,8,9,9][R.no-1]}분</td></tr>`).join('')}</tbody></table></div>
+    <div class="grid2"><div class="panel" style="display:grid;gap:6px"><h3 style="font-size:22px">지원 팀원 파견 (1~3R)</h3><p style="margin:0">라운드마다 각 팀은 <b>1명</b>을 화면에 표시된 팀으로 보낸다. 지원 팀원은 그 팀의 팀원처럼 의견을 낸다. 지원 팀원이 간 팀이 <b>성공하면 보낸 팀 +5</b>.</p></div>
+    <div class="panel" style="display:grid;gap:6px"><h3 style="font-size:22px">거래와 협상</h3><p style="margin:0">언제든 자료 카드와 <b>협력 코인(1개 = 5점)</b>을 주고받을 수 있다. 말로 한 약속은 지키지 않아도 된다.</p></div></div>
+    ${notes('트롤팀도 자기 팀 미션을 똑같이 하고 같은 기준으로 점수를 받습니다. 대충 하면 바로 의심받습니다.')}</div>`;
+  return `<div class="scene"><span class="eyebrow">규칙 3/3</span><h2 class="mid">점수 · 추리 · 금지 행동</h2>
+    <div class="grid2"><div class="panel" style="display:grid;gap:8px"><h3 style="font-size:22px">점수</h3>
+      <ul style="margin:0;padding-left:1.2em;display:grid;gap:6px">${RD.map(R=>`<li><b>${R.no}R</b> ${R.score}</li>`).join('')}<li>남은 협력 코인 1개 = 5점</li></ul></div>
+    <div class="panel" style="display:grid;gap:8px"><h3 style="font-size:22px">추리 (4R 끝)</h3><ul style="margin:0;padding-left:1.2em;display:grid;gap:6px">
+      <li>각 팀은 트롤팀이라고 생각하는 팀 1개를 투표 (자기 팀 제외)</li><li>맞힌 일반팀 <b>+20</b></li><li>트롤팀은 지목 1표당 <b>−${S.cfg.voteHit}</b>, 아무도 못 맞히면 <b>+30</b></li><li>트롤팀은 진행자 2만 아는 <b>비밀 점수</b>가 있다</li></ul></div></div>
+    <div class="grid2"><div class="panel" style="border-top:6px solid var(--red)"><h3 style="font-size:22px">트롤팀 금지 (적발 시 정체 공개 · −30)</h3><p style="margin:0">남의 카드·작업물 손대기, 없는 규칙 지어내기, 소리 지르기·물리적 방해, 거짓 판정 주장</p></div>
+    <div class="panel" style="border-top:6px solid var(--green)"><h3 style="font-size:22px">트롤팀 허용</h3><p style="margin:0">의견, 질문, 제안, 칭찬, 거래, 회의 방식 제안, 일부러 천천히 동의하기. <b>실제 팀플에서 누군가 할 법한 말</b>이면 OK</p></div></div>
+    ${notes('질문 1~2개만 받고 지령 뽑기로 넘어가세요.')}</div>`;
+}
+function vDraw(sub){
+  if(sub===0) return `<div class="scene"><span class="eyebrow">지령 뽑기 · 2분</span><h2 class="big">문제 카드와 봉투를 뽑으세요</h2>
+    <div class="panel">${[0,1,2].map(t=>`<div class="inrow" ${tc(t)}><h3>${tn(t)}</h3><div>${seg('prob',t,[0,1,2],S.problems[t],['① 셔틀버스','② 학관 점심','③ 생활관 소음'])} <div class="lead" style="font-size:15px;margin-top:4px">${PROBLEMS[S.problems[t]]}</div></div></div>`).join('')}</div>
+    <div class="grid2"><div class="sticky" style="transform:none">봉투 안 지령은 <b>우리 팀끼리만</b> 조용히 확인!<br>트롤팀 봉투에는 비밀 미션지와 미끼 자료 카드 4장이 들어 있습니다.</div>${pic('k2_envelope','빨간 X 도장이 찍힌 봉투')}</div>
+    ${notes('각 팀 대표가 문제 카드 1장, 봉투 1개를 뽑습니다. 뽑은 문제를 위 버튼으로 입력하세요.','봉투를 섞어서 내밀고, 어느 팀이 트롤 봉투를 가져갔는지 기억하세요.')}</div>`;
+  return `<div class="scene"><span class="eyebrow" style="color:var(--red)">진행자 2 전용 · 청중이 보지 않을 때</span><h2 class="mid">트롤 봉투를 가져간 팀을 누르세요</h2>
+    <div class="grid3">${[0,1,2].map(t=>`<button class="btn lg" ${tc(t)} style="border-top:7px solid var(--tc);font-size:28px;padding:26px" data-act="troll" data-t="${t}" aria-pressed="${host2&&S.troll===t}">${tn(t)}</button>`).join('')}</div>
+    <p class="mid" style="text-align:center;color:${S.troll!=null?'var(--green)':'var(--muted)'}">${S.troll==null?'아직 지정 안 됨':host2?`지정 완료 · ${tn(S.troll)}`:'지정 완료'}</p>
+    ${notes(null,'누른 팀은 화면에 표시되지 않습니다(진행자 2 모드에서만 보임). 잘못 눌렀으면 다시 누르면 바뀝니다.')}</div>`;
+}
+function eventScreen(r){
+  const R=RD[r];
+  return `<div class="scene"><span class="eyebrow">ROUND ${R.no} / 4 · 이벤트 카드</span>
+    <div class="grid2"><div class="ecard"><span class="tag">EVENT CARD</span><h2>${R.event}</h2><p>${R.ebody}</p></div>${pic(R.img,R.title)}</div>
+    <p class="say" data-say>${esc(LINES[R.audio])}</p><div class="row"><button class="btn" data-act="voice" data-a="${R.audio}">▶ 다시 듣기</button>${r===3?'<button class="btn primary" data-act="preset" data-i="0">협상 1분 시작</button>':''}</div>
+    <div class="grid2"><div class="panel"><b>일반팀 미션</b><p style="margin:4px 0 0">${R.mission}</p></div><div class="panel"><b>판정</b><p style="margin:4px 0 0">${R.judge}</p></div></div>
+    ${notes(r===3?'협상 1분: 자리 이동 자유. 끝나면 "다음"으로 발표.':'이벤트 카드를 읽어 주고 "다음"으로 지원 팀원 파견.', `트롤팀 비밀 미션: ${R.sab}. 트롤팀만 받은 방해 카드를 자연스럽게 쓰는지 지켜보세요.`)}</div>`;
+}
+function dispatchScreen(r){
+  const D=DISPATCH[r], X=[130,380,630], Y=110;
+  const arrows=[0,1,2].map(t=>{ const a=X[t],b=X[D[t]]; const up=(D[t]>t)?-1:1; const mid=(a+b)/2, h=Math.abs(b-a)>300?120:70;
+    return `<path d="M${a} ${Y+up*42} Q ${mid} ${Y+up*(42+h)} ${b} ${Y+up*42}" fill="none" stroke="${['#e05a47','#4a8fe0','#e8b93c'][t]}" stroke-width="7" marker-end="url(#ah${t})"/>`; }).join('');
+  const markers=[0,1,2].map(t=>`<marker id="ah${t}" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="${['#e05a47','#4a8fe0','#e8b93c'][t]}"/></marker>`).join('');
+  const nodes=[0,1,2].map(t=>`<g><circle cx="${X[t]}" cy="${Y}" r="40" fill="${['#e05a47','#4a8fe0','#e8b93c'][t]}"/><text x="${X[t]}" y="${Y+9}" text-anchor="middle" font-size="26" fill="#fff">${tn(t).slice(0,4)}</text></g>`).join('');
+  return `<div class="scene"><span class="eyebrow">ROUND ${r+1} · 지원 팀원 파견</span><h2 class="mid">각 팀 1명씩 화살표 방향으로 이동</h2>
+    <svg class="dispatch" viewBox="0 0 760 240" role="img" aria-label="지원 팀원 이동 방향"><defs>${markers}</defs>${arrows}${nodes}</svg>
+    <div class="grid3">${[0,1,2].map(t=>`<div class="panel" ${tc(t)} style="border-top:6px solid var(--tc)"><b>${tn(t)}</b> → <b>${tn(D[t])}</b>로 1명</div>`).join('')}</div>
+    <p class="say" data-say>${esc(LINES.g_dispatch)}</p>
+    ${notes('지난 라운드에 갔던 사람은 이번에 못 갑니다. 지원 팀원이 간 팀이 성공하면 보낸 팀 +5.','트롤팀 지원 팀원이 어느 팀으로 가는지 확인해 두세요.')}</div>`;
+}
+function workScreen(r,list,title,extra){
+  const cur=T.label;
+  return `<div class="scene"><span class="eyebrow">ROUND ${r+1} · ${title}</span>
+    <div class="bigtimer num">${Math.floor(T.left/60)}:${String(Math.max(0,Math.ceil(T.left))%60).padStart(2,'0')}</div>
+    <div class="presets">${list.map((p,i)=>`<button class="btn" data-act="preset" data-i="${i}" aria-pressed="${cur===p.label}">${p.label} ${Math.floor(p.sec/60)}:${String(p.sec%60).padStart(2,'0')}</button>`).join('')}</div>
+    ${extra||''}</div>`;
+}
+let presetsNow=[];
+function vRound(r,sub){
+  const R=RD[r], name=STEPS[S.step].subs[sub];
+  if(name==='이벤트 카드') return eventScreen(r);
+  if(name==='지원 팀원 파견') return dispatchScreen(r);
+  if(name==='자료 탐색·거래'){ presetsNow=R.works; return workScreen(r,R.works,name,`<div class="grid2"><div class="panel"><b>일반팀</b><p style="margin:4px 0 0">${R.mission}. 앞쪽 자료 시장에서 고르고, 다른 팀과 거래해도 됩니다.</p></div><div class="panel"><b>믿을 수 있는 자료 체크</b><p style="margin:4px 0 0">출처가 공식·조사 기반인가 · 3년 이내인가 · 우리 문제와 관련 있는가</p></div></div>${notes('5분 뒤 "제출 30초"를 누르세요.','팩트체크 요청은 팀당 1번, ○/×만 답합니다.')}`); }
+  if(name==='팀 회의'){ presetsNow=R.works; return workScreen(r,R.works,name,`<div class="grid3"><div class="sticky">① 핵심 원인 1개</div><div class="sticky">② 해결 아이디어 1개</div><div class="sticky">③ 역할 분담 (발표자 · PPT 담당)</div></div>${notes('"열심히 하자" 같은 빈말은 미완성입니다.','시트는 4분이 끝나는 순간 걷습니다.')}`); }
+  if(name==='연합 회의'){ presetsNow=[{label:'연합 회의',sec:180}]; return workScreen(r,presetsNow,name,`<div class="ecard"><span class="tag">각 팀 대표 1명 · 앞으로</span><h2>3분 안에 합의하고 3명 모두 서명</h2><p>① 4라운드 발표 순서 ② 질문 순서 — 합의하면 전 팀 +10, 결렬되면 전 팀 −5</p></div>${notes('다른 팀원은 말할 수 없습니다. 대표만 이야기합니다.','합의 여부를 판정 입력에서 기록합니다.')}`); }
+  if(name==='PPT 제작'){ presetsNow=R.works; return workScreen(r,R.works,name,`<div class="grid3"><div class="sticky">① 문제 정의</div><div class="sticky">② 근거 자료 (1R 카드 인용)</div><div class="sticky">③ 해결책</div><div class="sticky">④ 기대 효과</div><div class="sticky">⑤ 출처 표기</div></div>${notes('디자인 상은 +5, 필수 항목 1개는 최대 10점 차이. 이 말은 하지 마세요.','종료 즉시 A3를 걷어 5항목을 체크합니다.')}`); }
+  if(name==='발표'){ presetsNow=[0,1,2].map(t=>({label:`${S.teams[t].name} 발표`,sec:90})); return workScreen(r,presetsNow,'발표 (1분 + 질문 30초)',`${pic('k5_present','최종 발표')}${notes('연합 회의에서 정한 순서대로. 발표 1분이 지나면 질문 1개씩(30초).','채점: ① 1분 지킴 ② 1R 자료 인용 ③ 해결책 구체적 — 항목당 10점.')}`); }
+  if(name==='추리 투표'){ presetsNow=[{label:'추리 투표',sec:60}]; return workScreen(r,presetsNow,name,`<p class="say" data-say>${esc(LINES.g_vote)}</p><div class="sticky" style="transform:none">투표지에 적을 것 2가지: <b>① 트롤팀이라고 생각하는 팀</b> <b>② 베스트 발표 팀</b> (둘 다 자기 팀 제외)</div>${notes('투표지를 접어서 진행자 2에게.','투표지를 열어 판정 입력에 기록합니다.')}`); }
+  if(name==='판정 입력') return judgeScreen(r);
+  return resultScreen(r);
+}
+function judgeScreen(r){
+  let body='';
+  if(r===0) body=[0,1,2].map(t=>`<div class="inrow" ${tc(t)}><h3>${tn(t)}</h3><div><div class="lbl">제출한 3장 중 믿을 수 있는 자료</div>${seg('rel',t,[0,1,2,3],S.r1.rel[t],['0장','1장','2장','3장'])}</div></div>`).join('');
+  if(r===1) body=[0,1,2].map(t=>`<div class="inrow" ${tc(t)}><h3>${tn(t)}</h3><div><div class="lbl">회의 결정 시트 완성 칸</div>${seg('cells',t,[0,1,2,3],S.r2.cells[t],['0칸','1칸','2칸','3칸'])}</div></div>`).join('')+`<div class="inrow"><h3 style="border-color:var(--ink)">연합 회의</h3><div>${seg('union',0,[1,0],S.r2.union===true?1:S.r2.union===false?0:null,['합의 (서명 3개)','결렬'])}</div></div>`;
+  if(r===2) body=[0,1,2].map(t=>`<div class="inrow" ${tc(t)}><h3>${tn(t)}</h3><div><div class="lbl">필수 5항목 중 들어간 항목</div>${seg('items',t,[0,1,2,3,4,5],S.r3.items[t])}</div></div>`).join('')+`<div class="inrow"><h3 style="border-color:var(--ink)">디자인 상 (+5)</h3><div>${seg('design',0,[0,1,2,-1],S.r3.design==null?null:S.r3.design,[tn(0),tn(1),tn(2),'없음'])}</div></div>`;
+  if(r===3) body=[0,1,2].map(t=>`<div class="inrow" ${tc(t)}><h3>${tn(t)}</h3><div style="display:grid;gap:8px">
+     <div><div class="lbl">발표 채점 (1분 · 자료 인용 · 해결책) 충족 개수</div>${seg('crit',t,[0,1,2,3],S.r4.crit[t])}</div>
+     <div><div class="lbl">베스트 발표 받은 표</div>${seg('best',t,[0,1,2],S.r4.best[t],['0표','1표','2표'])}</div>
+     <div><div class="lbl">이 팀이 트롤팀으로 지목한 팀</div>${seg('vote',t,others(t),S.r4.vote[t],others(t).map(tn))}</div></div></div>`).join('');
+  const bestSum=S.r4.best.reduce((a,v)=>a+(v||0),0);
+  return `<div class="scene"><span class="eyebrow">ROUND ${r+1} · 판정 입력 (진행자 2)</span><h2 class="mid">${RD[r].title} 판정</h2>
+    <div class="panel">${body}</div>${r===3&&bestSum!==3?`<p class="lead" style="color:var(--red)">베스트 발표 표 합계가 ${bestSum}표입니다. 3팀이 1표씩이면 3표여야 합니다.</p>`:''}
+    ${notes(null,RD[r].judge+'. 점수: '+RD[r].score+'. 입력값에는 비밀 점수가 표시되지 않습니다.')}</div>`;
+}
+function resultScreen(r){
+  const lines=[0,1,2].map(t=>{
+    let why='';
+    if(r===0) why=`신뢰 자료 ${S.r1.rel[t]??'-'}장`;
+    if(r===1) why=`시트 ${S.r2.cells[t]??'-'}칸 · 연합 ${S.r2.union===true?'합의':S.r2.union===false?'결렬':'-'}`;
+    if(r===2) why=`필수 ${S.r3.items[t]??'-'}/5${S.r3.design===t?' · 디자인 상':''}`;
+    if(r===3) why=`발표 ${S.r4.crit[t]??'-'}/3 · 베스트 ${S.r4.best[t]??0}표`;
+    const c=coop(r,t);
+    return `<div class="panel" ${tc(t)} style="border-top:7px solid var(--tc);display:grid;gap:4px"><h3 style="font-size:26px">${tn(t)}</h3><div class="mid num" style="color:var(--blue)">+${pubRound(r,t)}</div><div class="lead" style="font-size:15px">${why}</div>${c?`<div style="color:var(--green);font-weight:700">협력 보너스 +5 (${tn(DISPATCH[r][t])} 성공)</div>`:''}</div>`;
+  }).join('');
+  return `<div class="scene"><span class="eyebrow">ROUND ${r+1} · 결과</span><h2 class="mid">${RD[r].title} 결과</h2><div class="grid3">${lines}</div>${scoreboard()}
+    ${notes(r<3?'다음 라운드 전에 지원 팀원은 원래 팀으로 돌아갑니다.':'이제 최종 집계입니다. 남은 협력 코인을 세어 주세요.', host2?`이번 라운드 트롤 비밀 점수: ${secret(r)}점`:'비밀 점수는 진행자 2 모드에서만 보입니다.')}</div>`;
+}
+function vFinal(sub){
+  if(sub===0) return `<div class="scene"><span class="eyebrow">최종 집계</span><h2 class="mid">남은 협력 코인 (1개 = 5점)</h2>
+    <div class="panel">${[0,1,2].map(t=>`<div class="inrow" ${tc(t)}><h3>${tn(t)}</h3><div>${seg('coins',t,[0,1,2,3,4,5,6,7,8,9],S.coins[t]==null?3:S.coins[t])}</div></div>`).join('')}</div>
+    ${notes('코인을 거래로 주고받았다면 지금 가진 개수 그대로 입력합니다.')}</div>`;
+  if(sub===1) return `<div class="scene" style="text-align:center;justify-items:center">${pic('k2_envelope','트롤팀 봉투')}<p class="say" data-say style="text-align:left">${esc(LINES.g_reveal)}</p>
+    ${S.revealed&&S.troll!=null?`<div class="reveal">트롤팀은 ${tn(S.troll)}</div>`:`<button class="btn danger lg" data-act="reveal" ${S.troll==null?'disabled':''}>트롤팀 공개</button>${S.troll==null?'<p class="lead">지령 뽑기에서 트롤팀이 지정되지 않았습니다.</p>':''}`}
+    ${notes('음성이 끝나면 "트롤팀 공개"를 누르세요.','트롤팀에게 라운드별로 어떤 방해를 했는지 한 줄씩 물어보세요.')}</div>`;
+  const ranks=[0,1,2].sort((a,b)=>finalTotal(b)-finalTotal(a)), trollWin=S.troll!=null&&ranks[0]===S.troll;
+  if(sub===2) return `<div class="scene"><div class="grid2">${pic(trollWin?'k6_troll_win':'k7_normal_win',trollWin?'트롤팀 승리':'팀플 완주')}<div style="display:grid;gap:12px;align-content:start"><span class="eyebrow">결말</span><h2 class="big" style="color:${trollWin?'var(--red)':'var(--green)'}">${trollWin?'트롤팀 승리':'팀플 완주'}</h2><p class="say" data-say>${esc(LINES[trollWin?'g_end_troll':'g_end_normal'])}</p><button class="btn" data-act="voice" data-a="${trollWin?'g_end_troll':'g_end_normal'}">▶ 다시 듣기</button></div></div>
+    <div class="rank">${ranks.map((t,i)=>`<div ${tc(t)}><span class="num">${i+1}위</span><span><b>${tn(t)}</b> ${t===S.troll?'<span class="badge">트롤</span>':''}</span><span class="s num">${finalTotal(t)}</span></div>`).join('')}</div></div>`;
+  return `<div class="scene"><span class="eyebrow">최종 점수표</span><h2 class="mid">비밀 점수까지 모두 공개</h2>${scoreboard({final:true})}
+    ${S.troll!=null?`<div class="wrapx"><table class="tbl"><thead><tr><th>트롤 비밀 점수</th><th>1R</th><th>2R</th><th>3R</th><th>4R(추리)</th><th>합계</th></tr></thead><tbody><tr><td>${dot(S.troll)}${tn(S.troll)}</td>${[0,1,2,3].map(r=>`<td class="num sec">${secret(r)}</td>`).join('')}<td class="num tot">${secretTotal()}</td></tr></tbody></table></div>`:''}
+    <div class="row"><button class="btn" data-act="askreset">새 게임 준비</button></div>${notes('사진 찍기 좋은 순간입니다. 우승팀 발표!')}</div>`;
+}
+
+/* ---------- render / flow ---------- */
+function render(){
+  const st=STEPS[S.step]; let h='';
+  if(st.key==='setup') h=vSetup(); else if(st.key==='intro') h=vIntro(); else if(st.key==='rules') h=vRules(S.sub);
+  else if(st.key==='draw') h=vDraw(S.sub); else if(st.key==='r') h=vRound(st.r,S.sub); else h=vFinal(S.sub);
+  const stage=$('#stage'); stage.innerHTML=(host2?'<div class="h2banner">진행자 2 모드 · 비밀 정보 표시 중 — 청중에게 화면을 보여 주지 마세요</div>':'')+h; stage.classList.toggle('editing',editing);
+  $('#rail').innerHTML=STEPS.map((s,i)=>`<button class="pill ${i===S.step?'now':i<S.step?'done':''}" data-act="jump" data-i="${i}">${s.label}</button>`).join('');
+  const np=$('#rail .now'); if(np) np.scrollIntoView({block:'nearest',inline:'center'});
+  $('#where').innerHTML=`<b>${esc(st.label)}</b> · ${esc(st.subs[S.sub])}`;
+  const last=S.step===STEPS.length-1&&S.sub===st.subs.length-1;
+  $('#bPrev').disabled=S.step===0&&S.sub===0; $('#bNext').disabled=last;
+  $('#bH2').classList.toggle('h2on',host2); $('#bH2').textContent=host2?'진행자 2 끄기':'진행자 2';
+  drawTimer();
+}
+function enter(){
+  stopVoice(); setTimer(0); const st=STEPS[S.step], name=st.subs[S.sub];
+  if(st.key==='r'){
+    const R=RD[st.r];
+    if(name==='이벤트 카드') setTimeout(()=>playVoice(R.audio),350);
+    if(name==='지원 팀원 파견') setTimeout(()=>playVoice('g_dispatch'),350);
+    if(['자료 탐색·거래','팀 회의','PPT 제작','연합 회의','추리 투표'].includes(name)){ const p=presetsNow[0]; setTimer(p.sec,p.label,true); render(); }
+    if(name==='발표'){ const p=presetsNow[0]; setTimer(p.sec,p.label,false); render(); }
+    if(name==='추리 투표') setTimeout(()=>playVoice('g_vote'),350);
+  }
+  if(st.key==='final'&&S.sub===1) setTimeout(()=>playVoice('g_reveal'),350);
+  if(st.key==='final'&&S.sub===2){ const ranks=[0,1,2].sort((a,b)=>finalTotal(b)-finalTotal(a)), tw=S.troll!=null&&ranks[0]===S.troll; setTimeout(()=>{ (tw?SFX.bad:SFX.ok)(); playVoice(tw?'g_end_troll':'g_end_normal'); },400); }
+}
+function go(step,sub){ S.step=Math.max(0,Math.min(STEPS.length-1,step)); S.sub=Math.max(0,Math.min(STEPS[S.step].subs.length-1,sub)); save(); render(); enter(); }
+function next(){
+  const st=STEPS[S.step], name=st.subs[S.sub];
+  if(name==='판정 입력'){ const r=st.r; const miss= r===0?S.r1.rel.some(v=>v==null): r===1?(S.r2.cells.some(v=>v==null)||S.r2.union==null): r===2?(S.r3.items.some(v=>v==null)||S.r3.design==null): (S.r4.crit.some(v=>v==null)||S.r4.best.some(v=>v==null)||S.r4.vote.some(v=>v==null));
+    if(miss){ toast('판정을 모두 입력하세요'); return; } }
+  if(st.key==='draw'&&S.sub===1&&S.troll==null){ toast('진행자 2가 트롤팀을 지정해야 합니다'); return; }
+  if(!S.startedAt) S.startedAt=Date.now();
+  if(S.sub<st.subs.length-1) go(S.step,S.sub+1); else go(S.step+1,0);
+}
+function prev(){ if(S.sub>0) go(S.step,S.sub-1); else if(S.step>0) go(S.step-1,STEPS[S.step-1].subs.length-1); }
+
+document.addEventListener('click',e=>{
+  const b=e.target.closest('[data-act]'); if(!b) return; ctx();
+  const a=b.dataset.act, t=+b.dataset.t, v=b.dataset.v!==undefined?Number(b.dataset.v):null;
+  if(a==='jump') go(+b.dataset.i,0);
+  else if(a==='start'){ S.startedAt=Date.now(); go(1,0); }
+  else if(a==='resume') go(S.step||1,S.sub);
+  else if(a==='askreset') b.outerHTML='<span class="row"><b>진행 기록을 모두 지울까요?</b><button class="btn danger" data-act="reset">지우고 새로 시작</button><button class="btn" data-act="noreset">취소</button></span>';
+  else if(a==='reset'){ const k={teams:S.teams,cfg:S.cfg}; S=fresh(); S.teams=k.teams; S.cfg=k.cfg; go(0,0); toast('새 게임을 준비했습니다'); }
+  else if(a==='noreset') render();
+  else if(a==='size'){ S.teams[t].size=v; save(); render(); }
+  else if(a==='mult'){ S.cfg.secretMult=v; save(); render(); }
+  else if(a==='hit'){ S.cfg.voteHit=v; save(); render(); }
+  else if(a==='prob'){ S.problems[t]=v; save(); render(); }
+  else if(a==='troll'){ S.troll=t; save(); render(); toast('지정 완료'); }
+  else if(a==='rel'){ S.r1.rel[t]=v; save(); render(); }
+  else if(a==='cells'){ S.r2.cells[t]=v; save(); render(); }
+  else if(a==='union'){ S.r2.union=v===1; save(); render(); }
+  else if(a==='items'){ S.r3.items[t]=v; save(); render(); }
+  else if(a==='design'){ S.r3.design=v; save(); render(); }
+  else if(a==='crit'){ S.r4.crit[t]=v; save(); render(); }
+  else if(a==='best'){ S.r4.best[t]=v; save(); render(); }
+  else if(a==='vote'){ S.r4.vote[t]=v; save(); render(); }
+  else if(a==='coins'){ S.coins[t]=v; save(); render(); }
+  else if(a==='adj'){ S.adj[t]=(S.adj[t]||0)+v; save(); render(); }
+  else if(a==='voice') playVoice(b.dataset.a);
+  else if(a==='preset'){ const p=presetsNow[+b.dataset.i]||RD[3].works[0]; setTimer(p.sec,p.label,true); render(); }
+  else if(a==='reveal'){ S.revealed=true; save(); SFX.bad(); render(); }
+  else if(a==='vplay'){ const vd=$('#vid'); if(vd) vd.play().catch(()=>{}); }
+  else if(a==='vfull'){ const vd=$('#vid'); if(vd&&vd.requestFullscreen) vd.requestFullscreen().catch(()=>toast('전체화면을 쓸 수 없습니다')); }
+});
+document.addEventListener('input',e=>{ const el=e.target; if(el.dataset.act==='tname'){ S.teams[+el.dataset.t].name=el.value.slice(0,12); save(); } if(el.id==='h2code'&&el.value==='0000'){ host2=true; codeOpen=false; $('#codebox').innerHTML=''; render(); } });
+$('#bNext').addEventListener('click',()=>{ ctx(); next(); });
+$('#bPrev').addEventListener('click',prev);
+$('#tPlay').addEventListener('click',()=>{ ctx(); if(T.left<=0) T.left=T.total; T.run=!T.run; T.last=performance.now(); drawTimer(); });
+$('#tAdd').addEventListener('click',()=>{ T.left+=30; T.total=Math.max(T.total,T.left); drawTimer(); });
+$('#tReset').addEventListener('click',()=>{ T.left=T.total; T.run=false; drawTimer(); });
+$('#bSound').addEventListener('click',e=>{ soundOn=!soundOn; e.currentTarget.setAttribute('aria-pressed',soundOn); if(!soundOn) stopVoice(); });
+$('#bEdit').addEventListener('click',e=>{ editing=!editing; e.currentTarget.setAttribute('aria-pressed',editing); $('#stage').classList.toggle('editing',editing); });
+$('#bH2').addEventListener('click',()=>{
+  if(host2){ host2=false; render(); return; }
+  codeOpen=!codeOpen; $('#codebox').innerHTML=codeOpen?'<input id="h2code" inputmode="numeric" maxlength="4" placeholder="코드" aria-label="진행자 2 코드">':'';
+  if(codeOpen) $('#h2code').focus();
+});
+$('#bFull').addEventListener('click',()=>{ const d=document.documentElement; if(document.fullscreenElement) document.exitFullscreen().catch(()=>{}); else if(d.requestFullscreen) d.requestFullscreen().catch(()=>toast('전체화면을 쓸 수 없습니다')); });
+document.addEventListener('keydown',e=>{
+  if(e.target.matches('input,select,textarea')) return;
+  if(e.key===' '&&e.target.closest('button')) return;
+  if(['ArrowRight','PageDown',' '].includes(e.key)){ e.preventDefault(); ctx(); next(); }
+  else if(['ArrowLeft','PageUp'].includes(e.key)){ e.preventDefault(); prev(); }
+  else if(e.key==='t'||e.key==='T') $('#tPlay').click();
+});
+render();
+const st0=STEPS[S.step]; if(st0.key==='r'){ /* restore presets for timer buttons after reload */ vRound(st0.r,S.sub); }
+})();
+</script>

@@ -1,0 +1,10 @@
+offline/
+work/**/*.raw.mp3
+work/**/*.raw.mp4
+work/**/raw/
+work/voice/tts/
+work/video/vid/
+work/video/tts/
+work/video/out/*.mp4
+work/video/out/graph.txt
+work/**/*.log

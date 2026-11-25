@@ -1,0 +1,45 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Narr,Noto Sans KR,66,&H00FFFFFF,&H00FFFFFF,&H00101010,&H96000000,-1,0,0,0,100,100,0,0,1,4,1.5,2,120,120,64,1
+Style: Villain,Noto Sans KR,66,&H00A9C8FF,&H00FFFFFF,&H00081040,&H96000000,-1,0,0,0,100,100,0,0,1,4,1.5,2,120,120,64,1
+Style: Title,Black Han Sans,150,&H0040B7F4,&H00FFFFFF,&H00101010,&H96000000,0,0,0,0,100,100,2,0,1,6,3,5,80,80,40,1
+Style: TitleSub,Noto Sans KR,58,&H00FFFFFF,&H00FFFFFF,&H00101010,&H96000000,-1,0,0,0,100,100,4,0,1,3,2,2,80,80,250,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.13,0:00:02.53,Narr,,0,0,0,,이번 학기 마지막 과제.
+Dialogue: 0,0:00:02.53,0:00:07.53,Narr,,0,0,0,,거친 팀플의 바다 위로, 세 척의 배가 동시에 출항했다.
+Dialogue: 0,0:00:07.53,0:00:10.04,Narr,,0,0,0,,목적지는 '종강항'.
+Dialogue: 0,0:00:10.47,0:00:12.49,Narr,,0,0,0,,배의 이름은 '팀플호'.
+Dialogue: 0,0:00:12.49,0:00:16.55,Narr,,0,0,0,,자료조사로 돛을 달고, 회의로 키를 잡고,
+Dialogue: 0,0:00:16.55,0:00:19.70,Narr,,0,0,0,,PPT로 선체를 메워야 도착할 수 있다.
+Dialogue: 0,0:00:20.33,0:00:22.21,Narr,,0,0,0,,그런데 출항 전날 밤,
+Dialogue: 0,0:00:22.21,0:00:26.51,Narr,,0,0,0,,불 꺼진 강의실에 수상한 그림자가 나타났다.
+Dialogue: 0,0:00:26.51,0:00:29.84,Narr,,0,0,0,,학점을 노리는 해적, 캡틴 F.
+Dialogue: 0,0:00:30.67,0:00:33.33,Villain,,0,0,0,,상대평가라는 게 말이야…
+Dialogue: 0,0:00:33.33,0:00:39.50,Villain,,0,0,0,,남이 망하면, 네가 올라가는 거거든. 크크크.
+Dialogue: 0,0:00:40.43,0:00:45.85,Narr,,0,0,0,,캡틴 F는 각 팀에서 딱 한 명씩을 몰래 불러냈다.
+Dialogue: 0,0:00:45.85,0:00:49.74,Narr,,0,0,0,,"팀플을 망쳐라. 그러면 A+를 주마."
+Dialogue: 0,0:00:50.88,0:00:53.40,Narr,,0,0,0,,그렇게 세 척의 배에 한 명씩,
+Dialogue: 0,0:00:53.40,0:00:56.84,Narr,,0,0,0,,아무도 모르게 해적이 올라탔다.
+Dialogue: 0,0:00:56.84,0:00:59.29,Narr,,0,0,0,,우리는 그들을 'X맨'이라 부른다.
+Dialogue: 0,0:01:00.27,0:01:02.49,Narr,,0,0,0,,겉으로는 성실한 팀원.
+Dialogue: 0,0:01:02.49,0:01:05.65,Narr,,0,0,0,,자료를 찾는 척, 회의에 나오는 척.
+Dialogue: 0,0:01:05.65,0:01:09.90,Narr,,0,0,0,,하지만 결정적인 순간, 몰래 배에 구멍을 낸다.
+Dialogue: 0,0:01:10.92,0:01:13.50,Narr,,0,0,0,,항해는 네 번의 수리로 이루어진다.
+Dialogue: 0,0:01:13.50,0:01:18.17,Narr,,0,0,0,,자료조사, 미팅, PPT 제작, 그리고 최종 발표.
+Dialogue: 0,0:01:20.15,0:01:23.41,Narr,,0,0,0,,구멍이 세 개 뚫린 배는 침몰한다.
+Dialogue: 0,0:01:23.41,0:01:26.75,Narr,,0,0,0,,해적단이 배 두 척을 가라앉히면,
+Dialogue: 0,0:01:26.75,0:01:30.02,Narr,,0,0,0,,이번 학기는 캡틴 F의 승리다.
+Dialogue: 0,0:01:30.91,0:01:32.97,Narr,,0,0,0,,선원들이여, 의심하라.
+Dialogue: 0,0:01:32.97,0:01:36.89,Narr,,0,0,0,,마지막에 X맨을 정확히 지목하면, 아직 기회는 있다.
+Dialogue: 0,0:01:36.89,0:01:39.26,Narr,,0,0,0,,팀플호, 출항합니다!
+Dialogue: 1,0:01:40.40,0:01:45.00,Title,,0,0,0,,{\fad(500,400)}팀플호에 해적이 탔다
+Dialogue: 1,0:01:41.10,0:01:45.00,TitleSub,,0,0,0,,{\an8\pos(960,640)\fad(400,400)}X맨을 찾아라

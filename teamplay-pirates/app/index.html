@@ -1,0 +1,892 @@
+<title>팀플호에 해적이 탔다</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Noto+Sans+KR:wght@400;500;700;900&display=swap">
+<style>
+/* Layout: projector-first 16:9 stage — header progress rail / main stage / MC control bar. Phone ballot (#ballot) is a separate one-column view. Single dark "night sea" theme by choice. */
+:root{
+  --ink:#061418;      /* night sea, page ground */
+  --deep:#0b252b;     /* panels */
+  --tide:#12363d;     /* raised panels */
+  --line:#21505a;     /* hairlines */
+  --foam:#eaf3ef;     /* main text */
+  --mist:#93b3ad;     /* secondary text */
+  --lantern:#f4b740;  /* repair, success, accent */
+  --flare:#e2482f;    /* pirate, troll, failure */
+  --brass:#c9965a;
+  --t0:#e05a47; --t1:#4a8fe0; --t2:#e8b93c; /* the three sails */
+  --display:"Black Han Sans","Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  --body:"Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--ink);color:var(--foam);font-family:var(--body);font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased;overflow:hidden}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--lantern);outline-offset:2px}
+h1,h2,h3{font-family:var(--display);font-weight:400;margin:0;line-height:1.15;text-wrap:balance;letter-spacing:.01em}
+.num{font-variant-numeric:tabular-nums}
+
+#app{height:100%;display:grid;grid-template-rows:auto 1fr auto;grid-template-columns:minmax(0,1fr)}
+#app[hidden]{display:none!important}
+
+/* header */
+.bar{display:flex;align-items:center;gap:14px;padding-block:10px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));background:linear-gradient(#0a2026,#071a1f);border-bottom:1px solid var(--line)}
+.brand{font-family:var(--display);font-size:20px;white-space:nowrap;color:var(--lantern)}
+.brand small{font-family:var(--body);font-size:11px;color:var(--mist);margin-left:6px;letter-spacing:.08em}
+.rail{flex:1;display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;min-width:0}
+.rail::-webkit-scrollbar{display:none}
+.pill{flex:0 0 auto;border:1px solid var(--line);background:transparent;border-radius:999px;padding:4px 11px;font-size:13px;color:var(--mist)}
+.pill.done{color:var(--foam);border-color:#2c6a72}
+.pill.now{background:var(--lantern);border-color:var(--lantern);color:#1d1404;font-weight:700}
+.tools{display:flex;align-items:center;gap:6px}
+.clock{font-size:13px;color:var(--mist);padding:0 6px;white-space:nowrap}
+.clock b{color:var(--foam);font-weight:700}
+.ibtn{border:1px solid var(--line);background:var(--deep);border-radius:8px;padding:6px 10px;font-size:13px}
+.ibtn[aria-pressed="true"]{background:var(--tide);border-color:var(--lantern);color:var(--lantern)}
+
+/* stage */
+#stage{position:relative;overflow:auto;padding-block:20px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.scene{max-width:1280px;margin:0 auto;display:grid;gap:18px}
+.bg{position:fixed;inset:0;z-index:-1;background-size:cover;background-position:center;opacity:.22;filter:saturate(.9)}
+.bg::after{content:"";position:absolute;inset:0;background:radial-gradient(ellipse at 50% 30%,transparent 0,var(--ink) 75%)}
+.eyebrow{font-size:13px;letter-spacing:.16em;color:var(--brass);font-weight:700}
+.big{font-size:clamp(34px,5vw,68px)}
+.mid{font-size:clamp(24px,3vw,40px)}
+.lead{font-size:clamp(17px,1.6vw,22px);color:var(--mist);max-width:62ch}
+.mc{border-left:3px solid var(--brass);padding:8px 14px;background:rgba(201,150,90,.08);border-radius:0 8px 8px 0;font-size:15px;color:#e8d6bd;max-width:90ch}
+.mc b{color:var(--brass);margin-right:6px;font-size:12px;letter-spacing:.1em}
+.panel{background:var(--deep);border:1px solid var(--line);border-radius:14px;padding:18px}
+.row{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+@media (max-width:760px){.grid3{grid-template-columns:1fr}}
+.grid2{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:14px}
+@media (max-width:900px){.grid2{grid-template-columns:1fr}}
+.btn{border:0;border-radius:10px;padding:12px 20px;font-weight:700;background:var(--tide);border:1px solid var(--line)}
+.btn.primary{background:var(--lantern);color:#1d1404;border-color:var(--lantern)}
+.btn.danger{background:var(--flare);border-color:var(--flare);color:#fff}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn.lg{font-size:20px;padding:16px 28px}
+
+/* footer controls */
+.ctrl{display:flex;align-items:center;gap:12px;padding-block:10px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));background:#071a1f;border-top:1px solid var(--line)}
+.ctrl .where{flex:1;min-width:0;font-size:14px;color:var(--mist);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctrl .where b{color:var(--foam)}
+.timer{display:flex;align-items:center;gap:6px}
+.timer .t{font-family:var(--display);font-size:28px;min-width:3.4ch;text-align:center;font-variant-numeric:tabular-nums}
+.timer.warn .t{color:var(--flare);animation:blink 1s steps(2) infinite}
+.timer[hidden]{display:none!important}
+@keyframes blink{50%{opacity:.35}}
+
+/* setup */
+.team-card{display:grid;gap:10px;border-top:6px solid var(--tc)}
+.team-card input{background:var(--ink);border:1px solid var(--line);border-radius:8px;color:var(--foam);padding:8px 10px;font-size:18px;font-weight:700;width:100%}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.seg button{border:0;background:transparent;padding:8px 16px;font-weight:700}
+.seg button[aria-pressed="true"]{background:var(--lantern);color:#1d1404}
+.comp{font-size:14px;color:var(--mist)}
+.comp .p{color:var(--flare);font-weight:700}.comp .n{color:#7fd1c4;font-weight:700}
+details.panel summary{cursor:pointer;font-weight:700}
+.cfg{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px}
+.cfg label{display:grid;gap:4px;font-size:14px;color:var(--mist)}
+.cfg select{background:var(--ink);color:var(--foam);border:1px solid var(--line);border-radius:8px;padding:8px}
+.tl{width:100%;border-collapse:collapse;font-size:14px}
+.tl td{padding:5px 8px;border-bottom:1px solid var(--line)}
+.tl td:first-child{color:var(--lantern);white-space:nowrap;font-variant-numeric:tabular-nums;width:1%}
+.hero{display:grid;grid-template-columns:1.1fr 1fr;gap:24px;align-items:center}
+@media (max-width:900px){.hero{grid-template-columns:1fr}}
+.hero img{border-radius:14px;border:1px solid var(--line);display:block;width:100%}
+
+/* video */
+.vwrap{position:relative;max-width:1200px;margin:0 auto;border-radius:14px;overflow:hidden;border:1px solid var(--line);background:#000;aspect-ratio:16/9;width:100%}
+.vwrap video{width:100%;height:100%;display:block;object-fit:contain;background:#000}
+.vmsg{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:20px;background:rgba(6,20,24,.85)}
+
+/* rules */
+.rules{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,.8fr);gap:28px;align-items:start}
+@media (max-width:900px){.rules{grid-template-columns:1fr}}
+.rules ol,.rules ul{margin:0;padding-left:1.2em;display:grid;gap:10px;font-size:clamp(17px,1.7vw,23px)}
+.rules li b{color:var(--lantern)}
+.rules .pirate{color:var(--flare)}
+.wt{border-collapse:collapse;font-size:clamp(16px,1.5vw,21px);width:100%}
+.wt th,.wt td{border:1px solid var(--line);padding:8px 10px;text-align:center}
+.wt th{background:var(--tide);font-weight:700}
+.wt td:first-child{font-weight:700}
+.cardchip{display:inline-flex;align-items:center;gap:6px;border-radius:8px;padding:2px 10px;font-weight:700;font-size:.9em;vertical-align:middle}
+.cardchip.ok{background:var(--lantern);color:#1d1404}
+.cardchip.bad{background:var(--flare);color:#fff}
+.cardchip svg{width:1.1em;height:1.1em}
+
+/* broadcast */
+.bc{display:grid;grid-template-columns:minmax(0,.7fr) minmax(0,1.3fr);gap:28px;align-items:center}
+@media (max-width:900px){.bc{grid-template-columns:1fr}}
+.cf{position:relative;border-radius:16px;overflow:hidden;border:2px solid #5a1a10;box-shadow:0 0 0 0 rgba(226,72,47,.5);aspect-ratio:637/900;max-height:62vh;margin-inline:auto}
+.cf img{width:100%;height:100%;object-fit:cover;display:block}
+.cf.talk{animation:glow 1.2s ease-in-out infinite}
+@keyframes glow{50%{box-shadow:0 0 38px 6px rgba(226,72,47,.55)}}
+.quote{font-size:clamp(22px,2.6vw,36px);font-weight:700;line-height:1.45;border-left:4px solid var(--flare);padding-left:18px;white-space:pre-line}
+.quote.nar{border-color:var(--lantern)}
+.wk{display:flex;gap:10px;flex-wrap:wrap}
+.wk div{border:1px solid var(--line);border-radius:10px;padding:8px 14px;background:var(--deep);border-top:4px solid var(--tc)}
+.wk b{font-size:22px}
+
+/* ships */
+.fleet{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+@media (max-width:760px){.fleet{grid-template-columns:1fr}}
+.ship{background:var(--deep);border:1px solid var(--line);border-radius:14px;padding:12px 14px;display:grid;gap:6px;position:relative;border-top:5px solid var(--tc)}
+.ship h3{font-size:24px;display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.ship h3 small{font-family:var(--body);font-size:13px;color:var(--mist)}
+.ship svg.hull{width:100%;height:auto;display:block}
+.ship .st{display:flex;justify-content:space-between;font-size:14px;color:var(--mist)}
+.ship .st b{color:var(--foam)}
+.ship.sunk{border-color:var(--flare)}
+.ship.sunk .st b{color:var(--flare)}
+.ship.storm::after{content:"폭풍";position:absolute;top:10px;right:12px;background:#3c4fb8;color:#fff;font-size:12px;font-weight:700;border-radius:6px;padding:2px 8px}
+.ship.hit{animation:shake .5s}
+@keyframes shake{20%{transform:translateX(-8px)}40%{transform:translateX(7px)}60%{transform:translateX(-5px)}80%{transform:translateX(3px)}}
+.hist{display:flex;gap:6px}
+.hist i{width:22px;height:22px;border-radius:6px;border:1px solid var(--line);display:grid;place-items:center;font-style:normal;font-size:11px;color:var(--mist)}
+.hist i.ok{background:var(--lantern);border-color:var(--lantern);color:#1d1404}
+.hist i.bad{background:var(--flare);border-color:var(--flare);color:#fff}
+.edit{display:none;gap:6px;justify-content:flex-end}
+.editing .edit{display:flex}
+.edit button{border:1px solid var(--line);background:var(--ink);border-radius:6px;padding:2px 10px}
+
+/* input + reveal */
+.inrow{display:grid;grid-template-columns:minmax(120px,.6fr) 1fr;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
+.inrow:last-child{border-bottom:0}
+.inrow h3{font-size:24px;border-left:6px solid var(--tc);padding-left:10px}
+.inrow .seg button{min-width:64px;font-size:20px}
+.reveal{display:grid;gap:18px;justify-items:center;text-align:center}
+.cards{display:flex;gap:18px;flex-wrap:wrap;justify-content:center;perspective:900px}
+.fc{width:clamp(90px,11vw,150px);aspect-ratio:5/7;position:relative;transform-style:preserve-3d;transition:transform .55s cubic-bezier(.3,.7,.3,1.2)}
+.fc.open{transform:rotateY(180deg)}
+.fc>div{position:absolute;inset:0;border-radius:12px;backface-visibility:hidden;display:grid;place-items:center;border:2px solid var(--line)}
+.fc .back{background:repeating-linear-gradient(45deg,#12363d 0 10px,#0e2c32 10px 20px);}
+.fc .back::after{content:"팀플호";font-family:var(--display);color:var(--brass);font-size:18px}
+.fc .front{transform:rotateY(180deg);gap:4px;align-content:center;font-weight:900;font-size:clamp(16px,1.6vw,22px)}
+.fc .front svg{width:52%;height:auto}
+.fc .front.ok{background:var(--lantern);color:#1d1404;border-color:#ffd77a}
+.fc .front.bad{background:var(--flare);color:#fff;border-color:#ff8b74}
+.stamp{font-family:var(--display);font-size:clamp(36px,5vw,64px);padding:4px 22px;border:5px solid;border-radius:12px;transform:rotate(-4deg);animation:pop .35s ease-out}
+.stamp.ok{color:var(--lantern);border-color:var(--lantern)}
+.stamp.bad{color:var(--flare);border-color:var(--flare)}
+@keyframes pop{from{transform:rotate(-4deg) scale(1.8);opacity:0}}
+.tname{font-family:var(--display);font-size:clamp(30px,4vw,52px);border-bottom:6px solid var(--tc);padding:0 10px}
+
+/* countdown */
+.count{font-family:var(--display);font-size:min(38vh,280px);line-height:1;color:var(--lantern);text-align:center;animation:pop .4s}
+.count.go{color:var(--flare);font-size:min(20vh,150px)}
+
+/* ending */
+.verdict{position:relative;border-radius:16px;overflow:hidden;border:1px solid var(--line)}
+.verdict img{width:100%;display:block;max-height:46vh;object-fit:cover}
+.verdict .cap{position:absolute;left:0;right:0;bottom:0;padding:18px 22px;background:linear-gradient(transparent,rgba(6,20,24,.92) 40%)}
+.rank{display:grid;gap:10px}
+.rank div{display:grid;grid-template-columns:auto 1fr auto auto;gap:14px;align-items:center;background:var(--deep);border:1px solid var(--line);border-left:8px solid var(--tc);border-radius:12px;padding:10px 16px;font-size:20px}
+.rank .g{font-family:var(--display);font-size:34px;color:var(--lantern);min-width:2.2ch;text-align:center}
+.rank .g.f{color:var(--flare)}
+.rank small{color:var(--mist);font-size:14px}
+
+/* ballot (phone) */
+#ballot{height:100%;overflow:auto;padding-block:16px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+#ballot[hidden]{display:none!important}
+.bl{max-width:520px;margin:0 auto;display:grid;gap:14px}
+.bl .btn{width:100%;font-size:18px;padding:16px}
+.cover{min-height:60vh;display:grid;place-items:center;text-align:center;border:2px dashed var(--line);border-radius:16px;padding:20px;background:var(--deep)}
+.rolecard{border-radius:16px;overflow:hidden;border:2px solid var(--line);background:var(--deep)}
+.rolecard img{width:100%;display:block;aspect-ratio:16/10;object-fit:cover}
+.rolecard .in{padding:14px 16px;display:grid;gap:8px}
+.rolecard.pirate{border-color:var(--flare)}
+.rolecard.pirate h2{color:var(--flare)}
+.choice{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.choice button{aspect-ratio:3/4;border-radius:14px;border:0;display:grid;place-items:center;align-content:center;gap:8px;font-size:22px;font-weight:900}
+.choice svg{width:50%}
+.choice .ok{background:var(--lantern);color:#1d1404}
+.choice .bad{background:var(--flare);color:#fff}
+.bl .stamp{font-size:28px;transform:none;animation:none;justify-self:center;white-space:nowrap;padding:4px 16px}
+a.btn{color:var(--foam)}
+.toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--tide);border:1px solid var(--lantern);border-radius:10px;padding:10px 16px;z-index:50;font-weight:700}
+@media (max-width:760px){
+  .bar{flex-wrap:wrap;gap:8px}
+  .rail{order:3;flex-basis:100%}
+  .tools{margin-left:auto;flex-wrap:wrap;justify-content:flex-end}
+  .clock{display:none}
+  .ctrl{flex-wrap:wrap}
+  .ctrl .where{order:-1;flex-basis:100%}
+  .ctrl .btn{flex:1}
+  .inrow{grid-template-columns:1fr}
+  .rank div{grid-template-columns:auto 1fr auto;font-size:17px}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div id="app">
+  <header class="bar">
+    <div class="brand">팀플호<small>X맨을 찾아라</small></div>
+    <nav class="rail" id="rail" aria-label="진행 단계"></nav>
+    <div class="tools">
+      <span class="clock" id="clock" title="게임 경과 시간 (목표 40분)">경과 <b class="num">00:00</b> / 40:00</span>
+      <button class="ibtn" id="bSound" aria-pressed="true" title="효과음·음성">소리</button>
+      <button class="ibtn" id="bSea" aria-pressed="false" title="파도 배경음">파도</button>
+      <button class="ibtn" id="bEdit" aria-pressed="false" title="구멍 수 직접 수정">수정</button>
+      <button class="ibtn" id="bFull" title="전체 화면">전체화면</button>
+    </div>
+  </header>
+  <main id="stage" aria-live="polite"></main>
+  <footer class="ctrl">
+    <button class="btn" id="bPrev">◀ 이전</button>
+    <div class="where" id="where"></div>
+    <div class="timer" id="timer" hidden>
+      <span class="t num" id="tval">3:00</span>
+      <button class="ibtn" id="tPlay">시작</button>
+      <button class="ibtn" id="tAdd" title="30초 추가">+30초</button>
+      <button class="ibtn" id="tReset" title="처음부터">↺</button>
+    </div>
+    <button class="btn primary" id="bNext">다음 ▶</button>
+  </footer>
+</div>
+<div id="ballot" hidden></div>
+
+<script>
+(() => {
+'use strict';
+/* ---------- assets ---------- */
+const IMG = n => `assets/img/${n}.jpg`;
+const AUD = n => `assets/audio/${n}.mp3`;
+const ICON = {
+  anchor:'<svg viewBox="0 0 64 64" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><circle cx="32" cy="11" r="6"/><path d="M32 17v40M20 27h24M10 38c2 11 11 19 22 19s20-8 22-19"/><path d="M6 42l4-5 5 4M58 42l-4-5-5 4"/></g></svg>',
+  skull:'<svg viewBox="0 0 64 64" aria-hidden="true"><g fill="currentColor"><path d="M32 6C19 6 10 15 10 27c0 7 3 12 8 15v7h28v-7c5-3 8-8 8-15C54 15 45 6 32 6zm-9 30a6 6 0 110-12 6 6 0 010 12zm18 0a6 6 0 110-12 6 6 0 010 12zM29 41l3-6 3 6z"/></g><g stroke="currentColor" stroke-width="5" stroke-linecap="round"><path d="M10 52l44 8M54 52l-44 8"/></g></svg>'
+};
+
+/* ---------- game data ---------- */
+const TEAM_COLORS = ['var(--t0)','var(--t1)','var(--t2)'];
+const ROUNDS = [
+  {no:1,title:'자료조사',tag:'출처 없는 블로그를 조심하라',audio:'g_r1',voice:'villain',
+   line:'크크크. 자료조사라고?\n출처 없는 블로그 하나면 충분하지.\n자, 첫 번째 구멍을 내 볼까?',
+   workers:{3:2,4:2,5:2},rule:'첫 라운드라 특수 규칙은 없습니다. 첫 조장은 생일이 가장 빠른 사람.'},
+  {no:2,title:'미팅',tag:'회의 시간 정하는 데만 사흘',audio:'g_r2',voice:'villain',
+   line:'회의 시간 정하는 데만 사흘.\n회의록은 텅 비었고, 단톡방은 읽씹 천국이지.\n좋아, 아주 좋아.',
+   workers:{3:2,4:2,5:3},rule:'이 라운드가 끝나면 해적들의 밀회가 열립니다.'},
+  {no:3,title:'PPT 제작',tag:'최종_진짜최종_수정3.pptx',audio:'g_r3',voice:'villain',
+   line:'발표 자료 마감 세 시간 전.\n폰트는 깨지고, 파일명은 최종_진짜최종_수정3.\n폭풍이 온다.',
+   workers:{3:2,4:3,5:3},rule:'폭풍을 맞은 배는 이번 라운드에 실패하면 구멍이 2개 뚫립니다.'},
+  {no:4,title:'최종 발표',tag:'발표 명단에서 한 명의 이름을 뺀다',audio:'g_r4',voice:'villain',
+   line:'최종 발표다.\n교수님 앞에서 가라앉는 배만큼 아름다운 건 없지.\n이번 구멍은… 두 배다.',
+   workers:{3:2,4:3,5:4},rule:'조장은 발표 명단에서 뺄 1명을 정합니다. 실패하면 구멍이 2개 뚫립니다.'}
+];
+const NIGHT = {audio:'g_night',end:'g_night_end',
+  line:'모두 고개를 숙이고 눈을 감아 주세요.\n해적들만 조용히 고개를 드세요. 서로의 얼굴을 확인하세요.\n캡틴 F의 폭풍을 보낼 배를 손가락으로 가리키세요.'};
+const ACCUSE = {audio:'g_accuse',line:'마지막 기회다, 선원들. 누가 너희 배에 구멍을 냈지?\n틀리면… 억울한 팀원 하나가 단톡방을 나가겠지.'};
+const END = {
+  pirate:{audio:'g_end_pirate',img:'s6_sink',title:'해적단 승리',line:'크하하하! 상대평가 만세!\n이번 학기는 우리 해적단의 승리다! 해적들이여, 일어나라!'},
+  sailor:{audio:'g_end_sailor',img:'s7_arrive',title:'선원 승리',line:'해적의 계략은 실패했다.\n끝까지 배를 지킨 선원들 덕분에, 팀플호는 종강항에 도착했다.\n숨어 있던 해적들은, 이제 일어나 주세요.'}
+};
+const GRADES = ['A+','A0','B+','C+','D+'];
+
+/* steps: key, label, number of sub-screens */
+const STEPS = [
+  {key:'setup',label:'준비',subs:1},
+  {key:'intro',label:'오프닝',subs:1},
+  {key:'rules',label:'규칙',subs:4},
+  {key:'roles',label:'역할',subs:1},
+  {key:'round',r:0,label:'1R 자료조사',subs:5},
+  {key:'round',r:1,label:'2R 미팅',subs:5},
+  {key:'night',label:'밀회',subs:3},
+  {key:'round',r:2,label:'3R PPT',subs:5},
+  {key:'round',r:3,label:'4R 발표',subs:5},
+  {key:'accuse',label:'지목',subs:3},
+  {key:'ending',label:'결말',subs:2}
+];
+const ROUND_SUBS = ['캡틴 F 방송','회의 · 작업자 지명','비밀 수리','결과 입력','결과 공개'];
+
+/* ---------- state ---------- */
+const KEY = 'teamplay-pirates-v1';
+const fresh = () => ({
+  teams:[{name:'1조',size:4},{name:'2조',size:4},{name:'3조',size:4}],
+  cfg:{sink:3,r4mult:2,storm:true,tDiscuss:180,tVote:60,tAccuse:90},
+  step:0,sub:0,startedAt:null,
+  rounds:ROUNDS.map(()=>({trolls:[null,null,null],shown:0,orders:[null,null,null]})),
+  storm:null,               // team index, -1 = 없음, null = 미정
+  accuse:[null,null,null],  // true = 해적 검거, false = 누명
+  adj:[0,0,0]
+});
+let S = load();
+function load(){
+  try{const raw=localStorage.getItem(KEY); if(raw){const s=JSON.parse(raw); if(s&&s.teams&&s.rounds) return s;}}catch(e){}
+  return fresh();
+}
+function save(){ try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){} }
+
+/* ---------- rules engine ---------- */
+function roundHoles(r,t){
+  const v=S.rounds[r].trolls[t];
+  if(v==null||v===0) return 0;
+  let h=1;
+  if(r===3) h*=S.cfg.r4mult;
+  if(r===2 && S.cfg.storm && S.storm===t) h*=2;
+  return h;
+}
+function isShown(r,t){ const R=S.rounds[r]; return R.shown>t || (R.shown===t && !!R.open); }
+function holes(t,{onlyShown=true}={}){
+  let h=0;
+  for(let r=0;r<4;r++){ if(!onlyShown||isShown(r,t)) h+=roundHoles(r,t); }
+  if(S.accuse[t]===true) h=Math.max(0,h-1);
+  if(S.accuse[t]===false) h+=1;
+  return Math.max(0,h+(S.adj[t]||0));
+}
+function grade(h){ return h>=S.cfg.sink?'F':(GRADES[h]||'D+'); }
+function trollTotal(t){ return S.rounds.reduce((a,r,i)=>a+(isShown(i,t)?(r.trolls[t]||0):0),0); }
+function workers(r,t){ return ROUNDS[r].workers[S.teams[t].size]; }
+function rolesFor(size){ return {pirate:1,nav:size>=4?1:0,sailor:size-1-(size>=4?1:0)}; }
+function verdict(){
+  const sunk=[0,1,2].filter(t=>holes(t,{onlyShown:false})>=S.cfg.sink);
+  const pirateWin = sunk.length>=2;
+  const order=[0,1,2].sort((a,b)=>{
+    const ha=holes(a,{onlyShown:false}),hb=holes(b,{onlyShown:false});
+    if(ha!==hb) return ha-hb;
+    const ca=S.accuse[a]===true?0:1,cb=S.accuse[b]===true?0:1;
+    if(ca!==cb) return ca-cb;
+    return trollTotal(a)-trollTotal(b);
+  });
+  const escaped=[0,1,2].filter(t=>S.accuse[t]===false).sort((a,b)=>holes(b,{onlyShown:false})-holes(a,{onlyShown:false}));
+  return {sunk,pirateWin,order,mvpPirate:escaped[0]};
+}
+
+/* ---------- sound ---------- */
+let soundOn=true, ac=null, seaNode=null, voice=null;
+function ctx(){ if(!ac){ try{ac=new (window.AudioContext||window.webkitAudioContext)();}catch(e){ac=null;} } if(ac&&ac.state==='suspended') ac.resume(); return ac; }
+function tone(freq,dur,{type='sine',gain=.18,when=0,slide=null}={}){
+  const a=ctx(); if(!a||!soundOn) return;
+  const t=a.currentTime+when, o=a.createOscillator(), g=a.createGain();
+  o.type=type; o.frequency.setValueAtTime(freq,t); if(slide) o.frequency.exponentialRampToValueAtTime(slide,t+dur);
+  g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(gain,t+.01); g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+  o.connect(g).connect(a.destination); o.start(t); o.stop(t+dur+.05);
+}
+function noise(dur,{gain=.25,when=0,lp=900}={}){
+  const a=ctx(); if(!a||!soundOn) return;
+  const len=Math.floor(a.sampleRate*dur), buf=a.createBuffer(1,len,a.sampleRate), d=buf.getChannelData(0);
+  for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*(1-i/len);
+  const s=a.createBufferSource(), f=a.createBiquadFilter(), g=a.createGain();
+  s.buffer=buf; f.type='lowpass'; f.frequency.value=lp; g.gain.value=gain;
+  s.connect(f).connect(g).connect(a.destination); s.start(a.currentTime+when);
+}
+const SFX={
+  flip(){ noise(.12,{gain:.35,lp:2500}); },
+  ok(){ [523,659,784,1047].forEach((f,i)=>tone(f,.5,{type:'triangle',gain:.16,when:i*.09})); },
+  bad(){ tone(140,.9,{type:'sawtooth',gain:.2,slide:45}); noise(.9,{gain:.5,lp:420,when:.02}); },
+  tick(){ tone(880,.08,{type:'square',gain:.06}); },
+  horn(){ tone(196,1.1,{type:'sawtooth',gain:.14}); tone(247,1.1,{type:'sawtooth',gain:.1,when:.02}); },
+  storm(){ noise(2.2,{gain:.45,lp:600}); tone(60,2,{gain:.2,slide:40}); }
+};
+function sea(on){
+  const a=ctx(); if(!a) return;
+  if(!on){ if(seaNode){ try{seaNode.stop();}catch(e){} seaNode=null; } return; }
+  const len=a.sampleRate*4, buf=a.createBuffer(1,len,a.sampleRate), d=buf.getChannelData(0); let last=0;
+  for(let i=0;i<len;i++){ last=(last+.02*(Math.random()*2-1))/1.02; d[i]=last*3.2; }
+  const s=a.createBufferSource(); s.buffer=buf; s.loop=true;
+  const f=a.createBiquadFilter(); f.type='lowpass'; f.frequency.value=500;
+  const g=a.createGain(); g.gain.value=.22;
+  const lfo=a.createOscillator(), lg=a.createGain(); lfo.frequency.value=.12; lg.gain.value=.14; lfo.connect(lg).connect(g.gain); lfo.start();
+  s.connect(f).connect(g).connect(a.destination); s.start(); seaNode=s;
+}
+function playVoice(name,onEnd){
+  stopVoice(); if(!soundOn) return;
+  voice=new Audio(AUD(name));
+  const el=document.querySelector('[data-talk]'); if(el) el.classList.add('talk');
+  voice.addEventListener('ended',()=>{ const e=document.querySelector('[data-talk]'); if(e) e.classList.remove('talk'); onEnd&&onEnd(); });
+  voice.play().catch(()=>{ toast('음성을 재생하려면 ▶ 버튼을 한 번 눌러 주세요'); const e=document.querySelector('[data-talk]'); if(e) e.classList.remove('talk'); });
+}
+function stopVoice(){ if(voice){ voice.pause(); voice=null; } }
+
+/* ---------- timer ---------- */
+const T={total:0,left:0,run:false,last:0,label:''};
+function setTimer(sec,label,autostart){ T.total=sec; T.left=sec; T.label=label; T.run=!!autostart; T.last=performance.now(); drawTimer(); }
+function drawTimer(){
+  const el=document.getElementById('timer'); el.hidden=!T.total;
+  const s=Math.max(0,Math.ceil(T.left)); document.getElementById('tval').textContent=`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+  el.classList.toggle('warn',T.total>0&&s<=10&&s>0&&T.run);
+  document.getElementById('tPlay').textContent=T.run?'일시정지':(T.left<T.total?'계속':'시작');
+}
+let prevSec=null;
+setInterval(()=>{
+  const now=performance.now();
+  if(T.run){
+    T.left-= (now-T.last)/1000;
+    const s=Math.ceil(T.left);
+    if(s!==prevSec&&s<=5&&s>0) SFX.tick();
+    prevSec=s;
+    if(T.left<=0){ T.left=0; T.run=false; SFX.horn(); toast(`${T.label||'시간'} 종료!`); }
+    drawTimer();
+  }
+  T.last=now;
+  if(S.startedAt){ const e=Math.floor((Date.now()-S.startedAt)/1000); const c=document.querySelector('#clock b'); c.textContent=`${String(Math.floor(e/60)).padStart(2,'0')}:${String(e%60).padStart(2,'0')}`; c.style.color=e>2400?'var(--flare)':''; }
+},200);
+
+/* ---------- helpers ---------- */
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const tc=t=>`style="--tc:${TEAM_COLORS[t]}"`;
+const tn=t=>esc(S.teams[t].name||`${t+1}조`);
+function toast(msg){ const d=document.createElement('div'); d.className='toast'; d.textContent=msg; document.body.appendChild(d); setTimeout(()=>d.remove(),2600); }
+function shuffle(a){ for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]];} return a; }
+function chip(ok){ return ok?`<span class="cardchip ok">${ICON.anchor}수리</span>`:`<span class="cardchip bad">${ICON.skull}트롤</span>`; }
+function mc(text){ return `<p class="mc"><b>MC</b>${text}</p>`; }
+function bg(name){ return `<div class="bg" style="background-image:url('${IMG(name)}')"></div>`; }
+
+function shipSVG(t){
+  const h=holes(t), sink=S.cfg.sink, sunk=h>=sink, lvl=Math.min(1,h/sink);
+  const slots=[]; const n=Math.max(sink,h);
+  for(let i=0;i<n;i++){
+    const x=60+i*(80/Math.max(1,n-1||1)); const filled=i<h;
+    slots.push(`<circle cx="${n===1?100:x}" cy="96" r="7" fill="${filled?'#061418':'none'}" stroke="${filled?'#e2482f':'#93b3ad'}" stroke-width="${filled?3:1.5}" ${filled?'':'stroke-dasharray="3 3"'}/>`);
+    if(filled) slots.push(`<path d="M${n===1?100:x} 88 q-3 -10 0 -16 q3 6 0 16" fill="#7fd1e0" opacity=".85"/>`);
+  }
+  return `<svg class="hull" viewBox="0 0 200 135" role="img" aria-label="${tn(t)} 배, 구멍 ${h}개">
+    <g transform="${sunk?'translate(0 26) rotate(14 100 90)':''}" opacity="${sunk?.75:1}">
+      <line x1="100" y1="12" x2="100" y2="82" stroke="#c9965a" stroke-width="4"/>
+      <rect x="64" y="18" width="72" height="46" rx="3" fill="${TEAM_COLORS[t]}" opacity=".95"/>
+      <rect x="72" y="44" width="8" height="14" fill="#fff" opacity=".7"/><rect x="85" y="36" width="8" height="22" fill="#fff" opacity=".7"/><rect x="98" y="28" width="8" height="30" fill="#fff" opacity=".7"/><rect x="111" y="40" width="8" height="18" fill="#fff" opacity=".7"/>
+      <path d="M18 82 H182 L162 112 H38 Z" fill="#6b4425" stroke="#3a2412" stroke-width="2"/>
+      <path d="M24 89 H176" stroke="#8a5a32" stroke-width="2"/>
+      <clipPath id="hc${t}"><path d="M18 82 H182 L162 112 H38 Z"/></clipPath>
+      <rect clip-path="url(#hc${t})" x="0" y="${112-30*lvl}" width="200" height="40" fill="#1d6f86" opacity=".55"/>
+      ${slots.join('')}
+    </g>
+    <path d="M0 118 q12 -7 25 0 t25 0 t25 0 t25 0 t25 0 t25 0 t25 0 t25 0 V135 H0Z" fill="#0f4552"/>
+  </svg>`;
+}
+function fleet(){
+  return `<div class="fleet">${[0,1,2].map(t=>{
+    const h=holes(t), sunk=h>=S.cfg.sink;
+    const hist=ROUNDS.map((R,r)=>{ if(!isShown(r,t)) return `<i>${r+1}</i>`; const v=S.rounds[r].trolls[t]; return v>0?`<i class="bad" title="${r+1}R 실패">${r+1}</i>`:`<i class="ok" title="${r+1}R 성공">${r+1}</i>`; }).join('');
+    return `<div class="ship ${sunk?'sunk':''} ${S.cfg.storm&&S.storm===t&&S.rounds[2].shown<3?'storm':''}" id="ship${t}" ${tc(t)}>
+      <h3>${tn(t)} <small>${S.teams[t].size}명</small></h3>${shipSVG(t)}
+      <div class="st"><span>구멍 <b class="num">${h} / ${S.cfg.sink}</b></span><span>${sunk?'<b>침몰</b>':'예상 학점 <b>'+grade(h)+'</b>'}</span></div>
+      <div class="hist" aria-label="라운드 기록">${hist}</div>
+      <div class="edit"><button data-act="adj" data-t="${t}" data-d="-1">구멍 −1</button><button data-act="adj" data-t="${t}" data-d="1">구멍 +1</button></div>
+    </div>`;}).join('')}</div>`;
+}
+
+/* ---------- screens ---------- */
+function vSetup(){
+  const total=S.teams.reduce((a,t)=>a+t.size,0);
+  const cfgSel=(id,val,opts)=>`<select id="${id}">${opts.map(([v,l])=>`<option value="${v}" ${String(v)===String(val)?'selected':''}>${l}</option>`).join('')}</select>`;
+  return `${bg('style_key')}<div class="scene">
+  <div class="hero">
+    <div style="display:grid;gap:14px">
+      <span class="eyebrow">3개 조 · 조당 3~5명 · 40분 사회추리 게임</span>
+      <h1 class="big">팀플호에<br>해적이 탔다</h1>
+      <p class="lead">각 조는 배 한 척. 조마다 캡틴 F에게 매수된 해적(X맨)이 한 명씩 숨어 있습니다. 자료조사, 미팅, PPT 제작, 최종 발표까지 네 번의 수리를 버티고, 마지막에 X맨을 지목하세요.</p>
+      <div class="row"><button class="btn primary lg" data-act="start">▶ 오프닝 영상으로 시작</button><a class="btn" href="#ballot" style="text-decoration:none">휴대폰 투표함 열기</a></div>
+      ${S.startedAt?`<div class="row"><button class="btn" data-act="resume">이어서 진행 (${esc(STEPS[S.step].label)})</button><button class="btn danger" data-act="askreset">새 게임</button></div>`:''}
+    </div>
+    <img src="${IMG('s4_three_ships')}" alt="세 척의 팀플호가 폭풍 속을 항해하는 장면">
+  </div>
+  <div class="grid3">${S.teams.map((tm,t)=>{const c=rolesFor(tm.size);return `<div class="panel team-card" ${tc(t)}>
+     <label for="tname${t}" class="eyebrow">${t+1}번 배</label>
+     <input id="tname${t}" data-act="tname" data-t="${t}" value="${esc(tm.name)}" maxlength="12">
+     <div class="row"><span class="seg" role="group" aria-label="${t+1}번 배 인원">${[3,4,5].map(n=>`<button data-act="size" data-t="${t}" data-n="${n}" aria-pressed="${tm.size===n}">${n}명</button>`).join('')}</span></div>
+     <div class="comp">역할 카드: <span class="p">해적 ${c.pirate}</span> · ${c.nav?'<span class="n">항해사 1</span> · ':''}선원 ${c.sailor}</div>
+   </div>`;}).join('')}</div>
+  <div class="grid2">
+    <div class="panel"><h3 style="font-size:22px;margin-bottom:8px">40분 진행표 <small style="font-family:var(--body);font-size:14px;color:var(--mist)">· 총 ${total}명</small></h3>
+      <table class="tl"><tbody>
+      <tr><td>00:00</td><td>오프닝 영상 (1분 45초)</td></tr><tr><td>02:00</td><td>규칙 설명 4장 (5분)</td></tr><tr><td>07:00</td><td>역할 카드 배분 · 확인 (2분)</td></tr>
+      <tr><td>09:00</td><td>1R 자료조사 (6분)</td></tr><tr><td>15:00</td><td>2R 미팅 (6분)</td></tr><tr><td>21:00</td><td>해적 밀회 · 폭풍 지정 (1분 30초)</td></tr>
+      <tr><td>22:30</td><td>3R PPT 제작 (6분)</td></tr><tr><td>28:30</td><td>4R 최종 발표 (6분)</td></tr><tr><td>34:30</td><td>최후의 지목 (3분)</td></tr><tr><td>37:30</td><td>결말 · 해적단 공개 · 시상 (2분 30초)</td></tr>
+      </tbody></table></div>
+    <details class="panel"><summary>규칙 조정 (기본값 권장)</summary>
+      <div class="cfg">
+        <label>침몰 기준 구멍 수 ${cfgSel('c_sink',S.cfg.sink,[[2,'2개 (해적 유리)'],[3,'3개 (기본)'],[4,'4개 (선원 유리)']])}</label>
+        <label>4R 실패 시 구멍 ${cfgSel('c_r4',S.cfg.r4mult,[[1,'1개'],[2,'2개 (기본)']])}</label>
+        <label>밀회 폭풍 ${cfgSel('c_storm',S.cfg.storm?1:0,[[1,'사용 (기본)'],[0,'사용 안 함']])}</label>
+        <label>회의 시간 ${cfgSel('c_td',S.cfg.tDiscuss,[[120,'2분'],[150,'2분 30초'],[180,'3분 (기본)'],[240,'4분']])}</label>
+        <label>비밀 수리 시간 ${cfgSel('c_tv',S.cfg.tVote,[[45,'45초'],[60,'1분 (기본)'],[90,'1분 30초']])}</label>
+        <label>지목 토론 시간 ${cfgSel('c_ta',S.cfg.tAccuse,[[60,'1분'],[90,'1분 30초 (기본)'],[120,'2분']])}</label>
+      </div></details>
+  </div>
+  ${mc('준비물: 역할 카드(조별 해적 1·항해사 1·선원 3, 인원에 맞게 빼기), 1인당 수리·트롤 카드 1장씩, 조별 수리함(컵이나 봉투) 1개. 인쇄가 어려우면 조마다 휴대폰 1대로 "투표함"을 쓰면 됩니다.')}
+  </div>`;
+}
+function vIntro(){
+  return `<div class="scene">
+    <div class="vwrap"><video id="vid" src="assets/intro.mp4" controls playsinline preload="auto" poster="${IMG('style_key')}"></video></div>
+    <div class="row" style="justify-content:center"><button class="btn primary lg" data-act="vplay">▶ 오프닝 영상 재생</button><button class="btn" data-act="vfull">영상 전체화면</button></div>
+    ${mc('영상이 끝나면 "다음"을 눌러 규칙 설명으로 넘어가세요. 영상에는 자막과 내레이션이 들어 있습니다.')}
+  </div>`;
+}
+function workerTable(){
+  return `<table class="wt"><thead><tr><th>조 인원</th>${ROUNDS.map(R=>`<th>${R.no}R ${R.title}</th>`).join('')}</tr></thead>
+    <tbody>${[3,4,5].map(n=>`<tr><td>${n}명</td>${ROUNDS.map(R=>`<td class="num">${R.workers[n]}명</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+}
+function vRules(sub){
+  const slides=[
+    ()=>`<div class="rules"><div style="display:grid;gap:16px"><span class="eyebrow">규칙 1 / 4 · 진영</span><h2 class="big">이 배에는<br>해적이 타 있다</h2>
+      <ul><li>조마다 배 한 척. <b>세 척이 동시에</b> 종강항으로 항해합니다.</li>
+      <li>조마다 <span class="pirate"><b style="color:var(--flare)">해적(X맨) 1명</b></span>이 숨어 있습니다. 나머지는 <b>선원</b>입니다.</li>
+      <li>4~5인 조에는 <b>항해사</b> 1명이 있습니다. 게임 중 딱 한 번, 결과 공개 뒤 팀원 1명의 역할 카드를 몰래 볼 수 있습니다.</li>
+      <li>해적끼리는 처음엔 서로 모릅니다. 2라운드 뒤 <b>밀회</b>에서 얼굴을 확인합니다.</li></ul></div>
+      <img src="${IMG('s8_xman')}" alt="선원들 몰래 배에 구멍을 뚫는 X맨" style="border-radius:14px;border:1px solid var(--line);width:100%"></div>`,
+    ()=>`<div class="rules"><div style="display:grid;gap:16px"><span class="eyebrow">규칙 2 / 4 · 한 라운드</span><h2 class="mid">네 번의 수리, 라운드마다 이렇게</h2>
+      <ol><li><b>캡틴 F 방송</b>을 듣는다.</li>
+      <li><b>회의 3분.</b> 조장이 수리할 작업자를 지명한다. 조장 자신도 뽑을 수 있다.</li>
+      <li><b>비밀 수리 1분.</b> 작업자는 카드 1장을 수리함에 엎어서 넣는다.<br>선원은 ${chip(true)}만, 해적은 ${chip(true)} ${chip(false)} 아무거나.</li>
+      <li><b>공개.</b> ${chip(false)}가 한 장이라도 나오면 수리 실패, <b style="color:var(--flare)">구멍 +1</b>.</li>
+      <li>조장 바통은 <b>왼쪽 사람</b>에게.</li></ol></div>
+      <div class="panel" style="display:grid;gap:10px"><span class="eyebrow">왜 X맨을 찾을 수 있나</span><p style="margin:0;font-size:19px">누가 작업자였는지는 모두가 압니다. 실패한 라운드의 작업자 명단을 겹쳐 보면 범인이 좁혀집니다. 해적은 의심을 피하려고 일부러 수리 카드를 낼 수도 있습니다.</p></div></div>`,
+    ()=>`<div class="rules"><div style="display:grid;gap:16px"><span class="eyebrow">규칙 3 / 4 · 작업자 수와 특수 라운드</span><h2 class="mid">라운드별 작업자 수</h2>${workerTable()}
+      <ul><li><b>밀회 (2R 뒤):</b> 모두 눈을 감고, 해적만 고개를 들어 서로 확인한 뒤 <b>폭풍을 보낼 배</b>를 가리킨다. 폭풍 맞은 배는 3R 실패 시 구멍 2개.</li>
+      <li><b>4R 최종 발표:</b> 조장이 발표 명단에서 뺄 1명을 정한다. 실패하면 구멍 2개.</li></ul></div>
+      <img src="${IMG('s5_night')}" alt="선실에서 몰래 모인 해적들의 밀회" style="border-radius:14px;border:1px solid var(--line);width:100%"></div>`,
+    ()=>`<div class="rules"><div style="display:grid;gap:16px"><span class="eyebrow">규칙 4 / 4 · 승패</span><h2 class="mid">구멍 ${S.cfg.sink}개면 침몰</h2>
+      <ul><li><b>최후의 지목:</b> 4R이 끝나면 조원 모두 동시에 X맨을 손가락으로 가리킨다. 가장 많이 지목된 사람이 역할 카드를 공개한다. 동점이면 마지막 조장이 정한다.</li>
+      <li>맞히면 <b>구명보트</b>: 구멍 −1. 틀리면 억울한 팀원이 단톡방을 나간다: <b style="color:var(--flare)">구멍 +1</b>.</li>
+      <li><b style="color:var(--flare)">침몰한 배가 2척 이상</b>이면 해적단 승리.</li>
+      <li>아니면 선원 승리. 구멍이 가장 적은 조가 <b>A+ 우승</b>입니다.</li></ul></div>
+      <img src="${IMG('s6_sink')}" alt="침몰하는 팀플호와 웃는 캡틴 F" style="border-radius:14px;border:1px solid var(--line);width:100%"></div>`
+  ];
+  return `${bg('style_key')}<div class="scene">${slides[sub]()}${mc(['조마다 한 명씩 해적이 있다는 것, 해적은 서로 모른다는 것을 강조하세요.','선원이 트롤 카드를 내면 반칙입니다. 손에 든 두 장 중 안 낸 카드는 엎어서 따로 버립니다.','인원표는 매 라운드 화면에 다시 나옵니다. 외울 필요 없습니다.','질문을 1~2개만 받고 역할 배분으로 넘어가세요.'][sub])}</div>`;
+}
+function vRoles(){
+  return `${bg('a1_crew')}<div class="scene"><span class="eyebrow">역할 배분 · 2분</span><h2 class="big">역할 카드를 받으세요</h2>
+    <div class="grid3">${S.teams.map((tm,t)=>{const c=rolesFor(tm.size);return `<div class="panel team-card" ${tc(t)}><h3 style="font-size:28px">${tn(t)}</h3>
+      <div style="font-size:20px">${tm.size}명 → <b style="color:var(--flare)">해적 ${c.pirate}</b> · ${c.nav?'<b style="color:#7fd1c4">항해사 1</b> · ':''}선원 ${c.sailor}</div></div>`;}).join('')}</div>
+    <ol class="lead" style="display:grid;gap:8px;font-size:20px;color:var(--foam)">
+      <li>조마다 역할 카드를 섞어서 한 장씩 나눠 갖고, <b>혼자만</b> 확인한 뒤 엎어 둡니다.</li>
+      <li>수리 카드와 트롤 카드를 1장씩 받습니다. 누가 어떤 카드를 냈는지는 끝까지 비밀입니다.</li>
+      <li>첫 조장은 <b style="color:var(--lantern)">생일이 가장 빠른 사람</b>입니다.</li>
+      <li>휴대폰 투표함을 쓰는 조는 투표함의 "역할 뽑기"로 대신합니다.</li></ol>
+    ${mc('역할을 확인할 때 표정 관리! 해적은 들키지 않게, 선원은 의심받지 않게. 준비되면 1라운드로 넘어갑니다.')}</div>`;
+}
+function vRound(r,sub){
+  const R=ROUNDS[r], st=S.rounds[r];
+  const head=`<div class="row" style="justify-content:space-between;align-items:end"><div><span class="eyebrow">ROUND ${R.no} / 4 · ${ROUND_SUBS[sub]}</span><h2 class="big">${R.title}</h2></div><p class="lead" style="margin:0">${esc(R.tag)}</p></div>`;
+  const wk=`<div class="wk">${[0,1,2].map(t=>`<div ${tc(t)}>${tn(t)} <span class="num">(${S.teams[t].size}명)</span> → 작업자 <b class="num">${workers(r,t)}명</b>${r===2&&S.cfg.storm&&S.storm===t?' <span style="color:#9fb1ff">· 폭풍</span>':''}</div>`).join('')}</div>`;
+  if(sub===0) return `${bg('a2_hall')}<div class="scene">${head}
+    <div class="bc"><div class="cf" data-talk><img src="${IMG('captain_face')}" alt="캡틴 F"></div>
+      <div style="display:grid;gap:18px"><span class="eyebrow" style="color:var(--flare)">캡틴 F의 방송</span><p class="quote">${esc(R.line)}</p>
+      <div class="row"><button class="btn" data-act="voice" data-a="${R.audio}">▶ 방송 다시 듣기</button></div>
+      <div class="panel" style="display:grid;gap:10px"><b>${esc(R.rule)}</b>${wk}</div></div></div>
+    ${mc(r===0?'첫 조장은 생일이 가장 빠른 사람입니다. 방송이 끝나면 "다음"을 눌러 회의 타이머를 시작하세요.':'조장 바통이 왼쪽 사람에게 넘어갔는지 확인하세요.')}</div>`;
+  if(sub===1) return `<div class="scene">${head}${wk}${fleet()}
+    ${mc(`조장은 작업자 ${[3,4,5].map(n=>`${n}인 조 ${R.workers[n]}명`).join(' · ')}을 지명하세요. 의심 가는 사람을 빼도 되고, 일부러 넣어서 시험해도 됩니다.${r===3?' 이번에는 발표 명단에서 뺄 1명을 정하는 라운드입니다.':''}`)}</div>`;
+  if(sub===2) return `<div class="scene">${head}
+    <div class="hero"><div style="display:grid;gap:16px"><h2 class="mid">작업자만 카드 1장을<br>수리함에 엎어 넣으세요</h2>
+      <p style="font-size:22px;margin:0">선원은 ${chip(true)} 만 · 해적은 ${chip(true)} 또는 ${chip(false)}</p>
+      <p class="lead" style="margin:0">작업자가 아닌 사람은 고개를 돌려 주세요. 안 낸 카드는 엎어서 따로 버립니다.</p></div>
+      <img src="${IMG('s8_xman')}" alt="몰래 구멍을 뚫는 X맨"></div>
+    ${mc('조마다 수리함을 걷거나, 조장이 수리함을 섞은 뒤 트롤 카드 수만 MC에게 알려 주세요. 휴대폰 투표함을 쓰는 조는 화면의 트롤 수를 불러 주면 됩니다.')}</div>`;
+  if(sub===3){
+    const all=[0,1,2].every(t=>st.trolls[t]!=null);
+    return `<div class="scene">${head}<div class="panel">
+      ${[0,1,2].map(t=>`<div class="inrow" ${tc(t)}><h3>${tn(t)} <small style="font-family:var(--body);font-size:14px;color:var(--mist)">작업자 ${workers(r,t)}명</small></h3>
+        <div class="row"><span class="eyebrow" style="letter-spacing:.04em">트롤 카드 수</span><span class="seg" role="group" aria-label="${tn(t)} 트롤 카드 수">${Array.from({length:workers(r,t)+1},(_,k)=>`<button data-act="troll" data-t="${t}" data-k="${k}" aria-pressed="${showInputs&&st.trolls[t]===k}" class="num">${k}</button>`).join('')}</span>
+        <span style="color:${st.trolls[t]!=null?'var(--lantern)':'var(--mist)'};font-weight:700">${st.trolls[t]!=null?(showInputs?`입력값 ${st.trolls[t]}`:'입력 완료'):'대기 중'}</span></div></div>`).join('')}
+      </div><div class="row" style="justify-content:space-between"><button class="btn" data-act="peekin">${showInputs?'입력값 숨기기':'입력값 확인 (MC만)'}</button><button class="btn primary lg" data-act="toreveal" ${all?'':'disabled'}>결과 공개하러 가기 ▶</button></div>
+      ${mc('누른 숫자는 화면에 표시되지 않습니다. 확인이 필요하면 "입력값 확인"을 누르되, 청중이 보지 않을 때만 누르세요.')}</div>`;
+  }
+  // sub 4: reveal
+  const cur=Math.min(st.shown,3);
+  if(cur>=3) return `<div class="scene">${head}<h2 class="mid" style="text-align:center">${R.no}라운드 결과</h2>${fleet()}
+    ${mc(r===1?'다음은 해적들의 밀회입니다. 모두 자리에 앉아 주세요.':r===3?'이제 최후의 지목입니다.':'항해사는 지금 망원경을 쓸 수 있습니다(게임 중 1번). 조장 바통은 왼쪽으로.')}</div>`;
+  const t=cur, n=workers(r,t), k=st.trolls[t]||0;
+  if(!st.orders[t]||st.orders[t].length!==n) { st.orders[t]=shuffle([...Array(n-k).fill(1),...Array(k).fill(0)]); save(); }
+  const ord=st.orders[t], open=!!st.open;
+  return `<div class="scene">${head}<div class="reveal" ${tc(t)}>
+     <div class="tname">${tn(t)}</div>
+     <div class="cards" id="cards">${ord.map(v=>`<div class="fc ${open?'open':''}"><div class="back"></div><div class="front ${v?'ok':'bad'}">${v?ICON.anchor+'수리':ICON.skull+'트롤'}</div></div>`).join('')}</div>
+     <div id="stampBox" style="min-height:90px;display:grid;place-items:center">${open?stamp(r,t):''}</div>
+     <div class="row"><button class="btn primary lg" data-act="flip" id="flipBtn">${open?(t<2?'다음 조 공개 ▶':'라운드 결과 보기 ▶'):'카드 뒤집기'}</button></div></div>
+     <div style="margin-top:6px">${fleet()}</div></div>`;
+}
+function vNight(sub){
+  if(sub===0) return `${bg('s5_night')}<div class="scene"><span class="eyebrow">2라운드 후 · 해적의 밀회</span><h2 class="big">모두 눈을 감으세요</h2>
+    <p class="quote nar">${esc(NIGHT.line)}</p><div class="row"><button class="btn" data-act="voice" data-a="${NIGHT.audio}">▶ 안내 음성 다시 듣기</button></div>
+    ${mc('해적이 고개를 들면 서로 얼굴을 확인할 시간을 5초쯤 주세요. 해적들이 손가락으로 가리킨 배를 "다음" 화면에서 누르세요. 의견이 갈리면 가장 많이 가리킨 배, 동점이면 폭풍 없음.')}</div>`;
+  if(sub===1) return `${bg('s5_night')}<div class="scene"><span class="eyebrow">MC만 보세요</span><h2 class="mid">해적들이 가리킨 배는?</h2>
+    <div class="grid3">${[0,1,2].map(t=>`<button class="btn lg" ${tc(t)} style="border-top:6px solid var(--tc);font-size:28px;padding:28px" data-act="storm" data-t="${t}" aria-pressed="${S.storm===t}">${tn(t)}</button>`).join('')}</div>
+    <div class="row"><button class="btn" data-act="storm" data-t="-1">폭풍 없음</button>${S.cfg.storm?'':'<span class="lead">규칙 조정에서 폭풍을 꺼 두었습니다. 해적끼리 얼굴만 확인합니다.</span>'}</div>
+    ${mc('선택하면 "고개를 드세요" 안내가 이어서 나옵니다.')}</div>`;
+  const s=S.storm;
+  return `${bg('s5_night')}<div class="scene" style="text-align:center;justify-items:center">
+    ${S.cfg.storm&&s!=null&&s>=0?`<span class="eyebrow" style="color:#9fb1ff">폭풍 경보</span><h2 class="big" style="color:#9fb1ff">${tn(s)} 팀플호에 폭풍이 다가옵니다</h2><p class="lead">3라운드에서 수리에 실패하면 구멍이 2개 뚫립니다.</p>`:`<h2 class="big">오늘 밤은 바다가 잠잠합니다</h2><p class="lead">해적들은 서로의 얼굴을 확인했습니다.</p>`}
+    ${fleet()}${mc('누가 폭풍을 보냈는지는 비밀입니다. 해적은 밀회에서 본 얼굴을 끝까지 모른 척!')}</div>`;
+}
+function vAccuse(sub){
+  if(sub===0) return `${bg('a2_hall')}<div class="scene"><span class="eyebrow">최후의 지목 · 토론</span><h2 class="big">X맨은 누구인가</h2>
+    <div class="bc"><div class="cf" data-talk><img src="${IMG('captain_face')}" alt="캡틴 F"></div><div style="display:grid;gap:16px"><p class="quote">${esc(ACCUSE.line)}</p>
+    <div class="row"><button class="btn" data-act="voice" data-a="${ACCUSE.audio}">▶ 방송 다시 듣기</button></div>
+    <p class="lead" style="margin:0">맞히면 구멍 −1, 틀리면 구멍 +1. 실패한 라운드의 작업자 명단을 다시 맞춰 보세요.</p></div></div>
+    ${mc('토론이 끝나면 "다음"을 눌러 동시 지목 카운트다운을 시작하세요.')}</div>`;
+  if(sub===1) return `<div class="scene" style="justify-items:center;text-align:center"><span class="eyebrow">조원 모두, 동시에 손가락으로</span>
+    <div id="cd" class="count">준비</div><button class="btn primary lg" data-act="countdown">카운트다운 시작</button>
+    ${mc('가장 많이 지목된 사람이 역할 카드를 공개합니다. 동점이면 마지막 조장이 정합니다.')}</div>`;
+  return `<div class="scene"><span class="eyebrow">지목 결과 입력</span><h2 class="mid">지목된 사람이 해적이었나요?</h2><div class="panel">
+    ${[0,1,2].map(t=>`<div class="inrow" ${tc(t)}><h3>${tn(t)}</h3><div class="row">
+      <button class="btn ${S.accuse[t]===true?'primary':''}" data-act="acc" data-t="${t}" data-v="1" aria-pressed="${S.accuse[t]===true}">해적 검거 · 구멍 −1</button>
+      <button class="btn ${S.accuse[t]===false?'danger':''}" data-act="acc" data-t="${t}" data-v="0" aria-pressed="${S.accuse[t]===false}">누명 · 구멍 +1</button></div></div>`).join('')}
+    </div>${fleet()}${mc('세 조 모두 입력하면 "다음"으로 결말을 엽니다.')}</div>`;
+}
+function vEnding(sub){
+  const V=verdict(), E=V.pirateWin?END.pirate:END.sailor;
+  if(sub===0) return `<div class="scene"><div class="verdict"><img src="${IMG(E.img)}" alt="${E.title}"><div class="cap"><span class="eyebrow">결말</span><h2 class="big" style="color:${V.pirateWin?'var(--flare)':'var(--lantern)'}">${E.title}</h2></div></div>
+    <p class="quote ${V.pirateWin?'':'nar'}">${esc(E.line)}</p><div class="row"><button class="btn" data-act="voice" data-a="${E.audio}">▶ 다시 듣기</button></div>
+    <p class="lead" style="margin:0">침몰한 배 ${V.sunk.length}척${V.sunk.length?' ('+V.sunk.map(tn).join(', ')+')':''} · 해적단 승리 조건은 침몰 2척 이상</p></div>`;
+  return `${bg(V.pirateWin?'s6_sink':'s7_arrive')}<div class="scene"><span class="eyebrow">최종 성적표</span><h2 class="big">해적들은 일어나 주세요!</h2>
+    <div class="rank">${V.order.map((t,i)=>{const h=holes(t,{onlyShown:false}),g=grade(h);return `<div ${tc(t)}><span class="num" style="color:var(--mist)">${i+1}위</span><span><b>${tn(t)}</b> <small>구멍 ${h}개 · ${S.accuse[t]===true?'X맨 검거':S.accuse[t]===false?'X맨 탈출':'지목 안 함'}</small></span><span class="g ${g==='F'?'f':''}">${g}</span><span>${i===0&&!V.pirateWin?'우승':''}</span></div>`;}).join('')}</div>
+    ${V.mvpPirate!=null?`<div class="panel"><b style="color:var(--flare)">최고의 X맨 후보:</b> ${tn(V.mvpPirate)}의 해적. 끝까지 들키지 않고 구멍 ${holes(V.mvpPirate,{onlyShown:false})}개를 남겼습니다.</div>`:''}
+    <div class="row"><button class="btn" data-act="askreset">새 게임 준비</button></div>
+    ${mc('해적들에게 어떤 라운드에서 트롤했는지 한마디씩 들어 보세요. 사진 찍기 좋은 순간입니다.')}</div>`;
+}
+
+/* ---------- render & flow ---------- */
+let editing=false, showInputs=false;
+function render(){
+  const st=STEPS[S.step];
+  const stage=$('#stage');
+  let html='';
+  if(st.key==='setup') html=vSetup();
+  else if(st.key==='intro') html=vIntro();
+  else if(st.key==='rules') html=vRules(S.sub);
+  else if(st.key==='roles') html=vRoles();
+  else if(st.key==='round') html=vRound(st.r,S.sub);
+  else if(st.key==='night') html=vNight(S.sub);
+  else if(st.key==='accuse') html=vAccuse(S.sub);
+  else html=vEnding(S.sub);
+  stage.innerHTML=html; stage.classList.toggle('editing',editing); stage.scrollTop=0;
+  $('#rail').innerHTML=STEPS.map((s,i)=>`<button class="pill ${i===S.step?'now':i<S.step?'done':''}" data-act="jump" data-i="${i}" ${i===S.step?'aria-current="step"':''}>${s.label}</button>`).join('');
+  const nowPill=$('#rail .now'); if(nowPill) nowPill.scrollIntoView({block:'nearest',inline:'center'});
+  const subName = st.key==='round'?ROUND_SUBS[S.sub]:st.subs>1?`${S.sub+1}/${st.subs}`:'';
+  $('#where').innerHTML=`<b>${esc(st.label)}</b>${subName?' · '+esc(subName):''}`;
+  $('#bPrev').disabled=S.step===0&&S.sub===0;
+  $('#bNext').textContent = S.step===STEPS.length-1&&S.sub===st.subs-1?'끝':'다음 ▶';
+  $('#bNext').disabled = S.step===STEPS.length-1&&S.sub===st.subs-1;
+}
+function enter(){ // side effects when arriving at a screen
+  stopVoice();
+  const st=STEPS[S.step];
+  setTimer(0);
+  if(st.key==='round'){
+    if(S.sub===0) setTimeout(()=>playVoice(ROUNDS[st.r].audio),350);
+    if(S.sub===1) setTimer(S.cfg.tDiscuss,'회의',true);
+    if(S.sub===2) setTimer(S.cfg.tVote,'비밀 수리',true);
+  }
+  if(st.key==='night'){
+    if(S.sub===0) setTimeout(()=>playVoice(NIGHT.audio),350);
+    if(S.sub===2) setTimeout(()=>playVoice(NIGHT.end,()=>{ if(S.cfg.storm&&S.storm!=null&&S.storm>=0) SFX.storm(); }),300);
+  }
+  if(st.key==='intro'){
+    const v=$('#vid');
+    if(v) v.addEventListener('error',()=>{ const w=v.parentElement; if(w&&!w.querySelector('.vmsg')) w.insertAdjacentHTML('beforeend','<div class="vmsg"><div><h3 class="mid">영상 파일을 찾지 못했습니다</h3><p class="lead">assets/intro.mp4가 index.html과 같은 폴더 구조에 있는지 확인하세요. 영상 없이 진행하려면 "다음"을 누르세요.</p></div></div>'); });
+  }
+  if(st.key==='accuse'){
+    if(S.sub===0){ setTimeout(()=>playVoice(ACCUSE.audio),350); setTimer(S.cfg.tAccuse,'지목 토론',false); }
+  }
+  if(st.key==='ending'&&S.sub===0){ const V=verdict(); setTimeout(()=>{ V.pirateWin?SFX.bad():SFX.ok(); playVoice((V.pirateWin?END.pirate:END.sailor).audio); },500); }
+  if(st.key==='roles') setTimer(120,'역할 확인',false);
+}
+function go(step,sub){
+  S.step=Math.max(0,Math.min(STEPS.length-1,step)); S.sub=Math.max(0,Math.min(STEPS[S.step].subs-1,sub)); save(); render(); enter();
+}
+function next(){
+  const st=STEPS[S.step];
+  // guards
+  if(st.key==='round'&&S.sub===3&&![0,1,2].every(t=>S.rounds[st.r].trolls[t]!=null)){ toast('세 조의 트롤 카드 수를 모두 입력하세요'); return; }
+  if(st.key==='round'&&S.sub===4&&S.rounds[st.r].shown<3){ revealStep(); return; }
+  if(st.key==='night'&&S.sub===1&&S.storm==null){ toast('해적들이 가리킨 배를 고르거나 "폭풍 없음"을 누르세요'); return; }
+  if(st.key==='accuse'&&S.sub===2&&S.accuse.some(v=>v==null)){ toast('세 조의 지목 결과를 모두 입력하세요'); return; }
+  if(!S.startedAt) S.startedAt=Date.now();
+  if(S.sub<st.subs-1) go(S.step,S.sub+1); else go(S.step+1,0);
+}
+function prev(){ if(S.sub>0) go(S.step,S.sub-1); else if(S.step>0) go(S.step-1,STEPS[S.step-1].subs-1); }
+
+function stamp(r,t){
+  const fail=(S.rounds[r].trolls[t]||0)>0;
+  return fail?`<div class="stamp bad">수리 실패 · 구멍 +${roundHoles(r,t)}</div>`:`<div class="stamp ok">수리 성공</div>`;
+}
+let flipping=false;
+function revealStep(){
+  const st=STEPS[S.step], R=S.rounds[st.r];
+  if(R.shown>=3||flipping) return;
+  const t=R.shown;
+  if(R.open){ R.shown++; R.open=false; save(); render(); return; }   // move on to next team
+  const box=$('#cards'); if(!box) return;
+  const cards=[...box.querySelectorAll('.fc')];
+  const btn=$('#flipBtn');
+  flipping=true; if(btn) btn.disabled=true;
+  cards.forEach((c,i)=>setTimeout(()=>{ c.classList.add('open'); SFX.flip(); },350+i*650));
+  setTimeout(()=>{
+    const fail=(R.trolls[t]||0)>0;
+    R.open=true; save();
+    $('#stampBox').innerHTML=stamp(st.r,t);
+    fail?SFX.bad():SFX.ok();
+    const fl=document.querySelector('.fleet'); if(fl) fl.outerHTML=fleet();
+    const ship=$('#ship'+t); if(ship&&fail) ship.classList.add('hit');
+    if(btn){ btn.disabled=false; btn.textContent=t<2?'다음 조 공개 ▶':'라운드 결과 보기 ▶'; }
+    flipping=false;
+  },350+cards.length*650+250);
+}
+
+/* ---------- events ---------- */
+document.addEventListener('click',e=>{
+  const b=e.target.closest('[data-act]'); if(!b) return;
+  const a=b.dataset.act, t=+b.dataset.t;
+  ctx();
+  if(a==='jump'){ go(+b.dataset.i,0); }
+  else if(a==='start'){ S.startedAt=Date.now(); go(1,0); }
+  else if(a==='resume'){ go(S.step===0?1:S.step,S.sub); }
+  else if(a==='askreset'){ b.outerHTML=`<span class="row"><b>진행 기록을 모두 지울까요?</b><button class="btn danger" data-act="reset">지우고 새로 시작</button><button class="btn" data-act="noreset">취소</button></span>`; }
+  else if(a==='reset'){ const keep={teams:S.teams,cfg:S.cfg}; S=fresh(); S.teams=keep.teams; S.cfg=keep.cfg; T.total=0; go(0,0); toast('새 게임을 준비했습니다'); }
+  else if(a==='noreset'){ render(); }
+  else if(a==='size'){ S.teams[t].size=+b.dataset.n; save(); render(); }
+  else if(a==='troll'){ S.rounds[STEPS[S.step].r].trolls[t]=+b.dataset.k; S.rounds[STEPS[S.step].r].orders[t]=null; save(); render(); }
+  else if(a==='toreveal'){ next(); }
+  else if(a==='flip'){ revealStep(); }
+  else if(a==='voice'){ playVoice(b.dataset.a); }
+  else if(a==='storm'){ S.storm=t; save(); go(S.step,2); }
+  else if(a==='peekin'){ showInputs=!showInputs; render(); }
+  else if(a==='acc'){ S.accuse[t]=b.dataset.v==='1'; save(); render(); (b.dataset.v==='1'?SFX.ok:SFX.bad)(); }
+  else if(a==='adj'){ S.adj[t]=(S.adj[t]||0)+(+b.dataset.d); save(); render(); }
+  else if(a==='vplay'){ const v=$('#vid'); if(v){ v.play().catch(()=>{}); } }
+  else if(a==='vfull'){ const v=$('#vid'); if(v&&v.requestFullscreen) v.requestFullscreen().catch(()=>toast('전체화면을 쓸 수 없는 환경입니다')); }
+  else if(a==='countdown'){
+    const cd=$('#cd'); b.disabled=true; let n=3;
+    const step=()=>{ if(!cd.isConnected) return; if(n>0){ cd.textContent=n; cd.className='count'; void cd.offsetWidth; cd.style.animation='none'; void cd.offsetWidth; cd.style.animation=''; SFX.tick(); n--; setTimeout(step,1000);} else { cd.textContent='지목!'; cd.className='count go'; SFX.horn(); } };
+    step();
+  }
+});
+document.addEventListener('change',e=>{
+  const el=e.target;
+  const map={c_sink:['sink',Number],c_r4:['r4mult',Number],c_storm:['storm',v=>v==='1'],c_td:['tDiscuss',Number],c_tv:['tVote',Number],c_ta:['tAccuse',Number]};
+  if(map[el.id]){ const [k,f]=map[el.id]; S.cfg[k]=f(el.value); save(); render(); }
+});
+document.addEventListener('input',e=>{
+  const el=e.target; if(el.dataset.act==='tname'){ S.teams[+el.dataset.t].name=el.value.slice(0,12); save(); }
+});
+$('#bNext').addEventListener('click',()=>{ ctx(); next(); });
+$('#bPrev').addEventListener('click',prev);
+$('#tPlay').addEventListener('click',()=>{ ctx(); if(T.left<=0) T.left=T.total; T.run=!T.run; T.last=performance.now(); drawTimer(); });
+$('#tAdd').addEventListener('click',()=>{ T.left+=30; T.total=Math.max(T.total,T.left); drawTimer(); });
+$('#tReset').addEventListener('click',()=>{ T.left=T.total; T.run=false; drawTimer(); });
+$('#bSound').addEventListener('click',e=>{ soundOn=!soundOn; e.currentTarget.setAttribute('aria-pressed',soundOn); if(!soundOn) stopVoice(); });
+$('#bSea').addEventListener('click',e=>{ const on=e.currentTarget.getAttribute('aria-pressed')!=='true'; e.currentTarget.setAttribute('aria-pressed',on); sea(on); });
+$('#bEdit').addEventListener('click',e=>{ editing=!editing; e.currentTarget.setAttribute('aria-pressed',editing); $('#stage').classList.toggle('editing',editing); });
+$('#bFull').addEventListener('click',()=>{ const d=document.documentElement; if(document.fullscreenElement) document.exitFullscreen().catch(()=>{}); else if(d.requestFullscreen) d.requestFullscreen().catch(()=>toast('전체화면을 쓸 수 없는 환경입니다')); });
+document.addEventListener('keydown',e=>{
+  if(location.hash==='#ballot') return;
+  if(e.target.matches('input,select,textarea')) return;
+  if(e.key===' '&&e.target.closest('button')) return; // let the focused button handle Space itself
+  if(['ArrowRight','PageDown',' '].includes(e.key)){ e.preventDefault(); ctx(); next(); }
+  else if(['ArrowLeft','PageUp'].includes(e.key)){ e.preventDefault(); prev(); }
+  else if(e.key==='t'||e.key==='T'){ $('#tPlay').click(); }
+});
+
+/* ======================================================================
+   PHONE BALLOT (#ballot) — pass-and-play role dealing + secret repair vote
+   ====================================================================== */
+const BK='teamplay-pirates-ballot-v1';
+let B=(()=>{ try{const r=localStorage.getItem(BK); if(r) return JSON.parse(r);}catch(e){} return {name:'우리 조',size:4,roles:null,navUsed:false}; })();
+let BV={view:'home',i:0,n:2,votes:[],order:null,peek:null};
+const bsave=()=>{ try{localStorage.setItem(BK,JSON.stringify(B));}catch(e){} };
+const ROLE_INFO={
+  pirate:{name:'해적 (X맨)',img:'s8_xman',cls:'pirate',text:'캡틴 F에게 매수됐습니다. 목표는 배 두 척 이상 침몰. 수리 때 수리·트롤 카드를 마음대로 낼 수 있습니다. 밀회 때 다른 조 해적과 얼굴을 확인하고 폭풍 보낼 배를 가리킵니다. 정체를 들키지 마세요.'},
+  nav:{name:'항해사',img:'a1_crew',cls:'',text:'선원 진영입니다. 게임 중 딱 한 번, 결과 공개 뒤 팀원 1명의 역할을 몰래 볼 수 있습니다(이 투표함의 "망원경"). 수리 때는 수리 카드만 냅니다.'},
+  sailor:{name:'선원',img:'style_key',cls:'',text:'배를 지켜 종강항에 도착하세요. 수리 때는 수리 카드만 냅니다. 누가 작업자였을 때 실패했는지 기억해 X맨을 찾으세요.'}
+};
+function bRender(){
+  const el=$('#ballot'); let h='';
+  const back=`<button class="btn" data-b="home">← 투표함 처음으로</button>`;
+  if(BV.view==='home'){
+    h=`<span class="eyebrow">팀플호 · 휴대폰 투표함</span><h1 class="mid">${esc(B.name)} 투표함</h1>
+      <label class="eyebrow" for="bname">조 이름</label><input id="bname" value="${esc(B.name)}" maxlength="12" style="background:var(--ink);border:1px solid var(--line);border-radius:8px;color:var(--foam);padding:10px;font-size:18px">
+      <div class="seg" role="group" aria-label="조 인원" style="justify-self:start">${[3,4,5].map(n=>`<button data-b="size" data-n="${n}" aria-pressed="${B.size===n}">${n}명</button>`).join('')}</div>
+      <button class="btn primary" data-b="deal">역할 뽑기 (돌려 보기)</button>
+      <button class="btn primary" data-b="vote">비밀 수리 투표</button>
+      <button class="btn" data-b="nav">항해사 망원경 (1회)</button>
+      <p class="lead" style="font-size:14px">역할 카드를 인쇄했다면 역할 뽑기와 망원경은 쓰지 않아도 됩니다. 투표 기록은 이 휴대폰에만 남습니다.</p>
+      <a class="btn" href="#" style="text-decoration:none;text-align:center">진행 화면(MC용)으로</a>`;
+  } else if(BV.view==='dealAsk'){
+    h=`<h2 class="mid">이미 뽑은 역할이 있습니다</h2><p class="lead">다시 뽑으면 이전 역할은 사라집니다. 게임 도중이라면 다시 뽑지 마세요.</p><button class="btn danger" data-b="dealNew">다시 뽑기</button>${back}`;
+  } else if(BV.view==='dealCover'){
+    h=`<div class="cover" data-b="dealShow"><div style="display:grid;gap:12px"><span class="eyebrow">${BV.i+1} / ${B.size}</span><h2 class="big">${BV.i+1}번 플레이어</h2><p class="lead">휴대폰을 받고 혼자만 보세요.<br>준비되면 화면을 누르세요.</p></div></div>
+      <p class="lead" style="font-size:14px">휴대폰은 시계방향으로 돌립니다. 받은 순서가 플레이어 번호입니다.</p>`;
+  } else if(BV.view==='dealShow'){
+    const r=ROLE_INFO[B.roles[BV.i]];
+    h=`<div class="rolecard ${r.cls}"><img src="${IMG(r.img)}" alt=""><div class="in"><span class="eyebrow">${BV.i+1}번 플레이어의 역할</span><h2 class="mid">${r.name}</h2><p style="margin:0">${r.text}</p></div></div>
+      <button class="btn primary" data-b="dealNext">확인했어요 · 화면 가리기</button>`;
+  } else if(BV.view==='dealDone'){
+    h=`<h2 class="mid">역할 배분 완료</h2><p class="lead">모두 자기 역할을 확인했습니다. 첫 조장은 생일이 가장 빠른 사람입니다.</p>${back}`;
+  } else if(BV.view==='voteSetup'){
+    h=`<span class="eyebrow">비밀 수리 투표</span><h2 class="mid">이번 작업자는 몇 명?</h2>
+      <table class="wt"><thead><tr><th>${B.size}명 조</th>${ROUNDS.map(R=>`<th>${R.no}R</th>`).join('')}</tr></thead><tbody><tr><td>작업자</td>${ROUNDS.map(R=>`<td>${R.workers[B.size]}</td>`).join('')}</tr></tbody></table>
+      <div class="seg" role="group" aria-label="작업자 수" style="justify-self:start">${[2,3,4].filter(n=>n<B.size).map(n=>`<button data-b="vn" data-n="${n}" aria-pressed="${BV.n===n}">${n}명</button>`).join('')}</div>
+      <button class="btn primary" data-b="voteGo">투표 시작</button>${back}`;
+  } else if(BV.view==='voteCover'){
+    h=`<div class="cover" data-b="voteShow"><div style="display:grid;gap:12px"><span class="eyebrow">작업자 ${BV.i+1} / ${BV.n}</span><h2 class="big">혼자만 보세요</h2><p class="lead">준비되면 화면을 누르세요.</p></div></div>`;
+  } else if(BV.view==='voteShow'){
+    h=`<span class="eyebrow">작업자 ${BV.i+1} / ${BV.n} · 카드 1장을 고르세요</span>
+      <div class="choice"><button class="ok" data-b="cast" data-v="1">${ICON.anchor}수리</button><button class="bad" data-b="cast" data-v="0">${ICON.skull}트롤</button></div>
+      <p class="lead" style="font-size:14px">선원은 수리만 낼 수 있습니다.</p>`;
+  } else if(BV.view==='votePass'){
+    h=`<div class="cover"><div style="display:grid;gap:14px"><h2 class="mid">제출했습니다</h2><p class="lead">${BV.i<BV.n?'다음 작업자에게 휴대폰을 넘기세요.':'모든 작업자가 냈습니다.'}</p>
+      <button class="btn primary" data-b="${BV.i<BV.n?'voteNextCover':'voteSealed'}">${BV.i<BV.n?'다음 작업자 차례':'투표함 봉인'}</button></div></div>`;
+  } else if(BV.view==='voteSealed'){
+    h=`<div class="cover"><div style="display:grid;gap:14px"><span class="eyebrow">투표함 봉인됨 · ${BV.n}장</span><h2 class="mid">MC가 공개하라고 하면<br>누르세요</h2><button class="btn danger" data-b="open">공개하기</button></div></div>`;
+  } else if(BV.view==='voteOpen'){
+    const k=BV.order.filter(v=>!v).length;
+    h=`<span class="eyebrow">결과 · 섞인 순서</span><div class="cards">${BV.order.map(v=>`<div class="fc open"><div class="back"></div><div class="front ${v?'ok':'bad'}">${v?ICON.anchor+'수리':ICON.skull+'트롤'}</div></div>`).join('')}</div>
+      <div class="stamp ${k?'bad':'ok'}" style="justify-self:center">${k?`트롤 ${k}장 · 실패`:'수리 성공'}</div>
+      <p class="lead">MC에게 "트롤 ${k}장"이라고 알려 주세요.</p><button class="btn primary" data-b="vote">새 투표</button>${back}`;
+  } else if(BV.view==='navNo'){
+    h=`<h2 class="mid">망원경을 쓸 수 없습니다</h2><p class="lead">${B.size<4?'3인 조에는 항해사가 없습니다.':!B.roles?'이 휴대폰으로 역할을 뽑지 않았습니다. 인쇄 카드를 쓰는 조는 대상에게 카드를 몰래 보여 달라고 하세요.':'이번 게임에서 망원경을 이미 썼습니다.'}</p>${back}`;
+  } else if(BV.view==='navPick'){
+    h=`<span class="eyebrow">항해사 본인만 보세요</span><h2 class="mid">누구의 역할을 볼까요?</h2>
+      <div class="grid3" style="grid-template-columns:repeat(3,1fr)">${B.roles.map((_,i)=>`<button class="btn lg" data-b="peek" data-i="${i}">${i+1}번</button>`).join('')}</div>
+      <p class="lead" style="font-size:14px">한 번 보면 이번 게임에서는 다시 쓸 수 없습니다.</p>${back}`;
+  } else if(BV.view==='navShow'){
+    const r=ROLE_INFO[B.roles[BV.peek]];
+    h=`<div class="cover"><div style="display:grid;gap:12px"><span class="eyebrow">${BV.peek+1}번 플레이어는</span><h2 class="big" style="color:${B.roles[BV.peek]==='pirate'?'var(--flare)':'var(--lantern)'}">${r.name}</h2><button class="btn primary" data-b="home">확인 · 화면 닫기</button></div></div>`;
+  }
+  el.innerHTML=`<div class="bl">${h}</div>`;
+}
+document.addEventListener('click',e=>{
+  const b=e.target.closest('[data-b]'); if(!b||location.hash!=='#ballot') return;
+  const a=b.dataset.b;
+  if(a==='home'){ BV.view='home'; }
+  else if(a==='size'){ B.size=+b.dataset.n; B.roles=null; B.navUsed=false; bsave(); }
+  else if(a==='deal'){ BV.view=B.roles?'dealAsk':'dealCover'; if(!B.roles) dealNew(); }
+  else if(a==='dealNew'){ dealNew(); BV.view='dealCover'; }
+  else if(a==='dealShow'){ BV.view='dealShow'; }
+  else if(a==='dealNext'){ BV.i++; BV.view=BV.i<B.size?'dealCover':'dealDone'; }
+  else if(a==='vote'){ BV.view='voteSetup'; BV.n=Math.min(BV.n,B.size-1); }
+  else if(a==='vn'){ BV.n=+b.dataset.n; }
+  else if(a==='voteGo'){ BV.votes=[]; BV.i=0; BV.view='voteCover'; }
+  else if(a==='voteShow'){ BV.view='voteShow'; }
+  else if(a==='cast'){ BV.votes.push(b.dataset.v==='1'?1:0); BV.i++; BV.view='votePass'; try{navigator.vibrate&&navigator.vibrate(30);}catch(err){} }
+  else if(a==='voteNextCover'){ BV.view='voteCover'; }
+  else if(a==='voteSealed'){ BV.view='voteSealed'; }
+  else if(a==='open'){ BV.order=shuffle([...BV.votes]); BV.votes=[]; BV.view='voteOpen'; }
+  else if(a==='nav'){ BV.view=(B.size>=4&&B.roles&&!B.navUsed)?'navPick':'navNo'; }
+  else if(a==='peek'){ BV.peek=+b.dataset.i; B.navUsed=true; bsave(); BV.view='navShow'; }
+  bRender();
+});
+document.addEventListener('input',e=>{ if(e.target.id==='bname'){ B.name=e.target.value.slice(0,12); bsave(); } });
+function dealNew(){
+  const c=rolesFor(B.size);
+  B.roles=shuffle([...Array(c.pirate).fill('pirate'),...Array(c.nav).fill('nav'),...Array(c.sailor).fill('sailor')]);
+  B.navUsed=false; BV.i=0; bsave();
+}
+
+/* ---------- routing ---------- */
+function route(){
+  const ballot=location.hash==='#ballot';
+  $('#app').hidden=ballot; $('#ballot').hidden=!ballot;
+  document.body.style.overflow=ballot?'auto':'hidden';
+  if(ballot){ BV.view='home'; bRender(); } else { render(); }
+}
+window.addEventListener('hashchange',route);
+route();
+})();
+</script>

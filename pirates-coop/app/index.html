@@ -1,0 +1,707 @@
+<title>팀플호 협동 항해</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Noto+Sans+KR:wght@400;500;700;900&display=swap">
+<style>
+/* Layout: TV-first 16:9 — header (progress + team chances) / big stage / host control bar. Single dark theme by choice: a lit TV in a classroom reads best on a dark ground. */
+:root{
+  --bg:#071a24; --panel:rgba(10,36,54,.86); --panel2:rgba(16,50,72,.92); --line:#25506a;
+  --ink:#eef6f4; --mute:#92b5b0; --accent:#f4b740; --ok:#35d0a0; --bad:#ff5a4a; --x:#ff6a3d;
+  --t0:#e05a47; --t1:#4a8fe0; --t2:#e8b93c;
+  --display:"Black Han Sans","Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  --body:"Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  color-scheme:dark;
+  font-size:clamp(14px,1.12vw,26px);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);line-height:1.5;-webkit-font-smoothing:antialiased;overflow:hidden}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+h1,h2,h3{font-family:var(--display);font-weight:400;margin:0;line-height:1.12;text-wrap:balance}
+.num{font-variant-numeric:tabular-nums}
+#app{position:relative;z-index:1;height:100%;display:grid;grid-template-rows:auto 1fr auto;grid-template-columns:minmax(0,1fr)}
+#bgwrap{position:fixed;inset:0;z-index:0;background:var(--bg) center/cover no-repeat;overflow:hidden}
+.note[hidden]{display:none!important}
+#bgwrap video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:opacity .6s}
+#bgwrap::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(7,26,36,.6),rgba(7,26,36,.78) 55%,rgba(7,26,36,.92))}
+#bgwrap.off video{opacity:0}
+video.shot{background:#000}
+.bar{display:flex;align-items:center;gap:.8rem;padding-block:.5rem;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));background:#0a101c;border-bottom:1px solid var(--line)}
+.brand{font-family:var(--display);font-size:1.3rem;white-space:nowrap}
+.brand b{color:var(--x);font-weight:400}
+.rail{flex:1;display:flex;gap:.3rem;overflow-x:auto;scrollbar-width:none;min-width:0}
+.rail::-webkit-scrollbar{display:none}
+.pill{flex:0 0 auto;border:1px solid var(--line);background:transparent;border-radius:999px;padding:.15rem .7rem;font-size:.8rem;color:var(--mute)}
+.pill.done{color:var(--ink)}
+.pill.now{background:var(--accent);border-color:var(--accent);color:#1a1400;font-weight:700}
+.chips{display:flex;gap:.4rem}
+.tchip{display:flex;align-items:center;gap:.3rem;border:1px solid var(--line);border-left:4px solid var(--tc);border-radius:8px;padding:.1rem .5rem;font-size:.8rem;white-space:nowrap}
+.tchip i{font-style:normal;color:var(--accent);letter-spacing:.1em}
+.ibtn{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:.25rem .6rem;font-size:.8rem;white-space:nowrap}
+.ibtn[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+#stage{position:relative;overflow:auto;padding-block:1.1rem;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.scene{max-width:1500px;margin:0 auto;display:grid;gap:1rem}
+.ctrl{display:flex;align-items:center;gap:.8rem;padding-block:.5rem;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));background:#0a101c;border-top:1px solid var(--line)}
+.ctrl .where{flex:1;min-width:0;color:var(--mute);font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctrl .where b{color:var(--ink)}
+.timer{display:flex;align-items:center;gap:.4rem}
+.timer[hidden]{display:none!important}
+.timer .t{font-family:var(--display);font-size:1.9rem;min-width:3.2ch;text-align:center;font-variant-numeric:tabular-nums}
+.timer.warn .t{color:var(--bad)}
+.btn{border:1px solid var(--line);background:var(--panel2);border-radius:10px;padding:.55rem 1.1rem;font-weight:700}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#1a1400}
+.btn.good{background:var(--ok);border-color:var(--ok);color:#03210f}
+.btn.bad{background:var(--bad);border-color:var(--bad);color:#fff}
+.btn.xbtn{background:var(--x);border-color:var(--x);color:#fff}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn.lg{font-size:1.25rem;padding:.8rem 1.6rem}
+.row{display:flex;gap:.8rem;flex-wrap:wrap;align-items:center}
+.eyebrow{font-size:.85rem;letter-spacing:.14em;color:var(--accent);font-weight:700}
+.big{font-size:clamp(2rem,4.2vw,4.4rem)}
+.mid{font-size:clamp(1.5rem,2.6vw,2.6rem)}
+.lead{font-size:1.25rem;color:var(--mute);margin:0;max-width:62ch}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:1rem 1.2rem;backdrop-filter:blur(6px)}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}
+.grid2{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:1.2rem;align-items:center}
+.grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1rem}
+@media (max-width:900px){.grid3,.grid2,.grid4{grid-template-columns:1fr}}
+.shot{width:100%;display:block;border-radius:14px;border:1px solid var(--line);aspect-ratio:16/9;object-fit:cover;background:var(--panel)}
+.note{display:grid;grid-template-columns:auto 1fr;gap:.4rem 1rem;font-size:.92rem;color:#d8deec;background:rgba(20,24,34,.82);border:1px dashed rgba(255,207,63,.35);border-radius:10px;padding:.6rem .9rem}
+.note b{color:var(--accent);font-size:.8rem;letter-spacing:.06em;white-space:nowrap;padding-top:.1rem}
+.team{border-top:6px solid var(--tc)}
+.tname{font-family:var(--display);font-size:1.6rem;color:var(--tc)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.seg button{border:0;background:transparent;padding:.4rem .9rem;font-weight:700}
+.seg button[aria-pressed="true"]{background:var(--accent);color:#1a1400}
+input.tn{background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:.4rem .6rem;font-size:1.1rem;font-weight:700;width:100%}
+.tbl{border-collapse:collapse;width:100%;font-size:1rem}
+.tbl th,.tbl td{border-bottom:1px solid var(--line);padding:.45rem .6rem;text-align:left;vertical-align:top}
+.tbl th{color:var(--mute);font-weight:700;font-size:.85rem}
+.tbl td.c,.tbl th.c{text-align:center}
+.tbl .tot{font-family:var(--display);font-size:1.4rem;color:var(--accent)}
+.wrapx{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:.3rem .8rem;backdrop-filter:blur(6px)}
+/* source card */
+.src{background:#fbf7ec;color:#1e1a10;border-radius:16px;padding:1.4rem 1.6rem;display:grid;gap:.6rem;box-shadow:0 18px 40px rgba(0,0,0,.35);border:3px solid #e9dfc2}
+.src .no{font-family:var(--display);color:#9a7d2e;font-size:1rem;letter-spacing:.1em}
+.src h2{font-size:clamp(2rem,3.6vw,3.6rem);color:#141009}
+.src .meta{font-size:1.4rem;color:#5a4d2c;background:#f1e8cf;border-radius:8px;padding:.5rem .8rem}
+.src .body{font-size:1.75rem;font-weight:700}
+.ox{display:flex;gap:1rem;justify-content:center}
+.oxbig{font-family:var(--display);font-size:min(28vh,13rem);line-height:1}
+.oxbig.o{color:var(--ok)}.oxbig.x{color:var(--bad)}
+.ansrow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}
+.ans{border:2px solid var(--line);border-top:8px solid var(--tc);border-radius:14px;padding:.7rem 1rem;display:grid;gap:.4rem;justify-items:center;text-align:center;background:var(--panel)}
+.ans .v{font-family:var(--display);font-size:3rem;line-height:1}
+.ans.right{border-color:var(--ok)}.ans.wrong{border-color:var(--bad)}
+.stamp{font-family:var(--display);font-size:1.3rem;border-radius:8px;padding:.1rem .6rem}
+.stamp.ok{background:var(--ok);color:#03210f}.stamp.bad{background:var(--bad);color:#fff}
+.done-mark{color:var(--accent);font-weight:700}
+/* telepathy */
+.opts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}
+.opt{display:flex;gap:1rem;align-items:center;background:var(--panel2);border:2px solid var(--line);border-radius:14px;padding:1rem 1.2rem;font-size:1.5rem;font-weight:700}
+.opt .n{font-family:var(--display);font-size:3rem;color:var(--accent);min-width:1.2ch;text-align:center}
+/* speed quiz */
+.word{font-family:var(--display);font-size:min(22vh,9.5rem);line-height:1.05;text-align:center;padding:2vh 0}
+.word.star{color:var(--accent)}
+.starbadge{display:inline-block;background:var(--accent);color:#1a1400;border-radius:999px;padding:.2rem 1rem;font-weight:900;font-size:1.3rem}
+.score-live{font-family:var(--display);font-size:3.2rem;color:var(--ok)}
+.wlist{display:flex;flex-wrap:wrap;gap:.4rem}
+.wlist span{border-radius:999px;padding:.15rem .7rem;font-size:.95rem;border:1px solid var(--line)}
+.wlist .ok{background:rgba(53,208,127,.15);border-color:var(--ok)}
+.wlist .pass{background:rgba(255,90,95,.12);border-color:var(--bad);text-decoration:line-through;color:#ffb3b5}
+/* karaoke */
+.slide{position:relative;border-radius:14px;overflow:hidden;border:2px solid var(--line);aspect-ratio:16/9;max-height:62vh;margin-inline:auto;width:100%;background:#000}
+.slide img,.slide video{width:100%;height:100%;object-fit:cover;display:block}
+.slide .cap{position:absolute;left:0;right:0;top:0;padding:1.2rem 1.6rem;background:linear-gradient(rgba(0,0,0,.78),transparent);font-family:var(--display);font-size:clamp(1.6rem,3vw,3rem)}
+.slide .pg{position:absolute;right:1rem;bottom:.8rem;background:rgba(0,0,0,.6);border-radius:8px;padding:.1rem .6rem}
+/* countdown overlay */
+#cd{position:fixed;inset:0;display:grid;place-items:center;background:rgba(8,12,22,.82);z-index:40;font-family:var(--display);color:var(--accent);font-size:min(40vh,22rem);pointer-events:none}
+#cd[hidden]{display:none!important}
+#cd.go{color:var(--x);font-size:min(20vh,10rem)}
+.pop{animation:pop .45s ease-out}
+@keyframes pop{from{transform:scale(1.7);opacity:0}}
+.reveal-x{font-family:var(--display);font-size:min(30vh,14rem);color:var(--x);text-align:center;animation:pop .6s ease-out}
+.toast{position:fixed;left:50%;bottom:calc(5rem + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--panel2);border:1px solid var(--accent);border-radius:10px;padding:.6rem 1rem;z-index:50;font-weight:700}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:grid;place-items:center;z-index:45}
+.modal[hidden]{display:none!important}
+.modal .panel{min-width:min(560px,92vw);display:grid;gap:.8rem}
+@media (max-width:760px){
+  .bar{flex-wrap:wrap}.rail{order:3;flex-basis:100%}.chips{display:none}
+  .ctrl{flex-wrap:wrap}.ctrl .where{order:-1;flex-basis:100%}
+  .ansrow,.opts{grid-template-columns:1fr}
+}
+.gate{position:fixed;top:3.4rem;left:50%;transform:translateX(-50%);z-index:60;background:var(--accent);color:#1a1400;border:0;border-radius:999px;padding:.55rem 1.4rem;font-weight:900;font-size:1.05rem;box-shadow:0 10px 30px rgba(0,0,0,.5);animation:gatepulse 1.4s ease-in-out infinite}
+.gate[hidden]{display:none!important}
+@keyframes gatepulse{50%{box-shadow:0 0 0 .6rem rgba(255,207,63,.35),0 10px 30px rgba(0,0,0,.5)}}
+.scopewrap{display:grid;place-items:center}
+.lens{position:relative;width:min(48vh,72vw);aspect-ratio:1;border-radius:50%;overflow:hidden;border:14px solid #b8892e;box-shadow:0 0 0 6px #6b4a14,0 18px 50px rgba(0,0,0,.6),inset 0 0 90px rgba(0,0,0,.75);background:#000}
+.lens img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:transform .16s linear}
+#bVol{width:5.5rem;accent-color:var(--accent);vertical-align:middle}
+.vol{display:flex;align-items:center;gap:.3rem;font-size:.8rem;color:var(--mute)}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div id="bgwrap" aria-hidden="true"><video id="bgv" muted loop playsinline autoplay preload="auto"></video></div>
+<div id="app">
+  <header class="bar">
+    <div class="brand">팀플호 <b>협동 항해</b></div>
+    <nav class="rail" id="rail" aria-label="진행 단계"></nav>
+    <button class="ibtn" id="bSound" aria-pressed="true" title="음성·효과음·영상 소리">소리</button>
+    <button class="ibtn" id="bMusic" aria-pressed="true" title="배경음악">음악</button>
+    <label class="vol" title="배경음악 크기">♪<input id="bVol" type="range" min="0" max="100" step="5" value="80" aria-label="배경음악 크기"></label>
+    <button class="ibtn" id="bFull">전체화면</button>
+  </header>
+  <main id="stage" aria-live="polite"></main>
+  <footer class="ctrl">
+    <button class="btn" id="bPrev">◀ 이전</button>
+    <div class="where" id="where"></div>
+    <div class="timer" id="timer" hidden><span class="t num" id="tval">0:30</span><button class="ibtn" id="tPlay">시작</button><button class="ibtn" id="tAdd">+15초</button><button class="ibtn" id="tReset">↺</button></div>
+    <button class="btn primary" id="bNext">다음 ▶</button>
+  </footer>
+</div>
+<button class="gate" id="gate" hidden>🔇 소리가 막혀 있습니다 — 여기를 눌러 켜기</button>
+<div id="cd" hidden></div>
+<script src="assets/timing.js"></script>
+<script>
+
+(() => {
+'use strict';
+const IMG = n => `assets/img/${n}.jpg`, AUD = n => `assets/audio/${n}.mp3`, LOOP = n => `assets/loop/${n}.mp4`, END = n => `assets/end/${n}.mp4`;
+const CDT=window.CDT||{};
+const CD_GO=CDT.go||{t:[134,868,1454,2067],end:2900}, CD_VOTE=CDT.vote||{t:[146,818,1432,1995],end:3300};
+/* 반복 배경마다 대응하는 그림 — 브라우저가 영상을 막거나 못 읽어도 장면 그림은 항상 보인다 */
+const LOOPIMG={harbor:'a3_port',sea:'s4_three_ships',night:'s5_night',chart:'chart',deck:'a1_crew',repair:'repair',report:'report',arrive:'s7_arrive',sink:'s6_sink'};
+function vid(name,cls,alt){ return `<video class="${cls||'shot'}" src="${LOOP(name)}" poster="${IMG(LOOPIMG[name]||'style_key')}" autoplay muted loop playsinline preload="auto" aria-label="${alt||''}"></video>`; }
+let bgCur=null;
+function setBg(name){ const w=document.getElementById('bgwrap'), v=document.getElementById('bgv'); if(!name){ w.classList.add('off'); w.style.backgroundImage=''; bgCur=null; return; } w.classList.remove('off'); if(bgCur===name) return; bgCur=name; w.style.backgroundImage=`url("${IMG(LOOPIMG[name]||'style_key')}")`; v.src=LOOP(name); v.play().catch(()=>{}); }
+/* 영상 폴백: (1) 반복 영상이 실패하면 그림으로 바꾼다 (2) 오프닝·결말 영상이 실패하면 안내문을 보인다 (3) 자동재생이 막혔으면 첫 클릭·키 입력에 다시 재생한다 */
+document.addEventListener('error',e=>{ const v=e.target; if(!v||v.tagName!=='VIDEO'||v.id==='bgv') return;
+  if(v.classList.contains('shot')&&v.poster){ const im=document.createElement('img'); im.className='shot'; im.src=v.poster; im.alt=v.getAttribute('aria-label')||''; v.replaceWith(im); return; }
+  const m=document.getElementById('vmsg'); if(m) m.hidden=false; },true);
+function retryLoops(){ document.querySelectorAll('video[loop],#bgv').forEach(v=>{ if(v.paused&&!v.ended&&!v.error){ const p=v.play(); if(p&&p.catch) p.catch(()=>{}); } }); }
+['pointerup','click','keydown','touchend'].forEach(ev=>document.addEventListener(ev,retryLoops,{capture:true}));
+const VFALL=f=>`<div id="vmsg" class="note" hidden><b>영상 안내</b><span>이 브라우저에서 영상을 불러오지 못했습니다. 아래 "영상만 새 창에서 열기"를 누르거나, Chrome·Edge 최신 버전으로 여세요. 영상이 없어도 "다음"으로 게임은 계속 진행됩니다.</span></div>
+  <div class="row" style="justify-content:center"><a class="btn" href="${f}" target="_blank" rel="noopener">영상만 새 창에서 열기</a></div>`;
+const TC = ['var(--t0)','var(--t1)','var(--t2)'];
+
+/* ---------- content ---------- */
+const ROUNDS=[
+ {no:1,name:'자료조사',theme:'출항 전 자료조사',game:'항해일지 귓속말 전달',loop:'chart',intro:'p_r1i',taunt:'p_r1c',
+  tauntText:'크크크. 출항 전 자료조사라고? 항해일지 한 줄쯤은, 슬쩍 바꿔도 아무도 모르지.',
+  line:'첫 번째 선원만 TV의 항해일지를 보고, 귓속말로 끝까지 전달합니다. 마지막 선원이 일지를 말하면 진행자가 맞힌 항목을 셉니다.',score:'항목 3개 중 맞힌 수 × 10 ÷ 3 (3개 모두 맞히면 10점)',
+  x:'숫자·단어 한 글자를 슬쩍 바꿔 전달한다 (예: 12포대 → 13포대)'},
+  {no:2,name:'팀 회의',theme:'갑판 집합',game:'몸으로 말해요',loop:'deck',intro:'p_r2i',taunt:'p_r2c',
+  tauntText:'몸으로 말해요? 내가 몸짓을 한 군데만 슬쩍 틀리면, 팀원들은 영영 못 맞힐걸. 크크크.',
+  line:'설명하는 1명만 TV의 단어를 보고, 말 없이 몸짓으로만 설명합니다. 나머지 선원이 맞히면 다음 사람이 나와 이어 갑니다. 제한 시간 안에 많이 맞힙니다.',score:'맞힌 단어 × 2점, 최대 10점',
+  x:'몸짓을 한 군데만 일부러 틀리게 하기(수영하다 갑자기 손 흔들기) · 정답 대신 엉뚱한 답 외치기 · 패스로 시간 끌기 — 보는 사람이 "어? 좀 이상한데?" 할 만큼만 티 나게'},
+ {no:3,name:'PPT 제작',theme:'망원경 이미지 점검',game:'망원경 이미지 퀴즈',loop:'sea',intro:'p_r3i',taunt:'p_r3c',
+  tauntText:'망원경으로 뭘 보겠다고? 내가 엉뚱한 답을 크게 외치면, 팀원들은 헷갈려서 놓칠걸. 크크크.',
+  line:'망원경 렌즈 속 그림이 천천히 넓어집니다(제한 시간이 끝나도 전체의 약 3분의 2까지만 보여요). 팀이 함께 무엇인지 맞히세요. 한 문제에 기회는 두 번(첫 번째에 맞히면 1점, 두 번째는 0.5점)이고, 팀마다 10문제를 풉니다.',score:'문제당 1 · 0.5 · 0점, 10문제 합계 = 최대 10점',
+  x:'확신에 찬 목소리로 엉뚱한 답을 외치기 · 팀이 맞힌 답에 "아닌 것 같은데?" 하고 흔들기 — 듣는 사람이 "어? 왜 저러지?" 할 만큼만 티 나게'},
+ {no:4,name:'최종 발표',theme:'입항 보고',game:'대본 외워 말하기',loop:'report',intro:'p_r4i',taunt:'p_r4c',
+  tauntText:'대본을 그대로 외운다고? 내가 한 단어만 슬쩍 바꿔 말하면, 보고서는 엉망이 되지. 크크크.',
+  line:'배마다 대본을 받아 외웁니다. 선원마다 한 문장씩 맡고, 대본을 가린 뒤 1번부터 차례로 한 문장씩 말합니다. 얼마나 정확하게 말했는지로 점수를 받습니다.',score:'문장마다 정확 2 · 조금 달라 1 · 틀림 0, 합계 ÷ (인원 × 2) × 10점',
+  x:'자기 문장의 단어를 한두 개 일부러 바꿔 말하기 · 외우는 시간에 틀린 단어 속삭이기 — 듣는 사람이 "대본과 다른데?" 할 만큼만 티 나게'}
+];
+const LOGS=[   // 항해일지는 항목 3개 (귓속말로 전달하기 쉽게)
+ {title:'보급 창고 점검',items:['쌀 12포대','물 40통','목적지 종강항']},
+ {title:'출항 명단',items:['선원 15명','깃발 파란색','목적지 등대섬']},
+ {title:'항로 기록',items:['북쪽으로 7일','섬 2개 통과','도착 저녁 6시']},
+ {title:'선장 지시',items:['돛 4장 수리','망치 6자루','집합 갑판 2층']}
+];
+const LOG_N=3;   // 항해일지 항목 수
+/* 3R 망원경 이미지 퀴즈: 그림 30장(팀마다 10장씩 겹치지 않게). f = assets/img/quiz/<f>.jpg */
+const QUIZ=[
+ {f:'q01',a:'닻'},{f:'q02',a:'등대'},{f:'q03',a:'해적선'},{f:'q04',a:'보물상자'},{f:'q05',a:'고래'},{f:'q06',a:'갈매기'},{f:'q07',a:'문어'},{f:'q08',a:'나침반'},{f:'q09',a:'불가사리'},{f:'q10',a:'배의 키',alt:'조타륜'},
+ {f:'q11',a:'보물지도'},{f:'q12',a:'앵무새'},{f:'q13',a:'상어'},{f:'q14',a:'거북이'},{f:'q15',a:'게'},{f:'q16',a:'해파리'},{f:'q17',a:'돛단배',alt:'요트'},{f:'q18',a:'구명튜브'},{f:'q19',a:'망원경'},{f:'q20',a:'소라',alt:'고둥'},
+ {f:'q21',a:'물고기'},{f:'q22',a:'대포'},{f:'q23',a:'노트북'},{f:'q24',a:'안경'},{f:'q25',a:'우산'},{f:'q26',a:'시계'},{f:'q27',a:'책'},{f:'q28',a:'신발'},{f:'q29',a:'가방'},{f:'q30',a:'자전거'}
+];
+const PER=10;   // 팀마다 푸는 문제 수
+const CHARS=['수영하기','낚시하기','노 젓기','닻 올리기','돛 펴기','망원경 보기','보물 캐기','칼싸움','물고기 잡기','파도타기','바닥 청소','요리하기','양치질','샤워하기','달리기','자전거 타기','전화 받기','사진 찍기','노트북 치기','발표하기','고양이','원숭이','상어','문어','갈매기','고래','앵무새','해적','선장','잠자기','밥 먹기','춤추기','기타 치기','축구하기','농구하기','우산 쓰기','추워서 떨기','깜짝 놀라기','웃기','울기'];
+/* 4R 대본: 문장 7개(문장당 46~80자(평균 72자), 화면에서 대개 2줄). 인원이 7명 미만이면 앞 문장을 쓰고 마지막 문장(맺음말)을 항상 붙인다 */
+const SCRIPTS=[
+ {title:'항해 결과 보고',lines:['우리 배는 오늘 새벽, 길고 거친 바다를 건너 무사히 종강항 항구에 도착했습니다. 모든 선원이 한마음으로 힘껏 노를 저은 덕분이라고 생각합니다.','항해 초반에는 파도가 너무 거칠어서 배가 크게 흔들렸지만, 선원들은 서로의 이름을 부르며 용기를 주었고 끝까지 포기하지 않고 힘을 냈습니다.','자료조사로 올바른 항로를 찾아냈고, 갑판에 모여 회의를 하면서 어느 쪽으로 갈지 의견을 충분히 나눈 다음 모두 함께 하나의 방향을 정했습니다.','폭풍에 찢어진 돛은 선원들이 밤새 힘을 모아 한 장 한 장 튼튼하게 꿰맸고, 덕분에 아침에는 새것처럼 바람을 가득 받으며 앞으로 나아갔습니다.','중간에 해적이 몰래 배에 올라 방해를 했지만, 우리는 서로를 믿고 끝까지 포기하지 않아서 마침내 약속한 시간에 맞추어 항구에 도착했습니다.','도와주신 모든 선원과 곁에서 응원해 준 다른 배의 친구들에게도, 이 자리를 빌려 진심으로 고맙다는 인사를 전하고 싶습니다.','이상으로 팀플호의 입항 보고를 모두 마치겠습니다. 끝까지 귀 기울여 들어 주셔서 정말 감사합니다.']},
+ {title:'항해 일지',lines:['안녕하세요, 저희는 이번 학기 마지막 과제를 향해 함께 출항한 팀플호의 선원들입니다. 지금부터 항해 일지를 차례대로 읽어 드리겠습니다.','저희는 아침 일찍 항구를 떠나 목적지인 종강항을 향해 출발했고, 출발하기 전에 모두가 각자 맡을 역할을 꼼꼼하게 정해 두었습니다.','첫째 날에는 바람이 아주 좋아서 돛을 활짝 폈고, 배는 반짝이는 파도 위를 미끄러지듯 빠르게 앞으로 나아가며 모두를 기분 좋게 했습니다.','둘째 날에는 짙은 안개가 껴서 앞이 전혀 보이지 않았지만, 저 멀리 희미하게 비치는 등대 불빛을 찾아 천천히 조심스럽게 방향을 잡았습니다.','셋째 날에는 큰 폭풍을 만나 배가 심하게 흔들렸지만, 선원들이 서로의 손과 밧줄을 단단히 붙잡아 주며 끝까지 함께 버텨 냈습니다.','마침내 이른 새벽, 수평선 너머로 종강항의 따뜻한 불빛이 반짝이며 보였을 때 선원들은 모두 함께 크게 환호성을 지르며 기뻐했습니다.','모두의 힘으로 무사히 도착했고, 이번 항해는 우리 모두에게 오랫동안 잊지 못할 소중한 추억이 될 것입니다.']},
+ {title:'선장님께 보고',lines:['선장님께 팀플호의 입항 보고를 드리겠습니다. 저희는 약속한 항로를 그대로 따라 한 명도 빠짐없이 모두 안전하게 돌아왔습니다.','저희 배의 이름은 팀플호이고, 이번 항해에는 서로 다른 이야기와 장점을 가진 선원들이 한 배에 모여 함께 일하며 많은 것을 배웠습니다.','선원들은 매일 아침 갑판에 모여 오늘 할 일을 골고루 나누었고, 해야 할 일을 빠짐없이 종이에 적어 두며 하나씩 차근차근 해냈습니다.','밤에는 선원들이 번갈아 망을 보면서 별자리를 따라 길을 확인했고, 졸음이 쏟아지는 선원에게는 따뜻한 차를 나누어 주며 서로 챙겨 주었습니다.','식량과 마실 물은 항해 내내 부족하지 않게 충분히 남아 있었고, 덕분에 모든 선원이 건강하게 끝까지 맡은 일을 해낼 수 있었습니다.','배 안에 수상한 해적이 숨어 있었지만, 선원들이 서로를 따뜻하게 지켜보며 조심한 덕분에 큰 피해 없이 안전하게 항구에 도착했습니다.','이상으로 보고를 마치겠습니다. 끝까지 함께해 준 팀플호 선원 일동, 선장님께 충성!']},
+ {title:'우리 배 소개',lines:['지금부터 저희 팀플호가 이번 항해에서 어떻게 함께 일했는지, 선원들이 보낸 하루를 아침부터 밤까지 차례대로 소개해 드리겠습니다.','우리 배는 서로를 아끼고 돕는 선원들로 가득해서, 누군가 힘들어하면 곁에서 말없이 다가가 짐을 나누어 들어 주는 따뜻한 분위기였습니다.','아침에는 모두 함께 갑판을 깨끗이 청소하고 돛과 밧줄을 꼼꼼하게 점검한 다음, 그날 해야 할 일정을 큰 소리로 한 번 더 확인했습니다.','점심에는 한자리에 모여 오늘 지나갈 항로를 의논했고, 서로 다른 의견이 나오면 끝까지 귀 기울여 들어 본 뒤에 모두 함께 하나로 정했습니다.','저녁에는 노래를 부르며 힘차게 노를 저었고, 지친 선원은 잠시 쉬게 하면서 서로 번갈아 가며 배가 멈추지 않도록 움직였습니다.','밤에는 두 명씩 번갈아 망을 보며 어두운 바다를 지켰고, 아침 해가 뜰 때까지 한 명도 자리를 비우지 않고 끝까지 책임을 다했습니다.','이렇게 우리는 서로를 믿으며 함께 힘을 모아 마침내 항구에 도착했습니다. 이상으로 소개를 마치겠습니다.']}
+];
+const scriptLines=(i,n)=>{ const L=SCRIPTS[i].lines; return n>=L.length?L.slice():[...L.slice(0,n-1),L[L.length-1]]; };
+const STEPS=[
+ {key:'setup',label:'준비',subs:1},
+ {key:'intro',label:'오프닝',subs:1},
+ {key:'secret',label:'비밀 쪽지',subs:1},
+ {key:'rules',label:'규칙',subs:3},
+ {key:'r1',label:'1R 자료조사',subs:6},
+ {key:'r2',label:'2R 팀 회의',subs:5},
+ {key:'r3',label:'3R PPT 제작',subs:5},
+ {key:'r4',label:'4R 최종 발표',subs:5},
+ {key:'vote',label:'추리·지목',subs:3},
+ {key:'end',label:'결말',subs:2}
+];
+const others=t=>[0,1,2].filter(o=>o!==t);
+
+/* ---------- state ---------- */
+const KEY='pirates-coop-v3';
+const fresh=()=>({teams:[{name:'1조',size:4},{name:'2조',size:4},{name:'3조',size:4}],cfg:{tRelay:60,tChar:90,tScope:15,tMem:45},step:0,sub:0,startedAt:null,
+ r1:{log:null,ph:'hid',score:[null,null,null]},
+ r2:{deck:null,ptr:0,words:[[],[],[]],ph:['ready','ready','ready']},
+ r3:{set:[null,null,null],i:[0,0,0],att:[0,0,0],res:[[],[],[]],used:[],ph:['ready','ready','ready']},
+ r4:{script:[null,null,null],mark:[[],[],[]],cur:[0,0,0],ph:['ready','ready','ready']},
+ caught:[null,null,null],endPick:null});
+let S=load();
+function load(){ try{ const r=localStorage.getItem(KEY); if(r){ const s=JSON.parse(r); if(s&&s.r1&&s.r2&&Array.isArray(s.r2.words)&&s.r4&&Array.isArray(s.r4.mark)&&s.caught&&s.cfg&&s.cfg.tChar&&s.cfg.tMem&&s.cfg.tScope&&s.r3&&Array.isArray(s.r3.res)){ if(s.r1.ph==='show') s.r1.ph='gone'; return s; } } }catch(e){} return fresh(); }
+function save(){ try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){} }
+
+/* ---------- scoring ---------- */
+const r1pts=t=>S.r1.score[t]==null?0:Math.round(S.r1.score[t]*10/LOG_N);
+const r2raw=t=>S.r2.words[t].filter(w=>w.r==='ok').length;
+const r2pts=t=>Math.min(10,r2raw(t)*2);
+const r3raw=t=>S.r3.res[t].reduce((a,v)=>a+v,0);
+const r3pts=t=>Math.min(10,Math.round(r3raw(t)*10/PER));
+const r4pts=t=>{ const n=S.teams[t].size, m=S.r4.mark[t]||[]; let sum=0; for(let k=0;k<n;k++) sum+=(m[k]||0); return Math.round(10*sum/(2*n)); };
+const ship=t=>r1pts(t)+r2pts(t)+r3pts(t)+r4pts(t);
+const bonus=t=>S.caught[t]===true?10:(S.caught[t]===false?-5:0);
+const total=t=>ship(t)+bonus(t);
+const caughtN=()=>S.caught.filter(v=>v===true).length;
+const ENDS=[
+  {file:'e0_sunk',poster:'s6_sink',label:'해적단 완승 · 침몰',head:'해적단 완승 · 침몰',color:'var(--x)'},
+  {file:'e1_pirate_win',poster:'s6_sink',label:'해적단 승리',head:'해적단 승리',color:'var(--x)'},
+  {file:'e2a_one',poster:'s4_three_ships',label:'한 척의 생존',head:'한 척의 생존',color:'var(--accent)'},
+  {file:'e2_partial',poster:'s7_arrive',label:'아슬아슬한 입항',head:'아슬아슬한 입항',color:'var(--accent)'},
+  {file:'e3_perfect',poster:'s7_arrive',label:'완벽한 입항',head:'완벽한 입항',color:'var(--ok)'},
+  {file:'e4_legend',poster:'s7_arrive',label:'전설의 항해',head:'전설의 항해',color:'var(--ok)'}];
+/* 결말 6종: 잡은 배 수(0/1/2/3척) + 세 배 항해 점수 평균(40점 만점). 기준값은 실제 플레이 전의 가정이라 고쳐 쓸 수 있게 상수로 둔다 */
+const SUNK_AVG=14, LEGEND_AVG=24;
+const avgShip=()=>[0,1,2].reduce((a,t)=>a+ship(t),0)/3;
+const endingIdx=()=>{ const n=caughtN(), av=avgShip(); if(n===0) return av<SUNK_AVG?0:1; if(n===1) return 2; if(n===2) return 3; return av>=LEGEND_AVG?5:4; };
+const endingOf=i=>ENDS[i==null?endingIdx():i];
+function closeEndPreview(){ const d=document.getElementById('epv'); if(d){ try{ d.querySelector('video').pause(); }catch(e){} d.remove(); } setBed(bedFor()); }
+function openEndPreview(k){ closeEndPreview(); stopVoice(); setBed(null); const E=ENDS[k];
+  const d=document.createElement('div'); d.className='modal'; d.id='epv';
+  d.innerHTML=`<div class="panel" style="width:min(1100px,94vw)"><div class="row" style="justify-content:space-between"><b style="font-size:1.3rem;color:${E.color}">${E.label} · 결말 영상</b><button class="btn" data-a="epclose">닫기 ✕</button></div>
+    <div class="slide" style="max-height:62vh"><video src="${END(E.file)}" controls playsinline autoplay poster="${IMG(E.poster)}" style="background:#000"></video></div>
+    <div class="row" style="justify-content:center">${ENDS.map((x,i)=>`<button class="btn ${i===k?'primary':''}" data-a="endpreview" data-k="${i}">${x.label}</button>`).join('')}</div>${VFALL(END(E.file))}</div>`;
+  document.body.appendChild(d); const v=d.querySelector('video'); v.muted=!soundOn; const p=v.play(); if(p&&p.catch) p.catch(()=>{}); }
+
+/* ---------- sound ----------
+   Browsers only allow sound after a user gesture. The first click/keypress "unlocks" three shared
+   elements (one voice element + three looping music beds); after that they can be driven from code
+   at any time without being blocked. If a voice is still blocked, a visible button asks for one click. */
+let soundOn=true, musicOn=true, ac=null, unlocked=false, pendingVoice=null, voiceTok=0, wantBed=null, ducked=false;
+let bgmVol=0.8; try{ const v=parseFloat(localStorage.getItem('px-tv-bgm')); if(v>=0&&v<=1) bgmVol=v; }catch(e){}
+const SILENT='data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=';
+const voiceEl=new Audio(); voiceEl.preload='auto';
+const BEDS={calm:'assets/music/calm.mp3',play:'assets/music/play.mp3',tense:'assets/music/tense.mp3'};
+const bgm={}; Object.keys(BEDS).forEach(k=>{ const a=new Audio(BEDS[k]); a.loop=true; a.preload='auto'; a.volume=0; bgm[k]=a; });
+function ctx(){ if(!ac){ try{ac=new (window.AudioContext||window.webkitAudioContext)();}catch(e){} } if(ac&&ac.state==='suspended') ac.resume(); return ac; }
+function tone(f,d,{type='sine',g=.16,w=0,to=null}={}){ const a=ctx(); if(!a||!soundOn) return; const t=a.currentTime+w,o=a.createOscillator(),G=a.createGain(); o.type=type; o.frequency.setValueAtTime(f,t); if(to) o.frequency.exponentialRampToValueAtTime(to,t+d); G.gain.setValueAtTime(0,t); G.gain.linearRampToValueAtTime(g,t+.01); G.gain.exponentialRampToValueAtTime(.0001,t+d); o.connect(G).connect(a.destination); o.start(t); o.stop(t+d+.05); }
+const SFX={ok(){[523,659,784,1047].forEach((f,i)=>tone(f,.4,{type:'triangle',w:i*.08}));},bad(){tone(180,.6,{type:'sawtooth',g:.14,to:70});},ding(){tone(1320,.18,{type:'triangle',g:.18});tone(1760,.25,{type:'triangle',g:.12,w:.08});},buzz(){tone(140,.25,{type:'square',g:.08});},tick(){tone(880,.07,{type:'square',g:.05});},horn(){tone(220,1,{type:'sawtooth',g:.12});tone(277,1,{type:'sawtooth',g:.08});},go(){tone(660,.5,{type:'square',g:.1});tone(990,.5,{type:'square',g:.08});}};
+function showGate(){ const g=document.getElementById('gate'); if(g) g.hidden=false; }
+function hideGate(){ const g=document.getElementById('gate'); if(g) g.hidden=true; }
+function startBeds(){ Object.values(bgm).forEach(a=>{ const p=a.play(); if(p&&p.catch) p.catch(()=>{ unlocked=false; }); }); }
+function unlockAudio(){
+  if(unlocked) return; unlocked=true; ctx();
+  const tok=++voiceTok;
+  try{ voiceEl.onended=null; voiceEl.src=SILENT; const p=voiceEl.play(); if(p&&p.then) p.then(()=>{ if(tok===voiceTok) voiceEl.pause(); }).catch(()=>{}); }catch(e){}
+  if(musicOn&&soundOn) startBeds();
+  hideGate();
+  if(pendingVoice){ const q=pendingVoice; pendingVoice=null; playVoice(q.n,q.end); }
+}
+['pointerup','click','keydown','touchend'].forEach(ev=>document.addEventListener(ev,unlockAudio,{capture:true}));
+function playVoice(n,end){
+  stopVoice(); if(!soundOn) return;
+  const tok=voiceTok;
+  voiceEl.src=AUD(n); voiceEl.volume=1; ducked=true;
+  voiceEl.onended=()=>{ if(tok!==voiceTok) return; ducked=false; end&&end(); };
+  voiceEl.onerror=()=>{ if(tok===voiceTok) ducked=false; };
+  const p=voiceEl.play();
+  if(p&&p.catch) p.catch(()=>{ if(tok!==voiceTok) return; ducked=false; pendingVoice={n,end}; unlocked=false; showGate(); });
+}
+function stopVoice(){ voiceTok++; try{ voiceEl.pause(); }catch(e){} voiceEl.onended=null; ducked=false; }
+function setBed(n){ wantBed=n; if(!unlocked&&n&&musicOn&&soundOn) showGate(); }
+setInterval(()=>{ Object.keys(bgm).forEach(k=>{ const a=bgm[k]; const want=(musicOn&&soundOn&&unlocked&&wantBed===k)?bgmVol*(ducked?0.35:1):0; const d=want-a.volume; if(Math.abs(d)<0.004){ a.volume=Math.max(0,Math.min(1,want)); return; } const stepv=d<0?0.05:0.03; a.volume=Math.max(0,Math.min(1,a.volume+Math.sign(d)*Math.min(Math.abs(d),stepv))); }); },60);
+
+
+function bgFor(){ const st=STEPS[S.step], s=S.sub;
+  if(st.key==='setup'||st.key==='rules') return 'harbor'; if(st.key==='intro') return null; if(st.key==='secret'||st.key==='vote') return 'night';
+  if(st.key==='r1') return (s>=1&&s<=4)?'chart':'sea';
+  if(st.key==='r2') return (s>=1&&s<=3)?'deck':'sea';
+  if(st.key==='r3') return 'sea';
+  if(st.key==='r4') return (s>=1&&s<=3)?'report':'sea';
+  if(st.key==='end') return s===0?null:(caughtN()===0?'sink':'arrive');
+  return 'harbor'; }
+function bedFor(){ const st=STEPS[S.step], s=S.sub;
+  if(st.key==='setup'||st.key==='rules') return 'calm'; if(st.key==='intro') return null; if(st.key==='secret'||st.key==='vote') return 'tense';
+  if(st.key==='r1') return (s>=1&&s<=4)?'play':'calm';
+  if(st.key==='r2') return (s>=1&&s<=3)?'play':'calm';
+  if(st.key==='r3') return (s>=1&&s<=3)?'play':'calm';
+  if(st.key==='r4') return (s>=1&&s<=3)?'play':'calm';
+  if(st.key==='end') return s===0?null:(caughtN()===0?'tense':'play');
+  return 'calm'; }
+/* ---------- timer ---------- */
+const T={total:0,left:0,run:false,last:0,label:'',onEnd:null};
+function setTimer(sec,label,auto,onEnd){ T.total=sec; T.left=sec; T.label=label; T.run=!!auto; T.last=performance.now(); T.onEnd=onEnd||null; drawTimer(); }
+function drawTimer(){ const el=$('#timer'); el.hidden=!T.total; const s=Math.max(0,Math.ceil(T.left)); $('#tval').textContent=`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`; el.classList.toggle('warn',T.run&&s<=5&&s>0); $('#tPlay').textContent=T.run?'멈춤':(T.left<T.total?'계속':'시작'); const big=document.querySelector('[data-bigtimer]'); if(big) big.textContent=s; const li=document.getElementById('lensimg'); if(li&&T.total) li.style.transform=`scale(${zoomScale()})`; }
+let prevS=null;
+setInterval(()=>{ const now=performance.now(); if(T.run){ T.left-=(now-T.last)/1000; const s=Math.ceil(T.left); if(s!==prevS&&s<=5&&s>0) SFX.tick(); prevS=s; if(T.left<=0){ T.left=0; T.run=false; SFX.horn(); const f=T.onEnd; T.onEnd=null; if(f) f(); else toast(`${T.label} 시간 끝!`); } drawTimer(); } T.last=now; },150);
+
+
+/* ---------- helpers ---------- */
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const tn=t=>esc(S.teams[t].name||`${t+1}조`);
+const tc=t=>`style="--tc:${TC[t]}"`;
+function toast(m){ const d=document.createElement('div'); d.className='toast'; d.textContent=m; document.body.appendChild(d); setTimeout(()=>d.remove(),2600); }
+function shuffle(a){ for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
+function note(mc,b){ return `<div class="note">${mc?`<b>진행자 A</b><span>${mc}</span>`:''}${b?`<b>진행자 B</b><span>${b}</span>`:''}</div>`; }
+function countdown(words,cb,opt){ const el=$('#cd'); el.hidden=false; const withVoice=!!(opt&&opt.voice&&soundOn); if(withVoice) playVoice(opt.voice);
+  const times=withVoice?opt.times.t:words.map((_,i)=>i*800);
+  words.forEach((w,i)=>setTimeout(()=>{ const last=i===words.length-1; el.textContent=w; el.className=last?'go pop':'pop'; void el.offsetWidth; if(last) SFX.go(); else if(!withVoice) SFX.tick(); },times[i]));
+  setTimeout(()=>{ el.hidden=true; el.className=''; cb&&cb(); },withVoice?opt.times.end:times[times.length-1]+950); }
+
+function scoreTable(cols){
+  return `<div class="wrapx"><table class="tbl"><thead><tr><th>배</th>${cols.map(c=>`<th class="c">${c[0]}</th>`).join('')}<th class="c">항해 점수</th></tr></thead><tbody>${[0,1,2].map(t=>`<tr><td><span class="tname" ${tc(t)} style="font-size:1.3rem">${tn(t)}</span></td>${cols.map(c=>`<td class="c num">${c[1](t)}</td>`).join('')}<td class="c tot num">${ship(t)}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+/* ---------- screens ---------- */
+function vSetup(){
+  const total_=S.teams.reduce((a,t)=>a+t.size,0);
+  const sel=(id,v,opts)=>`<select id="${id}" style="background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:.3rem">${opts.map(([a,b])=>`<option value="${a}" ${String(a)===String(v)?'selected':''}>${b}</option>`).join('')}</select>`;
+  return `<div class="scene"><div class="grid2"><div style="display:grid;gap:.8rem">
+    <span class="eyebrow">12명 기준(최대 20명) · 3척 · 팀마다 X맨 1명 · 약 40분 · 준비물: 종이 1장</span>
+    <h1 class="big">팀플호에<br>해적이 탔다 <span style="color:var(--x)">협동 항해</span></h1>
+    <p class="lead">세 척의 배가 협동 미니게임 네 판으로 항해합니다. 배마다 해적 X맨이 한 명씩 숨어 매 라운드 슬쩍 방해해요. 마지막에 우리 배의 X맨을 찾아내세요.</p>
+    <div class="row"><button class="btn primary lg" data-a="start">▶ 오프닝 영상으로 시작</button>${S.startedAt?`<button class="btn" data-a="resume">이어서 (${esc(STEPS[S.step].label)})</button><button class="btn bad" data-a="askreset">새 게임</button>`:''}</div>
+    <div class="row"><span style="color:var(--mute);font-size:.95rem">결말 영상 미리보기</span>${ENDS.map((x,k)=>`<button class="btn" data-a="endpreview" data-k="${k}">${x.label}</button>`).join('')}</div>
+  </div>${vid('harbor','shot','출항을 기다리는 항구')}</div>
+  <div class="row"><span style="color:var(--mute)">인원 빠른 설정</span>${[[10,[4,3,3]],[11,[4,4,3]],[12,[4,4,4]]].map(([n,z])=>`<button class="btn" data-a="preset" data-n="${n}" aria-pressed="${S.teams.map(m=>m.size).join()===z.join()}" style="${S.teams.map(m=>m.size).join()===z.join()?'background:var(--accent);color:#1a1400':''}">총 ${n}명 (${z.join('·')})</button>`).join('')}<span style="color:var(--mute);font-size:.9rem">팀 인원은 아래에서 직접 바꿔도 됩니다</span></div>
+  <div class="grid3">${S.teams.map((m,t)=>`<div class="panel team" ${tc(t)} style="display:grid;gap:.5rem"><label class="eyebrow" for="tn${t}">${t+1}번 배</label><input class="tn" id="tn${t}" data-a="tname" data-t="${t}" value="${esc(m.name)}" maxlength="10">
+    <div class="row"><span>인원</span><span class="seg">${[3,4,5,6,7].map(n=>`<button data-a="size" data-t="${t}" data-n="${n}" aria-pressed="${m.size===n}">${n}</button>`).join('')}</span></div></div>`).join('')}</div>
+  <div class="grid2" style="align-items:start"><div class="panel"><h3 style="font-size:1.4rem;margin-bottom:.4rem">약 40분 진행표 <span style="font-family:var(--body);font-size:.9rem;color:${total_<10||total_>20?'var(--bad)':'var(--mute)'}">· 지금 ${total_}명${total_<10||total_>20?' (10~20명 권장)':''}</span></h3>
+    <table class="tbl"><tbody>
+    <tr><td class="num">00:00</td><td>오프닝 영상 (2분) · 비밀 쪽지 뽑기 (3분) · 규칙 (3분)</td></tr>
+    <tr><td class="num">08:00</td><td>1R 출항 전 자료조사 — 항해일지 귓속말 전달 (8분)</td></tr>
+    <tr><td class="num">16:00</td><td>2R 팀 회의 — 갑판 집합: 몸으로 말해요 (7분)</td></tr>
+    <tr><td class="num">23:00</td><td>3R PPT 제작 — 망원경 이미지 퀴즈: 팀당 10문제 (9분)</td></tr>
+    <tr><td class="num">32:00</td><td>4R 최종 발표 — 입항 보고: 대본 외워 말하기 (8분)</td></tr>
+    <tr><td class="num">40:00</td><td>추리 · 지목 · X맨 공개 · 결말 (3분)</td></tr></tbody></table></div>
+    <div class="panel" style="display:grid;gap:.6rem"><h3 style="font-size:1.4rem">준비물과 설정</h3>
+      <p style="margin:0">종이 1장이면 됩니다. <b>배마다</b> 종이를 사람 수만큼 찢어 한 장에만 <b style="color:var(--x)">X</b>를 쓰고 접어 섞은 뒤 한 장씩 뽑아 몰래 확인하세요. 진행자도 모릅니다.</p>
+      <p style="margin:0;color:var(--mute)">TV 연결: 노트북을 HDMI로 TV에 꽂고 디스플레이를 "복제"로 둔 뒤 위의 "전체화면"을 누르세요. 소리는 TV 스피커로 나옵니다.</p>
+      <div class="row"><label>귓속말 ${sel('c_relay',S.cfg.tRelay,[[45,'45초'],[60,'60초'],[90,'90초']])}</label><label>몸으로 말해요 ${sel('c_char',S.cfg.tChar,[[60,'60초'],[90,'90초'],[120,'120초']])}</label><label>망원경 퀴즈(문제당) ${sel('c_scope',S.cfg.tScope,[[10,'10초'],[15,'15초'],[20,'20초']])}</label><label>대본 외우기 ${sel('c_mem',S.cfg.tMem,[[45,'45초'],[60,'60초'],[90,'90초']])}</label></div>
+    </div></div>
+  ${note('마이크를 잡고 설명과 "3, 2, 1!" 신호를 맡습니다.','노트북을 조작하고 점수를 입력합니다. X맨이 누구인지는 진행자도 모릅니다. 끝에 각 배가 쪽지를 펼칠 때 "검거/놓침"만 입력하세요.')}</div>`;
+}
+function vIntro(){
+  return `<div class="scene"><div class="slide" style="max-height:72vh"><video id="vid" src="assets/intro.mp4" controls playsinline preload="auto" poster="${IMG('style_key')}" style="width:100%;height:100%;display:block;background:#000"></video></div>
+  <div class="row" style="justify-content:center"><button class="btn primary lg" data-a="vplay">▶ 오프닝 영상 재생</button><button class="btn" data-a="vfull">영상 전체화면</button></div>
+  ${VFALL('assets/intro.mp4')}
+  ${note('영상이 끝나면 "다음"으로 비밀 쪽지 뽑기로 넘어갑니다.','')}</div>`;
+}
+function vSecret(){
+  return `<div class="scene"><div class="grid2"><div style="display:grid;gap:1rem"><span class="eyebrow">비밀 쪽지 · 3분</span><h2 class="big">배마다 해적이 한 명씩</h2>
+    <ol class="lead" style="color:var(--ink);font-size:1.35rem;display:grid;gap:.5rem;padding-left:1.3em">
+      <li>${S.teams.map((m,t)=>`<b style="color:${TC[t]}">${tn(t)} ${m.size}명</b>`).join(' · ')}으로 모여 앉습니다.</li>
+      <li>배마다 종이를 사람 수만큼 찢어 <b>한 장에만 X</b>를 쓰고, 똑같이 접어 섞습니다.</li>
+      <li>한 장씩 뽑아 혼자만 확인한 뒤 주머니에 넣으세요.</li>
+      <li><b style="color:var(--x)">X</b>를 뽑은 사람이 이 배의 해적(X맨)입니다. 표정 관리!</li></ol></div>
+    ${vid('night','shot','밤의 선실에서 몰래 모이는 해적')}</div>
+    ${note('"표정으로 티 내지 마세요"라고 한 번 말해 주세요. 쪽지는 진행자에게 돌려줄 필요 없습니다.','어느 배의 누가 X인지 알 수 없는 것이 정상입니다. 마지막 공개 때까지 아무것도 입력하지 않습니다.')}</div>`;
+}
+function vRules(sub){
+  if(sub===0) return `<div class="scene"><div class="grid2"><div style="display:grid;gap:1rem"><span class="eyebrow">규칙 1/3 · 세 줄 요약</span><h2 class="big">협동 항해, 해적은 방해 중</h2>
+    <ol style="font-size:1.6rem;display:grid;gap:.7rem;padding-left:1.2em;margin:0">
+      <li>세 척의 배가 <b>협동 미니게임 네 판</b>으로 항해합니다. 팀원 모두가 함께 해내는 게임입니다.</li>
+      <li>배마다 <b style="color:var(--x)">해적 X맨 1명</b>이 몰래 매 라운드 <b>일부러 슬쩍 방해</b>해요.</li>
+      <li>마지막에 우리 배의 X맨을 지목합니다. 맞히면 <b style="color:var(--ok)">+10</b>, 놓치면 <b style="color:var(--bad)">−5</b>.</li></ol></div>
+    ${vid('sea','shot','세 척의 배가 함께 항해')}</div></div>`;
+  if(sub===1) return `<div class="scene"><span class="eyebrow">규칙 2/3 · 미니게임 4판</span><h2 class="mid">이름은 그대로, 항해 테마로 바뀐 네 판</h2>
+    <div class="wrapx"><table class="tbl" style="font-size:1.15rem"><thead><tr><th>라운드</th><th>미니게임</th><th>하는 법</th><th>점수</th></tr></thead><tbody>
+    ${ROUNDS.map(R=>`<tr><td style="white-space:nowrap"><b>${R.no}R ${R.name}</b><br><small style="color:var(--mute)">${R.theme}</small></td><td style="color:var(--accent);font-weight:700;white-space:nowrap">${R.game}</td><td>${R.line}</td><td>${R.score}</td></tr>`).join('')}</tbody></table></div>
+    ${note('1라운드는 세 배가 동시에, 2~4라운드는 배 순서대로 합니다.','')}</div>`;
+  return `<div class="scene"><span class="eyebrow">규칙 3/3 · X맨</span><h2 class="mid">X맨의 수법 (모두가 알아도 괜찮습니다)</h2>
+    <div class="grid2" style="align-items:start"><div class="wrapx"><table class="tbl" style="font-size:1.1rem"><tbody>${ROUNDS.map(R=>`<tr><td style="white-space:nowrap"><b>${R.no}R ${R.game}</b></td><td>${R.x}</td></tr>`).join('')}</tbody></table></div>
+    <div style="display:grid;gap:.8rem"><div class="panel"><b style="color:var(--ok)">해도 되는 것</b><br>일부러 틀리되 <b>살짝 티 나게</b> — 보는 사람이 "어? 좀 이상한데?" 할 정도의 실수·엉뚱한 답·바꿔 말하기. 완전히 숨기면 추리가 불가능합니다.</div>
+    <div class="panel"><b style="color:var(--bad)">하면 안 되는 것</b><br>"내가 X맨이야" 말하기, 규칙을 어기거나 게임을 멈추기, 소리 지르기·몸싸움, 남의 물건에 손대기</div>
+    <div class="panel"><b>점수와 결말</b><br>라운드마다 0~10점(최대 40) + 검거 +10 / 놓침 −5. 세 배 중 <b>X맨을 잡은 배의 수</b>로 결말이 정해집니다: 0척 해적단 승리(점수까지 낮으면 침몰) · 1척 한 척의 생존 · 2척 아슬아슬한 입항 · 3척 완벽한 입항(점수까지 높으면 전설의 항해).</div></div></div>
+    ${note('질문을 1~2개 받고 1라운드로 넘어갑니다.','')}</div>`;
+}
+function vRoundIntro(r){
+  const R=ROUNDS[r];
+  return `<div class="scene"><div class="grid2"><div style="display:grid;gap:1rem"><span class="eyebrow">ROUND ${R.no} · ${R.name}</span><h2 class="big">${R.theme}</h2>
+    <p style="font-size:1.5rem;margin:0;color:var(--accent);font-weight:700">미니게임: ${R.game}</p>
+    <p style="font-size:1.45rem;margin:0">${R.line}</p><p class="lead" style="color:var(--mute)">점수: ${R.score}</p>
+    <div class="panel" style="border-left:6px solid var(--x)"><span class="eyebrow" style="color:var(--x)">캡틴 F</span><p style="margin:.2rem 0 0;font-size:1.25rem">“${R.tauntText}”</p></div>
+    <div class="row"><button class="btn" data-a="voice" data-v="${R.intro}" data-c="${R.taunt}">▶ 안내 다시 듣기</button></div></div>
+    ${vid(R.loop,'shot','')}</div></div>`;
+}
+/* R1 */
+function vR1(s){
+  const R=ROUNDS[0], L=LOGS[S.r1.log==null?0:S.r1.log];
+  const head=`<div class="row" style="justify-content:space-between"><span class="eyebrow">1R ${R.theme} · ${R.game}</span></div>`;
+  if(s===1) return `<div class="scene">${head}<h2 class="big">작전 회의 30초</h2>
+    <p style="font-size:1.6rem;margin:0">귓속말을 <b>어떻게 정확히 전달할지</b> 배마다 정하세요. 전달 순서(줄 순서)도 정합니다.</p>
+    <p class="lead">귓속말은 <b>딱 한 번만</b> 하고, 다시 말해 달라고 할 수 없습니다. 예) 숫자는 또박또박 · 항목 수를 먼저 알려 주기 · 줄 순서를 정하기</p>
+    ${note('30초가 끝나면 "다음"을 눌러 항해일지를 공개합니다.','')}</div>`;
+  if(s===2){ const ph=S.r1.ph;
+    return `<div class="scene">${head}<h2 class="mid">첫 번째 선원만 TV를 보세요</h2>
+    ${ph==='hid'?`<div class="panel" style="text-align:center;display:grid;gap:1rem;justify-items:center"><p style="font-size:1.5rem;margin:0">나머지 선원은 <b>등을 돌려</b> 주세요. 준비되면 일지를 10초 동안 공개합니다.</p><button class="btn primary lg" data-a="logshow">🔓 항해일지 공개 (10초)</button></div>`:''}
+    ${ph==='show'?`<div class="src"><span class="no">항해일지 · 게임용 가상 자료</span><h2>${esc(L.title)}</h2><ol class="body" style="margin:0;padding-left:1.2em;display:grid;gap:.3rem">${L.items.map(i=>`<li style="font-size:2rem;font-weight:900">${esc(i)}</li>`).join('')}</ol></div><div class="oxbig" style="font-size:5rem;color:var(--accent);text-align:center" data-bigtimer>${Math.ceil(T.left)}</div>`:''}
+    ${ph==='gone'?`<div class="panel" style="text-align:center"><p style="font-size:1.7rem;margin:0">🌊 항해일지를 가렸습니다. 이제 귓속말로 전달하세요!</p></div>`:''}
+    ${note('일지가 보이는 동안 다른 선원이 훔쳐보지 않는지 살펴 주세요.','공개 후 10초가 지나면 자동으로 가려집니다.')}</div>`; }
+  if(s===3) return `<div class="scene">${head}<h2 class="big">귓속말 전달 중!</h2>
+    <div class="row" style="justify-content:center"><div class="oxbig" style="font-size:9rem;color:var(--accent)" data-bigtimer>${Math.ceil(T.left)}</div></div>
+    <p class="lead" style="text-align:center;margin-inline:auto">맨 앞 선원부터 한 명씩 귓속말로 일지를 전달하세요. 마지막 선원이 일지를 크게 말합니다.</p>
+    ${note('다른 배가 들을 수 있게 크게 말하는 것은 반칙입니다. 시간이 끝나면 확인 화면으로 갑니다.','')}</div>`;
+  if(s===4){ return `<div class="scene">${head}<h2 class="mid">정답 항해일지: ${esc(L.title)}</h2>
+    <div class="src"><ol class="body" style="margin:0;padding-left:1.2em;display:grid;gap:.3rem">${L.items.map(i=>`<li style="font-size:1.8rem;font-weight:900">${esc(i)}</li>`).join('')}</ol></div>
+    <div class="ansrow">${[0,1,2].map(t=>`<div class="ans" ${tc(t)}><div class="tname">${tn(t)}</div><p style="margin:0;font-size:.9rem;color:var(--mute)">마지막 선원이 말한 일지에서 맞힌 항목 수</p><div class="row" style="justify-content:center">${Array.from({length:LOG_N+1},(_,k)=>k).map(k=>`<button class="btn num" data-a="r1score" data-t="${t}" data-k="${k}" aria-pressed="${S.r1.score[t]===k}" style="${S.r1.score[t]===k?'background:var(--accent);color:#1a1400':''}">${k}</button>`).join('')}</div></div>`).join('')}</div>
+    ${note('각 배의 마지막 선원이 말한 일지를 정답과 비교해 항목별로 맞으면 1개로 셉니다.','세 배 모두 입력하면 "다음"으로 결과를 봅니다.')}</div>`; }
+  return `<div class="scene"><span class="eyebrow">1R 결과</span><h2 class="mid">항해일지 귓속말 전달 결과</h2>${scoreTable([['맞힌 항목',t=>S.r1.score[t]],['1R 점수',r1pts]])}${note('점수가 낮은 배가 있다면 누가 바꿨는지 기억해 두세요.','')}</div>`;
+}
+/* R2 */
+function vR2(s){
+  const R=ROUNDS[1], t=s-1, ph=S.r2.ph[t], ws=S.r2.words[t];
+  const head=`<div class="row" style="justify-content:space-between"><span class="eyebrow">2R ${R.theme} · ${R.game} · ${s}번째 배</span><span class="tname" ${tc(t)}>${tn(t)}</span></div>`;
+  if(ph==='ready') return `<div class="scene">${head}<div class="grid2"><div style="display:grid;gap:1rem"><h2 class="big">${tn(t)} 몸으로 말해요 준비!</h2>
+    <p style="font-size:1.5rem;margin:0">설명하는 사람 1명만 TV를 봅니다. 나머지 선원은 <b>TV를 등지고</b> 앉아 몸짓을 보고 맞히세요.</p>
+    <p class="lead">말·소리·입 모양·가리키기는 금지, <b>몸짓만</b>! 맞히면 다음 사람이 나옵니다. 어려우면 패스해도 됩니다.</p>
+    <div class="row"><button class="btn primary lg" data-a="charstart" data-t="${t}">시작 (${S.cfg.tChar}초)</button></div></div>${vid('deck','shot','')}</div>
+    ${note('다른 배들은 정답을 외치면 안 됩니다. X맨이 있는 걸 잊지 마세요 — 이상한 몸짓과 엉뚱한 답을 눈여겨보세요.','정답 = 스페이스 또는 "정답" 버튼, 패스 = P 또는 "패스" 버튼.')}</div>`;
+  if(ph==='play'){ const w=curChar(); return `<div class="scene">${head}
+    <div class="row" style="justify-content:space-between"><span class="score-live num">${r2raw(t)}개</span><span class="oxbig num" style="font-size:4rem;color:var(--accent)" data-bigtimer>${Math.ceil(T.left)}</span></div>
+    <div class="word" id="word">${esc(w)}</div>
+    <p class="lead" style="text-align:center;margin-inline:auto">설명하는 사람만 TV를 보세요. 말 없이 몸으로만!</p>
+    <div class="row" style="justify-content:center"><button class="btn good lg" data-a="charok">정답 (Space)</button><button class="btn bad lg" data-a="charpass">패스 (P)</button><button class="btn" data-a="charend">그만 (종료)</button></div></div>`; }
+  return `<div class="scene">${head}<h2 class="big">${tn(t)} <span style="color:var(--ok)">맞힌 단어 ${r2raw(t)}개</span> → 점수 <span style="color:var(--accent)">${r2pts(t)}</span></h2>
+    <div class="wlist">${ws.map(x=>`<span class="${x.r}">${esc(x.w)}</span>`).join('')||'<span>맞힌 단어 없음</span>'}</div>
+    <p class="lead">맞힌 단어 ${r2raw(t)}개 · 패스 ${ws.filter(x=>x.r==='pass').length}개</p>${note('몸짓이 이상했거나 엉뚱한 답을 외친 선원을 기억해 두세요. "다음"을 누르면 다음 배 차례입니다.','')}</div>`;
+}
+function chDeck(){ if(!S.r2.deck){ S.r2.deck=shuffle(CHARS.slice()); S.r2.ptr=0; save(); } return S.r2.deck; }
+function curChar(){ const d=chDeck(); return d[S.r2.ptr%d.length]; }
+function charStart(t){ chDeck(); S.r2.ph[t]='play'; save(); render(); setTimer(S.cfg.tChar,'몸으로 말해요',true,()=>{ S.r2.ph[t]='done'; save(); render(); playVoice('v_time_up'); }); }
+function chMark(r){ const st=STEPS[S.step]; if(st.key!=='r2') return; const t=S.sub-1; if(t<0||t>2||S.r2.ph[t]!=='play') return; const w=curChar(); S.r2.words[t].push({w,r}); S.r2.ptr++; save(); (r==='ok'?SFX.ding:SFX.buzz)(); render(); }
+/* R3 망원경 이미지 퀴즈 */
+/* 렌즈 확대: 시작 7배 → 제한 시간이 끝날 때 전체 풀림 범위의 3분의 2 지점(약 3.1배)까지만 천천히 넓어진다. 그림 전체는 끝까지 보이지 않는다 */
+const ZOOM_START=7, ZOOM_FULL=1.12, REVEAL_MAX=2/3;
+const zoomScale=()=>{ if(!T.total) return ZOOM_START; const p=Math.max(0,Math.min(1,T.left/T.total)); return ZOOM_START-(ZOOM_START-ZOOM_FULL)*REVEAL_MAX*(1-p); };
+const focusOf=idx=>`${30+((idx*37)%41)}% ${30+((idx*53)%41)}%`;
+function vR3(s){
+  const R=ROUNDS[2], t=s-1, ph=S.r3.ph[t], set=S.r3.set[t]||[], i=S.r3.i[t]||0, res=S.r3.res[t];
+  const head=`<div class="row" style="justify-content:space-between"><span class="eyebrow">3R ${R.theme} · ${R.game} · ${s}번째 배</span><span class="tname" ${tc(t)}>${tn(t)}</span></div>`;
+  if(ph==='ready') return `<div class="scene">${head}<div class="grid2"><div style="display:grid;gap:1rem"><h2 class="big">${tn(t)} 망원경 준비!</h2>
+    <p style="font-size:1.5rem;margin:0">렌즈 속 그림이 천천히 넓어지지만 <b>끝까지 가도 전체의 약 3분의 2만</b> 보입니다. <b>팀이 함께</b> 무엇인지 맞히세요. 문제는 <b>${PER}개</b>, 한 문제에 기회는 <b>두 번</b>!</p>
+    <p class="lead">첫 번째에 맞히면 1점, 틀리고 두 번째에 맞히면 0.5점, 두 번 다 틀리거나 시간이 끝나면 0점. 답은 크게 외치면 됩니다(문제당 ${S.cfg.tScope}초).</p>
+    <div class="row"><button class="btn primary lg" data-a="scopestart" data-t="${t}">시작 (${PER}문제)</button></div></div>${vid('sea','shot','')}</div>
+    ${note('다른 두 배는 정답을 외치면 안 됩니다. X맨이 엉뚱한 답을 외치는지 귀 기울여 보세요.','정답 = Space 또는 "정답" 버튼, 오답 = X 또는 "오답" 버튼. 오답을 두 번 누르면 자동으로 정답이 공개됩니다.')}</div>`;
+  if(ph==='zoom'||ph==='reveal'){
+    const q=QUIZ[set[i]], dots=[0,1].map(k=>`<span style="color:${k<2-(S.r3.att[t]||0)?'var(--accent)':'var(--line)'}">●</span>`).join(' ');
+    const bar=`<div class="row" style="justify-content:space-between"><span class="score-live num">${i+1} / ${PER}</span><span style="font-size:1.6rem;letter-spacing:.2em" title="남은 기회">기회 ${dots}</span><span class="oxbig num" style="font-size:3.4rem;color:var(--accent)" data-bigtimer>${ph==='zoom'?Math.ceil(T.left):''}</span></div>`;
+    if(ph==='zoom') return `<div class="scene">${head}${bar}
+      <div class="scopewrap"><div class="lens"><img id="lensimg" src="assets/img/quiz/${q.f}.jpg" alt="망원경 속 그림" style="transform-origin:${focusOf(set[i])};transform:scale(${zoomScale()})"></div></div>
+      <div class="row" style="justify-content:center"><button class="btn good lg" data-a="scopeok">정답 (Space)</button><button class="btn bad lg" data-a="scopewrong">오답 (X)</button></div></div>`;
+    const sc=res[i]; const tag=sc===1?'<span class="stamp ok">첫 번째에 정답 · +1</span>':sc===.5?'<span class="stamp ok" style="background:var(--accent);color:#1a1400">두 번째에 정답 · +0.5</span>':'<span class="stamp bad">못 맞힘 · 0점</span>';
+    return `<div class="scene">${head}${bar}
+      <div class="slide" style="max-height:56vh"><img src="assets/img/quiz/${q.f}.jpg" alt="${esc(q.a)}"></div>
+      <div class="row" style="justify-content:center;gap:1.2rem">${tag}<span class="big" style="font-size:3rem">정답: ${esc(q.a)}${q.alt?` <small style="font-size:1.2rem;color:var(--mute)">(${esc(q.alt)})</small>`:''}</span></div>
+      <div class="row" style="justify-content:center"><button class="btn primary lg" data-a="scopenext" data-t="${t}">${i<PER-1?'다음 문제 ▶':'결과 보기 ▶'}</button></div></div>`;
+  }
+  return `<div class="scene">${head}<h2 class="big">${tn(t)} <span style="color:var(--ok)">${r3raw(t)}점</span> → 3R 점수 <span style="color:var(--accent)">${r3pts(t)}</span></h2>
+    <div class="wlist">${set.map((k,j)=>`<span class="${res[j]>0?'ok':'pass'}">${res[j]===1?'◎ ':res[j]===.5?'○ ':'✕ '}${esc(QUIZ[k].a)}</span>`).join('')}</div>
+    <p class="lead">◎ 첫 번째에 정답 ${res.filter(v=>v===1).length}개 · ○ 두 번째에 정답 ${res.filter(v=>v===.5).length}개 · ✕ 못 맞힘 ${res.filter(v=>v===0).length}개</p>${note('엉뚱한 답을 크게 외친 선원이 있었나요? "다음"을 누르면 다음 배 차례입니다.','')}</div>`;
+}
+function scopeStart(t){
+  if(!S.r3.set[t]){ const pool=shuffle(QUIZ.map((_,k)=>k).filter(k=>!S.r3.used.includes(k))); S.r3.set[t]=pool.slice(0,PER); S.r3.used.push(...S.r3.set[t]); }
+  S.r3.i[t]=0; S.r3.att[t]=0; S.r3.res[t]=[]; S.r3.ph[t]='zoom'; save(); render(); playVoice('p_scope_go'); setTimer(S.cfg.tScope,'망원경',true,()=>scopeFinish(t,0)); }
+function scopeFinish(t,score){ setTimer(0); S.r3.res[t][S.r3.i[t]]=score; S.r3.ph[t]='reveal'; save(); (score>0?SFX.ok:SFX.bad)(); render(); }
+function scopeMark(kind){ const st=STEPS[S.step]; if(st.key!=='r3') return; const t=S.sub-1; if(t<0||t>2||S.r3.ph[t]!=='zoom') return;
+  if(kind==='ok') return scopeFinish(t,(S.r3.att[t]||0)===0?1:.5);
+  S.r3.att[t]=(S.r3.att[t]||0)+1; if(S.r3.att[t]>=2) return scopeFinish(t,0); save(); SFX.buzz(); render(); }
+function scopeNext(t){ const n=(S.r3.i[t]||0)+1; if(n>=PER){ S.r3.ph[t]='done'; save(); render(); playVoice('v_round_result'); return; }
+  S.r3.i[t]=n; S.r3.att[t]=0; S.r3.ph[t]='zoom'; save(); render(); setTimer(S.cfg.tScope,'망원경',true,()=>scopeFinish(t,0)); }
+
+/* R4 대본 외워 말하기 */
+const scriptOf=t=>S.r4.script[t]==null?null:scriptLines(S.r4.script[t],S.teams[t].size);
+function vR4(s){
+  const R=ROUNDS[3], t=s-1, ph=S.r4.ph[t], n=S.teams[t].size, L=scriptOf(t);
+  const head=`<div class="row" style="justify-content:space-between"><span class="eyebrow">4R ${R.theme} · ${R.game} · ${s}번째 배</span><span class="tname" ${tc(t)}>${tn(t)}</span></div>`;
+  const card=(rows)=>`<div class="src">${rows}</div>`;
+  if(ph==='ready') return `<div class="scene">${head}<div class="grid2"><div style="display:grid;gap:1rem"><h2 class="big">${tn(t)} 입항 보고 준비!</h2>
+    <p style="font-size:1.5rem;margin:0">대본이 공개되면 선원 ${n}명이 <b>한 문장씩</b> 맡아 외웁니다. 서로 도와도 좋아요.</p>
+    <p class="lead">외우는 시간(${S.cfg.tMem}초)이 끝나면 대본을 가리고, 1번 선원부터 차례로 자기 문장을 말합니다. 얼마나 정확하게 말했는지로 점수를 받습니다.</p>
+    <div class="row"><button class="btn primary lg" data-a="memstart" data-t="${t}">대본 공개 · 외우기 시작 (${S.cfg.tMem}초)</button></div></div>${vid('report','shot','')}</div>
+    ${note('다른 두 배는 이 대본을 외우지 않아도 됩니다. 구경만 하면서 X맨의 수상한 행동을 눈여겨보세요.','대본이 배마다 다릅니다.')}</div>`;
+  if(ph==='mem') return `<div class="scene">${head}<div class="row" style="justify-content:space-between"><span class="eyebrow">대본 외우기 · ${esc(SCRIPTS[S.r4.script[t]].title)} · 내 번호의 문장을 외우세요!</span><span class="oxbig num" style="font-size:4rem;color:var(--accent)" data-bigtimer>${Math.ceil(T.left)}</span></div>
+    ${card(L.map((x,k)=>`<div style="display:flex;gap:.8rem;align-items:baseline"><span class="no" style="font-size:1.3rem;min-width:3ch">${k+1}번</span><span style="font-size:clamp(.95rem,1.3vw,1.5rem);font-weight:900;line-height:1.4;max-width:40em;word-break:keep-all">${esc(x)}</span></div>`).join(''))}
+    ${note('시간이 끝나면 대본이 자동으로 가려집니다. 그전에 다 외웠으면 "다음"을 눌러도 됩니다.','외우는 동안 팀원끼리 서로 문장을 말해 주며 연습해도 좋습니다.')}</div>`;
+  if(ph==='perf'){ const c=S.r4.cur[t]||0; return `<div class="scene">${head}<h2 class="big">대본을 가렸습니다 — 발표 시작!</h2>
+    <div class="row" style="justify-content:center">${Array.from({length:n},(_,k)=>`<span class="stamp ${k<c?'ok':''}" style="font-size:1.6rem;padding:.35rem .9rem;${k===c?'background:var(--accent);color:#1a1400':(k>c?'border:1px solid var(--line)':'')}">${k+1}번</span>`).join('')}</div>
+    <p class="lead" style="text-align:center;margin-inline:auto">${c<n?`지금은 <b style="color:var(--accent)">${c+1}번 선원</b> 차례! 자기 문장을 또박또박 말하세요.`:'모두 말했습니다. 채점으로 넘어가세요.'}</p>
+    <div class="row" style="justify-content:center">${c<n?`<button class="btn primary lg" data-a="perfnext" data-t="${t}">${c+1}번 선원 끝 → 다음 ▶</button>`:''}<button class="btn lg" data-a="perfend" data-t="${t}">발표 끝 → 채점</button></div>
+    ${note('다른 배는 조용히 들어 주세요. 틀리게 말한 단어는 기억해 두세요.','선원이 한 문장을 말할 때마다 "다음"을 누르면 순서가 넘어갑니다.')}</div>`; }
+  const m=S.r4.mark[t]||[]; const all=Array.from({length:n},(_,k)=>m[k]!=null).every(Boolean);
+  return `<div class="scene">${head}<h2 class="mid">${tn(t)} 정답 대본 · 문장마다 정확도를 눌러 주세요</h2>
+    ${card(L.map((x,k)=>`<div style="display:flex;flex-wrap:wrap;gap:.4rem .8rem;align-items:center"><span class="no" style="font-size:1.2rem;min-width:3ch">${k+1}번</span><span style="flex:1 1 16rem;font-size:clamp(.95rem,1.4vw,1.45rem);font-weight:900;line-height:1.4;word-break:keep-all">${esc(x)}</span>
+      <span class="row" style="gap:.3rem">${[[2,'정확'],[1,'조금 달라'],[0,'틀림']].map(([v,lb])=>`<button class="btn" data-a="sentmark" data-t="${t}" data-k="${k}" data-v="${v}" style="${m[k]===v?'background:var(--accent);color:#1a1400':''}">${lb}</button>`).join('')}</span></div>`).join(''))}
+    <div class="row" style="justify-content:space-between"><span class="score-live num">${all?`${r4pts(t)}점`:''}</span>${ph==='done'?'<span class="done-mark">완료 — "다음"으로 이동</span>':`<button class="btn primary lg" data-a="markdone" data-t="${t}" ${all?'':'disabled'}>점수 확정 ▶</button>`}</div>
+    ${note('들은 문장을 정답과 비교해 주세요. 한 단어만 달라도 "조금 달라", 많이 틀리거나 빠지면 "틀림"입니다.','일부러 바꿔 말한 단어가 있었다면 X맨 단서로 기억해 두세요. 점수 = 합계 ÷ (인원 × 2) × 10.')}</div>`;
+}
+function memStart(t){ if(S.r4.script[t]==null){ const used=S.r4.script.filter(v=>v!=null); const free=SCRIPTS.map((_,i)=>i).filter(i=>!used.includes(i)); S.r4.script[t]=free[Math.floor(Math.random()*free.length)]; }
+  S.r4.ph[t]='mem'; S.r4.cur[t]=0; save(); render(); playVoice('p_mem_go'); setTimer(S.cfg.tMem,'대본 외우기',true,()=>perfStart(t)); }
+function perfStart(t){ setTimer(0); S.r4.ph[t]='perf'; S.r4.cur[t]=0; save(); render(); playVoice('p_perform_go'); }
+function perfNext(t){ const n=S.teams[t].size; if((S.r4.cur[t]||0)<n){ S.r4.cur[t]=(S.r4.cur[t]||0)+1; save(); SFX.tick(); render(); } }
+function perfEnd(t){ S.r4.ph[t]='mark'; save(); render(); playVoice('p_mark'); }
+
+/* vote / reveal */
+function clueBoard(){
+  const cols=[['1R',r1pts],['2R',r2pts],['3R',r3pts],['4R',r4pts]];
+  return `<div class="wrapx"><table class="tbl" style="font-size:1.15rem"><thead><tr><th>배</th>${cols.map(c=>`<th class="c">${c[0]}</th>`).join('')}<th class="c">가장 낮았던 라운드</th></tr></thead><tbody>${[0,1,2].map(t=>{ const v=cols.map(c=>c[1](t)); const mn=Math.min(...v); const worst=cols.map((c,i)=>v[i]===mn?c[0]:null).filter(Boolean).join(', ');
+    return `<tr><td><span class="tname" ${tc(t)} style="font-size:1.2rem">${tn(t)}</span></td>${v.map(x=>`<td class="c num" style="${x===mn?'color:var(--bad);font-weight:900':''}">${x}</td>`).join('')}<td class="c">${worst}</td></tr>`; }).join('')}</tbody></table></div>`;
+}
+function vVote(s){
+  if(s===0) return `<div class="scene"><span class="eyebrow">추리 토론 · 60초</span><h2 class="big">우리 배의 X맨은 누구?</h2>${clueBoard()}
+    <p class="lead">점수가 떨어진 라운드에서 누가 이상했나요? 귓속말, 몸짓, 퀴즈 답, 대본 속 단어를 떠올려 보세요. 단정하지 말고 근거로 이야기하세요.</p>
+    ${note('60초 동안 배끼리 토론하게 하고, 끝나면 "다음"으로 지목합니다.','')}</div>`;
+  if(s===1) return `<div class="scene" style="justify-items:center;text-align:center"><span class="eyebrow">최후의 지목</span><h2 class="big">"3, 2, 1, 지목!"</h2>
+    <p class="lead" style="margin-inline:auto">배마다 팀원 전원이 자기 배의 X맨이라고 생각하는 사람을 동시에 손가락으로 가리킵니다. 가장 많이 지목된 사람이 쪽지를 펼칩니다.</p>
+    <button class="btn primary lg" data-a="cdvote">카운트다운</button>${note('동점이면 마지막으로 이야기한 사람이 정합니다.','')}</div>`;
+  return `<div class="scene"><span class="eyebrow">X맨 공개</span><h2 class="mid">지목된 사람이 쪽지에 X를 쓴 사람이었나요?</h2><div class="panel">
+    ${[0,1,2].map(t=>`<div class="inrow" ${tc(t)} style="display:grid;grid-template-columns:minmax(120px,.6fr) 1fr;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)"><h3 style="font-size:24px;border-left:6px solid var(--tc);padding-left:10px">${tn(t)}</h3><div class="row">
+      <button class="btn ${S.caught[t]===true?'good':''}" data-a="caught" data-t="${t}" data-v="1">⚓ 검거 · +10</button>
+      <button class="btn ${S.caught[t]===false?'bad':''}" data-a="caught" data-t="${t}" data-v="0">놓침 · −5</button></div></div>`).join('')}
+    </div><p class="lead">잡은 배 ${caughtN()}척 → ${endingOf().label}</p>${note('"지금부터 각 배의 X맨을 공개합니다. X맨은, 일어나 주세요!"','쪽지를 펼친 결과를 배마다 입력하세요. 세 배 모두 입력하면 "다음"으로 결말을 봅니다.')}</div>`;
+}
+function vEnd(s){
+  const E=endingOf(), PK=S.endPick!=null?S.endPick:endingIdx(), EP=endingOf(PK);
+  if(s===0) return `<div class="scene"><div class="row" style="justify-content:space-between"><span class="eyebrow">결말 · ${EP.label}${PK!==endingIdx()?' · 직접 선택':''}</span><span class="tname" style="--tc:${EP.color}">${caughtN()}척 검거</span></div>
+    <div class="row" style="justify-content:center"><span style="color:var(--mute)">결말 고르기</span>${ENDS.map((x,k)=>`<button class="btn" data-a="endpick" data-k="${k}" aria-pressed="${k===PK}" style="${k===PK?'background:var(--accent);color:#1a1400':''}">${x.label}${k===endingIdx()?' (기록 기준)':''}</button>`).join('')}</div>
+    <div class="slide" style="max-height:62vh"><video id="endv" src="${END(EP.file)}" playsinline preload="auto" poster="${IMG(EP.poster)}" style="background:#000"></video></div>
+    <div class="row" style="justify-content:center"><button class="btn primary lg" data-a="endplay">▶ 결말 영상 재생</button><button class="btn" data-a="endfull">영상 전체화면</button></div>
+    ${VFALL(END(EP.file))}</div>`;
+  const order=[0,1,2].sort((a,b)=>total(b)-total(a));
+  return `<div class="scene"><span class="eyebrow">최종 성적</span><h2 class="mid"><span style="color:${E.color}">${E.head}</span> · 1위 <span style="color:${TC[order[0]]}">${tn(order[0])}</span></h2>
+    <div class="wrapx"><table class="tbl" style="font-size:1.15rem"><thead><tr><th>순위</th><th>배</th><th class="c">1R</th><th class="c">2R</th><th class="c">3R</th><th class="c">4R</th><th class="c">검거</th><th class="c">총점</th></tr></thead><tbody>
+    ${order.map((t,i)=>`<tr><td class="num">${i+1}위</td><td><span class="tname" ${tc(t)} style="font-size:1.3rem">${tn(t)}</span></td><td class="c num">${r1pts(t)}</td><td class="c num">${r2pts(t)}</td><td class="c num">${r3pts(t)}</td><td class="c num">${r4pts(t)}</td><td class="c num">${S.caught[t]===true?'+10':S.caught[t]===false?'−5':'—'}</td><td class="c tot num">${total(t)}</td></tr>`).join('')}</tbody></table></div>
+    <div class="row"><button class="btn" data-a="askreset">새 게임</button></div>${note('X맨에게 "가장 잘 먹힌 방해"를 한 명씩 물어보세요. 사진 찍기 좋은 순간입니다.','')}</div>`;
+}
+
+/* ---------- render / flow ---------- */
+function render(){
+  const st=STEPS[S.step], s=S.sub; let h='';
+  if(st.key==='setup') h=vSetup(); else if(st.key==='intro') h=vIntro(); else if(st.key==='secret') h=vSecret(); else if(st.key==='rules') h=vRules(s);
+  else if(st.key==='r1') h=s===0?vRoundIntro(0):vR1(s);
+  else if(st.key==='r2') h=s===0?vRoundIntro(1):s<=3?vR2(s):`<div class="scene"><span class="eyebrow">2R 결과</span><h2 class="mid">몸으로 말해요 결과</h2>${scoreTable([['맞힌 단어',r2raw],['2R 점수',r2pts]])}</div>`;
+  else if(st.key==='r3') h=s===0?vRoundIntro(2):s<=3?vR3(s):`<div class="scene"><span class="eyebrow">3R 결과</span><h2 class="mid">망원경 이미지 퀴즈 결과</h2>${scoreTable([['맞힌 점수',r3raw],['3R 점수',r3pts]])}</div>`;
+  else if(st.key==='r4') h=s===0?vRoundIntro(3):s<=3?vR4(s):`<div class="scene"><span class="eyebrow">4R 결과</span><h2 class="mid">입항 보고 결과</h2>${scoreTable([['정확한 문장',t=>`${(S.r4.mark[t]||[]).slice(0,S.teams[t].size).filter(v=>v===2).length}/${S.teams[t].size}`],['4R 점수',r4pts]])}</div>`;
+  else if(st.key==='vote') h=vVote(s); else h=vEnd(s);
+  $('#stage').innerHTML=h; $('#stage').scrollTop=0; setBg(bgFor()); setBed(bedFor());
+  $('#rail').innerHTML=STEPS.map((x,i)=>`<button class="pill ${i===S.step?'now':i<S.step?'done':''}" data-a="jump" data-i="${i}">${x.label}</button>`).join('');
+  $('#where').innerHTML=`<b>${esc(st.label)}</b>${st.subs>1?` · ${s+1}/${st.subs}`:''}`;
+  $('#bPrev').disabled=S.step===0&&s===0;
+}
+function enter(){
+  stopVoice(); const st=STEPS[S.step], s=S.sub;
+  const keepTimer=(st.key==='r2'&&s>=1&&s<=3&&S.r2.ph[s-1]==='play')||(st.key==='r3'&&s>=1&&s<=3&&S.r3.ph[s-1]==='zoom')||(st.key==='r4'&&s>=1&&s<=3&&S.r4.ph[s-1]==='mem');
+  if(!keepTimer) setTimer(0);
+  const ri={r1:0,r2:1,r3:2,r4:3}[st.key];
+  if(st.key==='intro'){ const v=$('#vid'); if(v) v.muted=!soundOn; }
+  if(st.key==='secret') playVoice('p_secret');
+  if(st.key==='rules') playVoice('p_rules'+(s+1));
+  if(ri!=null&&s===0){ const R=ROUNDS[ri]; playVoice(R.intro,()=>playVoice(R.taunt)); }
+  if(st.key==='r1'){
+    if(s===1) setTimer(30,'작전 회의',true);
+    if(s===2){ if(S.r1.log==null){ S.r1.log=Math.floor(Math.random()*LOGS.length); } if(S.r1.ph!=='gone') S.r1.ph='hid'; save(); render(); playVoice('p_relay_show'); }
+    if(s===3) setTimer(S.cfg.tRelay,'귓속말 전달',true,()=>playVoice('v_time_up'));
+    if(s===4) playVoice('p_relay_check');
+    if(s===5) playVoice('v_round_result');
+  }
+  if(st.key==='r2'){ if(s>=1&&s<=3&&S.r2.ph[s-1]==='ready') playVoice('p_char_go'); if(s===4) playVoice('v_round_result'); }
+  if(st.key==='r3'){ if(s===4) playVoice('v_round_result'); }
+  if(st.key==='r4'){ if(s===4) playVoice('v_round_result'); }
+  if(st.key==='vote'){ if(s===0){ setTimer(60,'추리 토론',true); playVoice('p_talk'); } if(s===1) playVoice('p_vote'); if(s===2) playVoice('p_reveal'); }
+  if(st.key==='end'){ if(s===0){ const v=$('#endv'); if(v){ v.muted=!soundOn; const pr=v.play(); if(pr&&pr.catch) pr.catch(()=>{ showGate(); toast('▶ 결말 영상 재생을 눌러 주세요'); }); } } if(s===1) playVoice('v_scores'); }
+}
+function go(step,sub){ S.step=Math.max(0,Math.min(STEPS.length-1,step)); S.sub=Math.max(0,Math.min(STEPS[S.step].subs-1,sub)); save(); render(); enter(); }
+function next(){
+  const st=STEPS[S.step], s=S.sub;
+  if(!S.startedAt) S.startedAt=Date.now();
+  if(st.key==='r1'){ if(s===2&&S.r1.ph==='hid') return toast('"항해일지 공개" 버튼을 눌러 주세요'); if(s===2&&S.r1.ph==='show') return toast('일지가 보이는 중입니다'); if(s===4&&S.r1.score.some(v=>v==null)) return toast('세 배의 맞힌 항목 수를 입력하세요'); }
+  if(st.key==='r2'&&s>=1&&s<=3){ const t=s-1; if(S.r2.ph[t]==='ready') return charStart(t); if(S.r2.ph[t]==='play') return chMark('ok'); }
+  if(st.key==='r3'&&s>=1&&s<=3){ const t=s-1, ph=S.r3.ph[t]; if(ph==='ready') return scopeStart(t); if(ph==='zoom') return scopeMark('ok'); if(ph==='reveal') return scopeNext(t); }
+  if(st.key==='r4'&&s>=1&&s<=3){ const t=s-1, ph=S.r4.ph[t], n=S.teams[t].size; if(ph==='ready') return memStart(t); if(ph==='mem') return perfStart(t); if(ph==='perf'){ if((S.r4.cur[t]||0)<n) return perfNext(t); return perfEnd(t); } if(ph==='mark'){ const m=S.r4.mark[t]||[]; if(Array.from({length:n},(_,k)=>m[k]==null).some(Boolean)) return toast('모든 문장의 정확도를 눌러 주세요'); S.r4.ph[t]='done'; save(); SFX.ok(); return render(); } }
+  if(st.key==='vote'&&s===2&&S.caught.some(v=>v==null)) return toast('세 배의 검거/놓침을 모두 입력하세요');
+  if(s<st.subs-1) go(S.step,s+1); else if(S.step<STEPS.length-1) go(S.step+1,0);
+}
+function prev(){ if(S.sub>0) go(S.step,S.sub-1); else if(S.step>0) go(S.step-1,STEPS[S.step-1].subs-1); }
+
+
+/* ---------- events ---------- */
+document.addEventListener('click',e=>{
+  const b=e.target.closest('[data-a]'); if(!b) return; ctx();
+  const a=b.dataset.a, t=+b.dataset.t;
+  if(a==='jump') go(+b.dataset.i,0);
+  else if(a==='start'){ S.startedAt=Date.now(); go(1,0); }
+  else if(a==='resume') go(S.step||1,S.sub);
+  else if(a==='askreset'){ b.outerHTML=`<span class="row"><b>기록을 모두 지울까요?</b><button class="btn bad" data-a="reset">지우기</button><button class="btn" data-a="noreset">취소</button></span>`; }
+  else if(a==='reset'){ const keep={teams:S.teams,cfg:S.cfg}; S=fresh(); Object.assign(S,keep); go(0,0); }
+  else if(a==='noreset') render();
+  else if(a==='preset'){ const z={10:[4,3,3],11:[4,4,3],12:[4,4,4]}[b.dataset.n]; S.teams.forEach((m,i)=>{ m.size=z[i]; }); save(); render(); }
+  else if(a==='size'){ S.teams[t].size=+b.dataset.n; save(); render(); }
+  else if(a==='vplay'){ const v=$('#vid'); v&&v.play().catch(()=>{}); }
+  else if(a==='vfull'){ const v=$('#vid'); v&&v.requestFullscreen&&v.requestFullscreen().catch(()=>{}); }
+  else if(a==='voice'){ const c=b.dataset.c; playVoice(b.dataset.v,c?()=>playVoice(c):undefined); }
+  else if(a==='logshow'){ S.r1.ph='show'; save(); render(); setTimer(10,'항해일지',true,()=>{ S.r1.ph='gone'; save(); render(); }); }
+  else if(a==='r1score'){ S.r1.score[t]=+b.dataset.k; save(); SFX.tick(); render(); }
+  else if(a==='charstart') charStart(t);
+  else if(a==='charok') chMark('ok');
+  else if(a==='charpass') chMark('pass');
+  else if(a==='charend'){ const tt=S.sub-1; if(S.r2.ph[tt]==='play'){ setTimer(0); S.r2.ph[tt]='done'; save(); render(); playVoice('v_time_up'); } }
+  else if(a==='scopestart') scopeStart(t);
+  else if(a==='scopeok') scopeMark('ok');
+  else if(a==='scopewrong') scopeMark('wrong');
+  else if(a==='scopenext') scopeNext(t);
+  else if(a==='memstart') memStart(t);
+  else if(a==='perfnext') perfNext(t);
+  else if(a==='perfend') perfEnd(t);
+  else if(a==='sentmark'){ if(!S.r4.mark[t]) S.r4.mark[t]=[]; S.r4.mark[t][+b.dataset.k]=+b.dataset.v; save(); SFX.tick(); render(); }
+  else if(a==='markdone') next();
+  else if(a==='cdvote') countdown(['3','2','1','지목!'],null,{voice:'v_cd_vote',times:CD_VOTE});
+  else if(a==='endpick'){ S.endPick=+b.dataset.k; save(); render(); const v=$('#endv'); if(v){ v.muted=!soundOn; const p=v.play(); if(p&&p.catch) p.catch(()=>{ showGate(); }); } }
+  else if(a==='endpreview') openEndPreview(+b.dataset.k);
+  else if(a==='epclose') closeEndPreview();
+  else if(a==='caught'){ S.caught[t]=b.dataset.v==='1'; S.endPick=null; save(); (S.caught[t]?SFX.ok:SFX.bad)(); render(); }
+  else if(a==='endplay'){ const v=$('#endv'); if(v){ v.muted=!soundOn; v.currentTime=0; v.play().catch(()=>{ showGate(); }); } }
+  else if(a==='endfull'){ const v=$('#endv'); v&&v.requestFullscreen&&v.requestFullscreen().catch(()=>{}); }
+});
+document.addEventListener('change',e=>{
+  const m={c_relay:'tRelay',c_char:'tChar',c_scope:'tScope',c_mem:'tMem'}[e.target.id];
+  if(m){ S.cfg[m]=Number(e.target.value); save(); render(); }
+});
+document.addEventListener('input',e=>{ if(e.target.dataset.a==='tname'){ S.teams[+e.target.dataset.t].name=e.target.value.slice(0,10); save(); } });
+$('#bNext').addEventListener('click',()=>{ ctx(); next(); });
+$('#bPrev').addEventListener('click',prev);
+$('#tPlay').addEventListener('click',()=>{ ctx(); if(T.left<=0) T.left=T.total; T.run=!T.run; T.last=performance.now(); drawTimer(); });
+$('#tAdd').addEventListener('click',()=>{ T.left+=15; T.total=Math.max(T.total,T.left); drawTimer(); });
+$('#tReset').addEventListener('click',()=>{ T.left=T.total; T.run=false; drawTimer(); });
+$('#bSound').addEventListener('click',e=>{ soundOn=!soundOn; e.currentTarget.setAttribute('aria-pressed',soundOn); if(!soundOn) stopVoice(); else if(musicOn) startBeds(); document.querySelectorAll('video#vid,video#endv').forEach(v=>{ v.muted=!soundOn; }); });
+$('#bMusic').addEventListener('click',e=>{ musicOn=!musicOn; e.currentTarget.setAttribute('aria-pressed',musicOn); if(musicOn&&soundOn) startBeds(); });
+$('#bVol').value=Math.round(bgmVol*100);
+$('#bVol').addEventListener('input',e=>{ bgmVol=(+e.target.value)/100; try{ localStorage.setItem('px-tv-bgm',String(bgmVol)); }catch(err){} });
+$('#gate').addEventListener('click',()=>{ if(unlocked) hideGate(); });
+$('#bFull').addEventListener('click',()=>{ const d=document.documentElement; if(document.fullscreenElement) document.exitFullscreen().catch(()=>{}); else d.requestFullscreen&&d.requestFullscreen().catch(()=>toast('전체화면을 쓸 수 없는 환경입니다')); });
+document.addEventListener('keydown',e=>{
+  if(e.target.matches('input,select,textarea')) return;
+  if(document.getElementById('epv')){ if(e.key==='Escape') closeEndPreview(); return; }   // 미리보기 중에는 진행 단계가 넘어가지 않게
+  const st=STEPS[S.step];
+  if(st.key==='r3'&&S.sub>=1&&S.sub<=3&&S.r3.ph[S.sub-1]==='zoom'){ if(e.key===' '){ e.preventDefault(); scopeMark('ok'); return; } if(e.key==='x'||e.key==='X'){ scopeMark('wrong'); return; } }
+  if(st.key==='r2'&&S.sub>=1&&S.sub<=3&&S.r2.ph[S.sub-1]==='play'){ if(e.key===' '){ e.preventDefault(); chMark('ok'); return; } if(e.key==='p'||e.key==='P'){ chMark('pass'); return; } }
+  if(e.key===' '&&e.target.closest('button')) return;
+  if(['ArrowRight','PageDown',' '].includes(e.key)){ e.preventDefault(); ctx(); next(); }
+  else if(['ArrowLeft','PageUp'].includes(e.key)){ e.preventDefault(); prev(); }
+  else if(e.key==='t'||e.key==='T') $('#tPlay').click();
+});
+render(); enter();
+})();
+</script>
