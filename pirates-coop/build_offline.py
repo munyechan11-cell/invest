@@ -6,7 +6,7 @@ src = open(os.path.join(here, 'app/index.html'), encoding='utf-8').read()
 head = ('<!doctype html>\n<html lang="ko">\n<head>\n<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n')
 # move <title>/<meta>/<link>/<style> (everything before the first <div id="app">) into <head>
-i = src.index('<div id="app">')
+i = src.index('<div id="bgwrap"')
 out = head + src[:i] + '</head>\n<body>\n' + src[i:] + '\n</body>\n</html>\n'
 dst = os.path.join(here, 'offline')
 os.makedirs(dst, exist_ok=True)

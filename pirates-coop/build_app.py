@@ -55,7 +55,7 @@ const ROUNDS=[
  {no:1,name:'자료조사',theme:'출항 전 자료조사',game:'항해일지 귓속말 전달',loop:'chart',intro:'p_r1i',taunt:'p_r1c',
   tauntText:'크크크. 출항 전 자료조사라고? 항해일지 한 줄쯤은, 슬쩍 바꿔도 아무도 모르지.',
   line:'첫 번째 선원만 TV의 항해일지를 보고, 귓속말로 끝까지 전달합니다. 마지막 선원이 일지를 말하면 진행자가 맞힌 항목을 셉니다.',score:'맞힌 항목 × 2점 (항목 5개 → 최대 10점)',
-  x:'숫자·단어 한 글자를 슬쩍 바꿔 전달한다. "12포대 아니었나? 13이었던 것 같은데…"'},
+  x:'숫자·단어 한 글자를 슬쩍 바꿔 전달한다 (예: 12포대 → 13포대)'},
  {no:2,name:'팀 회의',theme:'갑판 집합',game:'말 없이 줄서기',loop:'deck',intro:'p_r2i',taunt:'p_r2c',
   tauntText:'말 없이 줄을 서라고? 내가 슬쩍 한 칸만 옮기면, 대열은 엉망이 되지.',
   line:'한마디도 하지 않고 60초 안에 생일(월·일) 순서로 한 줄을 섭니다. 끝나면 앞에서부터 생일을 말해 확인합니다.',score:'제자리에 선 인원 ÷ 팀 인원 × 10점',
@@ -228,7 +228,7 @@ function vR1(s){
   const head=`<div class="row" style="justify-content:space-between"><span class="eyebrow">1R ${R.theme} · ${R.game}</span></div>`;
   if(s===1) return `<div class="scene">${head}<h2 class="big">작전 회의 30초</h2>
     <p style="font-size:1.6rem;margin:0">귓속말을 <b>어떻게 정확히 전달할지</b> 배마다 정하세요. 전달 순서(줄 순서)도 정합니다.</p>
-    <p class="lead">예) 한 번씩 되묻기 · 숫자는 손가락으로 확인하기 · 앞사람 말이 끝나면 반복해서 확인하기</p>
+    <p class="lead">귓속말은 <b>딱 한 번만</b> 하고, 다시 말해 달라고 할 수 없습니다. 예) 숫자는 또박또박 · 항목 수를 먼저 알려 주기 · 줄 순서를 정하기</p>
     ${note('30초가 끝나면 "다음"을 눌러 항해일지를 공개합니다.','')}</div>`;
   if(s===2){ const ph=S.r1.ph;
     return `<div class="scene">${head}<h2 class="mid">첫 번째 선원만 TV를 보세요</h2>
