@@ -190,7 +190,7 @@ const TC = ['var(--t0)','var(--t1)','var(--t2)'];
 const ROUNDS=[
  {no:1,name:'자료조사',theme:'출항 전 자료조사',game:'항해일지 귓속말 전달',loop:'chart',intro:'p_r1i',taunt:'p_r1c',
   tauntText:'크크크. 출항 전 자료조사라고? 항해일지 한 줄쯤은, 슬쩍 바꿔도 아무도 모르지.',
-  line:'첫 번째 선원만 TV의 항해일지를 보고, 귓속말로 끝까지 전달합니다. 마지막 선원이 일지를 말하면 진행자가 맞힌 항목을 셉니다.',score:'맞힌 항목 × 2점 (항목 5개 → 최대 10점)',
+  line:'첫 번째 선원만 TV의 항해일지를 보고, 귓속말로 끝까지 전달합니다. 마지막 선원이 일지를 말하면 진행자가 맞힌 항목을 셉니다.',score:'항목 3개 중 맞힌 수 × 10 ÷ 3 (3개 모두 맞히면 10점)',
   x:'숫자·단어 한 글자를 슬쩍 바꿔 전달한다 (예: 12포대 → 13포대)'},
   {no:2,name:'팀 회의',theme:'갑판 집합',game:'몸으로 말해요',loop:'deck',intro:'p_r2i',taunt:'p_r2c',
   tauntText:'몸으로 말해요? 내가 몸짓을 한 군데만 슬쩍 틀리면, 팀원들은 영영 못 맞힐걸. 크크크.',
@@ -205,12 +205,13 @@ const ROUNDS=[
   line:'배마다 대본을 받아 외웁니다. 선원마다 한 문장씩 맡고, 대본을 가린 뒤 1번부터 차례로 한 문장씩 말합니다. 얼마나 정확하게 말했는지로 점수를 받습니다.',score:'문장마다 정확 2 · 조금 달라 1 · 틀림 0, 합계 ÷ (인원 × 2) × 10점',
   x:'자기 문장의 단어를 한두 개 일부러 바꿔 말하기 · 외우는 시간에 틀린 단어 속삭이기 — 듣는 사람이 "대본과 다른데?" 할 만큼만 티 나게'}
 ];
-const LOGS=[
- {title:'보급 창고 점검',items:['창고 3번','쌀 12포대','물 40통','출항 새벽 5시','목적지 종강항']},
- {title:'출항 명단',items:['선원 15명','깃발 파란색','밧줄 8개','출항 일요일','목적지 등대섬']},
- {title:'항로 기록',items:['북쪽으로 7일','섬 2개 통과','폭풍 3번','물고기 25마리','도착 저녁 6시']},
- {title:'선장 지시',items:['돛 4장 수리','망치 6자루','못 100개','집합 갑판 2층','점검 낮 12시']}
+const LOGS=[   // 항해일지는 항목 3개 (귓속말로 전달하기 쉽게)
+ {title:'보급 창고 점검',items:['쌀 12포대','물 40통','목적지 종강항']},
+ {title:'출항 명단',items:['선원 15명','깃발 파란색','목적지 등대섬']},
+ {title:'항로 기록',items:['북쪽으로 7일','섬 2개 통과','도착 저녁 6시']},
+ {title:'선장 지시',items:['돛 4장 수리','망치 6자루','집합 갑판 2층']}
 ];
+const LOG_N=3;   // 항해일지 항목 수
 /* 3R 망원경 이미지 퀴즈: 그림 30장(팀마다 10장씩 겹치지 않게). f = assets/img/quiz/<f>.jpg */
 const QUIZ=[
  {f:'q01',a:'닻'},{f:'q02',a:'등대'},{f:'q03',a:'해적선'},{f:'q04',a:'보물상자'},{f:'q05',a:'고래'},{f:'q06',a:'갈매기'},{f:'q07',a:'문어'},{f:'q08',a:'나침반'},{f:'q09',a:'불가사리'},{f:'q10',a:'배의 키',alt:'조타륜'},
@@ -254,7 +255,7 @@ function load(){ try{ const r=localStorage.getItem(KEY); if(r){ const s=JSON.par
 function save(){ try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){} }
 
 /* ---------- scoring ---------- */
-const r1pts=t=>S.r1.score[t]==null?0:S.r1.score[t]*2;
+const r1pts=t=>S.r1.score[t]==null?0:Math.round(S.r1.score[t]*10/LOG_N);
 const r2raw=t=>S.r2.words[t].filter(w=>w.r==='ok').length;
 const r2pts=t=>Math.min(10,r2raw(t)*2);
 const r3raw=t=>S.r3.res[t].reduce((a,v)=>a+v,0);
@@ -456,7 +457,7 @@ function vR1(s){
     ${note('다른 배가 들을 수 있게 크게 말하는 것은 반칙입니다. 시간이 끝나면 확인 화면으로 갑니다.','')}</div>`;
   if(s===4){ return `<div class="scene">${head}<h2 class="mid">정답 항해일지: ${esc(L.title)}</h2>
     <div class="src"><ol class="body" style="margin:0;padding-left:1.2em;display:grid;gap:.3rem">${L.items.map(i=>`<li style="font-size:1.8rem;font-weight:900">${esc(i)}</li>`).join('')}</ol></div>
-    <div class="ansrow">${[0,1,2].map(t=>`<div class="ans" ${tc(t)}><div class="tname">${tn(t)}</div><p style="margin:0;font-size:.9rem;color:var(--mute)">마지막 선원이 말한 일지에서 맞힌 항목 수</p><div class="row" style="justify-content:center">${[0,1,2,3,4,5].map(k=>`<button class="btn num" data-a="r1score" data-t="${t}" data-k="${k}" aria-pressed="${S.r1.score[t]===k}" style="${S.r1.score[t]===k?'background:var(--accent);color:#1a1400':''}">${k}</button>`).join('')}</div></div>`).join('')}</div>
+    <div class="ansrow">${[0,1,2].map(t=>`<div class="ans" ${tc(t)}><div class="tname">${tn(t)}</div><p style="margin:0;font-size:.9rem;color:var(--mute)">마지막 선원이 말한 일지에서 맞힌 항목 수</p><div class="row" style="justify-content:center">${Array.from({length:LOG_N+1},(_,k)=>k).map(k=>`<button class="btn num" data-a="r1score" data-t="${t}" data-k="${k}" aria-pressed="${S.r1.score[t]===k}" style="${S.r1.score[t]===k?'background:var(--accent);color:#1a1400':''}">${k}</button>`).join('')}</div></div>`).join('')}</div>
     ${note('각 배의 마지막 선원이 말한 일지를 정답과 비교해 항목별로 맞으면 1개로 셉니다.','세 배 모두 입력하면 "다음"으로 결과를 봅니다.')}</div>`; }
   return `<div class="scene"><span class="eyebrow">1R 결과</span><h2 class="mid">항해일지 귓속말 전달 결과</h2>${scoreTable([['맞힌 항목',t=>S.r1.score[t]],['1R 점수',r1pts]])}${note('점수가 낮은 배가 있다면 누가 바꿨는지 기억해 두세요.','')}</div>`;
 }
