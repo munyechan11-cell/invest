@@ -36,6 +36,9 @@ INTRO_LINES = {
 END_LINES = {
     'e1': (f'{W}/tts/403.mp3', "크하하하!\n아무도 내 X맨을 알아채지 못했군!\n이번 학기는 우리 해적단의 승리다!", 'Villain', 'tense', ['night', 'sink']),
     'e2': (f'{W}/tts/404.mp3', "X맨은 일부만 들켰다.\n배들은 간신히 항구에 도착했지만,\n아직 해적의 그림자가 남아 있다.", 'Narr', 'calm', ['sea', 'deck']),
+    'e0': (f'{W}/tts/409.mp3', "X맨은 끝까지 숨었고,\n항해마저 무너졌다.\n세 척의 배는 안개 속으로 가라앉았다.\n바다에는 해적 깃발만 남았다.", 'Narr', 'tense', ['sea', 'sink']),
+    'e2a': (f'{W}/tts/410.mp3', "X맨 한 명만 들켰다.\n한 척만 겨우 항구에 닿았고,\n나머지 배는 아직 바다 위에서\n해적과 싸우고 있다.", 'Narr', 'calm', ['night', 'arrive']),
+    'e4': (f'{W}/tts/411.mp3', "X맨이 모두 들켰고,\n항해마저 완벽했다.\n세 척은 나란히 종강항에 입항했다.\n이 바다의 전설이 될 선원들이다.", 'Narr', 'play', ['harbor', 'arrive']),
     'e3': (f'{W}/tts/405.mp3', "세 명의 X맨이 모두 들켰다.\n선원들은 힘을 모아 배를 지켜냈고,\n팀플호는 종강항에 무사히 도착했다.", 'Narr', 'play', ['deck', 'arrive']),
 }
 
@@ -171,19 +174,20 @@ def build_intro():
 
 def build_end(key):
     f, text, style, music, loops = END_LINES[key]
-    num = {'e1': '403', 'e2': '404', 'e3': '405'}[key]
+    num = {'e1': '403', 'e2': '404', 'e3': '405', 'e0': '409', 'e2a': '410', 'e4': '411'}[key]
     words = align_new[num]
     LEAD = 0.5
     total = round(LEAD + words[-1]['e'] + 1.6, 2)
     # two loops cross-faded, long enough for total
     d = [dur(f'{A}/loop/{n}.mp4') for n in loops]
-    off = d[0] - 0.8
+    XF = 0.8 if d[0] + d[1] - 0.8 >= total - 0.3 else 0.4   # 내레이션이 길면 이음 구간을 줄여 영상 길이를 확보
+    off = d[0] - XF
     joined = f'{W}/tmp/{key}_video.mp4'
     run(['ffmpeg', '-v', 'error', '-y', '-i', f'{A}/loop/{loops[0]}.mp4', '-i', f'{A}/loop/{loops[1]}.mp3'.replace('.mp3', '.mp4'),
-         '-filter_complex', f'[0:v][1:v]xfade=transition=fade:duration=0.8:offset={off:.2f}[v]', '-map', '[v]', '-t', f'{total}',
+         '-filter_complex', f'[0:v][1:v]xfade=transition=fade:duration={XF}:offset={off:.2f}[v]', '-map', '[v]', '-t', f'{total}',
          '-c:v', 'libx264', '-preset', 'fast', '-crf', '22', '-pix_fmt', 'yuv420p', joined])
     assert dur(joined) >= total - 0.3, (dur(joined), total)
-    out_name = {'e1': 'e1_pirate_win', 'e2': 'e2_partial', 'e3': 'e3_perfect'}[key]
+    out_name = {'e1': 'e1_pirate_win', 'e2': 'e2_partial', 'e3': 'e3_perfect', 'e0': 'e0_sunk', 'e2a': 'e2a_one', 'e4': 'e4_legend'}[key]
     ass = f'{W}/tmp/{key}.ass'
     open(ass, 'w', encoding='utf-8').write(ASS_HEAD + '\n'.join(sub_events(words, text, style, LEAD)) + '\n')
     os.makedirs(f'{A}/end', exist_ok=True)

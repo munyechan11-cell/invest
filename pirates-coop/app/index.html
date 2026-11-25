@@ -211,12 +211,12 @@ const LOGS=[
 const STAR=['돛','닻','밧줄','망치','나침반','깃발','보물지도','발표','슬라이드','그래프'];
 const PLAIN=['배','바다','파도','갈매기','섬','모래','조개','불가사리','고래','상어','문어','등대','항구','나무','톱','풀','보물','지도','선장','해적','선원','물','쌀','빵','사과','달','별','해','구름','비','바람','노트북','마이크','연필','책상','의자','시계','가방','안경','신발','우산'];
 const CHARS=['수영하기','낚시하기','노 젓기','닻 올리기','돛 펴기','망원경 보기','보물 캐기','칼싸움','물고기 잡기','파도타기','바닥 청소','요리하기','양치질','샤워하기','달리기','자전거 타기','전화 받기','사진 찍기','노트북 치기','발표하기','고양이','원숭이','상어','문어','갈매기','고래','앵무새','해적','선장','잠자기','밥 먹기','춤추기','기타 치기','축구하기','농구하기','우산 쓰기','추워서 떨기','깜짝 놀라기','웃기','울기'];
-/* 4R 대본: 짧고 쉬운 문장 7개. 인원이 7명 미만이면 앞 문장을 쓰고 마지막 문장(맺음말)을 항상 붙인다 */
+/* 4R 대본: 문장 7개(문장당 40~85자, 화면에서 1~3줄). 인원이 7명 미만이면 앞 문장을 쓰고 마지막 문장(맺음말)을 항상 붙인다 */
 const SCRIPTS=[
- {title:'항해 결과 보고',lines:['우리 배는 오늘 무사히 항구에 도착했습니다.','파도가 거칠었지만 모두 함께 노를 저었습니다.','자료조사로 길을 찾고 회의로 방향을 정했습니다.','찢어진 돛은 힘을 모아 튼튼하게 고쳤습니다.','해적이 방해했지만 끝까지 포기하지 않았습니다.','도와준 모든 선원에게 감사드립니다.','이상으로 입항 보고를 마치겠습니다.']},
- {title:'항해 일지',lines:['안녕하세요, 저희는 팀플호 선원입니다.','저희는 종강항을 향해 출항했습니다.','첫째 날에는 바람이 좋아 돛을 활짝 폈습니다.','둘째 날에는 안개가 껴서 등대를 찾았습니다.','셋째 날에는 폭풍을 만났지만 버텨 냈습니다.','마침내 새벽에 항구의 불빛이 보였습니다.','모두의 힘으로 무사히 도착했습니다.']},
- {title:'선장님께 보고',lines:['선장님께 입항 보고를 드리겠습니다.','저희 배의 이름은 팀플호입니다.','선원들은 매일 아침 갑판에 모였습니다.','밤에는 별을 보며 길을 확인했습니다.','식량과 물은 충분히 남아 있습니다.','해적을 조심하며 안전하게 왔습니다.','이상 보고를 마칩니다. 충성!']},
- {title:'우리 배 소개',lines:['지금부터 우리 배의 항해를 소개합니다.','우리 배는 서로 돕는 선원들로 가득합니다.','아침에는 갑판을 청소하고 돛을 점검했습니다.','점심에는 모여서 오늘의 항로를 의논했습니다.','저녁에는 노래를 부르며 노를 저었습니다.','밤에는 번갈아 망을 보며 바다를 지켰습니다.','이렇게 우리는 항구에 도착했습니다.']}
+ {title:'항해 결과 보고',lines:['우리 배는 오늘 새벽, 거친 바다를 건너 무사히 종강항 항구에 도착했습니다. 모든 선원이 한마음으로 노를 저은 덕분입니다.','처음에는 파도가 너무 거칠어서 배가 크게 흔들렸지만, 선원들은 서로의 이름을 부르며 끝까지 힘을 냈습니다.','자료조사로 올바른 항로를 찾아냈고, 갑판에 모여 회의를 하면서 어느 쪽으로 갈지 모두 함께 방향을 정했습니다.','폭풍에 찢어진 돛은 선원들이 밤새 힘을 모아 한 장 한 장 튼튼하게 꿰맸고, 아침에는 새것처럼 바람을 가득 받았습니다.','중간에 해적이 몰래 방해를 했지만, 우리는 서로를 믿고 끝까지 포기하지 않아서 마침내 약속한 시간에 도착했습니다.','도와주신 모든 선원과 응원해 준 다른 배의 친구들에게도 진심으로 고맙다는 인사를 전하고 싶습니다.','이상으로 팀플호의 입항 보고를 모두 마치겠습니다. 들어 주셔서 감사합니다.']},
+ {title:'항해 일지',lines:['안녕하세요, 저희는 이번 학기 마지막 과제를 향해 함께 출항한 팀플호의 선원들입니다. 지금부터 항해 일지를 읽겠습니다.','저희는 아침 일찍 항구를 떠나 목적지인 종강항을 향해 출발했고, 모두가 각자 맡은 역할을 정해 두었습니다.','첫째 날에는 바람이 아주 좋아서 돛을 활짝 폈고, 배는 파도 위를 미끄러지듯 빠르게 앞으로 나아갔습니다.','둘째 날에는 짙은 안개가 껴서 앞이 보이지 않았지만, 저 멀리 희미한 등대 불빛을 찾아 천천히 방향을 잡았습니다.','셋째 날에는 큰 폭풍을 만나 배가 크게 흔들렸지만, 선원들이 서로 밧줄을 붙잡아 주며 끝까지 버텨 냈습니다.','마침내 이른 새벽, 수평선 너머로 종강항의 따뜻한 불빛이 보였을 때 모두가 함께 환호성을 질렀습니다.','모두의 힘으로 무사히 도착했고, 이 항해는 우리 모두에게 잊지 못할 추억이 될 것입니다.']},
+ {title:'선장님께 보고',lines:['선장님께 팀플호의 입항 보고를 드리겠습니다. 저희는 약속한 항로를 따라 한 명도 빠짐없이 안전하게 돌아왔습니다.','저희 배의 이름은 팀플호이고, 이번 항해에는 서로 다른 이야기를 가진 선원들이 한 배에 모여 함께 일했습니다.','선원들은 매일 아침 갑판에 모여 오늘 할 일을 나누었고, 해야 할 일을 빠짐없이 적어 두며 차근차근 해냈습니다.','밤에는 번갈아 망을 보면서 별자리를 보며 길을 확인했고, 졸린 선원에게는 따뜻한 차를 나누어 주었습니다.','식량과 마실 물은 항해 내내 충분히 남아 있었고, 모든 선원이 건강하게 끝까지 일할 수 있었습니다.','수상한 해적이 배에 숨어 있었지만, 서로를 지켜보며 조심한 덕분에 큰 피해 없이 안전하게 왔습니다.','이상으로 보고를 마칩니다. 팀플호 선원 일동, 충성!']},
+ {title:'우리 배 소개',lines:['지금부터 저희 팀플호가 이번 항해에서 어떻게 일했는지, 선원들의 하루를 차례대로 소개해 드리겠습니다.','우리 배는 서로를 아끼고 돕는 선원들로 가득해서, 누군가 힘들어하면 곁에서 말없이 도와주는 분위기였습니다.','아침에는 모두 함께 갑판을 청소하고 돛과 밧줄을 꼼꼼하게 점검한 다음, 하루 일정을 큰 소리로 확인했습니다.','점심에는 한자리에 모여 오늘의 항로를 의논했고, 서로 다른 의견이 나오면 끝까지 들어 본 뒤 함께 정했습니다.','저녁에는 노래를 부르며 힘차게 노를 저었고, 지친 선원은 잠시 쉬게 하면서 번갈아 가며 배를 움직였습니다.','밤에는 두 명씩 번갈아 망을 보면서 바다를 지켰고, 아침 해가 뜰 때까지 한 명도 자리를 비우지 않았습니다.','이렇게 우리는 서로를 믿으며 함께 항구에 도착했습니다. 이상으로 소개를 마치겠습니다.']}
 ];
 const scriptLines=(i,n)=>{ const L=SCRIPTS[i].lines; return n>=L.length?L.slice():[...L.slice(0,n-1),L[L.length-1]]; };
 const STEPS=[
@@ -257,10 +257,16 @@ const bonus=t=>S.caught[t]===true?10:(S.caught[t]===false?-5:0);
 const total=t=>ship(t)+bonus(t);
 const caughtN=()=>S.caught.filter(v=>v===true).length;
 const ENDS=[
+  {file:'e0_sunk',poster:'s6_sink',label:'해적단 완승 · 침몰',head:'해적단 완승 · 침몰',color:'var(--x)'},
   {file:'e1_pirate_win',poster:'s6_sink',label:'해적단 승리',head:'해적단 승리',color:'var(--x)'},
+  {file:'e2a_one',poster:'s4_three_ships',label:'한 척의 생존',head:'한 척의 생존',color:'var(--accent)'},
   {file:'e2_partial',poster:'s7_arrive',label:'아슬아슬한 입항',head:'아슬아슬한 입항',color:'var(--accent)'},
-  {file:'e3_perfect',poster:'s7_arrive',label:'완벽한 입항',head:'완벽한 입항',color:'var(--ok)'}];
-const endingIdx=()=>{ const n=caughtN(); return n===0?0:(n<3?1:2); };   // 기록 기준: 잡은 배 0척 / 1~2척 / 3척
+  {file:'e3_perfect',poster:'s7_arrive',label:'완벽한 입항',head:'완벽한 입항',color:'var(--ok)'},
+  {file:'e4_legend',poster:'s7_arrive',label:'전설의 항해',head:'전설의 항해',color:'var(--ok)'}];
+/* 결말 6종: 잡은 배 수(0/1/2/3척) + 세 배 항해 점수 평균(40점 만점). 기준값은 실제 플레이 전의 가정이라 고쳐 쓸 수 있게 상수로 둔다 */
+const SUNK_AVG=14, LEGEND_AVG=24;
+const avgShip=()=>[0,1,2].reduce((a,t)=>a+ship(t),0)/3;
+const endingIdx=()=>{ const n=caughtN(), av=avgShip(); if(n===0) return av<SUNK_AVG?0:1; if(n===1) return 2; if(n===2) return 3; return av>=LEGEND_AVG?5:4; };
 const endingOf=i=>ENDS[i==null?endingIdx():i];
 function closeEndPreview(){ const d=document.getElementById('epv'); if(d){ try{ d.querySelector('video').pause(); }catch(e){} d.remove(); } setBed(bedFor()); }
 function openEndPreview(k){ closeEndPreview(); stopVoice(); setBed(null); const E=ENDS[k];
@@ -374,7 +380,7 @@ function vSetup(){
     <div class="panel" style="display:grid;gap:.6rem"><h3 style="font-size:1.4rem">준비물과 설정</h3>
       <p style="margin:0">종이 1장이면 됩니다. <b>배마다</b> 종이를 사람 수만큼 찢어 한 장에만 <b style="color:var(--x)">X</b>를 쓰고 접어 섞은 뒤 한 장씩 뽑아 몰래 확인하세요. 진행자도 모릅니다.</p>
       <p style="margin:0;color:var(--mute)">TV 연결: 노트북을 HDMI로 TV에 꽂고 디스플레이를 "복제"로 둔 뒤 위의 "전체화면"을 누르세요. 소리는 TV 스피커로 나옵니다.</p>
-      <div class="row"><label>귓속말 ${sel('c_relay',S.cfg.tRelay,[[45,'45초'],[60,'60초'],[90,'90초']])}</label><label>몸으로 말해요 ${sel('c_char',S.cfg.tChar,[[60,'60초'],[90,'90초'],[120,'120초']])}</label><label>스피드 퀴즈 ${sel('c_sq',S.cfg.tSQ,[[60,'60초'],[90,'90초'],[120,'120초']])}</label><label>대본 외우기 ${sel('c_mem',S.cfg.tMem,[[30,'30초'],[45,'45초'],[60,'60초'],[90,'90초']])}</label></div>
+      <div class="row"><label>귓속말 ${sel('c_relay',S.cfg.tRelay,[[45,'45초'],[60,'60초'],[90,'90초']])}</label><label>몸으로 말해요 ${sel('c_char',S.cfg.tChar,[[60,'60초'],[90,'90초'],[120,'120초']])}</label><label>스피드 퀴즈 ${sel('c_sq',S.cfg.tSQ,[[60,'60초'],[90,'90초'],[120,'120초']])}</label><label>대본 외우기 ${sel('c_mem',S.cfg.tMem,[[45,'45초'],[60,'60초'],[90,'90초']])}</label></div>
     </div></div>
   ${note('마이크를 잡고 설명과 "3, 2, 1!" 신호를 맡습니다.','노트북을 조작하고 점수를 입력합니다. X맨이 누구인지는 진행자도 모릅니다. 끝에 각 배가 쪽지를 펼칠 때 "검거/놓침"만 입력하세요.')}</div>`;
 }
@@ -409,7 +415,7 @@ function vRules(sub){
     <div class="grid2" style="align-items:start"><div class="wrapx"><table class="tbl" style="font-size:1.1rem"><tbody>${ROUNDS.map(R=>`<tr><td style="white-space:nowrap"><b>${R.no}R ${R.game}</b></td><td>${R.x}</td></tr>`).join('')}</tbody></table></div>
     <div style="display:grid;gap:.8rem"><div class="panel"><b style="color:var(--ok)">해도 되는 것</b><br>일부러 틀리되 <b>살짝 티 나게</b> — 보는 사람이 "어? 좀 이상한데?" 할 정도의 실수·엉뚱한 답·바꿔 말하기. 완전히 숨기면 추리가 불가능합니다.</div>
     <div class="panel"><b style="color:var(--bad)">하면 안 되는 것</b><br>"내가 X맨이야" 말하기, 규칙을 어기거나 게임을 멈추기, 소리 지르기·몸싸움, 남의 물건에 손대기</div>
-    <div class="panel"><b>점수와 결말</b><br>라운드마다 0~10점(최대 40) + 검거 +10 / 놓침 −5. 세 배 중 <b>X맨을 잡은 배의 수</b>로 결말이 정해집니다: 0척 해적단 승리 · 1~2척 아슬아슬한 입항 · 3척 완벽한 입항.</div></div></div>
+    <div class="panel"><b>점수와 결말</b><br>라운드마다 0~10점(최대 40) + 검거 +10 / 놓침 −5. 세 배 중 <b>X맨을 잡은 배의 수</b>로 결말이 정해집니다: 0척 해적단 승리(점수까지 낮으면 침몰) · 1척 한 척의 생존 · 2척 아슬아슬한 입항 · 3척 완벽한 입항(점수까지 높으면 전설의 항해).</div></div></div>
     ${note('질문을 1~2개 받고 1라운드로 넘어갑니다.','')}</div>`;
 }
 function vRoundIntro(r){
@@ -501,7 +507,7 @@ function vR4(s){
     <div class="row"><button class="btn primary lg" data-a="memstart" data-t="${t}">대본 공개 · 외우기 시작 (${S.cfg.tMem}초)</button></div></div>${vid('report','shot','')}</div>
     ${note('다른 두 배는 이 대본을 외우지 않아도 됩니다. 구경만 하면서 X맨의 수상한 행동을 눈여겨보세요.','대본이 배마다 다릅니다.')}</div>`;
   if(ph==='mem') return `<div class="scene">${head}<div class="row" style="justify-content:space-between"><span class="eyebrow">대본 외우기 · ${esc(SCRIPTS[S.r4.script[t]].title)} · 내 번호의 문장을 외우세요!</span><span class="oxbig num" style="font-size:4rem;color:var(--accent)" data-bigtimer>${Math.ceil(T.left)}</span></div>
-    ${card(L.map((x,k)=>`<div style="display:flex;gap:.8rem;align-items:baseline"><span class="no" style="font-size:1.3rem;min-width:3ch">${k+1}번</span><span style="font-size:clamp(1.2rem,2.2vw,2.2rem);font-weight:900">${esc(x)}</span></div>`).join(''))}
+    ${card(L.map((x,k)=>`<div style="display:flex;gap:.8rem;align-items:baseline"><span class="no" style="font-size:1.3rem;min-width:3ch">${k+1}번</span><span style="font-size:clamp(1rem,1.55vw,1.7rem);font-weight:900;line-height:1.4">${esc(x)}</span></div>`).join(''))}
     ${note('시간이 끝나면 대본이 자동으로 가려집니다. 그전에 다 외웠으면 "다음"을 눌러도 됩니다.','외우는 동안 팀원끼리 서로 문장을 말해 주며 연습해도 좋습니다.')}</div>`;
   if(ph==='perf'){ const c=S.r4.cur[t]||0; return `<div class="scene">${head}<h2 class="big">대본을 가렸습니다 — 발표 시작!</h2>
     <div class="row" style="justify-content:center">${Array.from({length:n},(_,k)=>`<span class="stamp ${k<c?'ok':''}" style="font-size:1.6rem;padding:.35rem .9rem;${k===c?'background:var(--accent);color:#1a1400':(k>c?'border:1px solid var(--line)':'')}">${k+1}번</span>`).join('')}</div>
@@ -510,7 +516,7 @@ function vR4(s){
     ${note('다른 배는 조용히 들어 주세요. 틀리게 말한 단어는 기억해 두세요.','선원이 한 문장을 말할 때마다 "다음"을 누르면 순서가 넘어갑니다.')}</div>`; }
   const m=S.r4.mark[t]||[]; const all=Array.from({length:n},(_,k)=>m[k]!=null).every(Boolean);
   return `<div class="scene">${head}<h2 class="mid">${tn(t)} 정답 대본 · 문장마다 정확도를 눌러 주세요</h2>
-    ${card(L.map((x,k)=>`<div style="display:flex;flex-wrap:wrap;gap:.4rem .8rem;align-items:center"><span class="no" style="font-size:1.2rem;min-width:3ch">${k+1}번</span><span style="flex:1 1 16rem;font-size:clamp(1.05rem,1.8vw,1.8rem);font-weight:900">${esc(x)}</span>
+    ${card(L.map((x,k)=>`<div style="display:flex;flex-wrap:wrap;gap:.4rem .8rem;align-items:center"><span class="no" style="font-size:1.2rem;min-width:3ch">${k+1}번</span><span style="flex:1 1 16rem;font-size:clamp(.95rem,1.4vw,1.45rem);font-weight:900;line-height:1.4">${esc(x)}</span>
       <span class="row" style="gap:.3rem">${[[2,'정확'],[1,'조금 달라'],[0,'틀림']].map(([v,lb])=>`<button class="btn" data-a="sentmark" data-t="${t}" data-k="${k}" data-v="${v}" style="${m[k]===v?'background:var(--accent);color:#1a1400':''}">${lb}</button>`).join('')}</span></div>`).join(''))}
     <div class="row" style="justify-content:space-between"><span class="score-live num">${all?`${r4pts(t)}점`:''}</span>${ph==='done'?'<span class="done-mark">완료 — "다음"으로 이동</span>':`<button class="btn primary lg" data-a="markdone" data-t="${t}" ${all?'':'disabled'}>점수 확정 ▶</button>`}</div>
     ${note('들은 문장을 정답과 비교해 주세요. 한 단어만 달라도 "조금 달라", 많이 틀리거나 빠지면 "틀림"입니다.','일부러 바꿔 말한 단어가 있었다면 X맨 단서로 기억해 두세요. 점수 = 합계 ÷ (인원 × 2) × 10.')}</div>`;
